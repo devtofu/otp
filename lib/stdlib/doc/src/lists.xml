@@ -69,7 +69,8 @@
       <desc>
         <p>Returns <c>true</c> if <c><anno>Pred</anno>(<anno>Elem</anno>)</c>
           returns <c>true</c> for all elements <c><anno>Elem</anno></c> in
-          <c><anno>List</anno></c>, otherwise <c>false</c>.</p>
+          <c><anno>List</anno></c>, otherwise <c>false</c>. The <c>Pred</c>
+          function must return a boolean.</p>
       </desc>
     </func>
 
@@ -80,7 +81,8 @@
       <desc>
         <p>Returns <c>true</c> if <c><anno>Pred</anno>(<anno>Elem</anno>)</c>
           returns <c>true</c> for at least one element <c><anno>Elem</anno></c>
-          in <c><anno>List</anno></c>.</p>
+          in <c><anno>List</anno></c>. The <c>Pred</c> function must return a
+          boolean.</p>
       </desc>
     </func>
 
@@ -154,7 +156,8 @@
         <p>Drops elements <c><anno>Elem</anno></c> from
           <c><anno>List1</anno></c> while
           <c><anno>Pred</anno>(<anno>Elem</anno>)</c> returns <c>true</c> and
-          returns the remaining list.</p>
+          returns the remaining list. The <c>Pred</c> function must return a
+          boolean.</p>
       </desc>
     </func>
 
@@ -172,12 +175,55 @@
     </func>
 
     <func>
+      <name name="enumerate" arity="1" since="OTP @OTP-17523@"/>
+      <fsummary>Annotates elements with their index.</fsummary>
+      <desc>
+        <p>Returns <c><anno>List1</anno></c> with each element
+        <c>H</c> replaced by a tuple of form <c>{I, H}</c> where
+        <c>I</c> is the position of <c>H</c> in
+        <c><anno>List1</anno></c>. The enumeration starts with 1 and
+        increases by 1 in each step.</p>
+        <p>That is, <c>enumerate/1</c> behaves as if it had been defined as follows:</p>
+        <code type="erl">
+enumerate(List) ->
+  {List1, _ } = lists:mapfoldl(fun(T, Acc) -> {{Acc, T}, Acc+1} end, 1, List),
+  List1.</code>
+        <p><em>Example:</em></p>
+        <pre>
+> <input>lists:enumerate([a,b,c]).</input>
+[{1,a},{2,b},{3,c}]</pre>
+      </desc>
+    </func>
+    
+    <func>
+      <name name="enumerate" arity="2" since="OTP @OTP-17523@"/>
+      <fsummary>Annotates elements with their index.</fsummary>
+      <desc>
+        <p>Returns <c><anno>List1</anno></c> with each element
+        <c>H</c> replaced by a tuple of form <c>{I, H}</c> where
+        <c>I</c> is the position of <c>H</c> in
+        <c><anno>List1</anno></c>. The enumeration starts with
+        <c><anno>Index</anno></c> and increases by 1 in each step.</p>
+        <p>That is, <c>enumerate/2</c> behaves as if it had been defined as follows:</p>
+        <code type="erl">
+enumerate(I, List) ->
+  {List1, _ } = lists:mapfoldl(fun(T, Acc) -> {{Acc, T}, Acc+1} end, I, List),
+  List1.</code>
+        <p><em>Example:</em></p>
+        <pre>
+> <input>lists:enumerate(10, [a,b,c]).</input>
+[{10,a},{11,b},{12,c}]</pre>
+      </desc>
+    </func>
+    
+    <func>
       <name name="filter" arity="2" since=""/>
       <fsummary>Select elements that satisfy a predicate.</fsummary>
       <desc>
         <p><c><anno>List2</anno></c> is a list of all elements
           <c><anno>Elem</anno></c> in <c><anno>List1</anno></c> for which
-          <c><anno>Pred</anno>(<anno>Elem</anno>)</c> returns <c>true</c>.</p>
+          <c><anno>Pred</anno>(<anno>Elem</anno>)</c> returns <c>true</c>.
+	  The <c>Pred</c> function must return a boolean.</p>
       </desc>
     </func>
 
@@ -696,7 +742,8 @@ c</pre>
           such that <c><anno>Pred</anno>(<anno>Value</anno>)</c> returns
           <c>true</c>, returns <c>{value, <anno>Value</anno>}</c>
           for the first such <c><anno>Value</anno></c>,
-          otherwise returns <c>false</c>.</p>
+          otherwise returns <c>false</c>. The <c>Pred</c> function must return
+          a boolean.</p>
       </desc>
     </func>
 
@@ -798,7 +845,8 @@ splitwith(Pred, List) ->
 {[1],[2,3,4,5,6,7]}
 > <input>lists:splitwith(fun(A) -> is_atom(A) end, [a,b,1,c,d,2,3,4,e]).</input>
 {[a,b],[1,c,d,2,3,4,e]}</pre>
-        <p>For a different way to partition a list, see 
+        <p>The <c>Pred</c> function must return a
+          boolean. For a different way to partition a list, see 
           <seemfa marker="#partition/2"><c>partition/2</c></seemfa>.</p>
       </desc>
     </func>
@@ -879,7 +927,8 @@ splitwith(Pred, List) ->
           <c><anno>List1</anno></c> while
           <c><anno>Pred</anno>(<anno>Elem</anno>)</c> returns <c>true</c>, that
           is, the function returns the longest prefix of the list for which
-          all elements satisfy the predicate.</p>
+          all elements satisfy the predicate. The <c>Pred</c> function must
+          return a boolean.</p>
       </desc>
     </func>
 

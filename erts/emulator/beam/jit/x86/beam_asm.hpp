@@ -288,6 +288,7 @@ protected:
         a.short_().jle(ok);
 
         a.bind(crash);
+        a.comment("# Redzone touched");
         a.ud2();
 
         a.bind(ok);
@@ -335,6 +336,7 @@ protected:
         Label next = a.newLabel();
         a.cmp(x86::rsp, getInitialSPRef());
         a.short_().je(next);
+        a.comment("# The stack has grown");
         a.ud2();
         a.bind(next);
 #endif
@@ -538,6 +540,7 @@ protected:
         a.short_().je(next);
 
         a.bind(crash);
+        a.comment("# Runtime stack is corrupt");
         a.ud2();
 
         a.bind(next);
@@ -558,6 +561,7 @@ protected:
         a.short_().jle(next);
 
         a.bind(crash);
+        a.comment("Erlang stack is corrupt");
         a.ud2();
         a.bind(next);
 #endif
@@ -1046,11 +1050,13 @@ class BeamModuleAssembler : public BeamAssembler {
 public:
     BeamModuleAssembler(BeamGlobalAssembler *ga,
                         Eterm mod,
-                        unsigned num_labels);
+                        unsigned num_labels,
+                        BeamFile_ExportTable *named_labels = NULL);
     BeamModuleAssembler(BeamGlobalAssembler *ga,
                         Eterm mod,
                         unsigned num_labels,
-                        unsigned num_functions);
+                        unsigned num_functions,
+                        BeamFile_ExportTable *named_labels = NULL);
 
     bool emit(unsigned op, const Span<ArgVal> &args);
 
