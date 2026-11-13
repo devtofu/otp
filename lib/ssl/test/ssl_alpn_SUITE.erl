@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,6 +25,7 @@
 
 -behaviour(ct_suite).
 
+-include("ssl_test_lib.hrl").
 -include_lib("common_test/include/ct.hrl").
 
 %% Callback functions
@@ -81,12 +84,14 @@ all() ->
 
 groups() ->
     [
-     {'tlsv1.3', [], alpn_tests() -- [client_renegotiate, session_reused]},
-     {'tlsv1.2', [], alpn_tests() ++ alpn_npn_coexist()},
-     {'tlsv1.1', [], alpn_tests() ++ alpn_npn_coexist()},
-     {'tlsv1', [], alpn_tests() ++ alpn_npn_coexist()},
-     {'dtlsv1.2', [], alpn_tests() ++ alpn_npn_coexist()},
-     {'dtlsv1', [], alpn_tests() ++ alpn_npn_coexist()}
+     {'tlsv1.3', [], [{group, alpn_tests}]},
+     {'tlsv1.2', [], [{group, alpn_tests}, {group, alpn_not_1_3}]},
+     {'tlsv1.1', [], [{group, alpn_tests}, {group, alpn_not_1_3}]},
+     {'tlsv1', [],   [{group, alpn_tests}, {group, alpn_not_1_3}]},
+     {'dtlsv1.2', [],[{group, alpn_tests}, {group, alpn_not_1_3}]},
+     {'dtlsv1', [],  [{group, alpn_tests}, {group, alpn_not_1_3}]},
+     {alpn_tests, [parallel], alpn_tests()},
+     {alpn_not_1_3, [parallel], alpn_not_1_3()}
     ].
 
 alpn_tests() ->
@@ -98,22 +103,22 @@ alpn_tests() ->
      no_matching_protocol,
      client_alpn_and_server_alpn,
      client_alpn_and_server_no_support,
-     client_no_support_and_server_alpn,
+     client_no_support_and_server_alpn
+    ].
+
+alpn_not_1_3() ->
+    [
+     client_alpn_npn_and_server_alpn_npn,
+     client_alpn_and_server_alpn_npn,
+     client_alpn_npn_and_server_alpn,
      client_renegotiate,
      session_reused
     ].
 
-alpn_npn_coexist() ->
-    [
-     client_alpn_npn_and_server_alpn_npn,
-     client_alpn_and_server_alpn_npn,
-     client_alpn_npn_and_server_alpn
-    ].
-
 
 init_per_suite(Config0) ->
-    catch crypto:stop(),
-    try crypto:start() of
+    catch application:stop(crypto),
+    try application:start(crypto) of
 	ok ->
 	    ssl_test_lib:clean_start(),
 	    ssl_test_lib:make_rsa_cert(Config0)
@@ -296,13 +301,13 @@ session_reused(Config) when  is_list(Config)->
 %%--------------------------------------------------------------------
 
 assert_alpn(Socket, Protocol) ->
-    ct:log("Negotiated Protocol ~p, Expecting: ~p ~n",
+    ?CT_LOG("Negotiated Protocol ~p, Expecting: ~p ~n",
 		       [ssl:negotiated_protocol(Socket), Protocol]),
     Protocol = ssl:negotiated_protocol(Socket).
 
 assert_alpn_and_renegotiate_and_send_data(Socket, Protocol, Data) ->
     assert_alpn(Socket, Protocol),
-    ct:log("Renegotiating ~n", []),
+    ?CT_LOG("Renegotiating ~n", []),
     ok = ssl:renegotiate(Socket),
     ssl:send(Socket, Data),
     assert_alpn(Socket, Protocol),
@@ -317,7 +322,7 @@ ssl_receive_and_assert_alpn(Socket, Protocol, Data) ->
     ssl_receive(Socket, Data).
 
 ssl_send(Socket, Data) ->
-    ct:log("Connection info: ~p~n",
+    ?CT_LOG("Connection info: ~p~n",
                [ssl:connection_information(Socket)]),
     ssl:send(Socket, Data).
 
@@ -325,11 +330,11 @@ ssl_receive(Socket, Data) ->
     ssl_receive(Socket, Data, []).
 
 ssl_receive(Socket, Data, Buffer) ->
-    ct:log("Connection info: ~p~n",
+    ?CT_LOG("Connection info: ~p~n",
            [ssl:connection_information(Socket)]),
     receive
     {ssl, Socket, MoreData} ->
-        ct:log("Received ~p~n",[MoreData]),
+        ?CT_LOG("Received ~p~n",[MoreData]),
         NewBuffer = Buffer ++ MoreData,
         case NewBuffer of
             Data ->

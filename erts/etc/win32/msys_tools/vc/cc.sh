@@ -1,8 +1,10 @@
 #! /bin/sh
 # 
 # %CopyrightBegin%
+#
+# SPDX-License-Identifier: Apache-2.0
 # 
-# Copyright Ericsson AB 2002-2020. All Rights Reserved.
+# Copyright Ericsson AB 2002-2025. All Rights Reserved.
 # 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -39,7 +41,7 @@ ERR_FILE=/tmp/cl.exe.$$.2
 MD_FORCED=false
 # If we're preprocession (only) i.e. -E
 PREPROCESSING=false
-# If we're generating dependencies (implies preprocesing)
+# If we're generating dependencies (implies preprocessing)
 DEPENDENCIES=false
 # If this is supposed to be a debug build
 DEBUG_BUILD=false
@@ -95,6 +97,8 @@ while test -n "$1" ; do
 		MD=-MD;
 	    fi
 	    OPTIMIZED_BUILD=true;;
+        -O0|-Og)
+            ;;
 	-O*)
 	    # Optimization hardcoded, needs to disable debugging too
 	    OPTIMIZE_FLAGS="-Ox -Zi";
@@ -310,7 +314,7 @@ if [ $LINKING = true ]; then
 	*)
 	    out_spec="-o $OUTFILE";;
     esac
-    # Descide which standard library to link against
+    # Decide which standard library to link against
     case $MD in
 	-ML)
 	    stdlib="-lLIBC";;

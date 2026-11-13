@@ -1,8 +1,10 @@
 #
 # %CopyrightBegin%
-# 
-# Copyright Ericsson AB 1996-2016. All Rights Reserved.
-# 
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 1996-2025. All Rights Reserved.
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# 
+#
 # %CopyrightEnd%
 #
 include $(ERL_TOP)/make/target.mk
@@ -24,7 +26,7 @@ include $(ERL_TOP)/make/$(TARGET)/otp.mk
 # Macros
 #
 
-SUB_DIRECTORIES = src doc/src examples
+SUB_DIRECTORIES = src doc examples
 
 include vsn.mk
 VSN = $(STDLIB_VSN)
@@ -37,5 +39,15 @@ SPECIAL_TARGETS =
 include $(ERL_TOP)/make/otp_subdir.mk
 
 DIA_PLT_APPS=compiler crypto
+TEST_NEEDS_RELEASE=true
 
+NO_TEST_TARGET:=1 # Avoid warning about ignoring old recipe for target 'test'
 include $(ERL_TOP)/make/app_targets.mk
+
+# Enable feature maybe_expr in runtime when running tests.
+# This is very non local and somewhat ugly.
+.PHONY: test
+test:
+	$(MAKE) TEST_NEEDS_RELEASE=$(TEST_NEEDS_RELEASE) \
+		ERL_ARGS="-enable-feature maybe_expr $(ERL_ARGS)"    \
+		-f $(ERL_TOP)/make/app_targets.mk $@

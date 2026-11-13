@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2021. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,6 +20,7 @@
 %% %CopyrightEnd%
 %%
 -module(systools_make).
+-moduledoc false.
 
 %% Purpose : Create start script. RelName.rel --> RelName.{script,boot}.
 %%           and create a tar file of a release (RelName.tar.gz)
@@ -32,7 +35,7 @@
 -export([read_application/4]).
 
 -export([make_hybrid_boot/4]).
--export([preloaded/0]). % Exported just for testing
+-export([preloaded/0, mandatory_modules/0]). % Exported just for testing
 
 -import(lists, [filter/2, keysort/2, keysearch/3, map/2, reverse/1,
 		append/1, foldl/3,  member/2, foreach/2]).
@@ -43,20 +46,17 @@
 
 -define(XREF_SERVER, systools_make).
 
--compile({inline,[{badarg,2}]}).
+-compile([{nowarn_possibly_unsafe_function, {erlang, binary_to_term, 1}},
+          {nowarn_possibly_unsafe_function, {file, consult, 1}},
+          {inline,[{badarg,2}]}]).
 
--ifdef(USE_ESOCK).
 -define(ESOCK_MODS, [prim_net,prim_socket,socket_registry]).
--else.
--define(ESOCK_MODS, []).
--endif.
-
 
 %%-----------------------------------------------------------------
 %% Create a boot script from a release file.
 %% Options is a list of {path, Path} | silent | local
 %%         | warnings_as_errors
-%% where path sets the search path, silent supresses error message
+%% where path sets the search path, silent suppresses error message
 %% printing on console, local generates a script with references
 %% to the directories there the applications are found,
 %% and warnings_as_errors treats warnings as errors.
@@ -195,7 +195,7 @@ do_make_hybrid_boot(TmpVsn, OldBoot, NewBoot, Args) ->
     {script,{_RelName1,_RelVsn1},OldScript} = binary_to_term(OldBoot),
     {script,{NewRelName,_RelVsn2},NewScript} = binary_to_term(NewBoot),
 
-    %% Everyting upto kernel_load_completed must come from the new script
+    %% Everything up to kernel_load_completed must come from the new script
     Fun1 = fun({progress,kernel_load_completed}) -> false;
               (_) -> true
            end,
@@ -345,7 +345,7 @@ add_apply_upgrade(Script,Args) ->
 %% Create a release package from a release file.
 %% Options is a list of {path, Path} | silent |
 %%    {dirs, [src,include,examples,..]} | {erts, ErtsDir} where path
-%% sets the search path, silent supresses error message printing,
+%% sets the search path, silent suppresses error message printing,
 %% dirs includes the specified directories (per application) in the
 %% release package and erts specifies that the erts-Vsn/bin directory
 %% should be included in the release package and there it can be found.
@@ -674,7 +674,7 @@ parse_application({application, Name, Dict}, File, Vsn, Incls)
 parse_application(Other, _, _, _) ->
     {error, {badly_formatted_application, Other}}.
 
-%% Test if all included applications specifed in the .rel file
+%% Test if all included applications specified in the .rel file
 %% exists in the {included_applications,Incs} specified in the
 %% .app file.
 override_include(Name, Incs, Incls) ->
@@ -701,7 +701,15 @@ specified([], _) ->
     [].
 
 get_items([H|T], Dict) ->
-    Item = check_item(keysearch(H, 1, Dict),H),
+    Item = case check_item(keysearch(H, 1, Dict),H) of
+        [Atom|_]=Atoms when is_atom(Atom), is_list(Atoms) ->
+            %% Check for duplicate entries in lists
+            case Atoms =/= lists:uniq(Atoms) of
+                true -> throw({dupl_entry, H, lists:subtract(Atoms, lists:uniq(Atoms))});
+                false -> Atoms
+            end;
+        X -> X
+    end,
     [Item|get_items(T, Dict)];
 get_items([], _Dict) ->
     [].
@@ -1162,9 +1170,33 @@ smart_guess(Dir,IncPath) ->
 	    D1 = reverse(D),
 	    Dirs = [filename:join(D1 ++ ["src"]),
 		    filename:join(D1 ++ ["src", "e_src"])],
-	    {Dirs,Dirs ++ IncPath};
+	    RecurseDirs = add_subdirs(Dirs),
+	    {RecurseDirs,RecurseDirs ++ IncPath};
 	_ ->
 	    {[Dir],[Dir] ++ IncPath}
+    end.
+
+%%______________________________________________________________________
+%% add_subdirs([Dirs]) -> [Dirs]
+%% Take the directories that were used for a guess, and search them
+%% recursively. This is required for applications relying on varying
+%% nested directories. One example within OTP is the `wx' application,
+%% which has auto-generated modules in `src/gen/' and then fail any
+%% systools check.
+
+add_subdirs([]) ->
+    [];
+add_subdirs([Dir|Dirs]) ->
+    case filelib:is_dir(Dir) of
+        false ->
+            %% Keep the bad guess, but put it last in the search order
+            %% since we won't find anything there. Handling of errors
+            %% for unfound file is done in `locate_src/2'
+            add_subdirs(Dirs) ++ [Dir];
+        true ->
+            SubDirs = [File || File <- filelib:wildcard(filename:join(Dir, "**")),
+                               filelib:is_dir(File)],
+            [Dir|SubDirs] ++ add_subdirs(Dirs)
     end.
 
 %%______________________________________________________________________
@@ -1346,7 +1378,7 @@ find_all(CheckingApp, [Name|T], L, Visited, Found, NotFound) ->
     case find_app(Name, L) of
 	{value, App} ->
 	    {_A,R} = App,
-	    %% It is OK to have a dependecy like
+	    %% It is OK to have a dependency like
 	    %% X includes Y, Y uses X.
 	    case lists:member(CheckingApp, R#application.includes) of
 		true ->
@@ -1386,7 +1418,7 @@ del_apps([], L) ->
 %%______________________________________________________________________
 %% Create the load path used in the generated script.
 %% If PathFlag is true a script intended to be used as a complete
-%% system (e.g. in an embbeded system), i.e. all applications are
+%% system (e.g. in an embedded system), i.e. all applications are
 %% located under $ROOT/lib.
 %% Otherwise all paths are set according to dir per application.
 
@@ -1510,37 +1542,30 @@ mandatory_modules() ->
     [error_handler,				%Truly mandatory.
 
      %% Modules that are almost always needed. Listing them here
-     %% helps the init module to load them faster. Modules not
-     %% listed here will be loaded by the error_handler module.
+     %% helps the init module to load them faster. The kernel supervisor
+     %% also loads some modules based on which mode the system is running in.
+     %% 
+     %% Think hard before adding modules here as it will increase the boot time of the system.
      %%
      %% Keep this list sorted.
      application,
      application_controller,
      application_master,
-     code,
-     code_server,
-     erl_eval,
-     erl_lint,
-     erl_parse,
-     error_logger,
-     ets,
-     file,
-     filename,
-     file_server,
-     file_io_server,
      gen,
-     gen_event,
-     gen_server,
-     heart,
+     gen_server, %% used by supervisor
+     heart, %% Part of all start scripts
      kernel,
-     logger,
-     logger_filters,
-     logger_server,
-     logger_backend,
-     logger_config,
-     logger_simple_h,
      lists,
+     logger, %% Started very early in kernel
+     logger_config,
+     logger_olp,
+     logger_proxy,
+     logger_server,
+     logger_simple_h,
+     os, %% used by heart and logger
      proc_lib,
+     proplists, %% used by logger
+     queue, %% used by logger
      supervisor
     ].
 
@@ -1552,7 +1577,7 @@ preloaded() ->
       ?ESOCK_MODS ++
           [atomics,counters,erl_init,erl_prim_loader,erl_tracer,erlang,
            erts_code_purger,erts_dirty_process_signal_handler,
-           erts_internal,erts_literal_area_collector,
+           erts_internal,erts_literal_area_collector,erts_trace_cleaner,
            init,persistent_term,prim_buffer,prim_eval,prim_file,
            prim_inet,prim_zip,zlib]).
 
@@ -1561,9 +1586,10 @@ preloaded() ->
 
 erts_binary_filter() ->
     Cmds = ["typer", "dialyzer", "ct_run", "yielding_c_fun", "erlc"],
+    Extensions = [".exe", ".pdb"],
     case os:type() of
         {unix,_} -> Cmds;
-        {win32,_} -> [ [Cmd, ".exe"] || Cmd <- Cmds]
+        {win32,_} -> [ [Cmd, Ext] || Cmd <- Cmds, Ext <- Extensions]
     end.
 
 %%______________________________________________________________________
@@ -1755,7 +1781,7 @@ add_system_files(Tar, RelName, Release, Path1) ->
     %% (well, actually the boot file was looked for in the same
     %% directory as RelName, which is not necessarily the same as cwd)
     %% --
-    %% but also in the path specfied as an option to systools:make_tar
+    %% but also in the path specified as an option to systools:make_tar
     %% (but make sure to search the RelName directory and cwd first)
     Path = case filename:dirname(RelName) of
 	       "." ->
@@ -1868,9 +1894,16 @@ add_appl(Name, Vsn, App, Tar, Variables, Flags, Var) ->
 		    ok
 	    end,
 	    BinDir = filename:join(ToDir, "ebin"),
-	    add_to_tar(Tar,
-		       filename:join(AppDir, Name ++ ".app"),
-		       filename:join(BinDir, Name ++ ".app")),
+	    AppBase = filename:join(AppDir, Name),
+	    BinBase = filename:join(BinDir, Name),
+	    add_to_tar(Tar, AppBase ++ ".app", BinBase ++ ".app"),
+	    AppUp = AppBase ++ ".appup",
+	    case filelib:is_regular(AppUp) of
+		true ->
+		    add_to_tar(Tar, AppUp, BinBase ++ ".appup");
+		false ->
+		    ok
+	    end,
 	    add_modules(map(fun(Mod) -> to_list(Mod) end,
 			    App#application.modules),
 			Tar,
@@ -2417,6 +2450,8 @@ form_reading({read,File}) ->
     io_lib:format("Cannot read ~tp~n",[File]);
 form_reading({{bad_param, P},_}) ->
     io_lib:format("Bad parameter in .app file: ~tp~n",[P]);
+form_reading({{dupl_entry, P, DE},_}) ->
+    io_lib:format("~tp parameter contains duplicates of: ~tp~n", [P, DE]);
 form_reading({{missing_param,P},_}) ->
     io_lib:format("Missing parameter in .app file: ~p~n",[P]);
 form_reading({badly_formatted_application,_}) ->

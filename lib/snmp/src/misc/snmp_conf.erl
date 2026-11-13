@@ -1,8 +1,10 @@
 %% 
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1996-2020. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,13 +16,14 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %% 
 %%----------------------------------------------------------------------
 %% Purpose: Basic module for reading and verifying config files
 %%----------------------------------------------------------------------
 -module(snmp_conf).
+-moduledoc false.
 
 
 %% External exports
@@ -163,7 +166,7 @@ no_gen(_Dir, _R) -> [].
 no_order(_, _) -> true.
 no_filter(X) -> X.
 
-%% Order tuples on element N with Keys first in appearence order.
+%% Order tuples on element N with Keys first in appearance order.
 %%
 %% An ordering function (A, B) shall return true iff
 %% A is less than or equal to B i.e shall return
@@ -924,7 +927,7 @@ check_transport_address(transportDomainUdpIpv4 = _Domain,
   when ?is_ipv4_addr(A0, A1, A2, A3) ->
     case PortInfo of
         system ->
-            %% The actual port number will be choosen
+            %% The actual port number will be chosen
             %% by the system (create with port = 0)
             %% when the socket is created.
             true;
@@ -946,7 +949,7 @@ check_transport_address(transportDomainUdpIpv6 = _Domain,
   when ?is_ipv6_addr(A0, A1, A2, A3, A4, A5, A6, A7) ->
     case PortInfo of
         system ->
-            %% The actual port number will be choosen
+            %% The actual port number will be chosen
             %% by the system (create with port = 0)
             %% when the socket is created.
             true;

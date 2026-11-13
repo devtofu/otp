@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2007-2017. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2007-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,22 +16,25 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
 -module(base64_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
 %% Test server specific exports
 -export([all/0, suite/0, groups/0, group/1]).
 
 %% Test cases must be exported.
--export([base64_encode/1, base64_decode/1, base64_otp_5635/1,
-	 base64_otp_6279/1, big/1, illegal/1, mime_decode/1,
-	 mime_decode_to_string/1,
-	 roundtrip_1/1, roundtrip_2/1, roundtrip_3/1, roundtrip_4/1]).
+-export([base64_encode/1, base64_encode_to_string/1, base64_encode_modes/1,
+	 base64_decode/1, base64_decode_to_string/1, base64_decode_modes/1,
+	 base64_otp_5635/1, base64_otp_6279/1, big/1, illegal/1,
+	 mime_decode/1, mime_decode_modes/1,
+	 mime_decode_to_string/1, mime_decode_to_string_modes/1,
+         roundtrip_1/1, roundtrip_2/1, roundtrip_3/1, roundtrip_4/1, doctests/1]).
 
 %%-------------------------------------------------------------------------
 %% Test cases starts here.
@@ -40,8 +45,11 @@ suite() ->
      {timetrap,{minutes,4}}].
 
 all() ->
-    [base64_encode, base64_decode, base64_otp_5635,
-     base64_otp_6279, big, illegal, mime_decode, mime_decode_to_string,
+    [base64_encode, base64_encode_to_string, base64_encode_modes,
+     base64_decode, base64_decode_to_string, base64_decode_modes,
+     base64_otp_5635, base64_otp_6279, big, illegal,
+     mime_decode, mime_decode_modes,
+     mime_decode_to_string, mime_decode_to_string_modes, doctests,
      {group, roundtrip}].
 
 groups() ->
@@ -53,44 +61,168 @@ group(roundtrip) ->
     [{timetrap,{minutes,10}}].
 
 %%-------------------------------------------------------------------------
-%% Test base64:encode/1.
+%% Test base64:encode/1,2.
 base64_encode(Config) when is_list(Config) ->
     %% Two pads
     <<"QWxhZGRpbjpvcGVuIHNlc2FtZQ==">> =
 	base64:encode("Aladdin:open sesame"),
+    <<"QWxhZGRpbjpvcGVuIHNlc2FtZQ">> =
+        base64:encode("Aladdin:open sesame", #{padding => false}),
     %% One pad
     <<"SGVsbG8gV29ybGQ=">> = base64:encode(<<"Hello World">>),
+    <<"SGVsbG8gV29ybGQ">> = base64:encode(<<"Hello World">>, #{padding => false}),
+    %% No pad
+    <<"QWxhZGRpbjpvcGVuIHNlc2Ft">> = base64:encode("Aladdin:open sesam"),
+    <<"QWxhZGRpbjpvcGVuIHNlc2Ft">> =
+        base64:encode("Aladdin:open sesam", #{padding => false}),
+
+    <<"MDEyMzQ1Njc4OSFAIzBeJiooKTs6PD4sLiBbXXt9">> =
+	base64:encode(<<"0123456789!@#0^&*();:<>,. []{}">>),
+    ok.
+
+%%-------------------------------------------------------------------------
+%% Test base64:encode_to_string/1,2.
+base64_encode_to_string(Config) when is_list(Config) ->
+    %% Two pads
+    "QWxhZGRpbjpvcGVuIHNlc2FtZQ==" =
+        base64:encode_to_string("Aladdin:open sesame"),
+    "QWxhZGRpbjpvcGVuIHNlc2FtZQ" =
+        base64:encode_to_string("Aladdin:open sesame", #{padding => false}),
+    %% One pad
+    "SGVsbG8gV29ybGQ=" = base64:encode_to_string(<<"Hello World">>),
+    "SGVsbG8gV29ybGQ" =
+        base64:encode_to_string(<<"Hello World">>, #{padding => false}),
     %% No pad
     "QWxhZGRpbjpvcGVuIHNlc2Ft" =
 	base64:encode_to_string("Aladdin:open sesam"),
+    "QWxhZGRpbjpvcGVuIHNlc2Ft" =
+        base64:encode_to_string("Aladdin:open sesam", #{padding => false}),
 
     "MDEyMzQ1Njc4OSFAIzBeJiooKTs6PD4sLiBbXXt9" =
 	base64:encode_to_string(<<"0123456789!@#0^&*();:<>,. []{}">>),
     ok.
+
 %%-------------------------------------------------------------------------
-%% Test base64:decode/1.
+%% Test base64:encode/2 and base64:encode_to_string/2.
+base64_encode_modes(Config) when is_list(Config) ->
+    Data = <<23, 234, 63, 163, 239, 129, 253, 175, 171>>,
+
+    <<"F+o/o++B/a+r">> = base64:encode(Data, #{mode => standard}),
+    <<"F-o_o--B_a-r">> = base64:encode(Data, #{mode => urlsafe}),
+
+    "F+o/o++B/a+r" = base64:encode_to_string(Data, #{mode => standard}),
+    "F-o_o--B_a-r" = base64:encode_to_string(Data, #{mode => urlsafe}),
+
+    ok.
+
+%%-------------------------------------------------------------------------
+%% Test base64:decode/1,2.
 base64_decode(Config) when is_list(Config) ->
     %% Two pads
     <<"Aladdin:open sesame">> =
-	base64:decode("QWxhZGRpbjpvcGVuIHNlc2FtZQ=="),
+        base64:decode(<<"QWxhZGRpbjpvcGVuIHNlc2FtZQ==">>),
+    <<"Aladdin:open sesame">> =
+        base64:decode("QWxhZGRpbjpvcGVuIHNlc2FtZQ=="),
+    <<"Aladdin:open sesame">> =
+        base64:decode(<<"QWxhZGRpbjpvcGVuIHNlc2FtZQ">>, #{padding => false}),
+    <<"Aladdin:open sesame">> =
+        base64:decode("QWxhZGRpbjpvcGVuIHNlc2FtZQ", #{padding => false}),
+    ?assertError(missing_padding, base64:decode(<<"QWxhZGRpbjpvcGVuIHNlc2FtZQ">>)),
+    ?assertError(missing_padding, base64:decode("QWxhZGRpbjpvcGVuIHNlc2FtZQ")),
     %% One pad
     <<"Hello World">> = base64:decode(<<"SGVsbG8gV29ybGQ=">>),
+    <<"Hello World">> = base64:decode("SGVsbG8gV29ybGQ="),
+    <<"Hello World">> = base64:decode(<<"SGVsbG8gV29ybGQ">>, #{padding => false}),
+    <<"Hello World">> = base64:decode("SGVsbG8gV29ybGQ", #{padding => false}),
+    ?assertError(missing_padding, base64:decode_to_string(<<"SGVsbG8gV29ybGQ">>)),
+    ?assertError(missing_padding, base64:decode_to_string("SGVsbG8gV29ybGQ")),
     %% No pad
     <<"Aladdin:open sesam">> =
-	base64:decode("QWxhZGRpbjpvcGVuIHNlc2Ft"),
+        base64:decode(<<"QWxhZGRpbjpvcGVuIHNlc2Ft">>),
+    <<"Aladdin:open sesam">> =
+        base64:decode("QWxhZGRpbjpvcGVuIHNlc2Ft"),
+    <<"Aladdin:open sesam">> =
+        base64:decode(<<"QWxhZGRpbjpvcGVuIHNlc2Ft">>, #{padding => false}),
+    <<"Aladdin:open sesam">> =
+        base64:decode("QWxhZGRpbjpvcGVuIHNlc2Ft", #{padding => false}),
 
     Alphabet = list_to_binary(lists:seq(0, 255)),
     Alphabet = base64:decode(base64:encode(Alphabet)),
+    Alphabet = base64:decode(base64:encode_to_string(Alphabet)),
+
+    %% Encoded base 64 strings may be divided by non base 64 chars.
+    %% In this cases whitespaces.
+    <<"0123456789!@#0^&*();:<>,. []{}">> =
+        base64:decode(
+            "MDEy MzQ1Njc4 \tOSFAIzBeJ \niooKTs6 PD4sLi \r\nBbXXt9"),
+    <<"0123456789!@#0^&*();:<>,. []{}">> =
+        base64:decode(
+            <<"MDEy MzQ1Njc4 \tOSFAIzBeJ \niooKTs6 PD4sLi \r\nBbXXt9">>),
+    ok.
+
+%%-------------------------------------------------------------------------
+%% Test base64:decode_to_string/1,2.
+base64_decode_to_string(Config) when is_list(Config) ->
+    %% Two pads
+    "Aladdin:open sesame" =
+        base64:decode_to_string(<<"QWxhZGRpbjpvcGVuIHNlc2FtZQ==">>),
+    "Aladdin:open sesame" =
+        base64:decode_to_string("QWxhZGRpbjpvcGVuIHNlc2FtZQ=="),
+    "Aladdin:open sesame" =
+        base64:decode_to_string(<<"QWxhZGRpbjpvcGVuIHNlc2FtZQ">>, #{padding => false}),
+    "Aladdin:open sesame" =
+        base64:decode_to_string("QWxhZGRpbjpvcGVuIHNlc2FtZQ", #{padding => false}),
+    ?assertError(missing_padding, base64:decode_to_string(<<"QWxhZGRpbjpvcGVuIHNlc2FtZQ">>)),
+    ?assertError(missing_padding, base64:decode_to_string("QWxhZGRpbjpvcGVuIHNlc2FtZQ")),
+    %% One pad
+    "Hello World" = base64:decode_to_string(<<"SGVsbG8gV29ybGQ=">>),
+    "Hello World" = base64:decode_to_string("SGVsbG8gV29ybGQ="),
+    "Hello World" = base64:decode_to_string(<<"SGVsbG8gV29ybGQ">>, #{padding => false}),
+    "Hello World" = base64:decode_to_string("SGVsbG8gV29ybGQ", #{padding => false}),
+    ?assertError(missing_padding, base64:decode_to_string(<<"SGVsbG8gV29ybGQ">>)),
+    ?assertError(missing_padding, base64:decode_to_string("SGVsbG8gV29ybGQ")),
+    %% No pad
+    "Aladdin:open sesam" =
+        base64:decode_to_string(<<"QWxhZGRpbjpvcGVuIHNlc2Ft">>),
+    "Aladdin:open sesam" =
+        base64:decode_to_string("QWxhZGRpbjpvcGVuIHNlc2Ft"),
+    "Aladdin:open sesam" =
+        base64:decode_to_string(<<"QWxhZGRpbjpvcGVuIHNlc2Ft">>, #{padding => false}),
+    "Aladdin:open sesam" =
+        base64:decode_to_string("QWxhZGRpbjpvcGVuIHNlc2Ft", #{padding => false}),
+
+    Alphabet = lists:seq(0, 255),
+    Alphabet = base64:decode_to_string(base64:encode(Alphabet)),
+    Alphabet = base64:decode_to_string(base64:encode_to_string(Alphabet)),
 
     %% Encoded base 64 strings may be divided by non base 64 chars.
     %% In this cases whitespaces.
     "0123456789!@#0^&*();:<>,. []{}" =
-	base64:decode_to_string(
-	  "MDEy MzQ1Njc4 \tOSFAIzBeJ \niooKTs6 PD4sLi \r\nBbXXt9"),
+        base64:decode_to_string(
+            "MDEy MzQ1Njc4 \tOSFAIzBeJ \niooKTs6 PD4sLi \r\nBbXXt9"),
     "0123456789!@#0^&*();:<>,. []{}" =
-	base64:decode_to_string(
-	  <<"MDEy MzQ1Njc4 \tOSFAIzBeJ \niooKTs6 PD4sLi \r\nBbXXt9">>),
+        base64:decode_to_string(
+            <<"MDEy MzQ1Njc4 \tOSFAIzBeJ \niooKTs6 PD4sLi \r\nBbXXt9">>),
     ok.
+
+%%-------------------------------------------------------------------------
+%% Test base64:decode/2 and base64:decode_to_string/2
+base64_decode_modes(Config) when is_list(Config) ->
+    DataBin = <<23, 234, 63, 163, 239, 129, 253, 175, 171>>,
+    DataStr = [23, 234, 63, 163, 239, 129, 253, 175, 171],
+
+    DataBin = base64:decode("F+o/o++B/a+r", #{mode => standard}),
+    DataBin = base64:decode("F-o_o--B_a-r", #{mode => urlsafe}),
+    ?assertError(_, base64:decode("F-o_o--B_a-r", #{mode => standard})),
+    ?assertError(_, base64:decode("F+o/o++B/a+r", #{mode => urlsafe})),
+
+    DataStr = base64:decode_to_string("F+o/o++B/a+r", #{mode => standard}),
+    DataStr = base64:decode_to_string("F-o_o--B_a-r", #{mode => urlsafe}),
+    ?assertError(_, base64:decode_to_string("F-o_o--B_a-r", #{mode => standard})),
+    ?assertError(_, base64:decode_to_string("F+o/o++B/a+r", #{mode => urlsafe})),
+
+    ok.
+
 %%-------------------------------------------------------------------------
 %% OTP-5635: Some data doesn't pass through base64:decode/1 correctly.
 base64_otp_5635(Config) when is_list(Config) ->
@@ -99,7 +231,7 @@ base64_otp_5635(Config) when is_list(Config) ->
 %%-------------------------------------------------------------------------
 %% OTP-6279: Make sure illegal characters are rejected when decoding.
 base64_otp_6279(Config) when is_list(Config) ->
-    {'EXIT',_} = (catch base64:decode("dGVzda==a")),
+    ?assertError(_, base64:decode("dGVzda==a")),
     ok.
 %%-------------------------------------------------------------------------
 %% Encode and decode big binaries.
@@ -116,11 +248,11 @@ big(Config) when is_list(Config) ->
 illegal(Config) when is_list(Config) ->
     %% A few samples with different error reasons. Nothing can be
     %% assumed about the reason for the crash.
-    {'EXIT',_} = (catch base64:decode("()")),
-    {'EXIT',_} = (catch base64:decode(<<19:8,20:8,21:8,22:8>>)),
-    {'EXIT',_} = (catch base64:decode([19,20,21,22])),
-    {'EXIT',_} = (catch base64:decode_to_string(<<19:8,20:8,21:8,22:8>>)),
-    {'EXIT',_} = (catch base64:decode_to_string([19,20,21,22])),
+    ?assertError(_, base64:decode("()")),
+    ?assertError(_, base64:decode(<<19:8,20:8,21:8,22:8>>)),
+    ?assertError(_, base64:decode([19,20,21,22])),
+    ?assertError(_, base64:decode_to_string(<<19:8,20:8,21:8,22:8>>)),
+    ?assertError(_, base64:decode_to_string([19,20,21,22])),
     ok.
 %%-------------------------------------------------------------------------
 %% mime_decode and mime_decode_to_string have different implementations
@@ -171,6 +303,31 @@ mime_decode(Config) when is_list(Config) ->
     <<"o">>   = MimeDecode(<<"bw=\000=">>),
     ok.
 
+%% Test base64:mime_decode/2.
+mime_decode_modes(Config) when is_list(Config) ->
+    MimeDecode = fun (In, Options) ->
+                                Out = base64:mime_decode(In, Options),
+                                Out = base64:mime_decode(binary_to_list(In), Options)
+                 end,
+
+    %% The following all decode to the same data.
+    Data = <<23, 234, 63, 163, 239, 129, 253, 175, 171>>,
+    Data = MimeDecode(<<"F+o/o++B/a+r">>, #{mode => standard}),
+    Data = MimeDecode(<<"F-o_o--B_a-r">>, #{mode => urlsafe}),
+
+    %% The following decodes to different data depending on mode.
+    Base64 = <<"AB+C+D/E/FG-H-I_J_KL">>,
+    %% In standard mode, "-" and "_" are invalid and thus ignored.
+    %% The base64 string to be decoded is equivalent to "AB+C+D/E/FGHIJKL".
+    <<0, 31, 130, 248, 63, 196, 252, 81, 135, 32, 146, 139>> =
+        MimeDecode(Base64, #{mode => standard}),
+    %% In urlsafe mode, "+" and "/" are invalid and thus ignored.
+    %% The base64 string to be decoded is equivalent to "ABCDEFG-H-I_J_KL".
+    <<0, 16, 131, 16, 81, 190, 31, 226, 63, 39, 242, 139>> =
+        MimeDecode(Base64, #{mode => urlsafe}),
+
+    ok.
+
 %%-------------------------------------------------------------------------
 
 %% Repeat of mime_decode() tests
@@ -219,6 +376,32 @@ mime_decode_to_string(Config) when is_list(Config) ->
     "012" = MimeDecodeToString(<<"\000M\000D\000E\000y=\000">>),
     "o"   = MimeDecodeToString(<<"bw==\000">>),
     "o"   = MimeDecodeToString(<<"bw=\000=">>),
+    ok.
+
+
+%% Test base64:mime_decode_to_string/2.
+mime_decode_to_string_modes(Config) when is_list(Config) ->
+    MimeDecode = fun (In, Options) ->
+                                Out = base64:mime_decode_to_string(In, Options),
+                                Out = base64:mime_decode_to_string(binary_to_list(In), Options)
+                 end,
+
+    %% The following all decode to the same data.
+    Data = [23, 234, 63, 163, 239, 129, 253, 175, 171],
+    Data = MimeDecode(<<"F+o/o++B/a+r">>, #{mode => standard}),
+    Data = MimeDecode(<<"F-o_o--B_a-r">>, #{mode => urlsafe}),
+
+    %% The following decodes to different data depending on mode.
+    Base64 = <<"AB+C+D/E/FG-H-I_J_KL">>,
+    %% In standard mode, "-" and "_" are invalid and thus ignored.
+    %% The base64 string to be decoded is equivalent to "AB+C+D/E/FGHIJKL".
+    [0, 31, 130, 248, 63, 196, 252, 81, 135, 32, 146, 139] =
+        MimeDecode(Base64, #{mode => standard}),
+    %% In urlsafe mode, "+" and "/" are invalid and thus ignored.
+    %% The base64 string to be decoded is equivalent to "ABCDEFG-H-I_J_KL".
+    [0, 16, 131, 16, 81, 190, 31, 226, 63, 39, 242, 139] =
+        MimeDecode(Base64, #{mode => urlsafe}),
+
     ok.
 
 %%-------------------------------------------------------------------------
@@ -330,3 +513,6 @@ mbb(N, Acc) when N > 256 ->
 mbb(N, Acc) ->
     B = list_to_binary(lists:seq(0, N-1)),
     lists:reverse(Acc, B).
+
+doctests(_Config) ->
+    ct_doctest:module(base64, [{skipped_blocks, 0}, {missing_tests, []}]).

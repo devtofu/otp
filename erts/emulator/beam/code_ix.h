@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2012-2017. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2012-2026. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,7 +33,7 @@
  *      The current 'active' code index is used to access the current running
  *      code. The 'staging' code index is used by the process that performs
  *      a code change operation. When a code change operation completes
- *      succesfully, the staging code index becomes the new active code index.
+ *      successfully, the staging code index becomes the new active code index.
  *
  *      The third code index is not explicitly used. It can be thought of as
  *      the "previous active" or the "next staging" index. It is needed to make
@@ -59,16 +61,39 @@
 
 #include "beam_opcodes.h"
 
+#undef ERL_THR_PROGRESS_TSD_TYPE_ONLY
+#define ERL_THR_PROGRESS_TSD_TYPE_ONLY
+#include "erl_thr_progress.h"
+#undef ERL_THR_PROGRESS_TSD_TYPE_ONLY
+
 struct process;
 
 
 #define ERTS_NUM_CODE_IX 3
+
+#ifdef BEAMASM
+#define ERTS_ADDRESSV_SIZE (ERTS_NUM_CODE_IX + 1)
+#define ERTS_SAVE_CALLS_CODE_IX (ERTS_ADDRESSV_SIZE - 1)
+#else
+#define ERTS_ADDRESSV_SIZE ERTS_NUM_CODE_IX
+#endif
+
+/* This structure lets `Export` entries and `ErlFunEntry` share dispatch code,
+ * which greatly improves the performance of fun calls. */
+typedef struct ErtsDispatchable_ {
+    ErtsCodePtr addresses[ERTS_ADDRESSV_SIZE];
+} ErtsDispatchable;
+
 typedef unsigned ErtsCodeIndex;
 
 typedef struct ErtsCodeMFA_ {
     Eterm module;
     Eterm function;
-    Uint  arity;
+
+    /* This is technically a byte, but the interpreter needs this to be a word
+     * for argument packing to work properly, and declaring it as a byte won't
+     * save any space due to tail padding. */
+    Uint arity;
 } ErtsCodeMFA;
 
 /*
@@ -79,12 +104,34 @@ typedef struct ErtsCodeMFA_ {
 /* If you change the size of this, you also have to update the code
    in ops.tab to reflect the new func_info size */
 typedef struct ErtsCodeInfo_ {
-    BeamInstr op;           /* OpCode(i_func_info) */
-    union {
-        struct generic_bp* gen_bp;     /* Trace breakpoint */
+    /* In both the JIT and interpreter, we may jump here to raise a
+     * function_clause error.
+     *
+     * In addition, the JIT also stores the current breakpoint flags here. */
+    struct {
+#ifndef BEAMASM
+        BeamInstr op;
+#else
+        struct {
+            char raise_function_clause[sizeof(BeamInstr) - 1];
+            char breakpoint_flag;
+        } metadata;
+#endif
     } u;
+
+    /* Trace breakpoint */
+    struct GenericBp *gen_bp;
     ErtsCodeMFA mfa;
 } ErtsCodeInfo;
+
+typedef struct {
+    erts_refc_t pending_schedulers;
+    ErtsThrPrgrLaterOp later_op;
+    UWord size;
+
+    void (*later_function)(void *);
+    void *later_data;
+} ErtsCodeBarrier;
 
 /* Get the code associated with a ErtsCodeInfo ptr. */
 ERTS_GLB_INLINE
@@ -116,37 +163,104 @@ ErtsCodeIndex erts_active_code_ix(void);
 
 /* Return staging code ix.
  * Only used by a process performing code loading/upgrading/deleting/purging.
- * Code write permission must be seized.
+ * Code staging permission must be seized.
  */
 ERTS_GLB_INLINE
 ErtsCodeIndex erts_staging_code_ix(void);
 
-/* Try seize exclusive code write permission. Needed for code staging.
+/** @brief Try to seize exclusive code loading permission. That is, both
+ * staging and modification permission.
+ *
  * Main process lock (only) must be held.
  * System thread progress must not be blocked.
- * Caller must not already hold the code write permission.
- * Caller is suspended and *must* yield if 0 is returned. 
- */
-int erts_try_seize_code_write_permission(struct process* c_p);
+ * Caller must not already have the code modification or staging permissions.
+ * Caller is suspended and *must* yield if false is returned. */
+bool erts_try_seize_code_load_permission(struct process* c_p);
 
-/* Try seize exclusive code write permission for aux work.
+/** @brief Release code loading permission. Resumes first suspended waiters. */
+void erts_release_code_load_permission(void);
+
+/** @brief Try to seize exclusive code staging permission. Needed for code
+ * loading and purging.
+ *
+ * This is kept separate from code modification permission to allow tracing and
+ * similar during long-running purge operations.
+ *
+ * * Main process lock (only) must be held.
+ * * System thread progress must not be blocked.
+ * * Caller must not already have the code modification or staging permissions.
+ *   
+ *   That is, it is _NOT_ possible to add code modification permission when you
+ *   already have staging permission. The other way around is fine however.
+ *
+ * If true is returned, calling BIF must either release before returning or
+ * schedule aux job that will eventually release.
+ *
+ * If false is returned, caller is suspended and *must* schedule itself to
+ * UNCONDITIONALLY call this function again.
+ */
+bool erts_try_seize_code_stage_permission(struct process* c_p);
+
+/** @brief Release code stage permission. Resumes first suspended waiter. */
+void erts_release_code_stage_permission(void);
+
+/** @brief Try to seize exclusive code modification permission. Needed for
+ * tracing, breakpoints, and so on.
+ *
+ * This used to be called code_write_permission, but was renamed to break
+ * merges of code that uses the old locking paradigm.
+ *
+ * * Main process lock (only) must be held.
+ * * System thread progress must not be blocked.
+ * * Caller must not already have the code modification permission, but may
+ *   have staging permission.
+ *
+ * If true is returned, calling BIF must either release before returning
+ * or schedule aux job that will eventually release.
+ *
+ * If false is returned, caller is suspended and *must* schedule itself to
+ * UNCONDITIONALLY call this function again.
+ *
+ */
+bool erts_try_seize_code_mod_permission(struct process* c_p);
+
+/** @brief As \c erts_try_seize_code_mod_permission but for aux work.
+ *
  * System thread progress must not be blocked.
  * On success return true.
  * On failure return false and aux work func(arg) will be scheduled when
- * permission is released.                                                                             .
+ * permission is released.
  */
-int erts_try_seize_code_write_permission_aux(void (*func)(void *),
-                                             void *arg);
+bool erts_try_seize_code_mod_permission_aux(void (*func)(void *),
+                                           void *arg);
 
-/* Release code write permission.
- * Will resume any suspended waiters.
+#ifdef ERTS_ENABLE_LOCK_CHECK
+void erts_lc_soften_code_mod_permission_check(void);
+#else
+# define erts_lc_soften_code_mod_permission_check() ((void)0)
+#endif
+
+/** @brief Release code modification permission. Resumes first suspended
+ * waiter.
  */
-void erts_release_code_write_permission(void);
+void erts_release_code_mod_permission(void);
+
+/** @brief Reject all code permissions. Resumes first suspended waiters.
+ *         Is called by exiting or garbing process that got permission(s)
+ *         but don't want it. A garbing process should be scheduled to try again
+ *         to seize permission after GC is done.
+ *
+ *  @param c_p[in]      Current process.
+ */
+void erts_reject_code_permissions(struct process* c_p);
+
 
 /* Prepare the "staging area" to be a complete copy of the active code.
- * Code write permission must have been seized.
+ *
+ * Code staging permission must have been seized.
+ *
  * Must be followed by calls to either "end" and "commit" or "abort" before
- * code write permission can be released.
+ * code staging permission can be released.
  */
 void erts_start_staging_code_ix(int num_new);
 
@@ -165,16 +279,40 @@ void erts_commit_staging_code_ix(void);
  */
 void erts_abort_staging_code_ix(void);
 
-#ifdef ERTS_ENABLE_LOCK_CHECK
-int erts_has_code_write_permission(void);
+#ifdef DEBUG
+void erts_debug_require_code_barrier(void);
+void erts_debug_check_code_barrier(void);
 #endif
 
-/* module/function/arity can be NIL/NIL/-1 when the MFA is pointing to some
-   invalid code, for instance unloaded_fun. */
+/* Schedules an operation to run after thread progress _and_ all schedulers
+ * have issued an instruction barrier. */
+void erts_schedule_code_barrier(ErtsCodeBarrier *barrier,
+                                void (*later_function)(void *),
+                                void *later_data);
+
+void erts_schedule_code_barrier_cleanup(ErtsCodeBarrier *barrier,
+                                        void (*later_function)(void *),
+                                        void *later_data,
+                                        UWord size);
+
+/* Issues a code barrier on the current thread, as well as all managed threads
+ * when they wake up after thread progress is unblocked.
+ *
+ * Requires that thread progress is blocked. */
+void erts_blocking_code_barrier(void);
+
+/* Helper function for the above: all managed threads should call this as soon
+ * as thread progress is unblocked, _BEFORE_ updating thread progress. */
+void erts_code_ix_finalize_wait(void);
+
+#ifdef ERTS_ENABLE_LOCK_CHECK
+int erts_has_code_load_permission(void);
+int erts_has_code_stage_permission(void);
+int erts_has_code_mod_permission(void);
+#endif
+
 #define ASSERT_MFA(MFA)                                                 \
-    ASSERT((is_atom((MFA)->module) || is_nil((MFA)->module)) &&         \
-           (is_atom((MFA)->function) || is_nil((MFA)->function)) &&     \
-           (((MFA)->arity >= 0 && (MFA)->arity < 1024) || (MFA)->arity == -1))
+    ASSERT(is_atom((MFA)->module) && is_atom((MFA)->function))
 
 extern erts_atomic32_t the_active_code_index;
 extern erts_atomic32_t the_staging_code_index;
@@ -185,7 +323,7 @@ ERTS_GLB_INLINE
 ErtsCodePtr erts_codeinfo_to_code(const ErtsCodeInfo *ci)
 {
 #ifndef BEAMASM
-    ASSERT(BeamIsOpCode(ci->op, op_i_func_info_IaaI) || !ci->op);
+    ASSERT(BeamIsOpCode(ci->u.op, op_i_func_info_IaaI) || !ci->u.op);
 #endif
     ASSERT_MFA(&ci->mfa);
     return (ErtsCodePtr)&ci[1];
@@ -197,7 +335,7 @@ const ErtsCodeInfo *erts_code_to_codeinfo(ErtsCodePtr I)
     const ErtsCodeInfo *ci = &((const ErtsCodeInfo *)I)[-1];
 
 #ifndef BEAMASM
-    ASSERT(BeamIsOpCode(ci->op, op_i_func_info_IaaI) || !ci->op);
+    ASSERT(BeamIsOpCode(ci->u.op, op_i_func_info_IaaI) || !ci->u.op);
 #endif
     ASSERT_MFA(&ci->mfa);
 

@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2018-2021. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2018-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -27,6 +29,9 @@
          %% Proxy call
          pcall/3,
 
+         %% OS commands
+         os_cmd/1, os_cmd/2,
+
          %% Time stuff
          timestamp/0,
          tdiff/2,
@@ -38,8 +43,31 @@
          print/1, print/2,
 
          %% Generic 'has support' test function(s)
+         has_support_ipv4/0,
          has_support_ipv6/0,
+         has_support_socket_option/2,
+         has_support_socket_option_sock/1,
+         has_support_socket_option_ip/1,
+         has_support_socket_option_ipv6/1,
+         has_support_socket_option_tcp/1,
+         has_support_socket_option_udp/1,
+         has_support_socket_option_sctp/1,
+         is_any_options_supported/1,
 
+         %% SCTP specific 'has support' test function(s)
+         has_support_sctp/0,
+         has_support_sctp_peeloff/0,
+         has_support_sctp_bindx/0,
+
+          %% OS/Platform checks
+         is_good_enough_platform/3,
+         is_not_freebsd/0,
+         is_not_openbsd/0,
+         is_not_netbsd/0,
+         is_not_darwin/0,
+         is_not_platform/2,
+
+	 mk_unique_path/0,
          which_local_host_info/1,
          which_local_addr/1,
 
@@ -51,6 +79,7 @@
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+-define(LIB,     kernel_test_lib).
 -define(FAIL(R), exit(R)).
 
 
@@ -72,18 +101,16 @@ pi(Node, Pid, Item) when is_pid(Pid) andalso is_atom(Item) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-pcall(F, Timeout, Default)
-  when is_function(F, 0) andalso is_integer(Timeout) andalso (Timeout > 0) ->
-    {P, M} = erlang:spawn_monitor(fun() -> exit(F()) end),
-    receive
-        {'DOWN', M, process, P, Reply} ->
-            Reply
-    after Timeout ->
-            erlang:demonitor(M, [flush]),
-            exit(P, kill),
-            Default
-    end.
-    
+pcall(F, Timeout, Default) ->
+    kernel_test_lib:proxy_call(F, Timeout, Default).
+
+
+os_cmd(C) ->
+    kernel_test_lib:os_cmd(C).
+
+os_cmd(C, T) ->
+    kernel_test_lib:os_cmd(C, T).
+
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -122,73 +149,252 @@ print(F, A) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+has_support_ipv4() ->
+    case which_local_addr(inet) of
+        {ok, _Addr} ->
+            ok;
+        {error, R1} ->
+            skip(f("Local Address eval failed: ~p", [R1]))
+    end.
+
 has_support_ipv6() ->
-    case socket:is_supported(ipv6) of
+    try
+        begin
+            case socket:is_supported(ipv6) of
+                true ->
+                    ok;
+                false ->
+                    skip("IPv6 Not Supported")
+            end,
+            Domain = inet6,
+            LocalAddr =
+                case which_local_addr(Domain) of
+                    {ok, Addr} ->
+                        Addr;
+                    {error, R1} ->
+                        skip(f("Local Address eval failed: ~p", [R1]))
+                end,
+            ServerSock =
+                case socket:open(Domain, dgram, udp) of
+                    {ok, SS} ->
+                        SS;
+                    {error, R2} ->
+                        skip(f("(server) socket open failed: ~p", [R2]))
+                end,
+            LocalSA = #{family => Domain, addr => LocalAddr},
+            ServerPort =
+                case socket:bind(ServerSock, LocalSA) of
+                    ok ->
+                        {ok, #{port := P1}} = socket:sockname(ServerSock),
+                        P1;
+                    {error, R3} ->
+                        socket:close(ServerSock),
+                        skip(f("(server) socket bind failed: ~p", [R3]))
+                end,
+            ServerSA = LocalSA#{port => ServerPort},
+            ClientSock =
+                case socket:open(Domain, dgram, udp) of
+                    {ok, CS} ->
+                        CS;
+                    {error, R4} ->
+                        skip(f("(client) socket open failed: ~p", [R4]))
+                end,
+            case socket:bind(ClientSock, LocalSA) of
+                ok ->
+                    ok;
+                {error, R5} ->
+                    socket:close(ServerSock),
+                    socket:close(ClientSock),
+                    skip(f("(client) socket bind failed: ~p", [R5]))
+            end,
+            case socket:sendto(ClientSock, <<"hejsan">>, ServerSA) of
+                ok ->
+                    ok;
+                {error, R6} ->
+                    socket:close(ServerSock),
+                    socket:close(ClientSock),
+                    skip(f("failed socket sendto test: ~p", [R6]))
+            end,
+            case socket:recvfrom(ServerSock) of
+                {ok, {_, <<"hejsan">>}} ->
+                    socket:close(ServerSock),
+                    socket:close(ClientSock),
+                    ok;
+                {error, R7} ->
+                    socket:close(ServerSock),
+                    socket:close(ClientSock),
+                    skip(f("failed socket recvfrom test: ~p", [R7]))
+            end
+        end
+    catch
+        error : notsup ->
+            skip("Not supported: socket")
+    end.
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%% --- General purpose socket option test functions ---
+
+has_support_socket_option_sock(Opt) ->
+    has_support_socket_option(socket, Opt).
+
+has_support_socket_option_ip(Opt) ->
+    has_support_socket_option(ip, Opt).
+
+has_support_socket_option_ipv6(Opt) ->
+    has_support_socket_option(ipv6, Opt).
+
+has_support_socket_option_tcp(Opt) ->
+    has_support_socket_option(tcp, Opt).
+
+has_support_socket_option_udp(Opt) ->
+    has_support_socket_option(udp, Opt).
+
+has_support_socket_option_sctp(Opt) ->
+    has_support_socket_option(sctp, Opt).
+
+
+has_support_socket_option(Level, Option) ->
+    case socket:is_supported(options, Level, Option) of
         true ->
             ok;
         false ->
-            skip("IPv6 Not Supported")
-    end,
-    Domain = inet6,
-    LocalAddr =
-        case which_local_addr(Domain) of
-            {ok, Addr} ->
-                Addr;
-            {error, R1} ->
-                skip(f("Local Address eval failed: ~p", [R1]))
-        end,
-    ServerSock =
-        case socket:open(Domain, dgram, udp) of
-            {ok, SS} ->
-                SS;
-            {error, R2} ->
-                skip(f("(server) socket open failed: ~p", [R2]))
-        end,
-    LocalSA = #{family => Domain, addr => LocalAddr},
-    ServerPort =
-        case socket:bind(ServerSock, LocalSA) of
-            ok ->
-                {ok, #{port := P1}} = socket:sockname(ServerSock),
-                P1;
-            {error, R3} ->
-                socket:close(ServerSock),
-                skip(f("(server) socket bind failed: ~p", [R3]))
-        end,
-    ServerSA = LocalSA#{port => ServerPort},
-    ClientSock =
-        case socket:open(Domain, dgram, udp) of
-            {ok, CS} ->
-                CS;
-            {error, R4} ->
-                skip(f("(client) socket open failed: ~p", [R4]))
-        end,
-    case socket:bind(ClientSock, LocalSA) of
-        ok ->
+            skip(f("Not Supported: ~w option ~w", [Level, Option]))
+    end.
+
+is_any_options_supported(Options) ->
+    Pred = fun({Level, Option}) ->
+                   socket:is_supported(options, Level, Option)
+           end,
+    lists:any(Pred, Options).
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%% has_support_sctp() ->
+%%     case os:type() of
+%%         {win32, _} ->
+%%             skip("SCTP Not Supported");
+%%         {unix, netbsd} ->
+%%             %% XXX We will have to investigate this later...
+%%             skip("SCTP Not Supported");
+%%         _ ->
+%%             case socket:is_supported(sctp) of
+%%                 true ->
+%%                     ok;
+%%                 false ->
+%%                     skip("SCTP Not Supported")
+%%             end
+%%     end.
+has_support_sctp() ->
+    case os:type() of
+        {win32, _} ->
+            skip("SCTP Not Supported");
+        _ ->
+            case socket:is_supported(sctp) of
+                true ->
+                    ok;
+                false ->
+                    skip("SCTP Not Supported")
+            end
+    end.
+
+has_support_sctp_peeloff() ->
+    has_support_sctp_key(peeloff).
+
+has_support_sctp_bindx() ->
+    has_support_sctp_key(bindx).
+
+has_support_sctp_key(Key) when is_atom(Key) ->
+    case socket:info() of
+        #{io_backend := #{sctp := #{Key := true}}} ->
             ok;
-        {error, R5} ->
-            socket:close(ServerSock),
-            socket:close(ClientSock),
-            skip(f("(client) socket bind failed: ~p", [R5]))
-    end,
-    case socket:sendto(ClientSock, <<"hejsan">>, ServerSA) of
-        ok ->
-            ok;
-        {error, R6} ->
-            socket:close(ServerSock),
-            socket:close(ClientSock),
-            skip(f("failed socket sendto test: ~p", [R6]))
-    end,
-    case socket:recvfrom(ServerSock) of
-        {ok, {_, <<"hejsan">>}} ->
-            socket:close(ServerSock),
-            socket:close(ClientSock),
-            ok;
-        {error, R7} ->
-            socket:close(ServerSock),
-            socket:close(ClientSock),
-            skip(f("failed socket recvfrom test: ~p", [R7]))
-   end.
-            
+        _ ->
+            skip(f("~w not supported", [Key]))
+    end.
+    
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+is_good_enough_platform(Family, Name, CondVsn) ->
+    case os:type() of
+	{Family, Name} ->
+	    ID = fun() -> f("~w:~w", [Family, Name]) end,
+	    is_good_enough_platform2(os:version(), CondVsn, ID);
+	_ ->
+	    ok
+    end.
+
+is_good_enough_platform2(Vsn, CondVsn, _) when (Vsn > CondVsn) ->
+    ok;
+is_good_enough_platform2(Vsn, CondVsn, ID) ->
+    skip(f("Not 'good enough' ~s (~p <= ~p)", [ID(), Vsn, CondVsn])).
+
+
+is_not_freebsd() ->
+    is_not_platform(freebsd, "FreeBSD").
+
+is_not_openbsd() ->
+    is_not_platform(openbsd, "OpenBSD").
+
+is_not_netbsd() ->
+    is_not_platform(netbsd, "NetBSD").
+
+is_not_darwin() ->
+    is_not_platform(darwin, "Darwin").
+
+is_not_platform(Platform, PlatformStr)
+  when is_atom(Platform) andalso is_list(PlatformStr) ->
+      case os:type() of
+          {unix, Platform} ->
+              skip("This does not work on " ++ PlatformStr);
+        _ ->
+            ok
+    end.
+  
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+mk_unique_path() ->
+    {OSF, _} = os:type(),
+    mk_unique_path(OSF).
+       
+mk_unique_path(win32) ->
+    [NodeName | _] = string:tokens(atom_to_list(node()), [$@]),
+    Path = f("esock_~s_~w", [NodeName, erlang:system_time(nanosecond)]),
+    ensure_unique_path(Path, ".sock");
+mk_unique_path(_) ->
+    [NodeName | _] = string:tokens(atom_to_list(node()), [$@]),
+    Path = f("/tmp/esock_~s_~w", [NodeName, erlang:system_time(nanosecond)]),
+    ensure_unique_path(Path, "").
+
+ensure_unique_path(Path, Ext) ->
+    NewPath = Path ++ Ext,
+    case file:read_file_info(NewPath) of
+        {ok, _} -> % Ouch, append a unique ID and try again
+            ensure_unique_path(Path, Ext, 1);
+        {error, _} ->
+            %% We assume this means it does not exist yet...
+            %% If we have several process in parallel trying to create
+            %% (unique) path's, then we are in trouble. To *really* be
+            %% on the safe side we should have a (central) path registry...
+            encode_path(NewPath)
+    end.
+
+ensure_unique_path(Path, Ext, ID) when (ID < 100) -> % If this is not enough...
+    NewPath = f("~s_~w", [Path, ID]) ++ Ext,
+    case file:read_file_info(NewPath) of
+        {ok, _} -> % Ouch, this also existed, increment and try again
+            ensure_unique_path(Path, Ext, ID + 1);
+        {error, _} -> % We assume this means it does not exist yet...
+            encode_path(NewPath)
+    end;
+ensure_unique_path(_, _, _) -> 
+    skip("Could not create unique path").
+
+encode_path(Path) ->
+    unicode:characters_to_binary(Path, file:native_name_encoding()).
             
 
 
@@ -209,91 +415,12 @@ which_local_addr(Domain) ->
 %% Returns the interface (name), flags and address (not 127...)
 %% of the local host.
 which_local_host_info(Domain) ->
-    case inet:getifaddrs() of
-        {ok, IFL} ->
-            which_local_host_info(Domain, IFL);
+    case ?LIB:which_local_host_info(Domain) of
+        {ok, [H|_]} ->
+	    {ok, H};
         {error, _} = ERROR ->
             ERROR
     end.
-
-which_local_host_info(_Domain, []) ->
-    {error, no_address};
-which_local_host_info(Domain, [{"docker" ++ _, _}|IFL]) ->
-    which_local_host_info(Domain, IFL);
-which_local_host_info(Domain, [{"br-" ++ _, _}|IFL]) ->
-    which_local_host_info(Domain, IFL);
-which_local_host_info(Domain, [{Name, IFO}|IFL]) ->
-    case if_is_running_and_not_loopback(IFO) of
-        true ->
-            try which_local_host_info2(Domain, IFO) of
-                Info ->
-                    {ok, Info#{name => Name}}
-            catch
-                throw:_:_ ->
-                    which_local_host_info(Domain, IFL)
-            end;
-        false ->
-            which_local_host_info(Domain, IFL)
-    end;
-which_local_host_info(Domain, [_|IFL]) ->
-    which_local_host_info(Domain, IFL).
-
-if_is_running_and_not_loopback(If) ->
-    lists:keymember(flags, 1, If) andalso
-        begin
-            {value, {flags, Flags}} = lists:keysearch(flags, 1, If),
-            (not lists:member(loopback, Flags)) andalso
-                lists:member(running, Flags)
-        end.
-
-
-which_local_host_info2(inet = _Domain, IFO) ->
-    Addr      = which_local_host_info3(addr,  IFO,
-                                       fun({A, _, _, _}) when (A =/= 127) -> true;
-                                          (_) -> false
-                                       end),
-    NetMask   = which_local_host_info3(netmask,  IFO,
-                                       fun({_, _, _, _}) -> true;
-                                          (_) -> false
-                                       end),
-    BroadAddr = which_local_host_info3(broadaddr,  IFO,
-                                       fun({_, _, _, _}) -> true;
-                                          (_) -> false
-                                       end),
-    Flags     = which_local_host_info3(flags, IFO, fun(_) -> true end),
-    #{flags     => Flags,
-      addr      => Addr,
-      broadaddr => BroadAddr,
-      netmask   => NetMask};
-which_local_host_info2(inet6 = _Domain, IFO) ->
-    Addr    = which_local_host_info3(addr,  IFO,
-                                     fun({A, _, _, _, _, _, _, _}) 
-                                           when (A =/= 0) andalso 
-                                                (A =/= 16#fe80) -> true;
-                                        (_) -> false
-                                     end),
-    NetMask = which_local_host_info3(netmask,  IFO,
-                                       fun({_, _, _, _, _, _, _, _}) -> true;
-                                          (_) -> false
-                                       end),
-    Flags   = which_local_host_info3(flags, IFO, fun(_) -> true end),
-    #{flags   => Flags,
-      addr    => Addr,
-      netmask => NetMask}.
-
-which_local_host_info3(_Key, [], _) ->
-    throw({error, no_address});
-which_local_host_info3(Key, [{Key, Val}|IFO], Check) ->
-    case Check(Val) of
-        true ->
-            Val;
-        false ->
-            which_local_host_info3(Key, IFO, Check)
-    end;
-which_local_host_info3(Key, [_|IFO], Check) ->
-    which_local_host_info3(Key, IFO, Check).
-
-
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -302,7 +429,7 @@ not_yet_implemented() ->
     skip("not yet implemented").
 
 skip(Reason) ->
-    throw({skip, Reason}).
+    exit({skip, Reason}).
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

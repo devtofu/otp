@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2010-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2010-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,13 +23,15 @@
 
 %% Test functions
 -export([all/0, suite/0, init_per_suite/1, end_per_suite/1,
-         big/1, tiny/1, simple/1, message/1, distributed/1, port/1,
+         groups/0, init_per_group/2, end_per_group/2]).
+-export([big/1, tiny/1, simple/1, message/1, distributed/1, port/1,
 	 send/1, recv/1,
-         ip_port/1, file_port/1, file_port2/1,
+         ip_port/1, file_port/1, file_port2/1, file_tracer/1,
          ip_port_busy/1, wrap_port/1, wrap_port_time/1,
          with_seq_trace/1, dead_suspend/1, local_trace/1,
          saved_patterns/1, tracer_exit_on_stop/1,
-         erl_tracer/1, distributed_erl_tracer/1]).
+         erl_tracer/1, distributed_erl_tracer/1,
+         session_parent_down/1]).
 -export([tracee1/1, tracee2/1]).
 -export([dummy/0, exported/1]).
 -export([enabled/3, trace/5, load_nif/1]).
@@ -39,18 +43,31 @@ suite() ->
      {timetrap, {minutes, 1}}].
 
 all() -> 
-    [big, tiny, simple, message, distributed, port, ip_port,
-     send, recv,
-     file_port, file_port2, ip_port_busy,
-     wrap_port, wrap_port_time, with_seq_trace, dead_suspend,
-     local_trace, saved_patterns, tracer_exit_on_stop,
-     erl_tracer, distributed_erl_tracer].
+    [{group, global}].
+
+groups() ->
+    [{global,[],[{group, tests}]},
+     {tests,[],[
+                big, tiny, simple, message, distributed, port, ip_port,
+                send, recv,
+                file_port, file_port2, file_tracer, ip_port_busy,
+                wrap_port, wrap_port_time, with_seq_trace, dead_suspend,
+                local_trace, saved_patterns, tracer_exit_on_stop,
+                erl_tracer, distributed_erl_tracer,
+                session_parent_down
+               ]}].
 
 init_per_suite(Config) ->
     Config.
 
 end_per_suite(_Config) ->
-    dbg:stop_clear(),
+    dbg:stop(),
+    ok.
+
+init_per_group(_, Config) ->
+    Config.
+
+end_per_group(_, _Config) ->
     ok.
 
 %% Rudimentary interface test
@@ -89,7 +106,7 @@ big(Config) when is_list(Config) ->
 
         ok=file:set_cwd(OldCurDir)
     after
-        dbg:stop_clear()
+        dbg:stop()
     end,
     ok.
 
@@ -120,7 +137,7 @@ tiny(Config) when is_list(Config) ->
                 failure
         end
     after
-        dbg:stop_clear(),
+        dbg:stop(),
         ok = file:set_cwd(OldCurDir)
     end,
     ok.
@@ -136,7 +153,7 @@ simple(Config) when is_list(Config) ->
         S = self(),
         [{trace,S,call,{dbg,ltp,[]}}] = flush()
     after
-        dbg:stop_clear()
+        dbg:stop()
     end,
     ok.
 
@@ -152,7 +169,7 @@ message(Config) when is_list(Config) ->
         ok = dbg:ltp(),
         ok = dbg:ln()
     after
-        dbg:stop_clear()
+        dbg:stop()
     end,
     S = self(),
     [{trace,S,call,{dbg,ltp,[]},S},
@@ -161,9 +178,9 @@ message(Config) when is_list(Config) ->
 
 send(Config) when is_list(Config) ->
     {ok, _} = start(),
-    Node = start_slave(),
+    {ok, Peer, Node} = ?CT_PEER(),
     rpc:call(Node, code, add_patha,
-             [filename:join(proplists:get_value(data_dir, Config), "..")]),
+             [filename:dirname(proplists:get_value(data_dir, Config))]),
     try
         Echo = fun F() ->
                        receive {From, M} ->
@@ -172,7 +189,7 @@ send(Config) when is_list(Config) ->
                        end
                end,
 	Rcvr = spawn_link(Echo),
-        RemoteRcvr = spawn_link(Node, Echo),
+        RemoteRcvr = spawn(Node, Echo),
 
 	{ok, [{matched, _, 1}]} = dbg:p(Rcvr, send),
 
@@ -222,7 +239,7 @@ send(Config) when is_list(Config) ->
         %% Test that distributed dbg works
         dbg:tracer(Node, process, {fun myhandler/2, self()}),
         Rcvr2 = spawn_link(Echo),
-        RemoteRcvr2 = spawn_link(Node, Echo),
+        RemoteRcvr2 = spawn(Node, Echo),
         dbg:p(Rcvr2, [send]),
         dbg:p(RemoteRcvr2, [send]),
         dbg:tpe(send, [{['_', hej],[],[]}]),
@@ -235,7 +252,8 @@ send(Config) when is_list(Config) ->
         ok
 
     after
-	dbg:stop_clear()
+	dbg:stop(),
+        peer:stop(Peer)
     end.
 
 send_test(Pid, Pattern, Msg, TraceEvent) ->
@@ -270,7 +288,7 @@ send_test_rcv(Pid, Msg, S, TraceEvent) ->
 
 recv(Config) when is_list(Config) ->
     {ok, _} = start(),
-    Node = start_slave(),
+    {ok, Peer, Node} = ?CT_PEER(),
     rpc:call(Node, code, add_patha,
              [filename:join(proplists:get_value(data_dir, Config), "..")]),
     try
@@ -281,7 +299,7 @@ recv(Config) when is_list(Config) ->
                        end
                end,
 	Rcvr = spawn_link(Echo),
-        RemoteRcvr = spawn_link(Node, Echo),
+        RemoteRcvr = spawn(Node, Echo),
 
 	{ok, [{matched, _, 1}]} = dbg:p(Rcvr, 'receive'),
 
@@ -333,7 +351,7 @@ recv(Config) when is_list(Config) ->
         %% Test that distributed dbg works
         dbg:tracer(Node, process, {fun myhandler/2, self()}),
         Rcvr2 = spawn_link(Echo),
-        RemoteRcvr2 = spawn_link(Node, Echo),
+        RemoteRcvr2 = spawn(Node, Echo),
         dbg:p(Rcvr2, ['receive']),
         dbg:p(RemoteRcvr2, ['receive']),
         dbg:tpe('receive', [{[node(), '_', '$1'],[{'==',{element,2,'$1'}, hej}],[]}]),
@@ -346,7 +364,8 @@ recv(Config) when is_list(Config) ->
         ok
 
     after
-	dbg:stop_clear()
+	dbg:stop(),
+        peer:stop(Peer)
     end.
 
 recv_test(Pid, Pattern, Msg, TraceEvent) ->
@@ -382,7 +401,7 @@ recv_test_rcv(Pid, Msg, TraceEvent) ->
 %% Simple test of distributed tracing
 distributed(Config) when is_list(Config) ->
     {ok, _} = start(),
-    Node = start_slave(),
+    {ok, Peer, Node} = ?CT_PEER(),
     try
         RexPid = rpc:call(Node, erlang, whereis, [rex]),
         RexPidList = pid_to_list(RexPid),
@@ -395,23 +414,24 @@ distributed(Config) when is_list(Config) ->
         {value, {matched, Node, 1}} = lists:keysearch(Node, 2, Z),
         dbg:cn(Node),
         dbg:tp(dbg,ln,[]),
-        ok = rpc:block_call(Node, dbg, ltp, []),
-        ok = rpc:block_call(Node, dbg, ln, []),
         ok = dbg:ln(),
+        [ok = rpc:block_call(Node, dbg, ltp, []) || _ <- lists:seq(1,100)],
+        ok = rpc:block_call(Node, dbg, ln, []),
         S = self(),
         {TraceSend, TraceCall} =
         lists:partition(fun ({trace,RP,send,_,_}) when RP =:= RexPid -> true;
                             (_) -> false end,
                         flush()),
         [_|_] = TraceSend,
-        [{trace,Pid,call,{dbg,ltp,[]}},
-         {trace,S,call,{dbg,ln,[]}}] = TraceCall,
+        [{trace,S,call,{dbg,ln,[]}} | RemoteCall] = TraceCall,
+        100 = length(RemoteCall),
+        [{trace,Pid,call,{dbg,ltp,[]}}] = lists:uniq(RemoteCall),
         Node = node(Pid),
         %%
         stop()
     after
-        dbg:stop_clear(),
-        stop_slave(Node)
+        dbg:stop(),
+        peer:stop(Peer)
     end,
     ok.
 
@@ -455,13 +475,13 @@ local_trace(Config) when is_list(Config) ->
         4 = ?MODULE:exported(2),
         [] = flush(),
         {ok, _} = dbg:tpl(?MODULE,not_exported,x),
-        catch ?MODULE:exported(x),
+        try ?MODULE:exported(x) catch error:badarith -> ok end,
         [{trace,S,call,{dbg_SUITE,not_exported,[x]}},
          {trace,S,exception_from,
           {dbg_SUITE,not_exported,1},
           {error,badarith}}] = flush()
     after
-        dbg:stop_clear()
+        dbg:stop()
     end,
     ok.
 
@@ -476,17 +496,23 @@ port(Config) when is_list(Config) ->
         %% Do a run to get rid of all extra port operations
         port_close(Fun()),
 
-        dbg:p(new,ports),
+        dbg:p(new_ports,ports),
         Port = Fun(),
         port_close(Port),
         stop(),
 
-        TraceFileDrv = list_to_atom(lists:flatten(["trace_file_drv n ",TestFile])),
+        TraceFileDrv = list_to_atom(
+                         %% priv_dir may be long on some sytems where tests are
+                         %% being run, and result in a large port command. This
+                         %% will get truncated so it doesn't exceed max atom
+                         %% size (255 chars)
+                         lists:sublist( lists:flatten(["trace_file_drv n ",TestFile]), 255)
+                        ),
         [{trace,Port,open,S,TraceFileDrv},
          {trace,Port,getting_linked,S},
          {trace,Port,closed,normal}] = flush()
     after
-        dbg:stop_clear()
+        dbg:stop()
     end,
     ok.
 
@@ -512,7 +538,7 @@ saved_patterns(Config) when is_list(Config) ->
         S = self(),
         [{trace,S,call,{dbg,ltp,[]},blahonga}] = flush()
     after
-        dbg:stop_clear()
+        dbg:stop()
     end,
     ok.
 
@@ -544,7 +570,7 @@ ip_port(Config) when is_list(Config) ->
         [{trace,S,call,{dbg,ltp,[]},S},
          {trace,S,call,{dbg,ln,[]},hej}] = flush()
     after
-        dbg:stop_clear()
+        dbg:stop()
     end,
     ok.
 
@@ -560,7 +586,7 @@ ip_port_busy(Config) when is_list(Config) ->
         io:format("Error reason = ~p~n", [Reason]),
         true = port_close(Port)
     after
-        dbg:stop_clear()
+        dbg:stop()
     end,
     ok.
 
@@ -585,7 +611,7 @@ file_port(Config) when is_list(Config) ->
          {trace,S,call,{dbg,ln,[]},hej},
          end_of_trace] = flush()
     after
-        dbg:stop_clear(),
+        dbg:stop(),
         file:delete(FName)
     end,
     ok.
@@ -614,7 +640,32 @@ file_port2(Config) when is_list(Config) ->
         stop(),
         [] = flush()
     after
-        dbg:stop_clear(),
+        dbg:stop(),
+        file:delete(FName)
+    end,
+    ok.
+
+%% Test tracing to file
+file_tracer(Config) when is_list(Config) ->
+    stop(),
+    FName = make_temp_name(Config),
+    %% Ok, lets try with flush and follow_file.
+    {ok, _} = dbg:tracer(file, FName),
+    try
+        {ok, [{matched, _node, 1}]} = dbg:p(self(),call),
+        {ok, _} = dbg:tp(dbg, ltp,[{'_',[],[{message, {self}}]}]),
+        {ok, _} = dbg:tp(dbg, ln, [{'_',[],[{message, hej}]}]),
+        ok = dbg:ltp(),
+        timer:sleep(100),
+        {ok, LTP} = file:read_file(FName),
+        <<"dbg:ltp()",_/binary>> = string:find(LTP, "dbg:ltp() ("++pid_to_list(self())++")"),
+        ok = dbg:ln(),
+        timer:sleep(100),
+        {ok, LN} = file:read_file(FName),
+        <<"dbg:ln()",_/binary>> = string:find(LN, "dbg:ln() (hej)"),
+        stop()
+    after
+        dbg:stop(),
         file:delete(FName)
     end,
     ok.
@@ -682,7 +733,7 @@ wrap_port(Config) when is_list(Config) ->
         %%
         lists:map(fun(F) -> file:delete(F) end, Files)
     after
-        dbg:stop_clear()
+        dbg:stop()
     end,
     ok.
 
@@ -754,7 +805,7 @@ wrap_port_time(Config) when is_list(Config) ->
          end_of_trace] = flush(),
         lists:map(fun(F) -> file:delete(F) end, Files)
     after
-        dbg:stop_clear()
+        dbg:stop()
     end,
     ok.
 
@@ -780,7 +831,7 @@ with_seq_trace(Config) when is_list(Config) ->
          {seq_trace,0,{send,_,Server,S,{dbg,{ok,Tracer}}}}] =
         flush()
     after
-        dbg:stop_clear()
+        dbg:stop()
     end,
     ok.
 
@@ -791,7 +842,7 @@ dead_suspend(Config) when is_list(Config) ->
     try
         survived = run_dead_suspend()
     after
-        dbg:stop_clear()
+        dbg:stop()
     end.
 
 run_dead_suspend() ->
@@ -870,7 +921,7 @@ distributed_erl_tracer(Config) ->
     ok = load_nif(Config),
 
     LNode = node(),
-    RNode = start_slave(),
+    {ok, Peer, RNode} = ?CT_PEER(),
     true = rpc:call(RNode, code, add_patha, [filename:join(proplists:get_value(data_dir, Config), "..")]),
     ok = rpc:call(RNode, ?MODULE, load_nif, [Config]),
 
@@ -899,6 +950,46 @@ distributed_erl_tracer(Config) ->
     RCall = spawn_link(RNode, fun() -> ?MODULE:dummy() end),
     [{RCall, call, RNifProxy, RCall, {?MODULE, dummy, []}, #{}}] = flush(),
 
+    peer:stop(Peer),
+    ok.
+
+session_parent_down(_Config) ->
+    stop(),
+    S = self(),
+    spawn_link(
+      fun() ->
+              DbgSession = dbg:session_create(session_parent_down),
+              Pid = self(),
+              dbg:session(DbgSession,
+                          fun() ->
+                                  {ok, _} = dbg:tracer(process, {fun(Event, ok) -> S ! Event end, ok}),
+                                  {ok, Tracer} = dbg:get_tracer(),
+                                  {ok, _} = dbg:p(Pid, [call]),
+                                  {ok, _} = dbg:tp(?MODULE, dummy, []),
+                                  S ! {DbgSession, Pid, Tracer}
+                          end),
+              %% wait for monitors to be set up
+              receive go -> ok end,
+              ?MODULE:dummy()
+      end),
+
+    {DbgSession, Pid, Tracer} = receive {_, _, _} = Pids -> Pids end,
+    DbgSessionMref = erlang:monitor(process, DbgSession),
+    PidMref = erlang:monitor(process, Pid),
+    TracerMref = erlang:monitor(process, Tracer),
+    Pid ! go,
+
+    %% we don't care about order, and race conditions mean we can't rely on
+    %% order in test. We just care that all expected messages are received.
+    ExpectedMessages =
+    lists:sort(
+      [
+       {trace, Pid, call, {?MODULE, dummy, []}},
+       {'DOWN', PidMref, process, Pid, normal},
+       {'DOWN', DbgSessionMref, process, DbgSession, shutdown},
+       {'DOWN', TracerMref, process, Tracer, normal}
+      ]),
+    ExpectedMessages = lists:sort(flush()),
 
     ok.
 
@@ -921,29 +1012,6 @@ trace(_, _, _, _, _) ->
 %%
 %% Support functions
 %%
-
-start_slave() ->
-    Name = "asdkxlkmd" ++ integer_to_list(erlang:unique_integer([positive])),
-    {ok, Node} = test_server:start_node(Name,slave,[]),
-    ok = wait_node(Node, 15),
-    Node.
-
-stop_slave(Node) ->
-    test_server:stop_node(Node).
-
-wait_node(_,0) ->
-    no;
-wait_node(Node, N) ->
-    case net_adm:ping(Node) of
-        pong ->
-            ok;
-        pang ->
-            receive
-            after 1000 ->
-                      ok
-            end,
-            wait_node(Node, N - 1)
-    end.
 
 myhandler(Message, {wait_for_go,Pid}) ->
     receive

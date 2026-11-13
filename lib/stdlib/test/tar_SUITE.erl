@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,17 +21,21 @@
 %%
 -module(tar_SUITE).
 
--export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1, 
+-export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1,
 	 init_per_group/2, end_per_group/2,
          init_per_testcase/2,
          borderline/1, atomic/1, long_names/1,
 	 create_long_names/1, bad_tar/1, errors/1, extract_from_binary/1,
 	 extract_from_binary_compressed/1, extract_filtered/1,
 	 extract_from_open_file/1, symlinks/1, open_add_close/1, cooked_compressed/1,
-	 memory/1,unicode/1,read_other_implementations/1,
-         sparse/1, init/1, leading_slash/1, dotdot/1,
+	 memory/1,unicode/1,read_other_implementations/1,bsdtgz/1,
+         sparse/1, init/1, leading_slash/1, dotdot/1, incomplete_utf8_name/1,
          roundtrip_metadata/1, apply_file_info_opts/1,
-         incompatible_options/1]).
+         incompatible_options/1, table_absolute_names/1,
+         sparse_hole/1,
+         streamed_extract/1, symlink_parent_dir/1,
+         streamed_extract/1, max_size/1, pax_record_length/1,
+         ustar_prefix_length/1]).
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("kernel/include/file.hrl").
@@ -42,15 +48,18 @@ all() ->
      extract_from_binary_compressed, extract_from_open_file,
      extract_filtered,
      symlinks, open_add_close, cooked_compressed, memory, unicode,
-     read_other_implementations,
+     read_other_implementations, bsdtgz, incomplete_utf8_name,
      sparse,init,leading_slash,dotdot,roundtrip_metadata,
-     apply_file_info_opts,incompatible_options].
+     apply_file_info_opts,incompatible_options, table_absolute_names,
+     sparse_hole,
+     streamed_extract, symlink_parent_dir,
+     max_size, pax_record_length, ustar_prefix_length].
 
 groups() -> 
     [].
 
 init_per_suite(Config) ->
-    Config.
+    uid_config(Config).
 
 end_per_suite(_Config) ->
     ok.
@@ -83,7 +92,7 @@ borderline(Config) when is_list(Config) ->
     Record = 512,
     Block = 20 * Record,
 
-    lists:foreach(fun(Size) -> borderline_test(Size, TempDir) end,
+    lists:foreach(fun(Size) -> borderline_test(Size, TempDir, Config) end,
 		  [0, 1, 10, 13, 127, 333, Record-1, Record, Record+1,
 		   Block-2*Record-1, Block-2*Record, Block-2*Record+1,
 		   Block-Record-1, Block-Record, Block-Record+1,
@@ -95,13 +104,16 @@ borderline(Config) when is_list(Config) ->
 
     verify_ports(Config).
 
-borderline_test(Size, TempDir) ->
+borderline_test(Size, TempDir, Config) ->
     io:format("Testing size ~p", [Size]),
-    borderline_test(Size, TempDir, true),
-    borderline_test(Size, TempDir, false),
+    case long_uid(Config) of
+        true -> ok;
+        false -> borderline_test1(Size, TempDir, true)
+    end,
+    borderline_test1(Size, TempDir, false),
     ok.
 
-borderline_test(Size, TempDir, IsUstar) ->
+borderline_test1(Size, TempDir, IsUstar) ->
     Prefix = case IsUstar of
                  true ->
                      "file_";
@@ -113,8 +125,8 @@ borderline_test(Size, TempDir, IsUstar) ->
     Name = filename:join(TempDir, Prefix++SizeList),
 
     %% Create a file and archive it.
-    X0 = erlang:monotonic_time(),
-    ok = file:write_file(Name, random_byte_list(X0, Size)),
+    RandomBytes = rand:bytes(Size),
+    ok = file:write_file(Name, RandomBytes),
     ok = erl_tar:create(Archive, [Name]),
     ok = file:delete(Name),
 
@@ -125,7 +137,7 @@ borderline_test(Size, TempDir, IsUstar) ->
 
     %% Verify contents of extracted file.
     {ok, Bin} = file:read_file(Name),
-    true = match_byte_list(X0, binary_to_list(Bin)),
+    RandomBytes = Bin,
 
     %% Verify that Unix tar can read it.
     case IsUstar of
@@ -198,34 +210,6 @@ make_cmd(Cmd) ->
 	{win32, _} -> lists:concat(["cmd /c",  Cmd]);
 	{unix, _}  -> lists:concat(["sh -c '",  Cmd,  "'"])
     end.
-
-%% Verifies a random byte list.
-
-match_byte_list(X0, [Byte|Rest]) ->
-    X = next_random(X0),
-    case (X bsr 26) band 16#ff of
-	Byte -> match_byte_list(X, Rest);
-	_ -> false
-    end;
-match_byte_list(_, []) ->
-    true.
-
-%% Generates a random byte list.
-
-random_byte_list(X0, Count) ->
-    random_byte_list(X0, Count, []).
-
-random_byte_list(X0, Count, Result) when Count > 0->
-    X = next_random(X0),
-    random_byte_list(X, Count-1, [(X bsr 26) band 16#ff|Result]);
-random_byte_list(_X, 0, Result) ->
-    lists:reverse(Result).
-
-%% This RNG is from line 21 on page 102 in Knuth: The Art of Computer Programming,
-%% Volume II, Seminumerical Algorithms.
-
-next_random(X) ->
-    (X*17059465+1) band 16#fffffffff.
 
 %% Test the 'atomic' operations: create/extract/table, on compressed
 %% and uncompressed archives.
@@ -369,7 +353,6 @@ create_long_names() ->
     ok = erl_tar:tt(TarName),
 
     %% Extract and verify.
-    true = is_ustar(TarName),
     ExtractDir = "extract_dir",
     ok = file:make_dir(ExtractDir),
     ok = erl_tar:extract(TarName, [{cwd,ExtractDir}]),
@@ -616,7 +599,7 @@ symlinks(Config) when is_list(Config) ->
 	      {error, enotsup} ->
 		  {skip, "Symbolic links not supported on this platform"};
 	      ok ->
-		  symlinks(Dir, "bad_symlink", PointsTo),
+		  symlinks(Dir, "bad_symlink", PointsTo, Config),
 		  long_symlink(Dir),
                   symlink_vulnerability(VulnerableDir)
 	  end,
@@ -649,7 +632,7 @@ make_symlink(Path, Link) ->
 	    file:make_symlink(Path, Link)
     end.
 
-symlinks(Dir, BadSymlink, PointsTo) ->
+symlinks(Dir, BadSymlink, PointsTo, Config) ->
     Tar = filename:join(Dir, "symlink.tar"),
     DerefTar = filename:join(Dir, "dereference.tar"),
 
@@ -662,7 +645,6 @@ symlinks(Dir, BadSymlink, PointsTo) ->
     ok = file:write_file(AFile, ALine),
     ok = file:make_symlink(AFile, GoodSymlink),
     ok = erl_tar:create(Tar, [BadSymlink, GoodSymlink, AFile], [verbose]),
-    true = is_ustar(Tar),
 
     %% List contents of tar file.
 
@@ -671,7 +653,12 @@ symlinks(Dir, BadSymlink, PointsTo) ->
     %% Also create another archive with the dereference flag.
 
     ok = erl_tar:create(DerefTar, [AFile, GoodSymlink], [dereference, verbose]),
-    true = is_ustar(DerefTar),
+    case long_uid(Config) of
+        true -> ok;
+        false ->
+            true = is_ustar(Tar),
+            true = is_ustar(DerefTar)
+    end,
 
     %% Extract files to a new directory.
 
@@ -739,6 +726,78 @@ symlink_vulnerability(Dir) ->
 
     ok.
 
+symlink_parent_dir(Config) when is_list(Config) ->
+    PrivDir = proplists:get_value(priv_dir, Config),
+    Dir = filename:join(PrivDir, "symlink_parent_dir"),
+    ok = file:make_dir(Dir),
+    Res = case make_symlink("dummy_target", filename:join(Dir, "test_link")) of
+              {error, enotsup} ->
+                  {skip, "Symbolic links not supported on this platform"};
+              ok ->
+                  file:delete(filename:join(Dir, "test_link")),
+                  symlink_parent_dir_safe(Dir),
+                  symlink_parent_dir_unsafe(Dir)
+          end,
+    delete_files([Dir]),
+    verify_ports(Config),
+    Res.
+
+symlink_parent_dir_safe(Dir) ->
+    %% dir/link -> ../file is safe (resolves to file within extraction dir)
+    SafeDir1 = filename:join(Dir, "safe1"),
+    ok = file:make_dir(SafeDir1),
+    ok = file:set_cwd(SafeDir1),
+    ok = file:make_dir("dir"),
+    ok = file:write_file("file", <<"safe1">>),
+    ok = file:make_symlink("../file", filename:join("dir", "link")),
+    ok = erl_tar:create("test.tar", ["dir/link", "file"]),
+    ExtractDir1 = filename:join(SafeDir1, "extracted"),
+    ok = file:make_dir(ExtractDir1),
+    ok = erl_tar:extract("test.tar", [{cwd, ExtractDir1}]),
+    {ok, #file_info{type=symlink}} = file:read_link_info(filename:join([ExtractDir1, "dir", "link"])),
+    {ok, "../file"} = file:read_link(filename:join([ExtractDir1, "dir", "link"])),
+
+    %% a/b/link -> ../../file is safe (resolves to file within extraction dir)
+    SafeDir2 = filename:join(Dir, "safe2"),
+    ok = file:make_dir(SafeDir2),
+    ok = file:set_cwd(SafeDir2),
+    ok = filelib:ensure_dir(filename:join(["a", "b", "dummy"])),
+    ok = file:write_file("file", <<"safe2">>),
+    ok = file:make_symlink("../../file", filename:join(["a", "b", "link"])),
+    ok = erl_tar:create("test.tar", ["a/b/link", "file"]),
+    ExtractDir2 = filename:join(SafeDir2, "extracted"),
+    ok = file:make_dir(ExtractDir2),
+    ok = erl_tar:extract("test.tar", [{cwd, ExtractDir2}]),
+    {ok, #file_info{type=symlink}} = file:read_link_info(filename:join([ExtractDir2, "a", "b", "link"])),
+    {ok, "../../file"} = file:read_link(filename:join([ExtractDir2, "a", "b", "link"])),
+
+    ok.
+
+symlink_parent_dir_unsafe(Dir) ->
+    %% dir/link -> ../../escape is unsafe (escapes extraction dir)
+    UnsafeDir2 = filename:join(Dir, "unsafe2"),
+    ok = file:make_dir(UnsafeDir2),
+    ok = file:set_cwd(UnsafeDir2),
+    ok = file:make_dir("dir"),
+    ok = file:make_symlink("../../escape", filename:join("dir", "link")),
+    ok = erl_tar:create("test.tar", ["dir/link"]),
+    ExtractDir2 = filename:join(UnsafeDir2, "extracted"),
+    ok = file:make_dir(ExtractDir2),
+    {error,{"../../escape",unsafe_symlink}} = erl_tar:extract("test.tar", [{cwd, ExtractDir2}]),
+
+    %% dir/link -> /etc/passwd is unsafe (absolute path)
+    UnsafeDir3 = filename:join(Dir, "unsafe3"),
+    ok = file:make_dir(UnsafeDir3),
+    ok = file:set_cwd(UnsafeDir3),
+    ok = file:make_dir("dir"),
+    ok = file:make_symlink("/etc/passwd", filename:join("dir", "link")),
+    ok = erl_tar:create("test.tar", ["dir/link"]),
+    ExtractDir3 = filename:join(UnsafeDir3, "extracted"),
+    ok = file:make_dir(ExtractDir3),
+    {error,{"/etc/passwd",unsafe_symlink}} = erl_tar:extract("test.tar", [{cwd, ExtractDir3}]),
+
+    ok.
+
 init(Config) when is_list(Config) ->
     PrivDir = proplists:get_value(priv_dir, Config),
     ok = file:set_cwd(PrivDir),
@@ -802,7 +861,11 @@ open_add_close(Config) when is_list(Config) ->
     ok = erl_tar:add(AD, ADir, [verbose]),
     ok = erl_tar:add(AD, AnotherDir, [verbose]),
     ok = erl_tar:close(AD),
-    true = is_ustar(TarOne),
+    case long_uid(Config) of
+        true -> ok;
+        false ->
+            true = is_ustar(TarOne)
+    end,
 
     ok = erl_tar:t(TarOne),
     ok = erl_tar:tt(TarOne),
@@ -891,6 +954,50 @@ do_read_other_implementations([File|Rest], DataDir) ->
     {ok, _} = erl_tar:extract(Full, [memory]),
     do_read_other_implementations(Rest, DataDir).
 
+%% test block padding with compressed tar from bsdtar or tape
+bsdtgz(Config) when is_list(Config) ->
+    DataDir = proplists:get_value(data_dir, Config),
+    File = "example_pad.tgz",
+    Full = filename:join(DataDir, File),
+    io:format("~nTrying ~s", [File]),
+    Table = ["autofs.conf","rpc"],
+    {ok, Table} = erl_tar:table(Full, [compressed]),
+    {ok, Bin} = file:read_file(Full),
+    {ok, Table} = erl_tar:table({binary, Bin}, [compressed]),
+    verify_ports(Config).
+
+%% Test that a name that ends with an incomplete UTF-8 sequence is read
+%% as its bytes, without the zero padding of the header field.
+incomplete_utf8_name(Config) when is_list(Config) ->
+    PrivDir = proplists:get_value(priv_dir, Config),
+    Dir = filename:join(PrivDir, ?FUNCTION_NAME),
+    ok = file:make_dir(Dir),
+    Tar = filename:join(Dir, "incomplete_utf8_name.tar"),
+
+    %% 16#E9 starts a three byte UTF-8 sequence. "caf" followed by it is
+    %% "café" in ISO Latin-1.
+    ok = erl_tar:create(Tar, [{"cafx", <<"contents">>}]),
+    {ok, Bin} = file:read_file(Tar),
+    ok = file:write_file(Tar, set_first_name(Bin, <<"caf", 16#E9>>)),
+
+    Name = "caf" ++ [16#E9],
+    {ok, [Name]} = erl_tar:table(Tar),
+    {ok, [{Name, <<"contents">>}]} = erl_tar:extract(Tar, [memory]),
+
+    ok = delete_files([Dir]),
+    verify_ports(Config).
+
+%% Replaces the name in the first header of a tar archive and updates the
+%% checksum of the header.
+set_first_name(<<_:100/binary, Fields:48/binary, _Chksum:8/binary,
+                 Tail:356/binary, Rest/binary>>, Name) ->
+    Padding = 100 - byte_size(Name),
+    NameField = <<Name/binary, 0:Padding/unit:8>>,
+    Sum = lists:sum(binary_to_list(<<NameField/binary, Fields/binary,
+                                     "        ", Tail/binary>>)),
+    Chksum = iolist_to_binary(io_lib:format("~6.8.0B", [Sum])),
+    <<NameField/binary, Fields/binary, Chksum/binary, 0, $\s,
+      Tail/binary, Rest/binary>>.
 
 %% Test handling of sparse files
 sparse(Config) when is_list(Config) ->
@@ -914,23 +1021,20 @@ do_sparse([Name|Rest], DataDir, PrivDir) ->
 
 %% Test filenames with characters outside the US ASCII range.
 unicode(Config) when is_list(Config) ->
-    run_unicode_node(Config, "+fnu"),
+    run_unicode_node(Config, ["+fnu"]),
     case has_transparent_naming() of
 	true ->
-	    run_unicode_node(Config, "+fnl");
+	    run_unicode_node(Config, ["+fnl"]);
 	false ->
 	    ok
     end.
 
-run_unicode_node(Config, Option) ->
+run_unicode_node(Config, Args) ->
     PrivDir = proplists:get_value(priv_dir, Config),
-    Pa = filename:dirname(code:which(?MODULE)),
-    Args = Option ++ " -pa "++Pa,
-    io:format("~s\n", [Args]),
-    Node = start_node(unicode, Args),
+    {ok, Peer, Node} = ?CT_PEER(Args),
     ok = rpc:call(Node, erlang, apply,
 		  [fun() -> do_unicode(PrivDir) end,[]]),
-    true = test_server:stop_node(Node),
+    peer:stop(Peer),
     ok.
 
 has_transparent_naming() ->
@@ -942,21 +1046,25 @@ has_transparent_naming() ->
 
 do_unicode(PrivDir) ->
     ok = file:set_cwd(PrivDir),
-    ok = file:make_dir("unicöde"),
+    case file:make_dir("unicöde") of
+        ok ->
+            Names = lists:sort(unicode_create_files()),
+            Tar = "unicöde.tar",
+            ok = erl_tar:create(Tar, ["unicöde"], []),
 
-    Names = lists:sort(unicode_create_files()),
-    Tar = "unicöde.tar",
-    ok = erl_tar:create(Tar, ["unicöde"], []),
-
-    %% Unicode filenames require PAX format.
-    false = is_ustar(Tar),
-    {ok,Names0} = erl_tar:table(Tar, []),
-    Names = lists:sort(Names0),
-    _ = [ok = file:delete(Name) || Name <- Names],
-    ok = erl_tar:extract(Tar),
-    _ = [{ok,_} = file:read_file(Name) || Name <- Names],
-    _ = [ok = file:delete(Name) || Name <- Names],
-    ok = file:del_dir("unicöde"),
+            %% Unicode filenames require PAX format.
+            false = is_ustar(Tar),
+            {ok,Names0} = erl_tar:table(Tar, []),
+            Names = lists:sort(Names0),
+            _ = [ok = file:delete(Name) || Name <- Names],
+            ok = erl_tar:extract(Tar),
+            _ = [{ok,_} = file:read_file(Name) || Name <- Names],
+            _ = [ok = file:delete(Name) || Name <- Names],
+            ok = file:del_dir("unicöde");
+        {error,eilseq} ->
+            %% The FS (eg zfs) does not support transparent naming
+            ok
+    end,
     ok.
 
 unicode_create_files() ->
@@ -1014,7 +1122,7 @@ roundtrip_metadata(Config) ->
 
 do_roundtrip_metadata(Dir, File) ->
     Tar = filename:join(Dir, atom_to_list(?FUNCTION_NAME)++".tar"),
-    BeamFile = code:which(compile),
+    BeamFile = code:which(?MODULE),
     {ok,Fd} = erl_tar:open(Tar, [write]),
     ok = erl_tar:add(Fd, BeamFile, File, []),
     ok = erl_tar:close(Fd),
@@ -1045,7 +1153,8 @@ apply_file_info_opts(Config) when is_list(Config) ->
     ok = file:make_dir("empty_directory"),
     ok = file:write_file("file", "contents"),
 
-    Opts = [{atime, 0}, {mtime, 0}, {ctime, 0}, {uid, 0}, {gid, 0}],
+    Mode = 8#707,
+    Opts = [{atime, 0}, {mtime, 0}, {ctime, 0}, {uid, 0}, {gid, 0}, {mode, Mode}],
     TarFile = "reproducible.tar",
     {ok, Tar} = erl_tar:open(TarFile, [write]),
     ok = erl_tar:add(Tar, "file", Opts),
@@ -1056,14 +1165,294 @@ apply_file_info_opts(Config) when is_list(Config) ->
     ok = file:make_dir("extracted"),
     erl_tar:extract(TarFile, [{cwd, "extracted"}]),
 
-    {ok, #file_info{mtime=0}} =
+    {ok, #file_info{mtime=0} = Fi1} =
         file:read_file_info("extracted/empty_directory", [{time, posix}]),
-    {ok, #file_info{mtime=0}} =
+    {ok, #file_info{mtime=0} = Fi2} =
         file:read_file_info("extracted/file", [{time, posix}]),
-    {ok, #file_info{mtime=0}} =
+    {ok, #file_info{mtime=0} = Fi3} =
         file:read_file_info("extracted/memory_file", [{time, posix}]),
 
+    %% On Unix platforms 'mode' works
+    case os:type() of
+        {unix,_} ->
+            Mode = Fi1#file_info.mode band Mode,
+            Mode = Fi2#file_info.mode band Mode,
+            Mode = Fi3#file_info.mode band Mode,
+            ok;
+        _ ->
+            ok
+    end.
+
+table_absolute_names(Config) ->
+    PrivDir = proplists:get_value(priv_dir, Config),
+    ok = file:set_cwd(PrivDir),
+    N = max(1, 101 - length(PrivDir)),
+    TestFileName = lists:duplicate(N, $a),
+    ok = file:write_file(TestFileName, "hello, world\n"),
+
+    %% File paths greater than 100 bytes will be split and stored
+    %% as a filename and prefix.
+    TarTestFileName = filename:absname(TestFileName),
+
+    io:format("~p: ~p\n", [length(TarTestFileName), TarTestFileName]),
+
+    TarName = "my_tar_with_long_names.tar",
+    ok = erl_tar:create(TarName, [TarTestFileName]),
+    {ok, [TarTestFileName]} = erl_tar:table(TarName),
+
+    ok = file:delete(TarTestFileName),
+    ok = file:delete(TarName),
+
     ok.
+
+sparse_hole(Config) ->
+    PrivDir = proplists:get_value(priv_dir, Config),
+    Dir = filename:join(PrivDir, ?FUNCTION_NAME),
+    ok = file:make_dir(Dir),
+    File = filename:join(Dir, "file"),
+
+    %% Data at offset 0, followed by a huge hole. erl_tar used to loop
+    %% forever.
+    Tar1 = make_sparse(0),
+
+    {Pid,Ref} =
+        spawn_monitor(fun() ->
+                              Res = erl_tar:extract({binary, Tar1},
+                                                    [{cwd, Dir}]),
+                              exit(Res)
+                      end),
+    receive
+        {'DOWN',Ref,process,Pid,Result} ->
+            ok = Result,
+            {ok, <<"data",0:((1 bsl 20) - 4)/unit:8>>} =
+                file:read_file(File),
+            ok = file:delete(File)
+    after 10_000 ->
+            error(not_finished)
+    end,
+
+    %% A hole of size 70000 (larger than the chunk size), followed by 4 bytes
+    %% of data, followed by another hole. Would raise a `badarg` exception.
+    Tar2 = make_sparse(70000),
+    ok = erl_tar:extract({binary, Tar2}, [{cwd, Dir}]),
+    {ok, <<0:70000/unit:8, "data", 0:((1 bsl 20) - 4 - 70000)/unit:8>>} =
+        file:read_file(File),
+    ok = file:delete(File),
+
+    ok.
+
+make_sparse(DataPos) ->
+    H = <<"file", 0:(96*8),                       % name
+          "0000644", 0, "0000000", 0, "0000000", 0, % mode, uid, gid
+          (octal(4))/binary, (octal(0))/binary,     % size (stored bytes), mtime
+          "        ", "S",                         % checksum placeholder, GNU sparse type
+          0:(100*8), "ustar ", " ", 0, 0:(121*8),  % linkname, GNU magic, unused fields
+          (octal(DataPos))/binary, (octal(4))/binary, % sparse[0]: offset DataPos, 4 bytes
+          0:(3*24*8), 0,                            % sparse[1..3], isextended
+          (octal(1 bsl 20))/binary, 0:(17*8)>>,      % realsize 1 MiB
+    <<Pre:148/binary, _:8/binary, Post/binary>> = H,
+    Sum = lists:sum(binary_to_list(H)),
+    <<Pre/binary, (io_lib:bformat("~6.8.0b", [Sum]))/binary, 0, " ",
+      Post/binary, "data", 0:(508*8), 0:(1024*8)>>.
+
+octal(N) -> <<(io_lib:bformat("~11.8.0b", [N]))/binary, 0>>.
+
+%% Test that extracting to disk streams file entries in chunks
+%% instead of loading them fully into memory.
+streamed_extract(Config) ->
+    PrivDir = proplists:get_value(priv_dir, Config),
+    Dir = filename:join(PrivDir, ?FUNCTION_NAME),
+    ok = file:make_dir(Dir),
+
+    %% Create test files of various sizes.
+    EmptyFile = filename:join(Dir, "empty"),
+    ok = file:write_file(EmptyFile, <<>>),
+
+    %% A file larger than the default chunk size (65536 bytes).
+    LargeSize = 200000,
+    LargeData = crypto:strong_rand_bytes(LargeSize),
+    LargeFile = filename:join(Dir, "large"),
+    ok = file:write_file(LargeFile, LargeData),
+
+    %% A file exactly equal to a small chunk size we'll use (1024 bytes).
+    ChunkSize = 1024,
+    BoundaryData = crypto:strong_rand_bytes(ChunkSize),
+    BoundaryFile = filename:join(Dir, "boundary"),
+    ok = file:write_file(BoundaryFile, BoundaryData),
+
+    %% A small file (less than one chunk).
+    SmallData = <<"hello">>,
+    SmallFile = filename:join(Dir, "small"),
+    ok = file:write_file(SmallFile, SmallData),
+
+    %% Create a tar archive containing all test files.
+    TarFile = filename:join(Dir, "test.tar"),
+    ok = erl_tar:create(TarFile, [
+        {"empty", EmptyFile},
+        {"large", LargeFile},
+        {"boundary", BoundaryFile},
+        {"small", SmallFile}
+    ]),
+
+    %% Extract with default chunk size and verify contents.
+    ExtractDir1 = filename:join(Dir, "extract_default"),
+    ok = file:make_dir(ExtractDir1),
+    ok = erl_tar:extract(TarFile, [{cwd, ExtractDir1}]),
+    {ok, <<>>} = file:read_file(filename:join(ExtractDir1, "empty")),
+    {ok, LargeData} = file:read_file(filename:join(ExtractDir1, "large")),
+    {ok, BoundaryData} = file:read_file(filename:join(ExtractDir1, "boundary")),
+    {ok, SmallData} = file:read_file(filename:join(ExtractDir1, "small")),
+
+    %% Extract with a small {chunks, N} to exercise multi-chunk streaming.
+    ExtractDir2 = filename:join(Dir, "extract_chunked"),
+    ok = file:make_dir(ExtractDir2),
+    ok = erl_tar:extract(TarFile, [{cwd, ExtractDir2}, {chunks, ChunkSize}]),
+    {ok, <<>>} = file:read_file(filename:join(ExtractDir2, "empty")),
+    {ok, LargeData} = file:read_file(filename:join(ExtractDir2, "large")),
+    {ok, BoundaryData} = file:read_file(filename:join(ExtractDir2, "boundary")),
+    {ok, SmallData} = file:read_file(filename:join(ExtractDir2, "small")),
+
+    %% Extract from binary with {chunks, N} (binary input, disk output).
+    {ok, TarBin} = file:read_file(TarFile),
+    ExtractDir3 = filename:join(Dir, "extract_binary"),
+    ok = file:make_dir(ExtractDir3),
+    ok = erl_tar:extract({binary, TarBin}, [{cwd, ExtractDir3}, {chunks, ChunkSize}]),
+    {ok, <<>>} = file:read_file(filename:join(ExtractDir3, "empty")),
+    {ok, LargeData} = file:read_file(filename:join(ExtractDir3, "large")),
+    {ok, BoundaryData} = file:read_file(filename:join(ExtractDir3, "boundary")),
+    {ok, SmallData} = file:read_file(filename:join(ExtractDir3, "small")),
+
+    %% Verify that memory extraction still works (not affected by streaming).
+    {ok, MemFiles} = erl_tar:extract(TarFile, [memory]),
+    MemMap = maps:from_list(MemFiles),
+    <<>> = maps:get("empty", MemMap),
+    LargeData = maps:get("large", MemMap),
+    BoundaryData = maps:get("boundary", MemMap),
+    SmallData = maps:get("small", MemMap),
+
+    ok.
+
+max_size(Config) when is_list(Config) ->
+    PrivDir = proplists:get_value(priv_dir, Config),
+    Dir = filename:join(PrivDir, "max_size"),
+    ok = file:make_dir(Dir),
+
+    Data1 = crypto:strong_rand_bytes(1000),
+    Data2 = crypto:strong_rand_bytes(2000),
+    FileBins = [{"file1", Data1}, {"file2", Data2}],
+    TotalSize = byte_size(Data1) + byte_size(Data2),
+
+    TarName = filename:join(Dir, "test.tar"),
+    ok = erl_tar:create(TarName, FileBins),
+
+    %% Memory extraction: limit smaller than total should fail.
+    {error, too_big} = erl_tar:extract(TarName,
+                                       [memory, {max_size, TotalSize - 1}]),
+
+    %% Memory extraction: limit equal to total should succeed.
+    {ok, _} = erl_tar:extract(TarName, [memory, {max_size, TotalSize}]),
+
+    %% Memory extraction: infinity (default) should succeed.
+    {ok, _} = erl_tar:extract(TarName, [memory]),
+
+    %% Disk extraction: limit smaller than total should fail.
+    ExtractDir1 = filename:join(Dir, "extract1"),
+    ok = file:make_dir(ExtractDir1),
+    {error, too_big} = erl_tar:extract(TarName,
+                                       [{cwd, ExtractDir1},
+                                        {max_size, TotalSize - 1}]),
+
+    %% Disk extraction: limit equal to total should succeed.
+    ExtractDir2 = filename:join(Dir, "extract2"),
+    ok = file:make_dir(ExtractDir2),
+    ok = erl_tar:extract(TarName, [{cwd, ExtractDir2},
+                                   {max_size, TotalSize}]),
+
+    %% Binary extraction: limit should work.
+    {ok, TarBin} = file:read_file(TarName),
+    {error, too_big} = erl_tar:extract({binary, TarBin},
+                                       [memory, {max_size, TotalSize - 1}]),
+    {ok, _} = erl_tar:extract({binary, TarBin},
+                              [memory, {max_size, TotalSize}]),
+
+    %% Compressed binary: limit should apply to decompressed data.
+    %% The decompressed tar includes headers and padding so it's larger
+    %% than just the file content. A very small limit should still trigger
+    %% too_big during decompression.
+    GzTarName = filename:join(Dir, "test.tar.gz"),
+    ok = erl_tar:create(GzTarName, FileBins, [compressed]),
+    {ok, GzBin} = file:read_file(GzTarName),
+    {error, too_big} = erl_tar:extract({binary, GzBin},
+                                       [memory, compressed,
+                                        {max_size, 1}]),
+    %% A large enough limit should succeed (tar overhead is headers + padding).
+    {ok, _} = erl_tar:extract({binary, GzBin},
+                              [memory, compressed, {max_size, 10 * TotalSize}]),
+
+    %% File path extraction with max_size.
+    {error, too_big} = erl_tar:extract(TarName,
+                                       [memory, {max_size, 1}]),
+    {ok, _} = erl_tar:extract(TarName,
+                              [memory, {max_size, TotalSize}]),
+
+    %% Clean up.
+    ok = delete_files([Dir]),
+
+    verify_ports(Config).
+
+%% Test that the length of a PAX record is counted in bytes.
+pax_record_length(Config) when is_list(Config) ->
+    PrivDir = proplists:get_value(priv_dir, Config),
+    Dir = filename:join(PrivDir, ?FUNCTION_NAME),
+    ok = file:make_dir(Dir),
+    Tar = filename:join(Dir, "pax.tar"),
+
+    %% U+00E9 is two bytes in UTF-8. From 42 of them the path record
+    %% is at least 100 bytes long but shorter than 100 characters.
+    Names = ["lib/" ++ lists:duplicate(N, 16#E9) ++ ".ex" ||
+                N <- lists:seq(40, 60)],
+    {ok, Fd} = erl_tar:open(Tar, [write]),
+    _ = [ok = erl_tar:add(Fd, <<"contents">>, Name, []) || Name <- Names],
+    ok = erl_tar:close(Fd),
+
+    {ok, Bin} = file:read_file(Tar),
+    Names = [unicode:characters_to_list(Path) ||
+                {<<"path">>, Path} <- pax_attributes(Bin)],
+    {ok, Names} = erl_tar:table(Tar),
+
+    ok = delete_files([Dir]),
+    verify_ports(Config).
+
+%% Test that the separator between the ustar prefix and name is counted
+%% when checking that a path fits in the ustar header.
+ustar_prefix_length(Config) when is_list(Config) ->
+    PrivDir = proplists:get_value(priv_dir, Config),
+    Dir = filename:join(PrivDir, ?FUNCTION_NAME),
+    ok = file:make_dir(Dir),
+
+    %% The ustar prefix of A/B/c is A/B, which is A+B+1 bytes long. It
+    %% fits in the 155 byte prefix field when A+B is at most 154.
+    Path = fun(A, B) ->
+                   lists:duplicate(A, $a) ++ "/" ++
+                       lists:duplicate(B, $b) ++ "/c"
+           end,
+    Names = [Path(A, B) || A <- lists:seq(75, 79), B <- lists:seq(75, 79)],
+    Tar = filename:join(Dir, "ustar.tar"),
+    ok = erl_tar:create(Tar, [{Name, list_to_binary(Name)} || Name <- Names]),
+    {ok, Names} = erl_tar:table(Tar),
+    {ok, Files} = erl_tar:extract(Tar, [memory]),
+    Expected = [{Name, list_to_binary(Name)} || Name <- Names],
+    Expected = lists:sort(Files),
+
+    Tar155 = filename:join(Dir, "prefix155.tar"),
+    ok = erl_tar:create(Tar155, [{Path(77, 77), <<>>}]),
+    true = is_ustar(Tar155),
+    Tar156 = filename:join(Dir, "prefix156.tar"),
+    ok = erl_tar:create(Tar156, [{Path(77, 78), <<>>}]),
+    false = is_ustar(Tar156),
+
+    ok = delete_files([Dir]),
+    verify_ports(Config).
 
 %% Delete the given list of files.
 delete_files([]) -> ok;
@@ -1131,17 +1520,6 @@ make_temp_dir(Base, I) ->
 	{error,eexist} -> make_temp_dir(Base, I+1)
     end.
 
-start_node(Name, Args) ->
-    [_,Host] = string:tokens(atom_to_list(node()), "@"),
-    ct:log("Trying to start ~w@~s~n", [Name,Host]),
-    case test_server:start_node(Name, peer, [{args,Args}]) of
-	{error,Reason} ->
-	    ct:fail(Reason);
-	{ok,Node} ->
-	    ct:log("Node ~p started~n", [Node]),
-	    Node
-    end.
-
 %% Test that the given tar file is a plain USTAR archive,
 %% without any PAX extensions.
 is_ustar(File) ->
@@ -1154,6 +1532,30 @@ is_ustar(File) ->
         _ -> true
     end.
 
+%% Returns the attributes in the PAX extended headers of a tar archive.
+%% A record is read by the length it starts with, which counts all bytes
+%% of the record including the length itself and the trailing newline.
+pax_attributes(<<0:512/unit:8, _/binary>>) ->
+    [];
+pax_attributes(<<Header:512/binary, Rest0/binary>>) ->
+    <<_:124/binary, Size0:11/binary, _:21/binary, Type, _/binary>> = Header,
+    Size = binary_to_integer(Size0, 8),
+    Padding = (512 - Size rem 512) rem 512,
+    <<Data:Size/binary, _:Padding/binary, Rest/binary>> = Rest0,
+    case Type of
+        $x -> pax_records(Data) ++ pax_attributes(Rest);
+        _ -> pax_attributes(Rest)
+    end.
+
+pax_records(<<>>) ->
+    [];
+pax_records(Data) ->
+    [Len, _] = binary:split(Data, <<" ">>),
+    RecordSize = binary_to_integer(Len) - byte_size(Len) - 2,
+    <<_:(byte_size(Len))/binary, " ", Record:RecordSize/binary, "\n",
+      Rest/binary>> = Data,
+    [Key, Value] = binary:split(Record, <<"=">>),
+    [{Key, Value}|pax_records(Rest)].
 
 verify_ports(Config) ->
     PortsBefore = proplists:get_value(ports, Config),
@@ -1164,3 +1566,14 @@ verify_ports(Config) ->
         [_|_]=Rem ->
             error({leaked_ports,Rem})
     end.
+
+uid_config(Config) ->
+    DataDir = proplists:get_value(data_dir, Config),
+    Long = filename:join(DataDir, "long_names.tar"),
+    {ok, FileInfo} = file:read_file_info(Long),
+    Uid = FileInfo#file_info.uid,
+    Octal = integer_to_list(Uid, 8),
+    [{longuid, length(Octal) > 7}|Config].
+
+long_uid(Config) ->
+    proplists:get_value(longuid, Config).

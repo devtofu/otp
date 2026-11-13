@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2012-2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2012-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -130,8 +132,8 @@ groups() ->
      {pg9,[parallel],[tc5,tc0]}, % exit during testcase
      {pg10,[parallel],[tc0,tc5]},% exit during testcase
      {pg11,[parallel],[tc3,tc2]},% suite is valid if nothing else is specified
-     {sg1,[sequence],[tc5,tc0,tc1,tc2]}, % exit during sequencial testcase
-     {sg2,[sequence],[tc5,tc0,tc1,tc2]}].% timeout during sequencial testcase
+     {sg1,[sequence],[tc5,tc0,tc1,tc2]}, % exit during sequential testcase
+     {sg2,[sequence],[tc5,tc0,tc1,tc2]}].% timeout during sequential testcase
 
 group(g0) ->
     [{timetrap,{timetrap_utils,timetrap_val,[{seconds,1}]}}];

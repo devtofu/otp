@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1999-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1999-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,6 +22,7 @@
 %% Purpose : Converts intermediate assembly code to final format.
 
 -module(beam_flatten).
+-moduledoc false.
 
 -export([module/2]).
 
@@ -28,8 +31,8 @@
 -spec module(beam_utils:module_code(), [compile:option()]) ->
                     {'ok',beam_utils:module_code()}.
 
-module({Mod,Exp,Attr,Fs,Lc}, _Opt) ->
-    {ok,{Mod,Exp,Attr,[function(F) || F <- Fs],Lc}}.
+module({Mod,Exp,Attr,Anno,Fs,Lc}, _Opt) ->
+    {ok,{Mod,Exp,Attr,Anno,[function(F) || F <- Fs],Lc}}.
 
 function({function,Name,Arity,CLabel,Is0}) ->
     Is = block(Is0),
@@ -55,16 +58,16 @@ norm({set,[D],[S],fmove})         -> {fmove,S,D};
 norm({set,[D],[S],fconv})         -> {fconv,S,D};
 norm({set,[D],[S1,S2],put_list})  -> {put_list,S1,S2,D};
 norm({set,[D],Els,put_tuple2})    -> {put_tuple2,D,{list,Els}};
-norm({set,[D],[],{put_tuple,A}})  -> {put_tuple,A,D};
-norm({set,[],[S],put})            -> {put,S};
 norm({set,[D],[S],{get_tuple_element,I}}) -> {get_tuple_element,S,I,D};
-norm({set,[],[S,D],{set_tuple_element,I}}) -> {set_tuple_element,S,D,I};
 norm({set,[D],[S],get_hd})        -> {get_hd,S,D};
 norm({set,[D],[S],get_tl})        -> {get_tl,S,D};
 norm({set,[D],[S|Puts],{alloc,R,{put_map,Op,F}}}) ->
     {put_map,F,Op,S,D,R,{list,Puts}};
 norm({set,[],[],remove_message})   -> remove_message;
-norm({set,[],[],{line,_}=Line}) -> Line.
+norm({set,[],[],{line,_}=Line}) -> Line;
+norm({set,[],[],{executable_line,_,_}=Line}) -> Line;
+norm({set,[],_,{debug_line,_,_,_,_}=Line}) -> norm_debug_line(Line);
+norm({set,[D1,D2],[D1,D2],swap})   -> {swap,D1,D2}.
 
 norm_allocate({_Zero,nostack,Nh,[]}, Regs) ->
     [{test_heap,Nh,Regs}];
@@ -72,3 +75,10 @@ norm_allocate({nozero,Ns,0,Inits}, Regs) ->
     [{allocate,Ns,Regs}|Inits];
 norm_allocate({nozero,Ns,Nh,Inits}, Regs) ->
     [{allocate_heap,Ns,Nh,Regs}|Inits].
+
+norm_debug_line({debug_line,Location,Index,Live,Info}) ->
+    Kind = case Info of
+               #{frame_size := entry} -> entry;
+               _ -> line
+           end,
+    {debug_line,{atom,Kind},Location,Index,Live,Info}.

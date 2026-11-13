@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2003-2021. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2003-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,6 +25,9 @@
 %%
 
 -module(ct_gen_conn).
+-moduledoc false.
+
+-compile([{nowarn_deprecated_function, [{erlang,exit,2}]}]).
 
 -behaviour(gen_server).
 
@@ -83,6 +88,7 @@
            | {use_existing_connection, boolean()}
            | {reconnect, boolean()}
            | {forward_messages, boolean()}
+           | {old, boolean()}
       ;    (Name, Address, InitData, CallbackMod)
    -> {ok, handle()} | {error, Reason :: term()}
  when Name :: ct:target_name(),
@@ -216,7 +222,7 @@ end_log() ->
 -spec do_within_time(Fun, Tmo)
    -> Result
  when Fun :: fun(),
-      Tmo :: non_neg_integer(),
+      Tmo :: timeout(),
       Result :: term().
 
 %% Return the result of evaluating Fun, or interrupt after Tmo
@@ -331,7 +337,7 @@ call(Pid, Msg, infinity = Tmo) ->
     gen_call(Pid, Msg, Tmo);
 
 %% Spawn a middleman process if the call can timeout to avoid the
-%% possibilty of a reply being left in the caller's mailbox after a
+%% possibility of a reply being left in the caller's mailbox after a
 %% timeout.
 call(Pid, Msg, Tmo) ->
     {_, MRef} = spawn_monitor(fun() -> exit(gen_call(Pid, Msg, Tmo)) end),

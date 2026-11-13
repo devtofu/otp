@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2007-2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2007-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,6 +22,7 @@
 %%
 
 -module(inets_service).
+-moduledoc false.
 
 
 %% Starts service stand-alone
@@ -55,7 +58,7 @@
 %% Returns list of running services. Services started as stand alone
 %% are not listed 
 %% services() -> % [{Service, Pid}] 
-%% Exampel:
+%% Example:
 %% services() ->
 %%   [{httpc, Pid} || {_, Pid, _, _} <- 
 %%			supervisor:which_children(httpc_profile_sup)].

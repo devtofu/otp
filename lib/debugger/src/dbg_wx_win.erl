@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,6 +22,7 @@
 
 %%
 -module(dbg_wx_win).
+-moduledoc false.
 
 %% External exports
 -export([init/0,
@@ -319,8 +322,8 @@ menu_name(Atom, N) when is_atom(Atom) ->
 menu_name("Help", _) -> %% Mac needs this to be exactly this
     "&Help";
 menu_name(Str, Pos) when is_integer(Pos) ->
-    {S1,S2} = lists:split(Pos,Str),
-    S1 ++ [$&|S2];
+    {S1,[Key|_]=S2} = lists:split(Pos,Str),
+    S1 ++ [$&|S2] ++ "\tCtrl+" ++ string:uppercase([Key]);
 menu_name(Str,_) ->
     Str.
 

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2007-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2007-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,9 +22,15 @@
 
 %%----------------------------------------------------------------------
 %% Purpose: Manages ssl sessions and trusted certifacates
+%% (Note: See the document internal_doc/pem_and_cert_cache.md for additional
+%% information)
 %%----------------------------------------------------------------------
 
 -module(ssl_manager).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
+
 -behaviour(gen_server).
 
 %% Internal application API
@@ -31,15 +39,21 @@
 	 lookup_trusted_cert/4,
 	 clean_cert_db/2,
          refresh_trusted_db/1, refresh_trusted_db/2,
-	 register_session/2, register_session/4, invalidate_session/2,
-	 insert_crls/2, insert_crls/3, delete_crls/1, delete_crls/2, 
+	 register_session/4, invalidate_session/2,
+         insert_crls/2, insert_crls/3, async_insert_crls/3,
+         delete_crls/1, delete_crls/2,
 	 invalidate_session/3, name/1]).
 
 -export([init_session_validator/1]).
 
 %% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2,
-	 terminate/2, code_change/3]).
+-export([init/1,
+         handle_call/3,
+         handle_cast/2,
+         handle_info/2,
+         terminate/2,
+         format_status/1,
+         code_change/3]).
 
 -include("ssl_handshake.hrl").
 -include("ssl_internal.hrl").
@@ -47,17 +61,25 @@
 
 -include_lib("kernel/include/file.hrl").
 
+-export_type([certdb_ref/0,
+              db_handle/0]).
+
+-type certdb_ref()        :: reference().
+-type db_handle()         :: any().
+-type serialnumber()      :: pos_integer().
+
 -record(state, {
-	  session_cache_client    :: db_handle(),
-	  session_cache_client_cb :: atom(),
-	  session_lifetime        :: integer(),
-	  certificate_db          :: db_handle(),
-	  session_validation_timer :: reference(),
-	  session_cache_client_max   :: integer(),
-          session_client_invalidator :: undefined | pid(),
-          options                    :: list(),
-          client_session_order       :: gb_trees:tree()
-	 }).
+                session_cache_client,
+                session_cache_client_cb,
+                session_lifetime,
+                certificate_db,
+                session_validation_timer,
+                session_cache_client_max,
+                session_client_invalidator,
+                options,
+                client_session_order,
+                max_crl_cache_size
+               }).
 
 -define(GEN_UNIQUE_ID_MAX_TRIES, 10).
 -define(SESSION_VALIDATION_INTERVAL, 60000).
@@ -119,7 +141,7 @@ connection_init(Trustedcerts, Role, CRLCache) ->
     call({connection_init, Trustedcerts, Role, CRLCache}).
 
 %%--------------------------------------------------------------------
--spec cache_pem_file(binary(), term()) -> {ok, term()} | {error, reason()}.
+-spec cache_pem_file(binary(), term()) -> {ok, term()} | {error, ssl:reason()}.
 %%		    
 %% Description: Cache a pem file and return its content.
 %%--------------------------------------------------------------------
@@ -138,9 +160,9 @@ cache_pem_file(File, DbHandle) ->
     end.
 
 %%--------------------------------------------------------------------
--spec lookup_trusted_cert(term(), reference(), serialnumber(), issuer()) ->
+-spec lookup_trusted_cert(term(), reference(), serialnumber(), public_key:issuer_name()) ->
           undefined |
-          {ok, #cert{}}.
+          {ok, public_key:combined_cert()}.
 %%
 %% Description: Lookup the trusted cert with Key = {reference(),
 %% serialnumber(), issuer()}.
@@ -183,9 +205,6 @@ register_session(Host, Port, Session, true) ->
 register_session(Host, Port, Session, unique = Save) ->
     cast({register_session, Host, Port, Session, Save}).
 
--spec register_session(inet:port_number(), #session{}) -> ok.
-register_session(Port, Session) ->
-    cast({register_session, Port, Session}).
 %%--------------------------------------------------------------------
 %%
 %% Description: Make the session unavailable for reuse. After
@@ -210,6 +229,10 @@ insert_crls(?NO_DIST_POINT_PATH = Path, CRLs, ManagerType)->
 insert_crls(Path, CRLs, ManagerType)->
     put(ssl_manager, name(ManagerType)),
     call({insert_crls, Path, CRLs}).
+
+async_insert_crls(Path, CRLs, ManagerType)->
+    put(ssl_manager, name(ManagerType)),
+    cast({insert_crls, Path, CRLs}).
 
 delete_crls(Path)->
     delete_crls(Path, normal).
@@ -259,38 +282,39 @@ init([ManagerName, PemCacheName, Opts]) ->
 		session_cache_client_max = ClientSessMax,
 		session_client_invalidator = undefined,
                 options = Opts,
-                client_session_order = gb_trees:empty()
+                client_session_order = gb_trees:empty(),
+                max_crl_cache_size = ssl_config:get_max_crl_cache_size()
 	       }}.
 
 %%--------------------------------------------------------------------
--spec handle_call(msg(), from(), #state{}) -> {reply, reply(), #state{}}. 
+-spec handle_call(term(), gen_server:from(), #state{}) -> {reply, Reply::term(), #state{}}.
 %% Possible return values not used now.  
-%%					      {reply, reply(), #state{}, timeout()} |
+%%					      {reply, term(), #state{}, timeout()} |
 %%					      {noreply, #state{}} |
 %%					      {noreply, #state{}, timeout()} |
-%%					      {stop, reason(), reply(), #state{}} |
+%%					      {stop, reason(), term(), #state{}} |
 %%					      {stop, reason(), #state{}}.
 %%
 %% Description: Handling call messages
 %%--------------------------------------------------------------------
 handle_call({{connection_init, <<>>, Role, {CRLCb, UserCRLDb}}, _Pid}, _From,
-	    #state{certificate_db = [CertDb, FileRefDb, PemChace | _] = Db} = State) ->
+	    #state{certificate_db = [CertDb, FileRefDb, PemCache | _] = Db} = State) ->
     Ref = make_ref(), 
     {reply, {ok, #{cert_db_ref => Ref, 
                    cert_db_handle => CertDb, 
                    fileref_db_handle => FileRefDb, 
-                   pem_cache => PemChace, 
+                   pem_cache => PemCache,
                    session_cache => session_cache(Role, State), 
                    crl_db_info => {CRLCb, crl_db_info(Db, UserCRLDb)}}}, State};
 
 handle_call({{connection_init, Trustedcerts, Role, {CRLCb, UserCRLDb}}, Pid}, _From,
-	    #state{certificate_db = [CertDb, FileRefDb, PemChace | _] = Db} = State) ->
+	    #state{certificate_db = [CertDb, FileRefDb, PemCache | _] = Db} = State) ->
     case add_trusted_certs(Pid, Trustedcerts, Db) of
 	{ok, Ref} ->
 	    {reply, {ok, #{cert_db_ref => Ref, 
                            cert_db_handle => CertDb, 
                            fileref_db_handle => FileRefDb, 
-                           pem_cache => PemChace, 
+                           pem_cache => PemCache,
                            session_cache => session_cache(Role, State), 
                            crl_db_info => {CRLCb, crl_db_info(Db, UserCRLDb)}}}, State};
         {error, _} = Error ->
@@ -306,18 +330,20 @@ handle_call({{delete_crls, CRLsOrPath}, _}, _From,
 	    #state{certificate_db = Db} = State) ->
     ssl_pkix_db:remove_crls(Db, CRLsOrPath),
     {reply, ok, State};
-handle_call({{register_session, Host, Port, Session},_}, _, State0) ->
+handle_call({{register_session, Host, Port, Session}, _}, _, State0) ->
     State = client_register_session(Host, Port, Session, State0), 
     {reply, ok, State};
 handle_call({refresh_trusted_db, _}, _, #state{certificate_db = Db} = State) ->
-    ssl_pkix_db:refresh_trusted_certs(Db),
+    PemCache = get(ssl_pem_cache),
+    ssl_pkix_db:refresh_trusted_certs(Db, PemCache),
     {reply, ok, State};
 handle_call({{refresh_trusted_db, File}, _}, _, #state{certificate_db = Db} = State) ->
-    ssl_pkix_db:refresh_trusted_certs(File, Db),
+    PemCache = get(ssl_pem_cache),
+    ssl_pkix_db:refresh_trusted_certs(File, Db, PemCache),
     {reply, ok, State}.
 
 %%--------------------------------------------------------------------
--spec  handle_cast(msg(), #state{}) -> {noreply, #state{}}.
+-spec  handle_cast(term(), #state{}) -> {noreply, #state{}}.
 %% Possible return values not used now.  
 %%				      | {noreply, #state{}, timeout()} |
 %%				       {stop, reason(), #state{}}.
@@ -328,26 +354,23 @@ handle_cast({register_session, Host, Port, Session, unique}, State0) ->
     State = client_register_unique_session(Host, Port, Session, State0), 
     {noreply, State};
 
-handle_cast({register_session, Host, Port, Session, true}, State0) ->
-    State = client_register_session(Host, Port, Session, State0), 
-    {noreply, State};
 handle_cast({invalidate_session, Host, Port,
 	     #session{session_id = ID} = Session},
 	    #state{session_cache_client = Cache,
 		   session_cache_client_cb = CacheCb} = State) ->
     invalidate_session(Cache, CacheCb, {{Host, Port}, ID}, Session, State);
-handle_cast({insert_crls, Path, CRLs},   
-	    #state{certificate_db = Db} = State) ->
-    ssl_pkix_db:add_crls(Db, Path, CRLs),
+handle_cast({insert_crls, Path, CRLs},
+            #state{certificate_db = Db,
+                   max_crl_cache_size = Max} = State) ->
+    do_insert_crls(Path, CRLs, Db, Max),
     {noreply, State};
-
-handle_cast({delete_crls, CRLsOrPath},   
+handle_cast({delete_crls, CRLsOrPath},
 	    #state{certificate_db = Db} = State) ->
     ssl_pkix_db:remove_crls(Db, CRLsOrPath),
     {noreply, State}.
 
 %%--------------------------------------------------------------------
--spec handle_info(msg(), #state{}) -> {noreply, #state{}}.
+-spec handle_info(term(), #state{}) -> {noreply, #state{}}.
 %% Possible return values not used now.
 %%				      |{noreply, #state{}, timeout()} |
 %%				      {stop, reason(), #state{}}.
@@ -369,7 +392,7 @@ handle_info({clean_cert_db, Ref, File},
 	    #state{certificate_db = [CertDb, {RefDb, FileMapDb} | _]} = State) ->
     
     case ssl_pkix_db:lookup(Ref, RefDb) of
-	undefined -> %% Alredy cleaned
+	undefined -> %% Already cleaned
 	    ok;
 	_ ->
 	    clean_cert_db(Ref, CertDb, RefDb, FileMapDb, File)
@@ -381,7 +404,7 @@ handle_info(_Info, State) ->
     {noreply, State}.
 
 %%--------------------------------------------------------------------
--spec terminate(reason(), #state{}) -> ok.
+-spec terminate(ssl:reason(), #state{}) -> ok.
 %%		       
 %% Description: This function is called by a gen_server when it is about to
 %% terminate. It should be the opposite of Module:init/1 and do any necessary
@@ -397,8 +420,17 @@ terminate(_Reason, #state{certificate_db = Db,
     catch CacheCb:terminate(ClientSessionCache),
     ok.
 
+-spec format_status(map()) -> map().
+format_status(Status) ->
+    maps:map(
+      fun(state, State) ->
+              State#state{client_session_order = ?SECRET_PRINTOUT};
+         (_,Value) ->
+              Value
+      end, Status).
+
 %%--------------------------------------------------------------------
--spec code_change(term(), #state{}, list()) -> {ok, #state{}}.			 
+-spec code_change(term(), #state{}, list()) -> {ok, #state{}}.
 %%
 %% Description: Convert process state when code is changed
 %%--------------------------------------------------------------------
@@ -461,7 +493,7 @@ invalidate_session(Cache, CacheCb, Key, _Session,
 
 clean_cert_db(Ref, CertDb, RefDb, FileMapDb, File) ->
     case ssl_pkix_db:ref_count(Ref, RefDb, 0) of
-	0 ->	  
+	0 ->
 	    ssl_pkix_db:remove(Ref, RefDb),
 	    ssl_pkix_db:remove(File, FileMapDb),
 	    ssl_pkix_db:remove_trusted_certs(Ref, CertDb);
@@ -502,20 +534,27 @@ client_register_session(Host, Port, Session, #state{session_cache_client = Cache
 
 do_register_session(Key, #session{time_stamp = TimeStamp} = Session0,
                     Max, Cache, CacheCb, Options, Order0) ->
-    try 
+    try
+        %% Remove stale Order entry if this key already exists in cache
+        Order1 = case CacheCb:lookup(Cache, Key) of
+                     #session{internal_id = OldInternalId} when OldInternalId =/= undefined ->
+                         gb_trees:delete_any(OldInternalId, Order0);
+                     _ ->
+                         Order0
+                 end,
         case CacheCb:size(Cache) of
             Max ->
                 InternalId = {TimeStamp, erlang:unique_integer([monotonic])},
                 Session = Session0#session{internal_id = InternalId},
-                {_, OldKey, Order1} = gb_trees:take_smallest(Order0),
-                Order = gb_trees:insert(InternalId, Key, Order1),
+                {_, OldKey, Order2} = gb_trees:take_smallest(Order1),
+                Order = gb_trees:insert(InternalId, Key, Order2),
                 CacheCb:delete(Cache, OldKey),
                 CacheCb:update(Cache, Key, Session),
                 {Cache, Order};
             _ ->
                 InternalId = {TimeStamp, erlang:unique_integer([monotonic])},
                 Session = Session0#session{internal_id = InternalId},
-                Order = gb_trees:insert(InternalId, Key, Order0),
+                Order = gb_trees:insert(InternalId, Key, Order1),
                 CacheCb:update(Cache, Key, Session),
                 {Cache, Order}
         end
@@ -552,14 +591,12 @@ exists_equivalent(_, []) ->
 exists_equivalent(#session{
 		     peer_certificate = PeerCert,
 		     own_certificates = [OwnCert | _],
-		     compression_method = Compress,
 		     cipher_suite = CipherSuite,
 		     srp_username = SRP,
 		     ecc = ECC} , 
 		  [#session{
 		      peer_certificate = PeerCert,
 		      own_certificates = [OwnCert | _],
-		      compression_method = Compress,
 		      cipher_suite = CipherSuite,
 		      srp_username = SRP,
 		      ecc = ECC} | _]) ->
@@ -592,3 +629,14 @@ load_mitigation() ->
 	MSec ->
 	    continue
     end.
+
+do_insert_crls(Path, CRLs, [_,_,_, {Cache, Mapping}|_] = Db, Max) ->
+    CRLSize = lists:foldl(fun(CRL, Sum) -> byte_size(CRL) + Sum end, 0, CRLs),
+    case CRLSize + ssl_pkix_db:db_size(Cache) of
+        Size when Size >= Max ->
+            ssl_pkix_db:clear(Mapping),
+            ssl_pkix_db:clear(Cache);
+        _ ->
+            ok
+    end,
+    ssl_pkix_db:add_crls(Db, Path, CRLs).

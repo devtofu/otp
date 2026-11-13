@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2002-2018. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2002-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +23,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <stddef.h>
 #include <erl_nif.h>
 
 /* #define ASN1_DEBUG 1 */
@@ -228,7 +231,7 @@ static int per_complete(ErlNifBinary *out_binary, unsigned char *in_buf,
 
 	case 30:
 	    /* If we call the following bytes, in the buffer in_ptr points at,
-	     By1,By2,Rest then Rest is the value that will be transfered to
+	     By1,By2,Rest then Rest is the value that will be transferred to
 	     the completed buffer. By1 tells how many of the rightmost bits in
 	     Rest that should not be used. By2 is the length of Rest in bytes.*/
 	    in_unused = (int) *(++in_ptr);
@@ -245,7 +248,7 @@ static int per_complete(ErlNifBinary *out_binary, unsigned char *in_buf,
 
 	case 31:
 	    /* If we call the following bytes, in the buffer in_ptr points at,
-	     By1,By2,By3,Rest then Rest is the value that will be transfered to
+	     By1,By2,By3,Rest then Rest is the value that will be transferred to
 	     the completed buffer. By1 tells how many of the rightmost bits in
 	     Rest that should not be used. By2 and By3 is the length of
 	     Rest in bytes.*/
@@ -834,7 +837,7 @@ static int per_insert_octets_except_unused(int no_bytes, unsigned char **input_p
  * List is like: [{TagNo,Value},{TagNo,Value},...]
  * Rest is a binary, i.e. the undecoded part of the buffer. Most often Rest
  * is the empty binary.
- * If some error occured during the decoding of the in_buf an error is returned.
+ * If some error occurred during the decoding of the in_buf an error is returned.
  */
 static int ber_decode_begin(ErlNifEnv* env, ERL_NIF_TERM *term, unsigned char *in_buf,
 	int in_buf_len, unsigned int *err_pos) {
@@ -950,7 +953,7 @@ static int ber_decode_value(ErlNifEnv* env, ERL_NIF_TERM *value, unsigned char *
     ERL_NIF_TERM term = 0, curr_head = 0;
 
     /* Recursion depth limitation, borrow a signed int: maybe_ret */
-    maybe_ret = (int) (ErlNifSInt) ((char *)value - (char *)ib_index);
+    maybe_ret = (int) (ptrdiff_t) ((char *)value - (char *)ib_index);
     maybe_ret = maybe_ret < 0 ? -maybe_ret : maybe_ret;
     if (maybe_ret >= sizeof(void *) * 8192) /* 8 k pointer words */
         return ASN1_ERROR;
@@ -1087,7 +1090,7 @@ static int ber_encode(ErlNifEnv *env, ERL_NIF_TERM term, mem_chunk_t **curr, uns
     }
     }
 
-    // We need atleast 5 bytes to encode the next tlv
+    // We need at least 5 bytes to encode the next tlv
     if (ber_check_memory(curr, 3))
 	return ASN1_ERROR;
 
@@ -1167,7 +1170,7 @@ static mem_chunk_t *ber_new_chunk(unsigned int length) {
     new->next = NULL;
     new->top = enif_alloc(sizeof(char) * length);
     if (new->top == NULL) {
-	free(new);
+	enif_free(new);
 	return NULL;
     }
     new->curr = new->top + length - 1;

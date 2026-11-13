@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1998-2020. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1998-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -32,30 +34,30 @@
 %	 same_time_yielding_with_cancel_other_accessor/1,
 	 auto_cancel_yielding/1,
          suspended_scheduler_timeout/1,
-         multizero_timeout_in_timeout/1]).
+         multizero_timeout_in_timeout/1,
+         huge_timeout/1]).
 
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
+-include("erts_test_utils.hrl").
 
 -define(SHORT_TIMEOUT, 5000). %% Bif timers as short as this may be pre-allocated
 -define(TIMEOUT_YIELD_LIMIT, 100).
 -define(AUTO_CANCEL_YIELD_LIMIT, 100).
 
 init_per_testcase(_Case, Config) ->
-    case catch erts_debug:get_internal_state(available_internal_state) of
-	true -> ok;
-	_ -> erts_debug:set_internal_state(available_internal_state, true)
-    end,
+    erts_test_utils:available_internal_state(true),
     Config.
 
-end_per_testcase(_Case, _Config) ->
-    ok.
+end_per_testcase(_Case, Config) ->
+    erts_test_utils:ept_check_leaked_nodes(Config).
 
 init_per_suite(Config) ->
     erts_debug:set_internal_state(available_internal_state, true),
     Config.
 
 end_per_suite(_Config) ->
-    catch erts_debug:set_internal_state(available_internal_state, false).
+    erts_debug:set_internal_state(available_internal_state, false).
 
 suite() ->
     [{ct_hooks,[ts_install_cth]},
@@ -72,7 +74,8 @@ all() ->
 %     same_time_yielding_with_cancel_other_accessor,
      auto_cancel_yielding,
      suspended_scheduler_timeout,
-     multizero_timeout_in_timeout].
+     multizero_timeout_in_timeout,
+     huge_timeout].
 
 
 %% Basic start_timer/3 functionality
@@ -221,50 +224,44 @@ cancel_timer_sync_test(SameSched) ->
 
 %% Error cases for start_timer/3
 start_timer_e(Config) when is_list(Config) ->
-    {'EXIT', _} = (catch erlang:start_timer(-4, self(), hej)),
-    {'EXIT', _} = (catch erlang:start_timer(1 bsl 64,
-                                            self(), hej)),
+    ?assertError(_, erlang:start_timer(-4, self(), hej)),
+    ?assertError(_, erlang:start_timer(1 bsl 64, self(), hej)),
 
-    {'EXIT', _} = (catch erlang:start_timer(4.5, self(), hej)),
-    {'EXIT', _} = (catch erlang:start_timer(a, self(), hej)),
+    ?assertError(_, erlang:start_timer(4.5, self(), hej)),
+    ?assertError(_, erlang:start_timer(a, self(), hej)),
 
-    Node = start_slave(),
+    {ok, Peer, Node} = ?CT_PEER(),
     Pid = spawn(Node, timer, sleep, [10000]),
-    {'EXIT', _} = (catch erlang:start_timer(1000, Pid, hej)),
-    stop_slave(Node),
-
-
-    ok.
+    ?assertError(_, erlang:start_timer(1000, Pid, hej)),
+    peer:stop(Peer).
 
 %% Error cases for send_after/3
 send_after_e(Config) when is_list(Config) ->
-    {'EXIT', _} = (catch erlang:send_after(-4, self(), hej)),
-    {'EXIT', _} = (catch erlang:send_after(1 bsl 64,
-                                           self(), hej)),
+    ?assertError(_, erlang:send_after(-4, self(), hej)),
+    ?assertError(_, erlang:send_after(1 bsl 64, self(), hej)),
 
-    {'EXIT', _} = (catch erlang:send_after(4.5, self(), hej)),
-    {'EXIT', _} = (catch erlang:send_after(a, self(), hej)),
+    ?assertError(_, erlang:send_after(4.5, self(), hej)),
+    ?assertError(_, erlang:send_after(a, self(), hej)),
 
-    Node = start_slave(),
+    {ok, Peer, Node} = ?CT_PEER(),
     Pid = spawn(Node, timer, sleep, [10000]),
-    {'EXIT', _} = (catch erlang:send_after(1000, Pid, hej)),
-    stop_slave(Node),
-    ok.
+    ?assertError(_, erlang:send_after(1000, Pid, hej)),
+    peer:stop(Peer).
 
 %% Error cases for cancel_timer/1
 cancel_timer_e(Config) when is_list(Config) ->
-    {'EXIT', _} = (catch erlang:cancel_timer(1)),
-    {'EXIT', _} = (catch erlang:cancel_timer(self())),
-    {'EXIT', _} = (catch erlang:cancel_timer(a)),
+    ?assertError(_, erlang:cancel_timer(1)),
+    ?assertError(_, erlang:cancel_timer(self())),
+    ?assertError(_, erlang:cancel_timer(a)),
     ok.
 
 %% Trivial and error test cases for read_timer/1.
 read_timer_trivial(Config) when is_list(Config) ->
     false = erlang:read_timer(make_ref()),
-    {'EXIT', _} = (catch erlang:read_timer(42)),
-    {'EXIT', _} = (catch erlang:read_timer(423497834744444444457667444444)),
-    {'EXIT', _} = (catch erlang:read_timer(self())),
-    {'EXIT', _} = (catch erlang:read_timer(ab)),
+    ?assertError(_, erlang:read_timer(42)),
+    ?assertError(_, erlang:read_timer(423497834744444444457667444444)),
+    ?assertError(_, erlang:read_timer(self())),
+    ?assertError(_, erlang:read_timer(ab)),
     ok.
 
 %% Test that read_timer/1 seems to return the correct values.
@@ -384,7 +381,7 @@ evil_timers(Config) when is_list(Config) ->
     %% in memory
     Self = self(),
     R1 = make_ref(),
-    Node = start_slave(),
+    {ok, Peer, Node} = ?CT_PEER(),
     spawn_link(Node,
                fun () ->
                        Self ! {R1,
@@ -396,7 +393,7 @@ evil_timers(Config) when is_list(Config) ->
                                  fun (A, B) -> A + B end]]}
                end),
     ExtList = receive {R1, L} -> L end,
-    stop_slave(Node),
+    peer:stop(Peer),
     BinList = [<<"bla">>,
                <<"blipp">>,
                <<"blupp">>,
@@ -771,20 +768,63 @@ multizero_timeout_in_timeout(Config) when is_list(Config) ->
     io:format("Time=~p~n", [Time]),
     true = Time < Timeout + MaxTimeoutDiff,
     ok.
-            
-        
+
+huge_timeout(Config) when is_list(Config) ->
+    %% More than 2^31 seconds...
+    huge_timeout_test((1 bsl 31)*1000 + 1000),
+    %% More than 2^32 seconds...
+    huge_timeout_test((1 bsl 32)*1000 + 1000),
+    %% More than 2^31 milliseconds...
+    huge_timeout_test((1 bsl 31) + 1000),
+    %% More than 2^32 milliseconds...
+    huge_timeout_test((1 bsl 32) + 1000),
+    ok.
+
+huge_timeout_test(HugeTmo) ->
+    SOnln = erlang:system_info(schedulers_online),
+    process_flag(trap_exit, true),
+    %% Likely to hit the bug if we set a huge timeout in an
+    %% empty timer wheel, then set a small timeout
+    %% and let the small timeout trigger. The huge timeout
+    %% will then be found as the next timeout in the wheel.
+    %% Just setting a huge timeout wont trigger the bug
+    %% since an empty wheel have a fake timeout of one week.
+    Ps = lists:map(
+           fun (N) ->
+                   spawn_opt(
+                     fun () ->
+                             erlang:send_after(HugeTmo, self(), hej),
+                             erlang:send_after(2, self(), hej),
+                             receive after infinity -> ok end
+                     end, [{scheduler,N}, link])
+           end, lists:seq(1, erlang:system_info(schedulers))),
+    %% If we have schedulers offline, those timer wheels are likely
+    %% empty, so set them online increasing the chanse of hitting
+    %% a bug.
+    try
+        erlang:system_flag(schedulers_online, erlang:system_info(schedulers)),
+        receive after 1000 -> ok end
+    after
+        lists:foreach(fun (P) ->
+                              unlink(P),
+                              exit(P, kill),
+                              false = is_process_alive(P)
+                      end, Ps),
+        erlang:system_flag(schedulers_online, SOnln),
+        process_flag(trap_exit, false)
+    end.
 
 process_is_cleaned_up(P) when is_pid(P) ->
     undefined == erts_debug:get_internal_state({process_status, P}).
 
 wait_until(Pred) when is_function(Pred) ->
-    case catch Pred() of
+    case ?Catch(Pred()) of
         true -> ok;
         _ -> receive after 50 -> ok end, wait_until(Pred)
     end.
 
 busy_wait_until(Pred) when is_function(Pred) ->
-    case catch Pred() of
+    case ?Catch(Pred()) of
         true -> ok;
         _ -> busy_wait_until(Pred)
     end.
@@ -812,17 +852,6 @@ get_msg() ->
     after 0 ->
               empty
     end.
-
-start_slave() ->
-    Pa = filename:dirname(code:which(?MODULE)),
-    Name = atom_to_list(?MODULE)
-    ++ "-" ++ integer_to_list(erlang:system_time(second))
-    ++ "-" ++ integer_to_list(erlang:unique_integer([positive])),
-    {ok, Node} = test_server:start_node(Name, slave, [{args, "-pa " ++ Pa}]),
-    Node.
-
-stop_slave(Node) ->
-    test_server:stop_node(Node).
 
 collect(Last) ->
     collect(Last, []).
@@ -897,7 +926,7 @@ mem_get() ->
     % Bif timer memory
     Ref = make_ref(),
     erlang:system_info({memory_internal, Ref, [fix_alloc]}),
-    mem_recv(erlang:system_info(schedulers), Ref, {0, 0}).
+    mem_recv(erts_internal:no_aux_work_threads()-1, Ref, {0, 0}).
 
 mem_recv(0, _Ref, AU) ->
     AU;

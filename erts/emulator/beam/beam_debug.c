@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 1998-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 1998-2026. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -96,7 +98,76 @@ erts_debug_size_shared_1(BIF_ALIST_1)
 }
 
 BIF_RETTYPE
-erts_debug_copy_shared_1(BIF_ALIST_1)
+erts_debug_unaligned_bitstring_2(BIF_ALIST_2)
+{
+    Eterm bitstring;
+    Uint offset;
+
+    byte *source_bytes;
+    Uint source_offset;
+    Uint source_size;
+
+    byte *target_bytes;
+    Eterm target_size;
+
+    Eterm *hp;
+    Eterm refc_binary;
+    ErlSubBits *sb;
+
+    Uint inner_offset, inner_size;
+    Eterm br_flags;
+    BinRef *br;
+    const byte *base;
+
+    bitstring = BIF_ARG_1;
+    if (is_not_bitstring(bitstring)) {
+        BIF_ERROR(BIF_P, BADARG);
+    }
+
+    if (is_not_small(BIF_ARG_2)) {
+        BIF_ERROR(BIF_P, BADARG);
+    }
+    offset = unsigned_val(BIF_ARG_2);
+    if (!(0 < offset && offset < 8)) {
+        BIF_ERROR(BIF_P, BADARG);
+    }
+
+    ERTS_GET_BITSTRING(bitstring,
+                       source_bytes,
+                       source_offset,
+                       source_size);
+
+    target_size = MAX(source_size + offset, ERL_ONHEAP_BITS_LIMIT + 1);
+    refc_binary = erts_new_bitstring(BIF_P, target_size, &target_bytes);
+
+    copy_binary_to_buffer(target_bytes, offset,
+                          source_bytes, source_offset,
+                          source_size);
+
+    hp = HAlloc(BIF_P, ERL_SUB_BITS_SIZE);
+    sb = (ErlSubBits*)hp;
+
+    ERTS_GET_BITSTRING_REF(refc_binary,
+                           br_flags,
+                           br,
+                           base,
+                           inner_offset,
+                           inner_size);
+    (void)inner_offset;
+    (void)inner_size;
+
+    erl_sub_bits_init(sb,
+                      br_flags,
+                      ((Eterm)br) | br_flags,
+                      base,
+                      offset,
+                      source_size);
+
+    BIF_RET(make_bitstring(sb));
+}
+
+BIF_RETTYPE
+erts_debug_copy_shared_2(BIF_ALIST_2)
 {
     Process* p = BIF_P;
     Eterm term = BIF_ARG_1;
@@ -105,6 +176,13 @@ erts_debug_copy_shared_1(BIF_ALIST_1)
     Eterm copy;
     erts_shcopy_t info;
     INITIALIZE_SHCOPY(info);
+
+    switch (BIF_ARG_2) {
+    case am_true: info.copy_literals = 1; break;
+    case am_false: info.copy_literals = 0; break;
+    default:
+        BIF_ERROR(p, BADARG);
+    }
 
     size = copy_shared_calculate(term, &info);
     if (size > 0) {
@@ -115,40 +193,114 @@ erts_debug_copy_shared_1(BIF_ALIST_1)
     BIF_RET(copy);
 }
 
+/* Protected by code modification permission */
+static struct {
+    ErtsCodeBarrier barrier;
+    Process* process;
+
+    BpFunctions f;
+    int enable;
+    int stage;
+} finish_debug_bp;
+
+static void debug_bp_finisher(void *ignored)
+{
+    Process* p = finish_debug_bp.process;
+
+    ERTS_LC_ASSERT(erts_has_code_mod_permission());
+
+    (void)ignored;
+
+    /* Code barriers are issued before each of the stages below. */
+    switch (finish_debug_bp.stage++) {
+    case 0:
+        /* Breakpoints need to be installed before they are committed, and
+         * committed before they are uninstalled. */
+        if (finish_debug_bp.enable) {
+            erts_install_breakpoints(&finish_debug_bp.f);
+        } else {
+            erts_commit_staged_bp();
+        }
+        break;
+    case 1:
+        if (!finish_debug_bp.enable) {
+            erts_uninstall_breakpoints(&finish_debug_bp.f);
+        } else {
+            erts_commit_staged_bp();
+        }
+        break;
+    case 2:
+        /* Now all breakpoints have either been inserted or removed. For all
+         * updated breakpoints, copy the active breakpoint data to the staged
+         * breakpoint data to make them equal (simplifying for the next time
+         * breakpoints are to be updated). If any breakpoints have been totally
+         * disabled, deallocate their GenericBp structs. */
+        erts_consolidate_local_bp_data(&finish_debug_bp.f);
+        erts_bp_free_matched_functions(&finish_debug_bp.f);
+        break;
+    case 3:
+        /* All schedulers have run a code barrier (or will as soon as they
+         * awaken) after updating all breakpoints, it's safe to return now. */
+#ifdef DEBUG
+        finish_debug_bp.process = NULL;
+        ASSERT(erts_staging_trace_session == &erts_trace_session_0);
+        erts_staging_trace_session = NULL;
+#endif
+        erts_release_code_mod_permission();
+
+        erts_proc_lock(p, ERTS_PROC_LOCK_STATUS);
+
+        if (!ERTS_PROC_IS_EXITING(p)) {
+            erts_resume(p, ERTS_PROC_LOCK_STATUS);
+        }
+
+        erts_proc_unlock(p, ERTS_PROC_LOCK_STATUS);
+        erts_proc_dec_refc(p);
+
+        erts_free_breakpoints();
+        return;
+    }
+
+    erts_schedule_code_barrier(&finish_debug_bp.barrier,
+                               debug_bp_finisher, NULL);
+}
+
 BIF_RETTYPE
 erts_debug_breakpoint_2(BIF_ALIST_2)
 {
-    Process* p = BIF_P;
-    Eterm MFA = BIF_ARG_1;
-    Eterm boolean = BIF_ARG_2;
-    Eterm* tp;
+    const Eterm mfa_pattern = BIF_ARG_1, enable = BIF_ARG_2;
+    int i, specified;
     ErtsCodeMFA mfa;
-    int i;
-    int specified = 0;
-    Eterm res;
-    BpFunctions f;
+    Eterm *tp;
 
-    if (boolean != am_true && boolean != am_false)
-	goto error;
-
-    if (is_not_tuple(MFA)) {
-	goto error;
+    if (enable != am_true && enable != am_false) {
+        BIF_ERROR(BIF_P, BADARG);
     }
-    tp = tuple_val(MFA);
+
+    if (is_not_tuple(mfa_pattern)) {
+        BIF_ERROR(BIF_P, BADARG);
+    }
+
+    tp = tuple_val(mfa_pattern);
     if (*tp != make_arityval(3)) {
-	goto error;
+        BIF_ERROR(BIF_P, BADARG);
     }
+
     if (!is_atom(tp[1]) || !is_atom(tp[2]) ||
-	(!is_small(tp[3]) && tp[3] != am_Underscore)) {
-	goto error;
+        (!is_small(tp[3]) && tp[3] != am_Underscore)) {
+        BIF_ERROR(BIF_P, BADARG);
     }
-    for (i = 0; i < 3 && tp[i+1] != am_Underscore; i++, specified++) {
-	/* Empty loop body */
+
+    for (i = 0, specified = 0;
+         i < 3 && tp[i+1] != am_Underscore;
+         i++, specified++) {
+        /* Empty loop body */
     }
+
     for (i = specified; i < 3; i++) {
-	if (tp[i+1] != am_Underscore) {
-	    goto error;
-	}
+        if (tp[i+1] != am_Underscore) {
+            BIF_ERROR(BIF_P, BADARG);
+        }
     }
 
     mfa.module = tp[1];
@@ -158,34 +310,35 @@ erts_debug_breakpoint_2(BIF_ALIST_2)
         mfa.arity = signed_val(tp[3]);
     }
 
-    if (!erts_try_seize_code_write_permission(BIF_P)) {
-	ERTS_BIF_YIELD2(BIF_TRAP_EXPORT(BIF_erts_debug_breakpoint_2),
-			BIF_P, BIF_ARG_1, BIF_ARG_2);
+    if (!erts_try_seize_code_mod_permission(BIF_P)) {
+        ERTS_BIF_YIELD2(BIF_TRAP_EXPORT(BIF_erts_debug_breakpoint_2),
+                        BIF_P, BIF_ARG_1, BIF_ARG_2);
     }
-    erts_proc_unlock(p, ERTS_PROC_LOCK_MAIN);
-    erts_thr_progress_block();
+    ASSERT(erts_staging_trace_session == NULL);
+    erts_staging_trace_session = &erts_trace_session_0;
 
-    erts_bp_match_functions(&f, &mfa, specified);
-    if (boolean == am_true) {
-	erts_set_debug_break(&f);
-	erts_install_breakpoints(&f);
-	erts_commit_staged_bp();
+    erts_bp_match_functions(&finish_debug_bp.f, &mfa, specified,
+                            1); // ignore bifs
+
+    ASSERT(finish_debug_bp.f.matched >= 0);
+    ASSERT(finish_debug_bp.process == NULL);
+    finish_debug_bp.enable = (enable == am_true);
+    finish_debug_bp.process = BIF_P;
+    finish_debug_bp.stage = 0;
+
+    if (finish_debug_bp.enable) {
+        erts_set_debug_break(&finish_debug_bp.f);
     } else {
-	erts_clear_debug_break(&f);
-	erts_commit_staged_bp();
-	erts_uninstall_breakpoints(&f);
+        erts_clear_debug_break(&finish_debug_bp.f);
     }
-    erts_consolidate_bp_data(&f, 1);
-    res = make_small(f.matched);
-    erts_bp_free_matched_functions(&f);
 
-    erts_thr_progress_unblock();
-    erts_proc_lock(p, ERTS_PROC_LOCK_MAIN);
-    erts_release_code_write_permission();
-    return res;
-
- error:
-    BIF_ERROR(p, BADARG);
+    /* Adding/removing breakpoints requires multiple code barriers. Suspend
+     * ourselves and continue in an aux job. */
+    erts_schedule_code_barrier(&finish_debug_bp.barrier,
+                               debug_bp_finisher, NULL);
+    erts_proc_inc_refc(BIF_P);
+    erts_suspend(BIF_P, ERTS_PROC_LOCK_MAIN, NULL);
+    ERTS_BIF_YIELD_RETURN(BIF_P, make_small(finish_debug_bp.f.matched));
 }
 
 #if 0 /* Kept for conveninence when hard debugging. */
@@ -265,10 +418,10 @@ erts_debug_disassemble_1(BIF_ALIST_1)
 	}
     } else if (is_tuple(addr)) {
 	ErtsCodeIndex code_ix;
+	const Export *ep;
 	Module* modp;
 	Eterm mod;
 	Eterm name;
-	Export* ep;
 	Sint arity;
 	int n;
 
@@ -299,7 +452,7 @@ erts_debug_disassemble_1(BIF_ALIST_1)
 	     * But this code_ptr will point to the start of the Export,
 	     * not the function's func_info instruction. BOOM !?
 	     */
-	    cmfa = erts_code_to_codemfa(ep->addresses[code_ix]);
+	    cmfa = erts_code_to_codemfa(ep->dispatch.addresses[code_ix]);
 	} else if (modp == NULL || (code_hdr = modp->curr.code_hdr) == NULL) {
 	    BIF_RET(am_undef);
 	} else {
@@ -341,7 +494,9 @@ erts_debug_disassemble_1(BIF_ALIST_1)
          */
         code_ptr = 0;
     }
-    bin = new_binary(p, (byte *) dsbufp->str, dsbufp->str_len);
+    bin = erts_new_binary_from_data(p,
+                                    dsbufp->str_len,
+                                    (byte *) dsbufp->str);
     erts_destroy_tmp_dsbuf(dsbufp);
     hsz = 4+4;
     (void) erts_bld_uword(NULL, &hsz, (BeamInstr) code_ptr);
@@ -449,9 +604,6 @@ print_op(fmtfn_t to, void *to_arg, int op, int size, BeamInstr* addr)
         addr++;
         ap = addr;
     } else {
-#if defined(ARCH_64) && defined(CODE_MODEL_SMALL)
-        BeamInstr instr_word = addr[0];
-#endif
         addr++;
 
 	/*
@@ -504,16 +656,6 @@ print_op(fmtfn_t to, void *to_arg, int op, int size, BeamInstr* addr)
 	    case 'P':
 		packed = *--sp;
 		break;
-#if defined(ARCH_64) && defined(CODE_MODEL_SMALL)
-            case '#':       /* -1 */
-            case '$':       /* -2 */
-            case '%':       /* -3 */
-            case '&':       /* -4 */
-            case '\'':      /* -5 */
-            case '(':       /* -6 */
-                packed = (packed << BEAM_WIDE_SHIFT) | BeamExtraData(instr_word);
-		break;
-#endif
 	    default:
                 erts_exit(ERTS_ERROR_EXIT, "beam_debug: invalid packing op: %c\n", *prog);
 	    }
@@ -607,17 +749,12 @@ print_op(fmtfn_t to, void *to_arg, int op, int size, BeamInstr* addr)
                     print_byte_string(to, to_arg, str, bytes);
                 }
                 break;
-	    case op_bs_put_string_WW:
-                if (ap - first_arg == 0) {
-                    erts_print(to, to_arg, "%d", *ap);
-                } else {
-                    Uint bytes = ap[-1];
-                    byte* str = (byte *) ap[0];
-                    print_byte_string(to, to_arg, str, bytes);
-                }
-                break;
 	    default:
+#ifdef ARCH_64
+		erts_print(to, to_arg, "%ld", *ap);
+#else
 		erts_print(to, to_arg, "%d", *ap);
+#endif
 	    }
 	    ap++;
 	    break;
@@ -671,7 +808,7 @@ print_op(fmtfn_t to, void *to_arg, int op, int size, BeamInstr* addr)
 	case 'F':		/* Function definition */
 	    {
 		ErlFunEntry* fe = (ErlFunEntry *) *ap;
-		const ErtsCodeMFA *cmfa = erts_get_fun_mfa(fe);
+		const ErtsCodeMFA *cmfa = erts_get_fun_mfa(fe, erts_active_code_ix());
 		erts_print(to, to_arg, "fun(`%T`:`%T`/%bpu)", cmfa->module,
 			   cmfa->function, cmfa->arity);
 		ap++;
@@ -814,6 +951,11 @@ print_op(fmtfn_t to, void *to_arg, int op, int size, BeamInstr* addr)
     case op_update_map_assoc_cdtI:
     case op_update_map_exact_xjdtI:
     case op_update_map_exact_yjdtI:
+    case op_i_create_native_record_jctI:
+    case op_i_create_local_native_record_qdtI:
+    case op_i_update_native_record_jsdtI:
+    case op_i_get_record_elements_jxI:
+    case op_i_get_record_elements_jyI:
 	{
 	    int n = unpacked[-1];
 
@@ -898,6 +1040,55 @@ print_op(fmtfn_t to, void *to_arg, int op, int size, BeamInstr* addr)
 	    }
 	}
 	break;
+    case op_i_bs_create_bin_jIWdW:
+        {
+            int n = unpacked[-1];
+            int i = 0;
+            Eterm type = 0;
+
+            while (n > 0) {
+                switch (i % 5) {
+                case 0:           /* Type */
+                    type = ap[i];
+                    erts_print(to, to_arg, " `%d`", type);
+                    break;
+                case 1:           /* Unit */
+                case 2:           /* Flags */
+                    erts_print(to, to_arg, " `%d`", (Eterm) ap[i]);
+                    break;
+                case 4:         /* Size */
+                    if (type == BSC_BINARY_FIXED_SIZE ||
+                        type == BSC_FLOAT_FIXED_SIZE ||
+                        type == BSC_INTEGER_FIXED_SIZE ||
+                        type == BSC_STRING ||
+                        type == BSC_UTF32) {
+                        erts_print(to, to_arg, " `%d`", ap[i]);
+                        break;
+                    }
+
+                    /*FALLTHROUGH*/
+                case 3:         /* Src */
+                    if (type == BSC_STRING) {
+                        erts_print(to, to_arg, " ");
+                        print_byte_string(to, to_arg, (byte *) ap[i], ap[i+1]);
+                        break;
+                    }
+                    switch (loader_tag(ap[i])) {
+                    case LOADER_X_REG:
+                        erts_print(to, to_arg, " x(%d)", loader_x_reg_index(ap[i]));
+                        break;
+                    case LOADER_Y_REG:
+                        erts_print(to, to_arg, " y(%d)", loader_y_reg_index(ap[i]) - CP_SIZE);
+                        break;
+                    default:
+                        erts_print(to, to_arg, " `%T`", (Eterm) ap[i]);
+                        break;
+                    }
+                }
+                i++, size++, n--;
+            }
+        }
+        break;
     }
     erts_print(to, to_arg, "\n");
 
@@ -1028,7 +1219,7 @@ dirty_test(Process *c_p, Eterm type, Eterm arg1, Eterm arg2, ErtsCodePtr I)
 	ErtsSchedulerData *esdp;
 	if (arg2 != am_type) 
 	    goto badarg;
-	esdp = erts_proc_sched_data(c_p);
+	esdp = erts_get_scheduler_data();
 	if (!esdp)
             goto scheduler_type_error;
       
@@ -1078,7 +1269,7 @@ dirty_test(Process *c_p, Eterm type, Eterm arg1, Eterm arg2, ErtsCodePtr I)
 	    Eterm *hp, sz;
 	    Eterm cpy;
 	    /* We do not want this to be optimized,
-	       but rather the oposite... */
+	       but rather the opposite... */
 	    sz = size_object(arg2);
 	    hp = HAlloc(c_p, sz);
 	    cpy = copy_struct(arg2, sz, &hp, &c_p->off_heap);
@@ -1177,13 +1368,15 @@ dirty_test(Process *c_p, Eterm type, Eterm arg1, Eterm arg2, ErtsCodePtr I)
 	dirty_send_message(c_p, arg2, AM_done);
 	ERTS_BIF_PREP_RET(ret, am_ok);
     }
-    else if (ERTS_IS_ATOM_STR("alive_waitexiting", arg1)) {
+    else if (ERTS_IS_ATOM_STR("alive_waitexiting", arg1)
+             || ERTS_IS_ATOM_STR("alive_waitexitingonly", arg1)) {
 	Process *real_c_p = erts_proc_shadow2real(c_p);
 	Eterm *hp, *hp2;
 	Uint sz;
 	int i;
-	ErtsSchedulerData *esdp = erts_proc_sched_data(c_p);
+	ErtsSchedulerData *esdp = erts_get_scheduler_data();
         int dirty_io = esdp->type == ERTS_SCHED_DIRTY_IO;
+        int no_wait_alloc = ERTS_IS_ATOM_STR("alive_waitexitingonly", arg1);
 
 	if (ERTS_PROC_IS_EXITING(real_c_p))
 	    goto badarg;
@@ -1197,16 +1390,21 @@ dirty_test(Process *c_p, Eterm type, Eterm arg1, Eterm arg2, ErtsCodePtr I)
                 erts_thr_yield();
         }
 
-	ms_wait(c_p, make_small(1000), 0);
+        if (no_wait_alloc) {
+            ERTS_BIF_PREP_RET(ret, am_ok);
+        }
+        else {
+            ms_wait(c_p, make_small(1000), 0);
 
-	/* Should still be able to allocate memory */
-	hp = HAlloc(c_p, 3); /* Likely on heap */
-	sz = 10000;
-	hp2 = HAlloc(c_p, sz); /* Likely in heap fragment */
-	*hp2 = make_pos_bignum_header(sz);
-	for (i = 1; i < sz; i++)
-	    hp2[i] = (Eterm) 4711;
-	ERTS_BIF_PREP_RET(ret, TUPLE2(hp, am_ok, make_big(hp2)));
+            /* Should still be able to allocate memory */
+            hp = HAlloc(c_p, 3); /* Likely on heap */
+            sz = 10000;
+            hp2 = HAlloc(c_p, sz); /* Likely in heap fragment */
+            *hp2 = make_pos_bignum_header(sz);
+            for (i = 1; i < sz; i++)
+                hp2[i] = (Eterm) 4711;
+            ERTS_BIF_PREP_RET(ret, TUPLE2(hp, am_ok, make_big(hp2)));
+        }
     }
     else {
     badarg:
@@ -1262,7 +1460,7 @@ dirty_send_message(Process *c_p, Eterm to, Eterm tag)
 static int
 ms_wait(Process *c_p, Eterm etimeout, int busy)
 {
-    ErtsSchedulerData *esdp = erts_proc_sched_data(c_p);
+    ErtsSchedulerData *esdp = erts_get_scheduler_data();
     ErtsMonotonicTime time, timeout_time;
     Sint64 ms;
 

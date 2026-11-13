@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2005-2020. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2005-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -25,11 +27,23 @@
 %%----------------------------------------------------------------------
 
 -module(megaco_codec_mstone1).
+-moduledoc """
+This module implements a simple megaco codec-based performance tool.
 
+This module implements the _mstone1_ tool, a simple megaco codec-based
+performance tool.
+
+The results, the mstone value(s), are written to stdout.
+
+_Note_ that this module is _not_ included in the runtime part of the
+application.
+""".
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
 
 %% API
 -export([
-	 start/0,          start/1,          start/2,
+	 start/0, start/1, start/2, start/3, start/4,
 	 start_flex/0,     start_flex/1,     start_flex/2,
 	 start_no_drv/0,   start_no_drv/1,   start_no_drv/2,
 	 start_only_drv/0, start_only_drv/1, start_only_drv/2
@@ -69,8 +83,23 @@
 -record(mstone, {id, count, codec, econf, heap_size, reds}).
 
 
+-doc(#{equiv => start/2}).
 start() ->
     start(?DEFAULT_FACTOR).
+
+
+-doc """
+start([MessagePackage, RunTime, Factor])
+
+This function is intended to be called from the _mstone1_ script, which
+uses the '-s' arguments to run the function (argument order; message package,
+run time (in minutes in the example) and factor):
+
+```text
+erl -s megaco_codec_mstone1 start time_test 1 1
+```
+
+""".
 
 start([Factor]) ->
     start(?DEFAULT_MESSAGE_PACKAGE, ?MSTONE_RUN_TIME, Factor);
@@ -81,15 +110,70 @@ start([MessagePackage, RunTime, Factor]) ->
 start(Factor) ->
     start(?DEFAULT_MESSAGE_PACKAGE, ?MSTONE_RUN_TIME, Factor).
 
-start(MessagePackage, Factor) ->
+-doc """
+start(MessagePackage, Factor)
+
+This function starts the _mstone1_ performance test with all codec configs.
+`Factor` (defaults to `1`) processes are started for every supported codec
+config.
+
+Each process encodes and decodes their messages. The number of messages
+processed in total (for all processes) is the mstone value.
+
+""".
+
+-spec start(RunTime, Factor) -> ok when
+      RunTime :: pos_integer(),
+      Factor  :: default | pos_integer();
+           (MessagePackage, Factor) -> ok when
+      MessagePackage :: atom(),
+      Factor         :: pos_integer().
+
+start(RunTime, default = _Factor)
+  when is_integer(RunTime) andalso (RunTime > 0) ->
+    start(?DEFAULT_MESSAGE_PACKAGE, RunTime, ?DEFAULT_FACTOR);
+start(RunTime, Factor)
+  when is_integer(RunTime) andalso (RunTime > 0) andalso
+       is_integer(Factor) andalso (Factor > 0) ->
+    start(?DEFAULT_MESSAGE_PACKAGE, RunTime, Factor);
+start(MessagePackage, Factor)
+  when is_atom(MessagePackage) andalso
+       is_integer(Factor) andalso (Factor > 0) ->
     start(MessagePackage, ?MSTONE_RUN_TIME, Factor).
 
+-doc false.
+start(Opts, RunTime, Factor) when is_map(Opts) ->
+    start(Opts, ?DEFAULT_MESSAGE_PACKAGE, RunTime, Factor);
 start(MessagePackage, RunTime, Factor) ->
-    do_start(MessagePackage, RunTime, Factor, ?DEFAULT_DRV_INCLUDE).
+    start(#{}, MessagePackage, RunTime, Factor).
+
+-doc false.
+start(#{bench := Bench},
+      MessagePackage, RunTime, Factor) when is_boolean(Bench) ->
+    do_start(Bench,
+             MessagePackage, RunTime, Factor, ?DEFAULT_DRV_INCLUDE);
+start(_,
+      MessagePackage, RunTime, Factor) ->
+    do_start(false,
+             MessagePackage, RunTime, Factor, ?DEFAULT_DRV_INCLUDE).
 
 
+-doc(#{equiv => start_flex/2}).
 start_flex() ->
     start_flex(?DEFAULT_FACTOR).
+
+-doc """
+start_flex([MessagePackage, RunTime, Factor])
+
+This function is intended to be called from the _mstone1_ script, which
+uses the '-s' arguments to run the function (argument order; message package,
+run time (in minutes in the example) and factor):
+
+```text
+erl -s megaco_codec_mstone1 start_flex time_test 1 1
+```
+
+""".
 
 start_flex([Factor]) ->
     start_flex(?DEFAULT_MESSAGE_PACKAGE, ?MSTONE_RUN_TIME, Factor);
@@ -100,15 +184,43 @@ start_flex([MessagePackage, RunTime, Factor]) ->
 start_flex(Factor) ->
     start_flex(?DEFAULT_MESSAGE_PACKAGE, ?MSTONE_RUN_TIME, Factor).
 
+-doc """
+This function starts the _mstone1_ performance test with only the flex codec
+configs (i.e. `pretty` and `compact` with `flex`). The same number of processes
+are started as when running the standard test (using the `start/0,1` function).
+Each process encodes and decodes their messages. The number of messages
+processed in total (for all processes) is the mstone value.
+""".
+
+-spec start_flex(MessagePackage, Factor) -> ok when
+      MessagePackage :: atom(),
+      Factor         :: pos_integer().
+
 start_flex(MessagePackage, Factor) ->
-    do_start(MessagePackage, ?MSTONE_RUN_TIME, Factor, flex).
+    do_start(false,
+             MessagePackage, ?MSTONE_RUN_TIME, Factor, flex).
 
 start_flex(MessagePackage, RunTime, Factor) ->
-    do_start(MessagePackage, RunTime, Factor, flex).
+    do_start(false,
+             MessagePackage, RunTime, Factor, flex).
 
 
+-doc(#{equiv => start_only_drv/2}).
 start_only_drv() ->
     start_only_drv(?DEFAULT_FACTOR).
+
+-doc """
+start_no_drv([MessagePackage, RunTime, Factor])
+
+This function is intended to be called from the _mstone1_ script, which
+uses the '-s' arguments to run the function (argument order; message package,
+run time (in minutes in the example) and factor):
+
+```text
+erl -s megaco_codec_mstone1 start_no_drv time_test 1 1
+```
+
+""".
 
 start_only_drv([Factor]) ->
     start_only_drv(?DEFAULT_MESSAGE_PACKAGE, ?MSTONE_RUN_TIME, Factor);
@@ -119,15 +231,44 @@ start_only_drv([MessagePackage, RunTime, Factor]) ->
 start_only_drv(Factor) ->
     start_only_drv(?DEFAULT_MESSAGE_PACKAGE, ?MSTONE_RUN_TIME, Factor).
 
+-doc """
+This function starts the _mstone1_ performance test with only the driver using
+codec configs (i.e. `pretty` and `compact` with `flex`, and `ber` and `per` with
+`driver` and `erlang` with `compressed`). The same number of processes are
+started as when running the standard test (using the `start/0,1` function). Each
+process encodes and decodes their messages. The number of messages processed in
+total (for all processes) is the mstone value.
+""".
+
+-spec start_only_drv(MessagePackage, Factor) -> ok when
+      MessagePackage :: atom(),
+      Factor         :: pos_integer().
+
 start_only_drv(MessagePackage, Factor) ->
-    do_start(MessagePackage, ?MSTONE_RUN_TIME, Factor, only_drv).
+    do_start(false,
+             MessagePackage, ?MSTONE_RUN_TIME, Factor, only_drv).
 
 start_only_drv(MessagePackage, RunTime, Factor) ->
-    do_start(MessagePackage, RunTime, Factor, only_drv).
+    do_start(false,
+             MessagePackage, RunTime, Factor, only_drv).
 
 
+-doc(#{equiv => start_no_drv/2}).
 start_no_drv() ->
     start_no_drv(?DEFAULT_FACTOR).
+
+-doc """
+start_no_drv([MessagePackage, RunTime, Factor])
+
+This function is intended to be called from the _mstone1_ script, which
+uses the '-s' arguments to run the function (argument order; message package,
+run time (in minutes in the example) and factor):
+
+```text
+erl -s megaco_codec_mstone1 start_no_drv time_test 1 1
+```
+
+""".
 
 start_no_drv([Factor]) ->
     start_no_drv(?DEFAULT_MESSAGE_PACKAGE, ?MSTONE_RUN_TIME, Factor);
@@ -138,48 +279,39 @@ start_no_drv([MessagePackage, RunTime, Factor]) ->
 start_no_drv(Factor) ->
     start_no_drv(?DEFAULT_MESSAGE_PACKAGE, ?MSTONE_RUN_TIME, Factor).
 
+-doc """
+This function starts the _mstone1_ performance test with codec configs not using
+any drivers (i.e. `pretty` and `compact` without `flex`, `ber` and `per` without
+`driver` and `erlang` without `compressed`). The same number of processes are
+started as when running the standard test (using the `start/0,1` function). Each
+process encodes and decodes their messages. The number of messages processed in
+total (for all processes) is the mstone value.
+""".
+
+-spec start_no_drv(MessagePackage, Factor) -> ok when
+      MessagePackage :: atom(),
+      Factor         :: pos_integer().
+
 start_no_drv(MessagePackage, Factor) ->
-    do_start(MessagePackage, ?MSTONE_RUN_TIME, Factor, no_drv).
+    do_start(false,
+             MessagePackage, ?MSTONE_RUN_TIME, Factor, no_drv).
 
 start_no_drv(MessagePackage, RunTime, Factor) ->
-    do_start(MessagePackage, RunTime, Factor, no_drv).
+    do_start(false,
+             MessagePackage, RunTime, Factor, no_drv).
 
     
-do_start(MessagePackageRaw, RunTimeRaw, FactorRaw, DrvInclude) ->
+do_start(Bench,
+         MessagePackageRaw, RunTimeRaw, FactorRaw, DrvInclude) ->
     RunTime        = parse_runtime(RunTimeRaw),
     Factor         = parse_factor(FactorRaw),
     MessagePackage = parse_message_package(MessagePackageRaw),
-    mstone_init(MessagePackage, RunTime, Factor, DrvInclude).
+    mstone_init(Bench,
+                MessagePackage, RunTime, Factor, DrvInclude).
 
 
-parse_runtime(RunTimeAtom) when is_atom(RunTimeAtom) ->
-    parse_runtime_str(atom_to_list(RunTimeAtom));
-parse_runtime(RunTimeStr) when is_list(RunTimeStr) ->
-    parse_runtime_str(RunTimeStr);
-parse_runtime(RunTime) when is_integer(RunTime) andalso (RunTime > 0) ->
-    timer:minutes(RunTime);
-parse_runtime(BadRunTime) ->
-    throw({error, {bad_runtime, BadRunTime}}).
-
-parse_runtime_str(RuneTimeStr) ->
-    try
-        begin
-            case lists:reverse(RuneTimeStr) of
-                [$s|Rest] ->
-                    timer:seconds(list_to_integer(lists:reverse(Rest)));
-                [$m|Rest] ->
-                    timer:minutes(list_to_integer(lists:reverse(Rest)));
-                [$h|Rest] ->
-                    timer:hours(list_to_integer(lists:reverse(Rest)));
-                _ ->
-                    timer:minutes(list_to_integer(RuneTimeStr))
-            end
-        end
-    catch
-        _:_:_ ->
-            throw({error, {bad_runtime, RuneTimeStr}})
-    end.
-
+parse_runtime(RunTimeAtom) ->
+    ?LIB:parse_runtime(RunTimeAtom).
 
 parse_factor(FactorAtom) when is_atom(FactorAtom) ->
     case (catch list_to_integer(atom_to_list(FactorAtom))) of
@@ -216,29 +348,39 @@ parse_message_package(BadMessagePackage) ->
 %%    pretty | compact | ber | per | erlang
 %%
 
-mstone_init(MessagePackage, RunTime, Factor, DrvInclude) ->
-%%     io:format("mstone_init -> entry with"
-%% 	      "~n   MessagePackage: ~p"
-%% 	      "~n   RunTime:        ~p"
-%% 	      "~n   Factor:         ~p"
-%% 	      "~n   DrvInclude:     ~p"
-%% 	      "~n", [MessagePackage, RunTime, Factor, DrvInclude]),
+mstone_init(Bench,
+            MessagePackage, RunTime, Factor, DrvInclude) ->
+    %% io:format("MStone init with:"
+    %%           "~n   MessagePackage: ~p"
+    %%           "~n   RunTime:        ~p ms"
+    %%           "~n   Factor:         ~p"
+    %%           "~n   DrvInclude:     ~p"
+    %%           "~n", [MessagePackage, RunTime, Factor, DrvInclude]),
     Codecs = ?MSTONE_CODECS, 
-    mstone_init(MessagePackage, RunTime, Factor, Codecs, DrvInclude).
+    mstone_init(Bench,
+                MessagePackage, RunTime, Factor, Codecs, DrvInclude).
 
-mstone_init(MessagePackage, RunTime, Factor, Codecs, DrvInclude) ->
+mstone_init(Bench,
+            MessagePackage, RunTime, Factor, Codecs, DrvInclude) ->
     Parent = self(), 
     Pid = spawn(
 	    fun() -> 
 		    process_flag(trap_exit, true),
-		    do_mstone(MessagePackage,
-                              RunTime, Factor, Codecs, DrvInclude),  
-		    Parent ! {done, self()}
+		    Done = do_mstone(MessagePackage,
+                                     RunTime, Factor, Codecs, DrvInclude),  
+		    Parent ! {Done, self()}
 	    end),
     receive
-	{done, Pid} ->
-	    ok
+	{{ok, _} = OK, Pid} ->
+	    mstone_maybe_bench(Bench, OK);
+        {{error, _} = ERROR, Pid} ->
+            ERROR
     end.
+
+mstone_maybe_bench(true, {ok, MStone}) ->
+    {bench, MStone};
+mstone_maybe_bench(false, {ok, _}) ->
+    ok.
 			 
 do_mstone(MessagePackage, RunTime, Factor, Codecs, DrvInclude) ->
     io:format("~n", []),
@@ -246,15 +388,22 @@ do_mstone(MessagePackage, RunTime, Factor, Codecs, DrvInclude) ->
     ?LIB:display_system_info(),
     ?LIB:display_app_info(),
     io:format("~n", []),
-    (catch asn1rt_driver_handler:load_driver()),
-    {Pid, Conf} = ?LIB:start_flex_scanner(),
-    put(flex_scanner_conf, Conf),
-    EMessages = ?LIB:expanded_messages(MessagePackage, Codecs, DrvInclude), 
-    EMsgs  = duplicate(Factor, EMessages),
-    MStone = t1(RunTime, EMsgs),
-    ?LIB:stop_flex_scanner(Pid),
-    io:format("~n", []),
-    io:format("MStone: ~p~n", [MStone]).
+    try ?LIB:start_flex_scanner() of
+        {Pid, Conf} when is_pid(Pid) ->
+            put(flex_scanner_conf, Conf),
+            EMessages = ?LIB:expanded_messages(MessagePackage, Codecs, DrvInclude), 
+            EMsgs  = duplicate(Factor, EMessages),
+            MStone = t1(RunTime, EMsgs),
+            ?LIB:stop_flex_scanner(Pid),
+            io:format("~n", []),
+            io:format("MStone: ~p~n", [MStone]),
+            {ok, MStone}
+    catch
+        throw:{error, Reason} = ERROR ->
+            io:format("<ERROR> Failed starting flex scanner: "
+                      "~n      ~p", [Reason]),
+            ERROR
+    end.
 
 duplicate(N, Elements) ->
     duplicate(N, Elements, []).
@@ -386,6 +535,7 @@ detect_versions(Codec, Conf, [{_Name, Bin}|Bins], Acc) ->
     detect_versions(Codec, Conf, Bins, [Data|Acc]).
 	    
 
+-doc false.
 mstone_runner_init(RunTime, _Codec, Parent, Mod, Conf, Msgs0) ->
     Msgs = detect_versions(Mod, Conf, Msgs0, []),
     warmup(Mod, Conf, Msgs, []),

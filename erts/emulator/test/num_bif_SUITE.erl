@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,6 +23,7 @@
 -module(num_bif_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
 %% Tests the BIFs:
 %% 	abs/1
@@ -41,6 +44,7 @@
 -export([all/0, suite/0, groups/0, init_per_suite/1, end_per_suite/1,
 	 init_per_group/2, end_per_group/2, t_abs/1, t_float/1,
 	 t_float_to_string/1, t_integer_to_string/1,
+         t_integer_to_string_large/1,
 	 t_string_to_integer/1, t_list_to_integer_edge_cases/1,
 	 t_string_to_float_safe/1, t_string_to_float_risky/1,
 	 t_round/1, t_trunc_and_friends/1
@@ -50,6 +54,7 @@ suite() -> [{ct_hooks,[ts_install_cth]}].
 
 all() ->
     [t_abs, t_float, t_float_to_string, t_integer_to_string,
+     t_integer_to_string_large,
      {group, t_string_to_float}, t_string_to_integer, t_round,
      t_trunc_and_friends, t_list_to_integer_edge_cases].
 
@@ -110,7 +115,7 @@ t_float(Config) when is_list(Config) ->
 
     %% Extremely big bignums.
     Big = id(list_to_integer(id(lists:duplicate(2000, $1)))),
-    {'EXIT', {badarg, _}} = (catch float(Big)),
+    ?assertError(badarg, float(Big)),
 
     ok.
 
@@ -128,24 +133,22 @@ t_float_to_string(Config) when is_list(Config) ->
     test_fts("1.00000000000000000000e+00",1.0,  []),
     test_fts("-1.00000000000000000000e+00",-1.0, []),
     test_fts("-1.00000000000000000000",-1.0, [{decimals, 20}]),
-    {'EXIT', {badarg, _}} = (catch float_to_list(1.0,  [{decimals, -1}])),
-    {'EXIT', {badarg, _}} = (catch float_to_list(1.0,  [{decimals, 254}])),
-    {'EXIT', {badarg, _}} = (catch float_to_list(1.0,  [{scientific, 250}])),
-    {'EXIT', {badarg, _}} = (catch float_to_list(1.0e+300, [{decimals, 1}])),
-    {'EXIT', {badarg, _}} = (catch float_to_binary(1.0,  [{decimals, -1}])),
-    {'EXIT', {badarg, _}} = (catch float_to_binary(1.0,  [{decimals, 254}])),
-    {'EXIT', {badarg, _}} = (catch float_to_binary(1.0,  [{scientific, 250}])),
-    {'EXIT', {badarg, _}} = (catch float_to_binary(1.0e+300, [{decimals, 1}])),
+    ?assertError(badarg, float_to_list(1.0,  [{decimals, -1}])),
+    ?assertError(badarg, float_to_list(1.0,  [{decimals, 254}])),
+    ?assertError(badarg, float_to_list(1.0,  [{scientific, 250}])),
+    ?assertError(badarg, float_to_list(1.0e+300, [{decimals, 1}])),
+    ?assertError(badarg, float_to_binary(1.0,  [{decimals, -1}])),
+    ?assertError(badarg, float_to_binary(1.0,  [{decimals, 254}])),
+    ?assertError(badarg, float_to_binary(1.0,  [{scientific, 250}])),
+    ?assertError(badarg, float_to_binary(1.0e+300, [{decimals, 1}])),
     test_fts("1.0e+300",1.0e+300, [{scientific, 1}]),
     test_fts("1.0",1.0,  [{decimals,   249}, compact]),
     test_fts("1",1.0,[{decimals,0}]),
     test_fts("2",1.9,[{decimals,0}]),
     test_fts("123456789012345680.0",123456789012345678.0,
 	     [{decimals, 236}, compact]),
-    {'EXIT', {badarg, _}} = (catch float_to_list(
-				     123456789012345678.0, [{decimals, 237}])),
-    {'EXIT', {badarg, _}} = (catch float_to_binary(
-				     123456789012345678.0, [{decimals, 237}])),
+    ?assertError(badarg, float_to_list(123456789012345678.0, [{decimals, 237}])),
+    ?assertError(badarg, float_to_binary(123456789012345678.0, [{decimals, 237}])),
     test_fts("1." ++ lists:duplicate(249, $0) ++ "e+00",
 	     1.0,  [{scientific, 249}, compact]),
 
@@ -191,26 +194,97 @@ t_float_to_string(Config) when is_list(Config) ->
     <<NegZero/float>> = <<16#8000000000000000:64>>,
     "-0.0" = float_to_list(NegZero, [{decimals, 1}, compact]),
     "-0.0" = float_to_list(NegZero, [{decimals, 1}]),
+    "-0.0" = float_to_list(NegZero, [short]),
     "-0.0e+00" = float_to_list(NegZero, [{scientific, 1}]),
     "-0.0e+00" = float_to_list(NegZero, [{scientific, 1}, compact]),
     <<"-0.0">> = float_to_binary(NegZero, [{decimals, 1}, compact]),
     <<"-0.0">> = float_to_binary(NegZero, [{decimals, 1}]),
+    <<"-0.0">> = float_to_binary(NegZero, [short]),
     <<"-0.0e+00">> = float_to_binary(NegZero, [{scientific, 1}]),
     <<"-0.0e+00">> = float_to_binary(NegZero, [{scientific, 1}, compact]),
 
     fts_rand_float_decimals(1000),
 
+    % test short option
+
+    % test switch for big integers
+    test_fts("-9007199254740991.0", -float((1 bsl 53) -1), [short]),
+    test_fts("-9.007199254740992e15", -float(1 bsl 53), [short]),
+    test_fts("-9.007199254740992e15", -float((1 bsl 53) +1), [short]),
+    test_fts("9007199254740991.0", float((1 bsl 53) -1), [short]),
+    test_fts("9.007199254740992e15", float(1 bsl 53), [short]),
+    test_fts("9.007199254740992e15", float((1 bsl 53) +1), [short]),
+
+    % test basic
+    test_fts("2.018", 2.018, [short]),
+    test_fts("-2.018", -2.018, [short]),
+
+    % test switching logic between decimal and scientific
+    test_fts("1.0e-6", 1.0e-6, [short]),
+    test_fts("1.0e-5", 1.0e-5, [short]),
+    test_fts("0.0001", 1.0e-4, [short]),
+    test_fts("0.001", 1.0e-3, [short]),
+    test_fts("0.01", 1.0e-2, [short]),
+    test_fts("0.1", 1.0e-1, [short]),
+    test_fts("1.0", 1.0e0, [short]),
+    test_fts("10.0", 1.0e1, [short]),
+    test_fts("100.0", 1.0e2, [short]),
+    test_fts("1.0e3", 1.0e3, [short]),
+    test_fts("1.0e4", 1.0e4, [short]),
+    test_fts("1.0e5", 1.0e5, [short]),
+    test_fts("1.0e6", 1.0e6, [short]),
+    test_fts("1.0e7", 1.0e7, [short]),
+    test_fts("1.234e-6", 1.234e-6, [short]),
+    test_fts("1.234e-5", 1.234e-5, [short]),
+    test_fts("1.234e-4", 1.234e-4, [short]),
+    test_fts("0.001234", 1.234e-3, [short]),
+    test_fts("0.01234", 1.234e-2, [short]),
+    test_fts("0.1234", 1.234e-1, [short]),
+    test_fts("1.234", 1.234e0, [short]),
+    test_fts("12.34", 1.234e1, [short]),
+    test_fts("123.4", 1.234e2, [short]),
+    test_fts("1234.0", 1.234e3, [short]),
+    test_fts("12340.0", 1.234e4, [short]),
+    test_fts("1.234e5", 1.234e5, [short]),
+    test_fts("1.234e6", 1.234e6, [short]),
+
+    % test the switch to subnormals
+    test_fts("2.2250738585072014e-308", 2.2250738585072014e-308, [short]),
+
+    % test lots of trailing zeroes
+    test_fts("2.9802322387695312e-8", 2.98023223876953125e-8, [short]),
+
+    % test some ryu regressions
+    test_fts("-2.109808898695963e16", -2.109808898695963e16, [short]),
+    test_fts("4.940656e-318", 4.940656e-318, [short]),
+    test_fts("1.18575755e-316", 1.18575755e-316, [short]),
+    test_fts("2.989102097996e-312", 2.989102097996e-312, [short]),
+    test_fts("9.0608011534336e15", 9.0608011534336e15, [short]),
+    test_fts("4.708356024711512e18", 4.708356024711512e18, [short]),
+    test_fts("9.409340012568248e18", 9.409340012568248e18, [short]),
+    test_fts("1.2345678", 1.2345678, [short]),
+
+    % test roundtrip of lots of short float strings
+    [begin
+         Float = binary_to_float(String),
+         ?assertEqual(String, float_to_binary(Float, [short])),
+
+         NegString = <<$-, String/binary>>,
+         ?assertEqual(NegString, float_to_binary(-Float, [short]))
+     end
+     || String <- short_float_strings()],
+
     ok.
 
 test_fts(Expect, Float) ->
-    Expect = float_to_list(Float),
+    ?assertEqual(Expect, float_to_list(Float)),
     BinExpect = list_to_binary(Expect),
-    BinExpect = float_to_binary(Float).
+    ?assertEqual(BinExpect, float_to_binary(Float)).
 
 test_fts(Expect, Float, Args) ->
-    Expect = float_to_list(Float,Args),
+    ?assertEqual(Expect, float_to_list(Float,Args)),
     BinExpect = list_to_binary(Expect),
-    BinExpect = float_to_binary(Float,Args).
+    ?assertEqual(BinExpect, float_to_binary(Float,Args)).
 
 
 rand_float_reasonable() ->
@@ -245,7 +319,7 @@ fts_rand_float_decimals(N) ->
               end,
          F1 = list_to_float(L1),
          Diff = abs(F0-F1),
-         MaxDiff = max_diff_decimals(F0, D),
+         MaxDiff = max_diff_decimals(F0, D-1),
          ok = case Diff =< MaxDiff of
                   true -> ok;
                   false ->
@@ -294,21 +368,21 @@ max_diff_decimals(F, D) ->
 
 t_string_to_float_safe(Config) when is_list(Config) ->
     test_stf(0.0,"0.0"),
-    test_stf(0.0,"-0.0"),
+    test_stf(-0.0,"-0.0"),
     test_stf(0.5,"0.5"),
     test_stf(-0.5,"-0.5"),
     test_stf(100.0,"1.0e2"),
     test_stf(127.5,"127.5"),
     test_stf(-199.5,"-199.5"),
 
-    {'EXIT',{badarg,_}} = (catch list_to_float(id("0"))),
-    {'EXIT',{badarg,_}} = (catch list_to_float(id("0..0"))),
-    {'EXIT',{badarg,_}} = (catch list_to_float(id("0e12"))),
-    {'EXIT',{badarg,_}} = (catch list_to_float(id("--0.0"))),
-    {'EXIT',{badarg,_}} = (catch binary_to_float(id(<<"0">>))),
-    {'EXIT',{badarg,_}} = (catch binary_to_float(id(<<"0..0">>))),
-    {'EXIT',{badarg,_}} = (catch binary_to_float(id(<<"0e12">>))),
-    {'EXIT',{badarg,_}} = (catch binary_to_float(id(<<"--0.0">>))),
+    ?assertError(badarg, list_to_float(id("0"))),
+    ?assertError(badarg, list_to_float(id("0..0"))),
+    ?assertError(badarg, list_to_float(id("0e12"))),
+    ?assertError(badarg, list_to_float(id("--0.0"))),
+    ?assertError(badarg, binary_to_float(id(<<"0">>))),
+    ?assertError(badarg, binary_to_float(id(<<"0..0">>))),
+    ?assertError(badarg, binary_to_float(id(<<"0e12">>))),
+    ?assertError(badarg, binary_to_float(id(<<"--0.0">>))),
 
     UBin = <<0:3,(id(<<"0.0">>))/binary,0:5>>,
     <<_:3,UnAlignedBin:3/binary,0:5>> = id(UBin),
@@ -326,11 +400,10 @@ t_string_to_float_safe(Config) when is_list(Config) ->
 t_string_to_float_risky(Config) when is_list(Config) ->
     Many_Ones = lists:duplicate(25000, id($1)),
     id(list_to_float("2."++Many_Ones)),
-    {'EXIT', {badarg, _}} = (catch list_to_float("2"++Many_Ones)),
+    ?assertError(badarg, list_to_float("2"++Many_Ones)),
 
     id(binary_to_float(list_to_binary("2."++Many_Ones))),
-    {'EXIT', {badarg, _}} = (catch binary_to_float(
-				     list_to_binary("2"++Many_Ones))),
+    ?assertError(badarg, binary_to_float(list_to_binary("2"++Many_Ones))),
     ok.
 
 test_stf(Expect,List) ->
@@ -474,7 +547,7 @@ trunc_and_friends(F) ->
     end,
     Trunc.
 
-%% Tests integer_to_binary/1.
+%% Tests integer_to_binary/{1,2} and integer_to_list/{1,2}.
 
 t_integer_to_string(Config) when is_list(Config) ->
     test_its("0",0),
@@ -494,16 +567,14 @@ t_integer_to_string(Config) when is_list(Config) ->
 
     %% Bignums.
     BigBin = id(list_to_binary(lists:duplicate(2000, id($1)))),
-    Big    = erlang:binary_to_integer(BigBin),
+    Big    = bin_to_int(BigBin),
     BigBin = erlang:integer_to_binary(Big),
 
     %% Invalid types
     lists:foreach(fun(Value) ->
-			  {'EXIT', {badarg, _}} =
-			      (catch erlang:integer_to_binary(Value)),
-			  {'EXIT', {badarg, _}} =
-			      (catch erlang:integer_to_list(Value))
-		  end,[atom,1.2,0.0,[$1,[$2]]]),
+                          ?assertError(badarg, erlang:integer_to_binary(Value)),
+                          ?assertError(badarg, erlang:integer_to_list(Value))
+                  end,[atom,1.2,0.0,[$1,[$2]]]),
 
     %% Base-2 integers
     test_its("0", 0, 2),
@@ -520,12 +591,16 @@ t_integer_to_string(Config) when is_list(Config) ->
              108977460683796539709587792812439445667270661579197935,
              16),
 
+    Pow9 = fun Pow(0, Acc) -> Acc; Pow(N, Acc) when N > 10 -> Pow(N-10, 9#10000000000*Acc); Pow(N, Acc) -> Pow(N-1, 9*Acc) end,
+    %% This used to cause an buffer overflow in the C code of integer_to_binary/2.
+    Str = integer_to_binary(Pow9(634_680, 1), 9),
+
+    634681 = byte_size(Str),
+
     lists:foreach(fun(Value) ->
-			  {'EXIT', {badarg, _}} =
-			      (catch erlang:integer_to_binary(Value, 8)),
-			  {'EXIT', {badarg, _}} =
-			      (catch erlang:integer_to_list(Value, 8))
-		  end,[atom,1.2,0.0,[$1,[$2]]]),
+                          ?assertError(badarg, erlang:integer_to_binary(Value, 8)),
+                          ?assertError(badarg, erlang:integer_to_list(Value, 8))
+                  end,[atom,1.2,0.0,[$1,[$2]]]),
 
     ok.
 
@@ -539,21 +614,92 @@ test_its(List,Int,Base) ->
     Binary = list_to_binary(List),
     Binary = integer_to_binary(Int, Base).
 
-%% Tests binary_to_integer/1.
+%% Exercises the bignum integer-to-string render path across the
+%% schoolbook / divide-and-conquer / Burnikel-Ziegler / Barrett
+%% reciprocal threshold boundaries in big.c. Each size is round-tripped
+%% through both integer_to_list/integer_to_binary and back via
+%% list_to_integer/binary_to_integer. Includes negatives and the
+%% high-half-zero split case (a power of the rendering base).
+t_integer_to_string_large(Config) when is_list(Config) ->
+    rand_seed(),
+    Sizes = [240, 250, 260,                 % WRITE_BIG_DC_THRESHOLD = 250
+             499, 500, 501,                 % 2 * threshold (use_dc gate)
+             999, 1000, 1001,               % first D&C split level
+             1999, 2000, 2001,
+             7999, 8000, 8001,              % spans BARRETT_LEVEL_THRESHOLD = 100 ErtsDigit
+             16383, 16384, 16385,
+             65535, 65536, 65537],          % deep recursion through the cache
+    ImportantBases = [2, 8, 10, 16, 36],
+    Bases = lists:seq(2, 36),
+    _ = [check_int_to_str_size(Size, Base) ||
+            Size <- Sizes,
+            Base <- Bases,
+            Size < 10_000 orelse lists:member(Base, ImportantBases)],
+    %% Power of base => high-half-zero branch in write_big_dc_padded.
+    PowBase10 = pow_int(10, 1024),
+    PowList = integer_to_list(PowBase10),
+    PowBase10 = list_to_integer(PowList),
+    NegPow = -PowBase10,
+    NegList = integer_to_list(NegPow),
+    NegPow = list_to_integer(NegList),
+
+    %% Try an integer near the system limit.
+    9943072 = bit_size(integer_to_binary(1 bsl (63 bsl 16))),
+
+    ok.
+
+check_int_to_str_size(NumDigits, Base) ->
+    N = random_int_with_digits(NumDigits, Base),
+    Pos = N,
+    Neg = -N,
+    PosList = integer_to_list(Pos, Base),
+    PosBin = integer_to_binary(Pos, Base),
+    PosBin = list_to_binary(PosList),
+    Pos = list_to_integer(PosList, Base),
+    Pos = binary_to_integer(PosBin, Base),
+    NegList = integer_to_list(Neg, Base),
+    NegBin = integer_to_binary(Neg, Base),
+    NegBin = list_to_binary(NegList),
+    Neg = list_to_integer(NegList, Base),
+    Neg = binary_to_integer(NegBin, Base),
+    %% For base 10, also verify the no-base BIFs.
+    case Base of
+        10 ->
+            PosList = integer_to_list(Pos),
+            PosBin = integer_to_binary(Pos),
+            Pos = list_to_integer(PosList),
+            Pos = binary_to_integer(PosBin);
+        _ ->
+            ok
+    end.
+
+random_int_with_digits(NumDigits, Base) ->
+    N = pow_int(Base, NumDigits-1),
+    N + rand:uniform(N).
+
+pow_int(_, 0) -> 1;
+pow_int(B, N) when N rem 2 =:= 0 ->
+    H = pow_int(B, N div 2),
+    H * H;
+pow_int(B, N) ->
+    B * pow_int(B, N - 1).
+
+%% Tests list_to_integer/{1,2} and binary_to_integer/{1,2}.
 
 t_string_to_integer(Config) when is_list(Config) ->
-    0 = erlang:binary_to_integer(id(<<"00">>)),
-    0 = erlang:binary_to_integer(id(<<"-0">>)),
-    0 = erlang:binary_to_integer(id(<<"+0">>)),
+    _ = rand:uniform(),				%Seed generator
+    io:format("Seed: ~p", [rand:export_seed()]),
+
+    0 = bin_to_int(id(<<"00">>)),
+    0 = bin_to_int(id(<<"-0">>)),
+    0 = bin_to_int(id(<<"+0">>)),
 
     test_sti(0),
     test_sti(1),
-    test_sti(-1),
+    test_sti(12),
     test_sti(42),
-    test_sti(-12),
     test_sti(32768),
     test_sti(268435455),
-    test_sti(-268435455),
 
     %% Interesting values around 2-pows, such as MIN_SMALL and MAX_SMALL.
     lists:foreach(fun(Bits) ->
@@ -565,37 +711,32 @@ t_string_to_integer(Config) when is_list(Config) ->
 		  lists:seq(16, 130)),
 
     %% Bignums
-    test_sti(123456932798748738738,16),
+    _ = [test_sti(rand_bignum()) || _ <- lists:seq(1, 1000)],
+    test_sti(123456932798748738738, 16),
     test_sti(list_to_integer(lists:duplicate(2000, $1))),
 
     %% Unaligned string
     Str = <<"10">>,
     UnalignStr = <<0:3, (id(Str))/binary, 0:5>>,
     <<_:3, SomeStr:2/binary, _:5>> = id(UnalignStr),
-    10 = erlang:binary_to_integer(SomeStr),
+    10 = bin_to_int(SomeStr),
 
     %% Invalid types
     lists:foreach(fun(Value) ->
-			  {'EXIT', {badarg, _}} =
-			      (catch binary_to_integer(Value)),
-			  {'EXIT', {badarg, _}} =
-			      (catch list_to_integer(Value))
+                      ?assertError(badarg, bin_to_int(Value)),
+                      ?assertError(badarg, list_to_integer(Value))
 		  end,[atom,1.2,0.0,[$1,[$2]]]),
 
     %% Default base error cases
     lists:foreach(fun(Value) ->
-			  {'EXIT', {badarg, _}} =
-			      (catch binary_to_integer(list_to_binary(Value))),
-			  {'EXIT', {badarg, _}} =
-			      (catch list_to_integer(Value))
+                      ?assertError(badarg, bin_to_int(list_to_binary(Value))),
+                      ?assertError(badarg, list_to_integer(Value))
 		  end,["1.0"," 1"," -1","","+"]),
 
     %% Custom base error cases
     lists:foreach(fun({Value,Base}) ->
-			  {'EXIT', {badarg, _}} =
-			      (catch binary_to_integer(list_to_binary(Value), Base)),
-			  {'EXIT', {badarg, _}} =
-			      (catch list_to_integer(Value, Base))
+                      ?assertError(badarg, binary_to_integer(list_to_binary(Value), Base)),
+                      ?assertError(badarg, list_to_integer(Value, Base))
 		  end,
                   [{" 1",1},{" 1",37},{"2",2},{"B",11},{"b",11},{":", 16},
                    {"1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111z",16},
@@ -610,11 +751,21 @@ t_string_to_integer(Config) when is_list(Config) ->
                    {"10",''}                    %Base 20
                   ]),
 
-    %% log2 calculation overflow bug in do_integer_to_list (OTP-12624).
-    %% Would crash with segementation fault.
-    0 = list_to_integer(lists:duplicate(10000000,$0)),
+    %% System limit
+    Digits = lists:duplicate(3_000_000, $9),
+    ?assertError(system_limit, list_to_integer(Digits)),
+    _ = erlang:garbage_collect(),
+    ?assertError(system_limit, list_to_integer(Digits, 16)),
+    _ = erlang:garbage_collect(),
+    {error,system_limit} = string:to_integer(Digits),
+    _ = erlang:garbage_collect(),
 
     ok.
+
+rand_bignum() ->
+    Sz = max(floor(rand:normal() * 128 + 64), 2*8),
+    <<Int:Sz/unit:8>> = rand:bytes(Sz),
+    Int.
 
 %% Tests edge cases for list_to_integer; compares with known good values
 
@@ -673,21 +824,94 @@ test_sti(Num) ->
 	 test_sti(Num,Base)
      end|| Base <- lists:seq(2,36)].
 
-test_sti(Num,Base) ->
+test_sti(Num, Base) ->
     Neg = -Num,
-    Num = list_to_integer(int2list(Num,Base),Base),
-    Neg = list_to_integer(int2list(Num*-1,Base),Base),
-    Num = binary_to_integer(int2bin(Num,Base),Base),
-    Neg = binary_to_integer(int2bin(Num*-1,Base),Base).
 
-% Calling this function (which is not supposed to be inlined) prevents
-% the compiler from calculating the answer, so we don't test the compiler
-% instead of the newest runtime system.
+    NumList = int2list(Num, Base),
+    NegNumList = int2list(Neg, Base),
+
+    Num = list_to_integer(NumList, Base),
+    Neg = list_to_integer(NegNumList, Base),
+    Num = binary_to_integer(iolist_to_binary(NumList), Base),
+    Neg = binary_to_integer(iolist_to_binary(NegNumList), Base),
+
+    if
+        Base =:= 10 ->
+            Num = list_to_integer(NumList),
+            Neg = list_to_integer(NegNumList),
+            Num = bin_to_int(iolist_to_binary(NumList)),
+            Neg = bin_to_int(iolist_to_binary(NegNumList));
+        true ->
+            ok
+    end,
+
+    ok.
+
+%% Calling this function (which is not supposed to be inlined)
+%% prevents the compiler from calculating the answer, so we don't test
+%% the compiler instead of the newest runtime system.
 id(X) -> X.
 
-%% Uses the printing library to to integer_to_binary conversions.
-int2bin(Int,Base) when Base < 37 ->
-    iolist_to_binary(int2list(Int,Base)).
-
-int2list(Int,Base) when Base < 37 ->
+%% Use the printing library to convert to list.
+int2list(Int, Base) when is_integer(Base), 2 =< Base, Base =< 36 ->
     lists:flatten(io_lib:format("~."++integer_to_list(Base)++"B",[Int])).
+
+bin_to_int(Bin) ->
+    Unaligned = erts_debug:unaligned_bitstring(Bin, 3),
+    try binary_to_integer(Bin) of
+        Int ->
+            Int = binary_to_integer(Unaligned),
+            Int
+    catch
+        C:E ->
+            try binary_to_integer(Unaligned) of
+                _ ->
+                    exit(should_fail)
+            catch
+                OtherC:OtherE when C =/= OtherC; E =/= OtherE ->
+                    exit(exceptions_different)
+            end
+    end.
+
+make_unaligned_sub_binary(Bin) ->
+    erts_debug:unaligned_bitstring(Bin, 3).
+
+
+short_float_strings() ->
+    [~"1.0",            ~"10.0",           ~"100.0",          ~"1.0e3",          ~"1.0e4",          ~"1.0e5",          ~"1.0e6",          ~"1.0e7",          ~"1.0e8",         ~"1.0e9",
+     ~"1.2",            ~"12.0",           ~"120.0",          ~"1.2e3",          ~"1.2e4",          ~"1.2e5",          ~"1.2e6",          ~"1.2e7",          ~"1.2e8",         ~"1.2e9",
+     ~"1.23",           ~"12.3",           ~"123.0",          ~"1230.0",         ~"1.23e4",         ~"1.23e5",         ~"1.23e6",         ~"1.23e7",         ~"1.23e8",        ~"1.23e9",
+     ~"1.234",          ~"12.34",          ~"123.4",          ~"1234.0",         ~"12340.0",        ~"1.234e5",        ~"1.234e6",        ~"1.234e7",        ~"1.234e8",       ~"1.234e9",
+     ~"1.2345",         ~"12.345",         ~"123.45",         ~"1234.5",         ~"12345.0",        ~"123450.0",       ~"1.2345e6",       ~"1.2345e7",       ~"1.2345e8",      ~"1.2345e9",
+     ~"1.23456",        ~"12.3456",        ~"123.456",        ~"1234.56",        ~"12345.6",        ~"123456.0",       ~"1234560.0",      ~"1.23456e7",      ~"1.23456e8",     ~"1.23456e9",
+     ~"1.234567",       ~"12.34567",       ~"123.4567",       ~"1234.567",       ~"12345.67",       ~"123456.7",       ~"1234567.0",      ~"12345670.0",     ~"1.234567e8",    ~"1.23456e9",
+     ~"1.2345678",      ~"12.345678",      ~"123.45678",      ~"1234.5678",      ~"12345.678",      ~"123456.78",      ~"1234567.8",      ~"12345678.0",     ~"123456780.0",   ~"1.2345678e9",
+     ~"1.23456789",     ~"12.3456789",     ~"123.456789",     ~"1234.56789",     ~"12345.6789",     ~"123456.789",     ~"1234567.89",     ~"12345678.9",     ~"123456789.0",   ~"1234567890.0",
+     ~"1.234567899",    ~"12.34567899",    ~"123.4567899",    ~"1234.567899",    ~"12345.67899",    ~"123456.7899",    ~"1234567.899",    ~"12345678.99",    ~"123456789.9",   ~"1234567899.0",
+     ~"1.2345678901",   ~"12.345678901",   ~"123.45678901",   ~"1234.5678901",   ~"12345.678901",   ~"123456.78901",   ~"1234567.8901",   ~"12345678.901",   ~"123456789.01",  ~"1234567890.1",
+
+     ~"1.23456789012345",~"12.3456789012345",~"123.456789012345",~"1234.56789012345",~"12345.6789012345",~"123456.789012345",~"1234567.89012345",~"12345678.9012345",
+     ~"123456789.012345",~"1234567890.12345",~"12345678901.2345",~"123456789012.345",~"1234567890123.45",~"12345678901234.5",~"123456789012345.0",~"1234567890123456.0",
+
+     ~"1.0e10",         ~"1.0e11",         ~"1.0e99",          ~"1.0e100",          ~"1.0e101",          ~"1.0e199",          ~"1.0e200",          ~"1.0e201",         ~"1.0e299",          ~"1.0e300",          ~"1.0e301",
+     ~"1.2e10",         ~"1.2e11",         ~"1.2e99",          ~"1.2e100",          ~"1.2e101",          ~"1.2e199",          ~"1.2e200",          ~"1.2e201",         ~"1.2e299",          ~"1.2e300",          ~"1.2e301",
+     ~"1.23e10",        ~"1.23e11",        ~"1.23e99",         ~"1.23e100",         ~"1.23e101",         ~"1.23e199",         ~"1.23e200",         ~"1.23e201",        ~"1.23e299",         ~"1.23e300",         ~"1.23e301",
+     ~"1.234e10",       ~"1.234e11",       ~"1.234e99",        ~"1.234e100",        ~"1.234e101",        ~"1.234e199",        ~"1.234e200",        ~"1.234e201",       ~"1.234e299",        ~"1.234e300",        ~"1.234e301",
+     ~"1.2345e10",      ~"1.2345e11",      ~"1.2345e99",       ~"1.2345e100",       ~"1.2345e101",       ~"1.2345e199",       ~"1.2345e200",       ~"1.2345e201",      ~"1.2345e299",       ~"1.2345e300",       ~"1.2345e301",
+     ~"1.23456e10",     ~"1.23456e11",     ~"1.23456e99",      ~"1.23456e100",      ~"1.23456e101",      ~"1.23456e199",      ~"1.23456e200",      ~"1.23456e201",     ~"1.23456e299",      ~"1.23456e300",      ~"1.23456e301",
+     ~"1.234567e10",    ~"1.234567e11",    ~"1.234567e99",     ~"1.234567e100",     ~"1.234567e101",     ~"1.234567e199",     ~"1.234567e200",     ~"1.234567e201",    ~"1.234567e299",     ~"1.234567e300",     ~"1.234567e301",
+     ~"1.2345678e10",   ~"1.2345678e11",   ~"1.2345678e99",    ~"1.2345678e100",    ~"1.2345678e101",    ~"1.2345678e199",    ~"1.2345678e200",    ~"1.2345678e201",   ~"1.2345678e299",    ~"1.2345678e300",    ~"1.2345678e301",
+     ~"12345678900.0",  ~"1.23456789e11",  ~"1.23456789e99",   ~"1.23456789e100",   ~"1.23456789e101",   ~"1.23456789e199",   ~"1.23456789e200",   ~"1.23456789e201",  ~"1.23456789e299",   ~"1.23456789e300",   ~"1.23456789e301",
+     ~"12345678990.0",  ~"123456789900.0", ~"1.234567895e99",  ~"1.234567895e100",  ~"1.234567895e101",  ~"1.234567895e199",  ~"1.234567895e200",  ~"1.234567895e201", ~"1.234567895e299",  ~"1.234567895e300",  ~"1.234567895e301",
+     ~"12345678901.0",  ~"123456789010.0", ~"1.2345678901e99", ~"1.2345678901e100", ~"1.2345678901e101", ~"1.2345678901e199", ~"1.2345678901e200", ~"1.2345678901e201",~"1.2345678901e299", ~"1.2345678901e300", ~"1.2345678901e301",
+
+     ~"0.1",            ~"0.01",           ~"0.001",          ~"0.0001",         ~"1.0e-5",         ~"1.0e-6",         ~"1.0e-7",         ~"1.0e-8",         ~"1.0e-9",         ~"1.0e-10",        ~"1.0e-11",        ~"1.0e-12",
+     ~"0.12",           ~"0.012",          ~"0.0012",         ~"1.2e-4",         ~"1.2e-5",         ~"1.2e-6",         ~"1.2e-7",         ~"1.2e-8",         ~"1.2e-9",         ~"1.2e-10",        ~"1.2e-11",        ~"1.2e-12",
+     ~"0.123",          ~"0.0123",         ~"0.00123",        ~"1.23e-4",        ~"1.23e-5",        ~"1.23e-6",        ~"1.23e-7",        ~"1.23e-8",        ~"1.23e-9",        ~"1.23e-10",       ~"1.23e-11",       ~"1.23e-12",
+     ~"0.1234",         ~"0.01234",        ~"0.001234",       ~"1.234e-4",       ~"1.234e-5",       ~"1.234e-6",       ~"1.234e-7",       ~"1.234e-8",       ~"1.234e-9",       ~"1.234e-10",      ~"1.234e-11",      ~"1.234e-12",
+     ~"0.12345",        ~"0.012345",       ~"0.0012345",      ~"1.2345e-4",      ~"1.2345e-5",      ~"1.2345e-6",      ~"1.2345e-7",      ~"1.2345e-8",      ~"1.2345e-9",      ~"1.2345e-10",     ~"1.2345e-11",     ~"1.2345e-12",
+     ~"0.123456",       ~"0.0123456",      ~"0.00123456",     ~"1.23456e-4",     ~"1.23456e-5",     ~"1.23456e-6",     ~"1.23456e-7",     ~"1.23456e-8",     ~"1.23456e-9",     ~"1.23456e-10",    ~"1.23456e-11",    ~"1.23456e-12",
+     ~"0.1234567",      ~"0.01234567",     ~"0.001234567",    ~"1.234567e-4",    ~"1.234567e-5",    ~"1.234567e-6",    ~"1.234567e-7",    ~"1.234567e-8",    ~"1.234567e-9",    ~"1.234567e-10",   ~"1.234567e-11",   ~"1.234567e-12",
+     ~"0.12345678",     ~"0.012345678",    ~"0.0012345678",   ~"1.2345678e-4",   ~"1.2345678e-5",   ~"1.2345678e-6",   ~"1.2345678e-7",   ~"1.2345678e-8",   ~"1.2345678e-9",   ~"1.2345678e-10",  ~"1.2345678e-11",  ~"1.2345678e-12",
+     ~"0.123456789",    ~"0.0123456789",   ~"0.00123456789",  ~"1.23456789e-4",  ~"1.23456789e-5",  ~"1.23456789e-6",  ~"1.23456789e-7",  ~"1.23456789e-8",  ~"1.23456789e-9",  ~"1.23456789e-10", ~"1.23456789e-11", ~"1.23456789e-12"
+].

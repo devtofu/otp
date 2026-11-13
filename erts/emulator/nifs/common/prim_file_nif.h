@@ -1,7 +1,10 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson 2017-2021. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson 2017-2023. All Rights Reserved.
+ * Copyright Ericsson AB 2017-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,7 +31,7 @@ enum efile_modes_t {
     EFILE_MODE_SYNC = (1 << 4),
 
     EFILE_MODE_SKIP_TYPE_CHECK = (1 << 5), /* Special for device files on Unix. */
-    EFILE_MODE_NO_TRUNCATE = (1 << 6), /* Special for reopening on VxWorks. */
+    /* EFILE_MODE_RESERVED = (1 << 6), - Reserved, previously used for reopening on VxWorks. */
 
     EFILE_MODE_DIRECTORY = (1 << 7),
 
@@ -94,7 +97,12 @@ typedef struct {
 /* The smallest value that can be converted freely between universal, local,
  * and POSIX time, as required by read_file_info/2. Corresponds to
  * {{1902,1,1},{0,0,0}} */
-#define EFILE_MIN_FILETIME -2145916800
+#define EFILE_MIN_FILETIME (-2145916800LL)
+
+/* The largest value that can be converted freely between universal, local,
+ * and POSIX time, as required by read_file_info/2. Corresponds to
+ * {{9999,12,31},{23,59,59}} */
+#define EFILE_MAX_FILETIME (253402300799LL)
 
 /* Initializes an efile_data_t; must be used in efile_open on success. */
 #define EFILE_INIT_RESOURCE(__d, __modes) do { \

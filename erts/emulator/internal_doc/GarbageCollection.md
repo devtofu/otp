@@ -1,3 +1,25 @@
+<!--
+%% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2017-2025. All Rights Reserved.
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%
+%% %CopyrightEnd%
+-->
+
 # Erlang Garbage Collector
 
 Erlang manages dynamic memory with a [tracing garbage collector](https://en.wikipedia.org/wiki/Tracing_garbage_collection). More precisely a per process generational semi-space copying collector using Cheney's copy collection algorithm together with a global large object space. (See C. J. Cheney in [References](#references).)
@@ -35,13 +57,13 @@ Compiling this code to beam assembly (`erlc -S`) shows exactly what is happening
 
 Looking at the assembler code we can see three things: The heap requirement in this function turns out to be only six words, as seen by the `{test_heap,6,1}` instruction. All the allocations are combined to a single instruction. The bulk of the data `{text, "hello world!"}` is a *literal*. Literals, sometimes referred to as constants, are not allocated in the function since they are a part of the module and allocated at load time.
 
-If there is not enough space available on the heap to satisfy the `test_heap` instructions request for memory, then a garbage collection is initiated. It may happen immediately in the `test_heap` instruction, or it can be delayed until a later time depending on what state the process is in. If the garbage collection is delayed, any memory needed will be allocated in heap fragments. Heap fragments are extra memory blocks that are a part of the young heap, but are not allocated in the contigious area where terms normally reside. See [The young heap](#the-young-heap) for more details.
+If there is not enough space available on the heap to satisfy the `test_heap` instructions request for memory, then a garbage collection is initiated. It may happen immediately in the `test_heap` instruction, or it can be delayed until a later time depending on what state the process is in. If the garbage collection is delayed, any memory needed will be allocated in heap fragments. Heap fragments are extra memory blocks that are a part of the young heap, but are not allocated in the contiguous area where terms normally reside. See [The young heap](#the-young-heap) for more details.
 
 ### The collector
 
 Erlang has a copying semi-space garbage collector. This means that when doing a garbage collection, the terms are copied from one distinct area, called the *from space*, to a new clean area, called the *to space*. The collector starts by [scanning the root-set](https://github.com/erlang/otp/blob/OTP-18.0/erts/emulator/beam/erl_gc.c#L1980) (stack, registers, etc).
 
-![Garbage collection: initial values](figures/gc-start.png)
+![Garbage collection: initial values](assets/gc-start.png)
 
 It follows all the pointers from the root-set to the heap and copies each term word by word to the *to space*.
 
@@ -53,15 +75,15 @@ After the header word has been copied a [*move marker*](https://github.com/erlan
 
 Only one copy of T exists on the heap and during the garbage collection only the first time T is encountered will it be copied.
 
-![Garbage collection: root set scan](figures/gc-rootset-scan.png)
+![Garbage collection: root set scan](assets/gc-rootset-scan.png)
 
-After [all terms](https://github.com/erlang/otp/blob/OTP-18.0/erts/emulator/beam/erl_gc.c#L1089) referenced by the root-set have been copied, the collector scans the *to space* and copies all terms that these terms reference. When scanning, the collector steps through each term on the *to space* and any term still referencing the *from space* is copied over to the *to space*. Some terms contain non-term data (the payload of a on heap binary for instance). When encountered by the collector, these values are simply skipped.
+After [all terms](https://github.com/erlang/otp/blob/OTP-18.0/erts/emulator/beam/erl_gc.c#L1089) referenced by the root-set have been copied, the collector scans the *to space* and copies all terms that these terms reference. When scanning, the collector steps through each term on the *to space* and any term still referencing the *from space* is copied over to the *to space*. Some terms contain non-term data (the payload of an on-heap binary for instance). When encountered by the collector, these values are simply skipped.
 
-![Garbage collection: heap scan](figures/gc-heap-scan1.png)
+![Garbage collection: heap scan](assets/gc-heap-scan1.png)
 
-Every term object we can reach is copied to the *to space* and stored on top off the *scan stop* line, and then the scan stop is moved to the end of the last object.
+Every term object we can reach is copied to the *to space* and stored on top of the *scan stop* line, and then the scan stop is moved to the end of the last object.
 
-![Garbage collection: heap scan](figures/gc-heap-stop.png)
+![Garbage collection: heap scan](assets/gc-heap-stop.png)
 
 When *scan stop* marker [catches up](https://github.com/erlang/otp/blob/OTP-18.0/erts/emulator/beam/erl_gc.c#L1103) to the *scan start* marker, the garbage collection is done. At this point we can [deallocate](https://github.com/erlang/otp/blob/OTP-18.0/erts/emulator/beam/erl_gc.c#L1206) the entire *from space* and therefore reclaim the entire young heap.
 
@@ -71,11 +93,11 @@ In addition to the collection algorithm described above, the Erlang garbage coll
 
 With this in mind we can look at the Erlang's garbage collection again. During the copy stage anything that should be copied to the young *to space* is instead copied to the old *to space* *if* it is [below the *high-watermark*](https://github.com/erlang/otp/blob/OTP-18.0/erts/emulator/beam/erl_gc.c#L1127).
 
-![Garbage collection: heap scan](figures/gc-watermark.png)
+![Garbage collection: heap scan](assets/gc-watermark.png)
 
 The [*high-watermark*](https://github.com/erlang/otp/blob/OTP-18.0/erts/emulator/beam/erl_process.h#L1021) is placed where the previous garbage collection (described in [Overview](#overview)) ended and we have introduced a new area called the old heap. When doing the normal garbage collection pass, any term that is located below the high-watermark is copied to the old *to space* instead of the young.
 
-![Garbage collection: heap scan](figures/gc-watermark-2.png)
+![Garbage collection: heap scan](assets/gc-watermark-2.png)
 
 In the next garbage collection, any pointers to the old heap will be ignored and not scanned. This way the garbage collector does not have to scan the long-lived terms.
 
@@ -85,7 +107,7 @@ The generational hypothesis predicts that most terms tend to die young (see D. U
 
 One critical issue to note here is that any term on the young heap can reference terms on the old heap but *no* term on the old heap may refer to a term on the young heap. This is due to the nature of the copy algorithm. Anything referenced by an old heap term is not included in the reference tree, root-set and its followers, and hence is not copied. If it was, the data would be lost, fire and brimstone would rise to cover the earth. Fortunately, this comes naturally for Erlang because the terms are immutable and thus there can be no pointers modified on the old heap to point to the young heap.
 
-To reclaim data from the old heap, both young and old heaps are included during the collection and copied to a common *to space*. Both the *from space* of the young and old heap are then deallocated and the procedure will start over from the beginning. This type of garbage collection is called a full sweep and is triggered when the size of the area under the high-watermark is larger than the size of the free area of the old heap. It can also be triggered by doing a manual call to [erlang:garbage_collect()](http://erlang.org/doc/man/erlang.html#garbage_collect-0), or by running into the young garbage collection limit set by [spawn\_opt(fun(),[{fullsweep\_after, N}\])](http://erlang.org/doc/man/erlang.html#spawn_opt-4) where N is the number of young garbage collections to do before forcing a garbage collection of both young and old heap.
+To reclaim data from the old heap, both young and old heaps are included during the collection and copied to a common *to space*. Both the *from space* of the young and old heap are then deallocated and the procedure will start over from the beginning. This type of garbage collection is called a full sweep and is triggered when the size of the area under the high-watermark is larger than the size of the free area of the old heap. It can also be triggered by doing a manual call to [erlang:garbage_collect()](http://erlang.org/doc/man/erlang.html#garbage_collect-0), or by running into the young garbage collection limit set by [erlang:spawn_opt()](http://erlang.org/doc/man/erlang.html#spawn_opt/4)'s `{fullsweep_after, N}` where N is the number of young garbage collections to do before forcing a garbage collection of both young and old heap.
 
 ## The young heap
 
@@ -113,11 +135,13 @@ The old heap is always one step ahead in the heap growth stages than the young h
 
 When garbage collecting a heap (young or old) all literals are left in place and not copied. To figure out if a term should be copied or not when doing a garbage collection the following pseudo code is used:
 
-    if (erts_is_literal(ptr) || (on_old_heap(ptr) && !fullsweep)) {
-      /* literal or non fullsweep - do not copy */
-    } else {
-      copy(ptr);
-    }
+```c
+if (erts_is_literal(ptr) || (on_old_heap(ptr) && !fullsweep)) {
+  /* literal or non fullsweep - do not copy */
+} else {
+  copy(ptr);
+}
+```
 
 The [`erts_is_literal`](https://github.com/erlang/otp/blob/OTP-19.0/erts/emulator/beam/global.h#L1452-L1465) check works differently on different architectures and operating systems.
 
@@ -171,7 +195,7 @@ There are a bunch of different tradeoffs that come into play when trying to figu
 
 Using `off_heap` may seem like a nice way to get a more scalable system as you get very little contention on the main locks, however, allocating a heap fragment is more expensive than allocating on the heap of the receiving process. So if it is very unlikely that contention will occur, it is more efficient to try to allocate the message directly on the receiving process' heap.
 
-Using `on_heap` will force all messages to be part of on the young heap which will increase the amount of data that the garbage collector has to move. So if a garbage collection is triggered while processing a large amount of messages, they will be copied to the young heap. This in turn will lead to that the messages will quickly be promoted to the old heap and thus increase its size. This may be good or bad depending on exactly what the process does. A large old heap means that the young heap will also be larger, which in turn means that less garbage collections will be triggered while processing the message queue. This will temporarly increase the throughput of the process at the cost of more memory usage. However, if after all the messages have been consumed the process enters a state where a lot less messages are being received. Then it may be a long time before the next fullsweep garbage collection happens and the messages that are on the old heap will be there until that happens. So while `on_heap` is potentially faster than the other modes, it uses more memory for a longer time. This mode is the legacy mode which is almost how the message queue was handled before Erlang/OTP 19.0.
+Using `on_heap` will force all messages to be part of on the young heap which will increase the amount of data that the garbage collector has to move. So if a garbage collection is triggered while processing a large amount of messages, they will be copied to the young heap. This in turn will lead to that the messages will quickly be promoted to the old heap and thus increase its size. This may be good or bad depending on exactly what the process does. A large old heap means that the young heap will also be larger, which in turn means that less garbage collections will be triggered while processing the message queue. This will temporarily increase the throughput of the process at the cost of more memory usage. However, if after all the messages have been consumed the process enters a state where a lot less messages are being received. Then it may be a long time before the next fullsweep garbage collection happens and the messages that are on the old heap will be there until that happens. So while `on_heap` is potentially faster than the other modes, it uses more memory for a longer time. This mode is the legacy mode which is almost how the message queue was handled before Erlang/OTP 19.0.
 
 Which one of these strategies is best depends a lot on what the process is doing and how it interacts with other processes. So, as always, profile the application and see how it behaves with the different options.
 

@@ -1,31 +1,15 @@
-// AsmJit - Machine code generation for C++
+// This file is part of AsmJit project <https://asmjit.com>
 //
-//  * Official AsmJit Home Page: https://asmjit.com
-//  * Official Github Repository: https://github.com/asmjit/asmjit
-//
-// Copyright (c) 2008-2020 The AsmJit Authors
-//
-// This software is provided 'as-is', without any express or implied
-// warranty. In no event will the authors be held liable for any damages
-// arising from the use of this software.
-//
-// Permission is granted to anyone to use this software for any purpose,
-// including commercial applications, and to alter it and redistribute it
-// freely, subject to the following restrictions:
-//
-// 1. The origin of this software must not be misrepresented; you must not
-//    claim that you wrote the original software. If you use this software
-//    in a product, an acknowledgment in the product documentation would be
-//    appreciated but is not required.
-// 2. Altered source versions must be plainly marked as such, and must not be
-//    misrepresented as being the original software.
-// 3. This notice may not be removed or altered from any source distribution.
+// See <asmjit/core.h> or LICENSE.md for license and copyright information
+// SPDX-License-Identifier: Zlib
 
 #ifndef ASMJIT_ARM_A64INSTDB_H_P_INCLUDED
 #define ASMJIT_ARM_A64INSTDB_H_P_INCLUDED
 
-#include "../arm/a64instdb.h"
-#include "../arm/a64operand.h"
+#include <asmjit/core/codeholder.h>
+#include <asmjit/core/instdb_p.h>
+#include <asmjit/arm/a64instdb.h>
+#include <asmjit/arm/a64operand.h>
 
 ASMJIT_BEGIN_SUB_NAMESPACE(a64)
 
@@ -35,9 +19,8 @@ ASMJIT_BEGIN_SUB_NAMESPACE(a64)
 
 namespace InstDB {
 
-// ============================================================================
-// [asmjit::a64::InstDB - Constants Used by Instructions]
-// ============================================================================
+// a64::InstDB - Constants Used by Instructions
+// ============================================
 
 // GP register types supported by base instructions.
 static constexpr uint32_t kW = 0x1;
@@ -48,9 +31,8 @@ static constexpr uint32_t kWX = 0x3;
 static constexpr uint32_t kZR = Gp::kIdZr;
 static constexpr uint32_t kSP = Gp::kIdSp;
 
-// ============================================================================
-// [asmjit::a64::InstDB - RWInfo]
-// ============================================================================
+// a64::InstDB - RWInfo
+// ====================
 
 enum RWInfoType : uint32_t {
   kRWI_R,
@@ -74,22 +56,21 @@ enum RWInfoType : uint32_t {
   kRWI_SpecialStart = kRWI_LDn
 };
 
-// ============================================================================
-// [asmjit::a64::InstDB - ElementType]
-// ============================================================================
+// a64::InstDB - ElementType
+// =========================
 
-enum ElementType : uint8_t {
-  kET_None = Vec::kElementTypeNone,
-  kET_B    = Vec::kElementTypeB,
-  kET_H    = Vec::kElementTypeH,
-  kET_S    = Vec::kElementTypeS,
-  kET_D    = Vec::kElementTypeD,
-  kET_2H   = Vec::kElementTypeH2,
-  kET_4B   = Vec::kElementTypeB4
+enum InstElementType : uint8_t {
+  kET_None = uint8_t(VecElementType::kNone),
+  kET_B    = uint8_t(VecElementType::kB),
+  kET_H    = uint8_t(VecElementType::kH),
+  kET_S    = uint8_t(VecElementType::kS),
+  kET_D    = uint8_t(VecElementType::kD),
+  kET_2H   = uint8_t(VecElementType::kH2),
+  kET_4B   = uint8_t(VecElementType::kB4)
 };
-// ============================================================================
-// [asmjit::a64::InstDB - GpType]
-// ============================================================================
+
+// a64::InstDB - GpType
+// ====================
 
 enum GpType : uint8_t {
   kGp_W,
@@ -97,33 +78,30 @@ enum GpType : uint8_t {
   kGp_X_SP
 };
 
-// ============================================================================
-// [asmjit::a64::InstDB - OPSig]
-// ============================================================================
+// a64::InstDB - OPSig
+// ===================
 
 enum kOpSignature : uint32_t {
-  kOp_GpW = GpW::kSignature,
-  kOp_GpX = GpX::kSignature,
+  kOp_GpW = RegTraits<RegType::kGp32>::kSignature,
+  kOp_GpX = RegTraits<RegType::kGp64>::kSignature,
+  kOp_B = RegTraits<RegType::kVec8>::kSignature,
+  kOp_H = RegTraits<RegType::kVec16>::kSignature,
+  kOp_S = RegTraits<RegType::kVec32>::kSignature,
+  kOp_D = RegTraits<RegType::kVec64>::kSignature,
+  kOp_Q = RegTraits<RegType::kVec128>::kSignature,
 
-  kOp_B = VecB::kSignature,
-  kOp_H = VecH::kSignature,
-  kOp_S = VecS::kSignature,
-  kOp_D = VecD::kSignature,
-  kOp_Q = VecV::kSignature,
+  kOp_V8B = kOp_D | Vec::kSignatureElementB,
+  kOp_V4H = kOp_D | Vec::kSignatureElementH,
+  kOp_V2S = kOp_D | Vec::kSignatureElementS,
 
-  kOp_V8B = VecD::kSignature | Vec::kSignatureElementB,
-  kOp_V4H = VecD::kSignature | Vec::kSignatureElementH,
-  kOp_V2S = VecD::kSignature | Vec::kSignatureElementS,
-
-  kOp_V16B = VecV::kSignature | Vec::kSignatureElementB,
-  kOp_V8H = VecV::kSignature | Vec::kSignatureElementH,
-  kOp_V4S = VecV::kSignature | Vec::kSignatureElementS,
-  kOp_V2D = VecV::kSignature | Vec::kSignatureElementD
+  kOp_V16B = kOp_Q | Vec::kSignatureElementB,
+  kOp_V8H = kOp_Q | Vec::kSignatureElementH,
+  kOp_V4S = kOp_Q | Vec::kSignatureElementS,
+  kOp_V2D = kOp_Q | Vec::kSignatureElementD
 };
 
-// ============================================================================
-// [asmjit::a64::InstDB - HFConv]
-// ============================================================================
+// a64::InstDB - HFConv
+// ====================
 
 enum kHFConv : uint32_t {
   //! FP16 version of the instruction is not available.
@@ -140,9 +118,8 @@ enum kHFConv : uint32_t {
   kHF_Count
 };
 
-// ============================================================================
-// [asmjit::a64::InstDB - VOType]
-// ============================================================================
+// a64::InstDB - VOType
+// ====================
 
 //! Vector operand type combinations used by FP&SIMD instructions.
 enum VOType : uint32_t {
@@ -176,9 +153,8 @@ enum VOType : uint32_t {
   kVO_Count
 };
 
-// ============================================================================
-// [asmjit::a64::InstDB - EncodingId]
-// ============================================================================
+// a64::InstDB - EncodingId
+// ========================
 
 // ${EncodingId:Begin}
 // ------------------- Automatically generated, do not edit -------------------
@@ -209,6 +185,7 @@ enum EncodingId : uint32_t {
   kEncodingBaseLdpStp,
   kEncodingBaseLdxp,
   kEncodingBaseLogical,
+  kEncodingBaseMinMax,
   kEncodingBaseMov,
   kEncodingBaseMovKNZ,
   kEncodingBaseMrs,
@@ -216,6 +193,8 @@ enum EncodingId : uint32_t {
   kEncodingBaseMvnNeg,
   kEncodingBaseOp,
   kEncodingBaseOpImm,
+  kEncodingBaseOpX16,
+  kEncodingBasePrfm,
   kEncodingBaseR,
   kEncodingBaseRM_NoImm,
   kEncodingBaseRM_SImm10,
@@ -279,101 +258,109 @@ enum EncodingId : uint32_t {
 // ----------------------------------------------------------------------------
 // ${EncodingId:End}
 
-// ============================================================================
-// [asmjit::a64::InstDB::EncodingData]
-// ============================================================================
+// a64::InstDB::EncodingData
+// =========================
 
 namespace EncodingData {
 
 #define M_OPCODE(field, bits) \
   uint32_t _##field : bits; \
-  inline constexpr uint32_t field() const noexcept { return uint32_t(_##field) << (32 - bits); }
+  ASMJIT_INLINE_CONSTEXPR uint32_t field() const noexcept { return uint32_t(_##field) << (32 - bits); }
 
 struct BaseOp {
   uint32_t opcode;
 };
 
+struct BaseOpX16 {
+  uint32_t opcode;
+};
+
 struct BaseOpImm {
   uint32_t opcode;
-  uint16_t immBits;
-  uint16_t immOffset;
+  uint16_t imm_bits;
+  uint16_t imm_offset;
 };
 
 struct BaseR {
   uint32_t opcode;
-  uint32_t rType : 8;
-  uint32_t rHiId : 8;
-  uint32_t rShift : 8;
+  uint32_t reg_type : 8;
+  uint32_t reg_hi_id : 8;
+  uint32_t r_shift : 8;
 };
 
 struct BaseRR {
   uint32_t opcode;
-  uint32_t aType : 2;
-  uint32_t aHiId : 6;
-  uint32_t aShift : 5;
-  uint32_t bType : 2;
-  uint32_t bHiId : 6;
-  uint32_t bShift : 5;
+  uint32_t a_type : 2;
+  uint32_t a_hi_id : 6;
+  uint32_t a_shift : 5;
+  uint32_t b_type : 2;
+  uint32_t b_hi_id : 6;
+  uint32_t b_shift : 5;
   uint32_t uniform : 1;
 };
 
 struct BaseRRR {
   M_OPCODE(opcode, 22)
-  uint32_t aType : 2;
-  uint32_t aHiId : 6;
-  uint32_t bType : 2;
-  uint32_t bHiId : 6;
-  uint32_t cType : 2;
-  uint32_t cHiId : 6;
+  uint32_t a_type : 2;
+  uint32_t a_hi_id : 6;
+  uint32_t b_type : 2;
+  uint32_t b_hi_id : 6;
+  uint32_t c_type : 2;
+  uint32_t c_hi_id : 6;
   uint32_t uniform : 1;
 };
 
 struct BaseRRRR {
   M_OPCODE(opcode, 22)
-  uint32_t aType : 2;
-  uint32_t aHiId : 6;
-  uint32_t bType : 2;
-  uint32_t bHiId : 6;
-  uint32_t cType : 2;
-  uint32_t cHiId : 6;
-  uint32_t dType : 2;
-  uint32_t dHiId : 6;
+  uint32_t a_type : 2;
+  uint32_t a_hi_id : 6;
+  uint32_t b_type : 2;
+  uint32_t b_hi_id : 6;
+  uint32_t c_type : 2;
+  uint32_t c_hi_id : 6;
+  uint32_t d_type : 2;
+  uint32_t d_hi_id : 6;
   uint32_t uniform : 1;
 };
 
 struct BaseRRII {
   M_OPCODE(opcode, 22)
-  uint32_t aType : 2;
-  uint32_t aHiId : 6;
-  uint32_t bType : 2;
-  uint32_t bHiId : 6;
-  uint32_t aImmSize : 6;
-  uint32_t aImmDiscardLsb : 5;
-  uint32_t aImmOffset : 5;
-  uint32_t bImmSize : 6;
-  uint32_t bImmDiscardLsb : 5;
-  uint32_t bImmOffset : 5;
+  uint32_t a_type : 2;
+  uint32_t a_hi_id : 6;
+  uint32_t b_type : 2;
+  uint32_t b_hi_id : 6;
+  uint32_t a_imm_size : 6;
+  uint32_t a_imm_discard_lsb : 5;
+  uint32_t a_imm_offset : 5;
+  uint32_t b_imm_size : 6;
+  uint32_t b_imm_discard_lsb : 5;
+  uint32_t b_imm_offset : 5;
 };
 
 struct BaseAtDcIcTlbi {
-  uint32_t immVerifyMask : 14;
-  uint32_t immVerifyData : 14;
-  uint32_t mandatoryReg : 1;
+  uint32_t imm_verify_mask : 14;
+  uint32_t imm_verify_data : 14;
+  uint32_t mandatory_reg : 1;
 };
 
 struct BaseAdcSbc {
   uint32_t opcode;
 };
 
+struct BaseMinMax {
+  uint32_t register_op;
+  uint32_t immediate_op;
+};
+
 struct BaseAddSub {
-  uint32_t shiftedOp  : 10; // sf|.......|Sh|.|Rm|  Imm:6 |Rn|Rd|
-  uint32_t extendedOp : 10; // sf|.......|..|.|Rm|Opt|Imm3|Rn|Rd|
-  uint32_t immediateOp: 10; // sf|.......|Sh|    Imm:12   |Rn|Rd|
+  uint32_t shifted_op  : 10; // sf|.......|Sh|.|Rm|  Imm:6 |Rn|Rd|
+  uint32_t extended_op : 10; // sf|.......|..|.|Rm|Opt|Imm3|Rn|Rd|
+  uint32_t immediate_op: 10; // sf|.......|Sh|    Imm:12   |Rn|Rd|
 };
 
 struct BaseAdr {
   M_OPCODE(opcode, 22)
-  uint32_t offsetType : 10;
+  OffsetType offset_type : 8;
 };
 
 struct BaseBfm {
@@ -381,21 +368,21 @@ struct BaseBfm {
 };
 
 struct BaseCmpCmn {
-  uint32_t shiftedOp  : 10; // sf|.......|Sh|.|Rm|  Imm:6 |Rn|11111|
-  uint32_t extendedOp : 10; // sf|.......|..|.|Rm|Opt|Imm3|Rn|11111|
-  uint32_t immediateOp: 10; // sf|.......|Sh|    Imm:12   |Rn|11111|
+  uint32_t shifted_op  : 10; // sf|.......|Sh|.|Rm|  Imm:6 |Rn|11111|
+  uint32_t extended_op : 10; // sf|.......|..|.|Rm|Opt|Imm3|Rn|11111|
+  uint32_t immediate_op: 10; // sf|.......|Sh|    Imm:12   |Rn|11111|
 };
 
 struct BaseExtend {
-  M_OPCODE(opcode, 22)      // sf|........|N|......|......|Rn|Rd|
-  uint32_t rType : 2;
+  M_OPCODE(opcode, 22)       // sf|........|N|......|......|Rn|Rd|
+  uint32_t reg_type : 2;
   uint32_t u : 1;
 };
 
 struct BaseLogical {
-  uint32_t shiftedOp  : 10; // sf|.......|Sh|.|Rm|  Imm:6 |Rn|Rd|
-  uint32_t immediateOp: 10; // sf|........|N|ImmR:6|ImmS:6|Rn|Rd|
-  uint32_t negateImm  : 1 ; // True if this is an operation that must negate IMM.
+  uint32_t shifted_op  : 10; // sf|.......|Sh|.|Rm|  Imm:6 |Rn|Rd|
+  uint32_t immediate_op: 10; // sf|........|N|ImmR:6|ImmS:6|Rn|Rd|
+  uint32_t negate_imm  : 1;  // True if this is an operation that must negate IMM.
 };
 
 struct BaseMvnNeg {
@@ -403,143 +390,150 @@ struct BaseMvnNeg {
 };
 
 struct BaseShift {
-  M_OPCODE(registerOp, 22)
-  M_OPCODE(immediateOp, 22)
+  M_OPCODE(register_op, 22)
+  M_OPCODE(immediate_op, 22)
   uint32_t ror : 2;
 };
 
 struct BaseTst {
-  uint32_t shiftedOp  : 10; // sf|.......|Sh|.|Rm|  Imm:6 |Rn|11111|
-  uint32_t immediateOp: 10; // sf|........|N|ImmR:6|ImmS:6|Rn|11111|
+  uint32_t shifted_op  : 10; // sf|.......|Sh|.|Rm|  Imm:6 |Rn|11111|
+  uint32_t immediate_op: 10; // sf|........|N|ImmR:6|ImmS:6|Rn|11111|
 };
 
 struct BaseRM_NoImm {
   M_OPCODE(opcode, 22)
-  uint32_t rType : 2;
-  uint32_t rHiId : 6;
-  uint32_t xOffset : 5;
+  uint32_t reg_type : 2;
+  uint32_t reg_hi_id : 6;
+  uint32_t x_offset : 5;
 };
 
 struct BaseRM_SImm9 {
-  M_OPCODE(offsetOp, 22)
-  M_OPCODE(prePostOp, 22)
-  uint32_t rType : 2;
-  uint32_t rHiId : 6;
-  uint32_t xOffset : 5;
-  uint32_t immShift : 4;
+  M_OPCODE(offset_op, 22)
+  M_OPCODE(pre_post_op, 22)
+  uint32_t reg_type : 2;
+  uint32_t reg_hi_id : 6;
+  uint32_t x_offset : 5;
+  uint32_t imm_shift : 4;
 };
 
 struct BaseRM_SImm10 {
   M_OPCODE(opcode, 22)
-  uint32_t rType : 2;
-  uint32_t rHiId : 6;
-  uint32_t xOffset : 5;
-  uint32_t immShift : 4;
+  uint32_t reg_type : 2;
+  uint32_t reg_hi_id : 6;
+  uint32_t x_offset : 5;
+  uint32_t imm_shift : 4;
+};
+
+struct BasePrfm {
+  uint32_t register_op : 11;
+  uint32_t s_offset_op  : 10;
+  uint32_t u_offset_op  : 11;
+  uint32_t literal_op;
 };
 
 struct BaseLdSt {
-  uint32_t uOffsetOp  : 10;
-  uint32_t prePostOp  : 11;
-  uint32_t registerOp : 11;
-  uint32_t literalOp  : 8;
-  uint32_t rType      : 2;
-  uint32_t xOffset    : 5;
-  uint32_t uOffsetShift : 3;
-  uint32_t uAltInstId : 14;
+  uint32_t u_offset_op    : 10;
+  uint32_t pre_post_op    : 11;
+  uint32_t register_op    : 11;
+  uint32_t literal_op     : 8;
+  uint32_t reg_type       : 2;
+  uint32_t x_offset       : 5;
+  uint32_t u_offset_shift : 3;
+  uint32_t u_alt_inst_id  : 14;
 };
 
 struct BaseLdpStp {
-  uint32_t offsetOp : 10;
-  uint32_t prePostOp : 10;
-  uint32_t rType : 2;
-  uint32_t xOffset : 5;
-  uint32_t offsetShift : 3;
+  uint32_t offset_op    : 10;
+  uint32_t pre_post_op  : 10;
+  uint32_t reg_type     : 2;
+  uint32_t x_offset     : 5;
+  uint32_t offset_shift : 3;
 };
 
 struct BaseStx {
   M_OPCODE(opcode, 22)
-  uint32_t rType : 2;
-  uint32_t xOffset : 5;
+  uint32_t reg_type : 2;
+  uint32_t x_offset : 5;
 };
 
 struct BaseLdxp {
   M_OPCODE(opcode, 22)
-  uint32_t rType : 2;
-  uint32_t xOffset : 5;
+  uint32_t reg_type : 2;
+  uint32_t x_offset : 5;
 };
 
 struct BaseStxp {
   M_OPCODE(opcode, 22)
-  uint32_t rType : 2;
-  uint32_t xOffset : 5;
+  uint32_t reg_type : 2;
+  uint32_t x_offset : 5;
 };
 
 struct BaseAtomicOp {
   M_OPCODE(opcode, 22)
-  uint32_t rType : 2;
-  uint32_t xOffset : 5;
+  uint32_t reg_type : 2;
+  uint32_t x_offset : 5;
   uint32_t zr : 1;
 };
 
 struct BaseAtomicSt {
   M_OPCODE(opcode, 22)
-  uint32_t rType : 2;
-  uint32_t xOffset : 5;
+  uint32_t reg_type : 2;
+  uint32_t x_offset : 5;
 };
 
 struct BaseAtomicCasp {
   M_OPCODE(opcode, 22)
-  uint32_t rType : 2;
-  uint32_t xOffset : 5;
+  uint32_t reg_type : 2;
+  uint32_t x_offset : 5;
 };
 
-typedef BaseOp BaseBranchReg;
-typedef BaseOp BaseBranchRel;
-typedef BaseOp BaseBranchCmp;
-typedef BaseOp BaseBranchTst;
-typedef BaseOp BaseExtract;
-typedef BaseOp BaseBfc;
-typedef BaseOp BaseBfi;
-typedef BaseOp BaseBfx;
-typedef BaseOp BaseCCmp;
-typedef BaseOp BaseCInc;
-typedef BaseOp BaseCSet;
-typedef BaseOp BaseCSel;
-typedef BaseOp BaseMovKNZ;
-typedef BaseOp BaseMull;
+using BaseBranchReg = BaseOp;
+using BaseBranchRel = BaseOp;
+using BaseBranchCmp = BaseOp;
+using BaseBranchTst = BaseOp;
+using BaseExtract = BaseOp;
+using BaseBfc = BaseOp;
+using BaseBfi = BaseOp;
+using BaseBfx = BaseOp;
+using BaseCCmp = BaseOp;
+using BaseCInc = BaseOp;
+using BaseCSet = BaseOp;
+using BaseCSel = BaseOp;
+using BaseMovKNZ = BaseOp;
+using BaseMull = BaseOp;
 
 struct FSimdGeneric {
-  uint32_t _scalarOp : 28;
+  uint32_t _scalar_op : 28;
   uint32_t _scalarHf : 4;
-  uint32_t _vectorOp : 28;
+  uint32_t _vector_op : 28;
   uint32_t _vectorHf : 4;
 
-  constexpr uint32_t scalarOp() const noexcept { return uint32_t(_scalarOp) << 10; }
-  constexpr uint32_t vectorOp() const noexcept { return uint32_t(_vectorOp) << 10; }
-  constexpr uint32_t scalarHf() const noexcept { return uint32_t(_scalarHf); }
-  constexpr uint32_t vectorHf() const noexcept { return uint32_t(_vectorHf); }
+  constexpr uint32_t scalar_op() const noexcept { return uint32_t(_scalar_op) << 10; }
+  constexpr uint32_t vector_op() const noexcept { return uint32_t(_vector_op) << 10; }
+  constexpr uint32_t scalar_hf() const noexcept { return uint32_t(_scalarHf); }
+  constexpr uint32_t vector_hf() const noexcept { return uint32_t(_vectorHf); }
 };
 
-typedef FSimdGeneric FSimdVV;
-typedef FSimdGeneric FSimdVVV;
-typedef FSimdGeneric FSimdVVVV;
+using FSimdVV = FSimdGeneric;
+using FSimdVVV = FSimdGeneric;
+using FSimdVVVV = FSimdGeneric;
 
 struct FSimdSV {
   uint32_t opcode;
 };
 
 struct FSimdVVVe {
-  uint32_t _scalarOp : 28;
+  uint32_t _scalar_op : 28;
   uint32_t _scalarHf : 4;
-  uint32_t _vectorOp;
+  uint32_t _vector_op;
   uint32_t _elementOp;
 
-  constexpr uint32_t scalarOp() const noexcept { return uint32_t(_scalarOp) << 10; }
-  constexpr uint32_t scalarHf() const noexcept { return uint32_t(_scalarHf); };
-  constexpr uint32_t vectorOp() const noexcept { return uint32_t(_vectorOp) << 10; }
-  constexpr uint32_t vectorHf() const noexcept { return kHF_C; }
-  constexpr uint32_t elementScalarOp() const noexcept { return (uint32_t(_elementOp) << 10) | (0x5u << 28); }
-  constexpr uint32_t elementVectorOp() const noexcept { return (uint32_t(_elementOp) << 10); }
+  constexpr uint32_t scalar_op() const noexcept { return uint32_t(_scalar_op) << 10; }
+  constexpr uint32_t scalar_hf() const noexcept { return uint32_t(_scalarHf); };
+  constexpr uint32_t vector_op() const noexcept { return uint32_t(_vector_op) << 10; }
+  constexpr uint32_t vector_hf() const noexcept { return kHF_C; }
+  constexpr uint32_t element_scalar_op() const noexcept { return (uint32_t(_elementOp) << 10) | (0x5u << 28); }
+  constexpr uint32_t element_vector_op() const noexcept { return (uint32_t(_elementOp) << 10); }
 };
 
 struct SimdFcadd {
@@ -552,8 +546,8 @@ struct SimdFcmla {
   uint32_t _regularOp;
   uint32_t _elementOp;
 
-  constexpr uint32_t regularOp() const noexcept { return uint32_t(_regularOp) << 10; }
-  constexpr uint32_t elementOp() const noexcept { return (uint32_t(_elementOp) << 10); }
+  constexpr uint32_t regular_op() const noexcept { return uint32_t(_regularOp) << 10; }
+  constexpr uint32_t element_op() const noexcept { return (uint32_t(_elementOp) << 10); }
 };
 
 struct SimdFccmpFccmpe {
@@ -565,18 +559,18 @@ struct SimdFcm {
   uint32_t _registerOp : 28;
   uint32_t _registerHf : 4;
 
-  uint32_t _zeroOp : 28;
+  uint32_t _zero_op : 28;
 
-  constexpr bool hasRegisterOp() const noexcept { return _registerOp != 0; }
-  constexpr bool hasZeroOp() const noexcept { return _zeroOp != 0; }
+  constexpr bool has_register_op() const noexcept { return _registerOp != 0; }
+  constexpr bool has_zero_op() const noexcept { return _zero_op != 0; }
 
-  constexpr uint32_t registerScalarOp() const noexcept { return (uint32_t(_registerOp) << 10) | (0x5u << 28); }
-  constexpr uint32_t registerVectorOp() const noexcept { return uint32_t(_registerOp) << 10; }
-  constexpr uint32_t registerScalarHf() const noexcept { return uint32_t(_registerHf); }
-  constexpr uint32_t registerVectorHf() const noexcept { return uint32_t(_registerHf); }
+  constexpr uint32_t register_scalar_op() const noexcept { return (uint32_t(_registerOp) << 10) | (0x5u << 28); }
+  constexpr uint32_t register_vector_op() const noexcept { return uint32_t(_registerOp) << 10; }
+  constexpr uint32_t register_scalar_hf() const noexcept { return uint32_t(_registerHf); }
+  constexpr uint32_t register_vector_hf() const noexcept { return uint32_t(_registerHf); }
 
-  constexpr uint32_t zeroScalarOp() const noexcept { return (uint32_t(_zeroOp) << 10) | (0x5u << 28); }
-  constexpr uint32_t zeroVectorOp() const noexcept { return (uint32_t(_zeroOp) << 10); }
+  constexpr uint32_t zero_scalar_op() const noexcept { return (uint32_t(_zero_op) << 10) | (0x5u << 28); }
+  constexpr uint32_t zero_vector_op() const noexcept { return (uint32_t(_zero_op) << 10); }
 };
 
 struct SimdFcmpFcmpe {
@@ -586,131 +580,131 @@ struct SimdFcmpFcmpe {
 
 struct SimdFcvtLN {
   uint32_t _opcode : 22;
-  uint32_t _isCvtxn : 1;
-  uint32_t _hasScalar : 1;
+  uint32_t _is_cvtxn : 1;
+  uint32_t _has_scalar : 1;
 
-  constexpr uint32_t scalarOp() const noexcept { return (uint32_t(_opcode) << 10) | (0x5u << 28); }
-  constexpr uint32_t vectorOp() const noexcept { return (uint32_t(_opcode) << 10); }
+  constexpr uint32_t scalar_op() const noexcept { return (uint32_t(_opcode) << 10) | (0x5u << 28); }
+  constexpr uint32_t vector_op() const noexcept { return (uint32_t(_opcode) << 10); }
 
-  constexpr uint32_t isCvtxn() const noexcept { return _isCvtxn; }
-  constexpr uint32_t hasScalar() const noexcept { return _hasScalar; }
+  constexpr uint32_t is_cvtxn() const noexcept { return _is_cvtxn; }
+  constexpr uint32_t has_scalar() const noexcept { return _has_scalar; }
 };
 
 struct SimdFcvtSV {
   uint32_t _vectorIntOp;
   uint32_t _vectorFpOp;
-  uint32_t _generalOp : 31;
+  uint32_t _general_op : 31;
   uint32_t _isFloatToInt : 1;
 
-  constexpr uint32_t scalarIntOp() const noexcept { return (uint32_t(_vectorIntOp) << 10) | (0x5u << 28); }
-  constexpr uint32_t vectorIntOp() const noexcept { return uint32_t(_vectorIntOp) << 10; }
-  constexpr uint32_t scalarFpOp() const noexcept { return (uint32_t(_vectorFpOp) << 10) | (0x5u << 28); }
-  constexpr uint32_t vectorFpOp() const noexcept { return uint32_t(_vectorFpOp) << 10; }
-  constexpr uint32_t generalOp() const noexcept { return (uint32_t(_generalOp) << 10); }
+  constexpr uint32_t scalar_int_op() const noexcept { return (uint32_t(_vectorIntOp) << 10) | (0x5u << 28); }
+  constexpr uint32_t vector_int_op() const noexcept { return uint32_t(_vectorIntOp) << 10; }
+  constexpr uint32_t scalar_fp_op() const noexcept { return (uint32_t(_vectorFpOp) << 10) | (0x5u << 28); }
+  constexpr uint32_t vector_fp_op() const noexcept { return uint32_t(_vectorFpOp) << 10; }
+  constexpr uint32_t general_op() const noexcept { return (uint32_t(_general_op) << 10); }
 
-  constexpr uint32_t isFloatToInt() const noexcept { return _isFloatToInt; }
-  constexpr uint32_t isFixedPoint() const noexcept { return _vectorFpOp != 0; }
+  constexpr uint32_t is_float_to_int() const noexcept { return _isFloatToInt; }
+  constexpr uint32_t is_fixed_point() const noexcept { return _vectorFpOp != 0; }
 };
 
 struct SimdFmlal {
-  uint32_t _vectorOp;
+  uint32_t _vector_op;
   uint32_t _elementOp;
   uint8_t _optionalQ;
-  uint8_t tA;
-  uint8_t tB;
+  uint8_t ta;
+  uint8_t tb;
   uint8_t tElement;
 
-  constexpr uint32_t vectorOp() const noexcept { return uint32_t(_vectorOp) << 10; }
-  constexpr uint32_t elementOp() const noexcept { return uint32_t(_elementOp) << 10; }
-  constexpr uint32_t optionalQ() const noexcept { return _optionalQ; }
+  constexpr uint32_t vector_op() const noexcept { return uint32_t(_vector_op) << 10; }
+  constexpr uint32_t element_op() const noexcept { return uint32_t(_elementOp) << 10; }
+  constexpr uint32_t optional_q() const noexcept { return _optionalQ; }
 };
 
 struct FSimdPair {
-  uint32_t _scalarOp;
-  uint32_t _vectorOp;
+  uint32_t _scalar_op;
+  uint32_t _vector_op;
 
-  constexpr uint32_t scalarOp() const noexcept { return uint32_t(_scalarOp) << 10; }
-  constexpr uint32_t vectorOp() const noexcept { return uint32_t(_vectorOp) << 10; }
+  constexpr uint32_t scalar_op() const noexcept { return uint32_t(_scalar_op) << 10; }
+  constexpr uint32_t vector_op() const noexcept { return uint32_t(_vector_op) << 10; }
 };
 
 struct ISimdVV {
   M_OPCODE(opcode, 22)
-  uint32_t vecOpType : 6;
+  uint32_t vec_op_type : 6;
 };
 
 struct ISimdVVx {
   M_OPCODE(opcode, 22)
-  uint32_t op0Signature;
-  uint32_t op1Signature;
+  uint32_t op0_signature;
+  uint32_t op1_signature;
 };
 
 struct ISimdSV {
   M_OPCODE(opcode, 22)
-  uint32_t vecOpType : 6;
+  uint32_t vec_op_type : 6;
 };
 
 struct ISimdVVV {
   M_OPCODE(opcode, 22)
-  uint32_t vecOpType : 6;
+  uint32_t vec_op_type : 6;
 };
 
 struct ISimdVVVx {
   M_OPCODE(opcode, 22)
-  uint32_t op0Signature;
-  uint32_t op1Signature;
-  uint32_t op2Signature;
+  uint32_t op0_signature;
+  uint32_t op1_signature;
+  uint32_t op2_signature;
 };
 
 struct ISimdWWV {
   M_OPCODE(opcode, 22)
-  uint32_t vecOpType : 6;
+  uint32_t vec_op_type : 6;
 };
 
 struct ISimdVVVe {
-  uint32_t regularOp : 26; // 22 bits used.
-  uint32_t regularVecType : 6;
-  uint32_t elementOp : 26; // 22 bits used.
-  uint32_t elementVecType : 6;
+  uint32_t regular_op : 26; // 22 bits used.
+  uint32_t regular_vec_type : 6;
+  uint32_t element_op : 26; // 22 bits used.
+  uint32_t element_vec_type : 6;
 };
 
 struct ISimdVVVI {
   M_OPCODE(opcode, 22)
-  uint32_t vecOpType : 6;
-  uint32_t immSize : 4;
-  uint32_t immShift : 4;
-  uint32_t imm64HasOneBitLess : 1;
+  uint32_t vec_op_type : 6;
+  uint32_t imm_size : 4;
+  uint32_t imm_shift : 4;
+  uint32_t imm64_has_one_bit_less : 1;
 };
 
 struct ISimdVVVV {
   uint32_t opcode : 22;
-  uint32_t vecOpType : 6;
+  uint32_t vec_op_type : 6;
 };
 
 struct ISimdVVVVx {
   uint32_t opcode;
-  uint32_t op0Signature;
-  uint32_t op1Signature;
-  uint32_t op2Signature;
-  uint32_t op3Signature;
+  uint32_t op0_signature;
+  uint32_t op1_signature;
+  uint32_t op2_signature;
+  uint32_t op3_signature;
 };
 
 struct SimdBicOrr {
-  uint32_t registerOp;   // 22 bits used.
-  uint32_t immediateOp;  // 22 bits used.
+  uint32_t register_op;   // 22 bits used.
+  uint32_t immediate_op;   // 22 bits used.
 };
 
 struct SimdCmp {
-  uint32_t regOp;
-  uint32_t zeroOp : 22;
-  uint32_t vecOpType : 6;
+  uint32_t register_op;
+  uint32_t zero_op : 22;
+  uint32_t vec_op_type : 6;
 };
 
 struct SimdDot {
-  uint32_t vectorOp;     // 22 bits used.
-  uint32_t elementOp;    // 22 bits used.
-  uint8_t tA;            // Element-type of the first operand.
-  uint8_t tB;            // Element-type of the second and third operands.
-  uint8_t tElement;      // Element-type of the element index[] operand.
+  uint32_t vector_op;     // 22 bits used.
+  uint32_t element_op;    // 22 bits used.
+  uint8_t ta;             // Element-type of the first operand.
+  uint8_t tb;             // Element-type of the second and third operands.
+  uint8_t tElement;       // Element-type of the element index[] operand.
 };
 
 struct SimdMoviMvni {
@@ -719,23 +713,23 @@ struct SimdMoviMvni {
 };
 
 struct SimdLdSt {
-  uint32_t uOffsetOp  : 10;
-  uint32_t prePostOp  : 11;
-  uint32_t registerOp : 11;
-  uint32_t literalOp  : 8;
-  uint32_t uAltInstId : 16;
+  uint32_t u_offset_op  : 10;
+  uint32_t pre_post_op  : 11;
+  uint32_t register_op : 11;
+  uint32_t literal_op  : 8;
+  uint32_t u_alt_inst_id : 16;
 };
 
 struct SimdLdNStN {
-  uint32_t singleOp;
-  uint32_t multipleOp : 22;
+  uint32_t single_op;
+  uint32_t multiple_op : 22;
   uint32_t n : 3;
   uint32_t replicate : 1;
 };
 
 struct SimdLdpStp {
-  uint32_t offsetOp : 10;
-  uint32_t prePostOp : 10;
+  uint32_t offset_op : 10;
+  uint32_t pre_post_op : 10;
 };
 
 struct SimdLdurStur {
@@ -743,21 +737,21 @@ struct SimdLdurStur {
 };
 
 struct ISimdPair {
-  uint32_t opcode2;      // 22 bits used.
-  uint32_t opcode3 : 26; // 22 bits used.
-  uint32_t opType3 : 6;
+  uint32_t opcode2;       // 22 bits used.
+  uint32_t opcode3 : 26;  // 22 bits used.
+  uint32_t op_type3 : 6;
 };
 
 struct SimdShift {
-  uint32_t registerOp;       // 22 bits used.
-  uint32_t immediateOp : 22; // 22 bits used.
-  uint32_t invertedImm : 1;
-  uint32_t vecOpType : 6;
+  uint32_t register_op;       // 22 bits used.
+  uint32_t immediate_op : 22; // 22 bits used.
+  uint32_t inverted_imm : 1;
+  uint32_t vec_op_type : 6;
 };
 
 struct SimdShiftES {
   uint32_t opcode : 22;
-  uint32_t vecOpType : 6;
+  uint32_t vec_op_type : 6;
 };
 
 struct SimdSm3tt {
@@ -766,13 +760,13 @@ struct SimdSm3tt {
 
 struct SimdSmovUmov {
   uint32_t opcode : 22;
-  uint32_t vecOpType : 6;
-  uint32_t isSigned : 1;
+  uint32_t vec_op_type : 6;
+  uint32_t is_signed : 1;
 };
 
 struct SimdSxtlUxtl {
   uint32_t opcode : 22;
-  uint32_t vecOpType : 6;
+  uint32_t vec_op_type : 6;
 };
 
 struct SimdTblTbx {
@@ -795,7 +789,7 @@ extern const BaseBfm baseBfm[3];
 extern const BaseBfx baseBfx[3];
 extern const BaseBranchCmp baseBranchCmp[2];
 extern const BaseBranchReg baseBranchReg[3];
-extern const BaseBranchRel baseBranchRel[2];
+extern const BaseBranchRel baseBranchRel[3];
 extern const BaseBranchTst baseBranchTst[2];
 extern const BaseCCmp baseCCmp[2];
 extern const BaseCInc baseCInc[3];
@@ -808,15 +802,18 @@ extern const BaseLdSt baseLdSt[9];
 extern const BaseLdpStp baseLdpStp[6];
 extern const BaseLdxp baseLdxp[2];
 extern const BaseLogical baseLogical[8];
+extern const BaseMinMax baseMinMax[4];
 extern const BaseMovKNZ baseMovKNZ[3];
 extern const BaseMvnNeg baseMvnNeg[3];
-extern const BaseOp baseOp[23];
-extern const BaseOpImm baseOpImm[14];
+extern const BaseOp baseOp[24];
+extern const BaseOpImm baseOpImm[15];
+extern const BaseOpX16 baseOpX16[1];
+extern const BasePrfm basePrfm[1];
 extern const BaseR baseR[10];
 extern const BaseRM_NoImm baseRM_NoImm[21];
 extern const BaseRM_SImm10 baseRM_SImm10[2];
 extern const BaseRM_SImm9 baseRM_SImm9[23];
-extern const BaseRR baseRR[15];
+extern const BaseRR baseRR[18];
 extern const BaseRRII baseRRII[2];
 extern const BaseRRR baseRRR[26];
 extern const BaseRRRR baseRRRR[6];
@@ -868,28 +865,13 @@ extern const SimdTblTbx simdTblTbx[2];
 
 } // {EncodingData}
 
-// ============================================================================
-// [asmjit::a64::InstDB - InstNameIndex]
-// ============================================================================
-
-// ${NameLimits:Begin}
-// ------------------- Automatically generated, do not edit -------------------
-enum : uint32_t { kMaxNameSize = 9 };
-// ----------------------------------------------------------------------------
-// ${NameLimits:End}
-
-struct InstNameIndex {
-  uint16_t start;
-  uint16_t end;
-};
-
-// ============================================================================
-// [asmjit::a64::InstDB - Tables]
-// ============================================================================
+// a64::InstDB - Tables
+// ====================
 
 #ifndef ASMJIT_NO_TEXT
-extern const char _nameData[];
-extern const InstNameIndex instNameIndex[26];
+extern const InstNameIndex _inst_name_index;
+extern const char _inst_name_string_table[];
+extern const uint32_t _inst_name_index_table[];
 #endif // !ASMJIT_NO_TEXT
 
 } // {InstDB}

@@ -1,3 +1,10 @@
+%%%
+%%% %CopyrightBegin%
+%%%
+%%% SPDX-License-Identifier: Apache-2.0
+%%%
+%%% Copyright Ericsson AB 2006-2025. All Rights Reserved.
+%%%
 %%% Licensed under the Apache License, Version 2.0 (the "License");
 %%% you may not use this file except in compliance with the License.
 %%% You may obtain a copy of the License at
@@ -10,11 +17,8 @@
 %%% See the License for the specific language governing permissions and
 %%% limitations under the License.
 %%%
-%%%
-%%% The Initial Developer of the Original Code is Ericsson Telecom
-%%% AB. Portions created by Ericsson are Copyright (C), 1998, Ericsson
-%%% Telecom AB. All Rights Reserved.
-%%%-------------------------------------------------------------------
+%%% %CopyrightEnd%
+%%% 
 
 %%% File    : xmerl_xsd.hrl
 %%% Author  : Bertil Karlsson <bertil@finrod>
@@ -51,7 +55,7 @@
 	  global_namespace_nodes=[],
 	  checked_namespace_nodes=[{"xml",[],'http://www.w3.org/XML/1998/namespace'}],
 	  table,
-	  tab2file=false, %% for debuging of abstract syntax
+	  tab2file=false, %% for debugging of abstract syntax
 	  redefine=false,
 	  finalDefault, %% undefined | '#all' | [atom()] 
 	                %% atom() -> extension |
@@ -89,7 +93,7 @@
 	  scope,
 	  form,             %% unqualified | qualified
 	  id,
-	  occurance={1,1},  %% {minOccurs,maxOccurs}
+	  occurrence={1,1},  %% {minOccurs,maxOccurs}
 	  value_constraint, %% undefined | {default,Value} | {fixed,Value}
 	  nillable=false,   %% true | false
 	  abstract=false,   %% true | false
@@ -153,7 +157,7 @@
 	  id,
 	  ref, %% in this case no name or content
 	  content=[],
-	  occurance={1,1}
+	  occurrence={1,1}
 	 }).
 -record(schema_extension,{
 	  base,
@@ -189,9 +193,9 @@
 %% alterantive, a collection of objects of which only one is chosen.
 -record(chain,{
 	  content,
-	  occurance={1,1}
+	  occurrence={1,1}
 	 }).
 -record(alternative,{
 	  content,
-	  occurance={0,1}
+	  occurrence={0,1}
 	 }).

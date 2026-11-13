@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2003-2017. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2003-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,6 +26,7 @@
  */ 
 
 #include <windows.h>
+#include <winerror.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "init_file.h"
@@ -47,11 +50,12 @@ int wmain(int argc, wchar_t **argv)
     InitFile *ini_file;
     InitSection *ini_section;
     HANDLE module = GetModuleHandle(NULL);
-    wchar_t *binaries[] = { L"erl.exe", L"werl.exe", L"erlc.exe", L"erl_call.exe",
+    wchar_t *binaries[] = { L"erl.exe", L"erlc.exe", L"erl_call.exe",
 			    L"dialyzer.exe",
 			    L"typer.exe",
 			    L"escript.exe", L"ct_run.exe", NULL };
     wchar_t *scripts[] = { L"start_clean.boot", L"start_sasl.boot", L"no_dot_erlang.boot", NULL };
+    wchar_t *links[][2] = { { L"erl.exe", L"werl.exe" }, NULL };
     wchar_t fromname[MAX_PATH];
     wchar_t toname[MAX_PATH];
     size_t  converted;
@@ -175,7 +179,32 @@ int wmain(int argc, wchar_t **argv)
 	    fprintf(stderr,"Continuing installation anyway...\n");
 	}
     }
-    
+
+    for (i = 0; links[i][0] != NULL; ++i) {
+        swprintf(toname,MAX_PATH,L"%s\\%s",bin_dir,links[i][1]);
+        if (!CreateSymbolicLinkW(toname,links[i][0],0)) {
+            DWORD err = GetLastError();
+            if (err == ERROR_PRIVILEGE_NOT_HELD) {
+                fprintf(stderr,"Must be administrator to create link, copying %S instead.\n",
+                        links[i][0]);
+                swprintf(fromname,MAX_PATH,L"%s\\%s",bin_dir,links[i][0]);
+                if (!CopyFileW(fromname,toname,FALSE)) {
+                    fprintf(stderr,"Could not copy file %S to %S\n",
+                            fromname,toname);
+                    fprintf(stderr,"Continuing installation anyway...\n");
+                }
+            } else {
+                wchar_t buf[256];
+                FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                               NULL, err, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), 
+                               buf, (sizeof(buf) / sizeof(wchar_t)), NULL);
+                fprintf(stderr,"Could not create links from %S to %S %d: %S\n",
+                        fromname, toname, err, buf);
+                fprintf(stderr,"Continuing installation anyway...\n");
+            }
+        }
+    }
+
     for (i = 0; scripts[i] != NULL; ++i) {
 	swprintf(fromname,MAX_PATH,L"%s\\%s",release_dir,scripts[i]);
 	swprintf(toname,MAX_PATH,L"%s\\%s",bin_dir,scripts[i]);
@@ -204,30 +233,6 @@ int wmain(int argc, wchar_t **argv)
 	exit(1);
     }
 
-    /* OBS!!! If the format of the init file is changed, do not forget
-       to update release_handler:write_ini_file(...) */
-    ini_file = create_init_file();
-    ini_section = create_init_section("erlang");
-    add_init_section(ini_file,ini_section);
-    WideCharToMultiByte(CP_UTF8,0,erts_dir,-1,tmp_utf8,MAX_PATH*4,NULL,NULL);
-    add_init_entry(ini_section,"Bindir",tmp_utf8);
-    add_init_entry(ini_section,"Progname","erl");
-    WideCharToMultiByte(CP_UTF8,0,root,-1,tmp_utf8,MAX_PATH*4,NULL,NULL);
-    add_init_entry(ini_section,"Rootdir",tmp_utf8);
-    swprintf(fromname,MAX_PATH,L"%s\\erl.ini",erts_dir);
-    swprintf(toname,MAX_PATH,L"%s\\erl.ini",bin_dir);
-    if (store_init_file(ini_file,fromname) != 0) {
-	fprintf(stderr,"Could not create file %S\n",
-		fromname);
-	fprintf(stderr,"Cannot continue installation, bailing out.\n");
-	exit(1);
-    }
-    if (!CopyFileW(fromname,toname,FALSE)) {
-	fprintf(stderr,"Could not copy file %S to %S\n",
-		 fromname,toname);
-	fprintf(stderr,"Cannot continue installation, bailing out.\n");
-	exit(1);
-    }
     if (!silent) {
 	printf("Erlang %s installed successfully\n", erts_version);
     }

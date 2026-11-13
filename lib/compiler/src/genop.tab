@@ -1,7 +1,9 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 1998-2018. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 1998-2026. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -108,7 +110,7 @@ BEAM_FORMAT_NUMBER=0
 ##
 ##      OTP 24: This instruction has been superseded by allocate/2 followed
 ##      by init_yregs/1.
-14: allocate_zero/2
+14: -allocate_zero/2
 
 ## @spec allocate_heap_zero StackNeed HeapNeed Live
 ## @doc Allocate space for StackNeed words on the stack and HeapNeed words
@@ -119,7 +121,7 @@ BEAM_FORMAT_NUMBER=0
 ##
 ##      OTP 24: This instruction has been superseded by allocate_heap/2
 ##      followed by init_yregs/1.
-15: allocate_heap_zero/3
+15: -allocate_heap_zero/3
 
 ## @spec test_heap HeapNeed Live
 ## @doc Ensure there is space for HeapNeed words on the heap. If a GC is needed
@@ -130,7 +132,7 @@ BEAM_FORMAT_NUMBER=0
 ## @doc  Clear the Nth stack word. (By writing NIL.)
 ##
 ##       OTP 24: This instruction has been superseded by init_yregs/1.
-17: init/1
+17: -init/1
 
 ## @spec deallocate N
 ## @doc  Restore the continuation pointer (CP) from the stack and deallocate
@@ -170,7 +172,7 @@ BEAM_FORMAT_NUMBER=0
 ##       receive loop at Label.
 25: wait/1
 
-## @spec wait_timeout Lable Time
+## @spec wait_timeout Label Time
 ## @doc  Sets up a timeout of Time milliseconds and saves the address of the
 ##       following instruction as the entry point if the timeout triggers.
 26: wait_timeout/2
@@ -192,7 +194,7 @@ BEAM_FORMAT_NUMBER=0
 38: -int_bnot/3
 
 #
-# Comparision operators.
+# Comparison operators.
 #
 
 ## @spec is_lt Lbl Arg1 Arg2
@@ -325,6 +327,9 @@ BEAM_FORMAT_NUMBER=0
 ## @spec set_tuple_element NewElement Tuple Position
 ## @doc  Update the element at position Position of the tuple Tuple
 ##       with the new element NewElement.
+##
+##       TODO: As of Erlang/OTP 29, this instruction is no longer emitted
+##       by the compiler.
 67: set_tuple_element/3
 
 #
@@ -332,8 +337,8 @@ BEAM_FORMAT_NUMBER=0
 #
 68: -put_string/3
 69: put_list/3
-70: put_tuple/2
-71: put/1
+70: -put_tuple/2
+71: -put/1
 
 #
 # Raising errors.
@@ -384,10 +389,10 @@ BEAM_FORMAT_NUMBER=0
 #
 87: -bs_init/2
 88: -bs_final/2
-89: bs_put_integer/5
-90: bs_put_binary/5
-91: bs_put_float/5
-92: bs_put_string/2
+89: -bs_put_integer/5
+90: -bs_put_binary/5
+91: -bs_put_float/5
+92: -bs_put_string/2
 
 #
 # Binary construction (R7B).
@@ -400,8 +405,8 @@ BEAM_FORMAT_NUMBER=0
 # The fclearerror and fcheckerror instructions are not used in OTP 24
 # and later.
 #
-94: fclearerror/0
-95: fcheckerror/1
+94: -fclearerror/0
+95: -fcheckerror/1
 96: fmove/2
 97: fconv/2
 98: fadd/4
@@ -411,7 +416,7 @@ BEAM_FORMAT_NUMBER=0
 102: fnegate/3
 
 # New fun construction (R8).
-103: make_fun2/1
+103: -make_fun2/1
 
 # Try/catch/raise (R10B).
 104: try/2
@@ -421,9 +426,9 @@ BEAM_FORMAT_NUMBER=0
 108: raise/2
 
 # New instructions in R10B.
-109: bs_init2/6
+109: -bs_init2/6
 110: -bs_bits_to_bytes/3
-111: bs_add/5
+111: -bs_add/5
 112: apply/1
 113: apply_last/2
 ## @spec is_boolean Lbl Arg1
@@ -438,14 +443,14 @@ BEAM_FORMAT_NUMBER=0
 
 # New bit syntax matching in R11B.
 
-116: bs_start_match2/5
+116: -bs_start_match2/5
 117: bs_get_integer2/7
 118: bs_get_float2/7
 119: bs_get_binary2/7
 120: bs_skip_bits2/5
 121: bs_test_tail2/3
-122: bs_save2/2
-123: bs_restore2/2
+122: -bs_save2/2
+123: -bs_restore2/2
 
 # New GC bifs introduced in R11B.
 
@@ -478,19 +483,19 @@ BEAM_FORMAT_NUMBER=0
 129: is_bitstr/2
 
 # R12B
-130: bs_context_to_binary/1
-131: bs_test_unit/3
+130: -bs_context_to_binary/1
+131: -bs_test_unit/3
 132: bs_match_string/4
 133: bs_init_writable/0
-134: bs_append/8
-135: bs_private_append/6
+134: -bs_append/8
+135: -bs_private_append/6
 
 ## @spec trim N Remaining
 ## @doc Reduce the stack usage by N words,
 ##      keeping the CP on the top of the stack.
 136: trim/2
 
-137: bs_init_bits/6
+137: -bs_init_bits/6
 
 # R12B-5
 138: bs_get_utf8/5
@@ -502,13 +507,13 @@ BEAM_FORMAT_NUMBER=0
 142: bs_get_utf32/5
 143: bs_skip_utf32/4
 
-144: bs_utf8_size/3
-145: bs_put_utf8/3
+144: -bs_utf8_size/3
+145: -bs_put_utf8/3
 
-146: bs_utf16_size/3
-147: bs_put_utf16/3
+146: -bs_utf16_size/3
+147: -bs_put_utf16/3
 
-148: bs_put_utf32/3
+148: -bs_put_utf32/3
 
 # R13B03
 
@@ -516,17 +521,8 @@ BEAM_FORMAT_NUMBER=0
 
 # R14A
 
-## @spec recv_mark Label
-## @doc  Save the end of the message queue and the address of
-##       the label Label so that a recv_set instruction can start
-##       scanning the inbox from this position.
-150: recv_mark/1
-
-## @spec recv_set Label
-## @doc Check that the saved mark points to Label and set the
-##      save pointer in the message queue to the last position
-##      of the message queue saved by the recv_mark instruction.
-151: recv_set/1
+150: -recv_mark/1
+151: -recv_set/1
 
 ## @spec gc_bif3 Lbl Live Bif Arg1 Arg2 Arg3 Reg
 ## @doc Call the bif Bif with the arguments Arg1, Arg2 and Arg3,
@@ -647,3 +643,159 @@ BEAM_FORMAT_NUMBER=0
 ## @doc  Sets the current receive cursor to the marker associated with
 ##       the given Reference.
 176: recv_marker_use/1
+
+# OTP 25
+
+## @spec bs_create_bin Fail Alloc Live Unit Dst OpList
+## @doc  Builda a new binary using the binary syntax.
+177: bs_create_bin/6
+
+## @spec call_fun2 Tag Arity Func
+## @doc Calls the fun Func with arity Arity. Assume arguments in registers x(0)
+##      to x(Arity-1). Tag can be one of:
+##
+##      * FunIndex      - `Func` is always a local fun identified by `FunIndex`
+##      * {atom,safe}   - `Func` is known to be a fun of correct arity.
+##      * {atom,unsafe} - Nothing is known about `Func`.
+178: call_fun2/3
+
+## @spec nif_start
+## @doc  No-op at start of each function declared in -nifs().
+179: nif_start/0
+
+## @spec badrecord Value
+## @doc Raises a {badrecord,Value} error exception.
+180: badrecord/1
+
+# OTP 26
+
+## @spec update_record Hint Size Src Dst Updates=[Index, Value]
+## @doc  Sets Dst to a copy of Src with the update list applied. Hint can be
+##       one of:
+##
+##       * {atom,copy}        - The result will always differ from Src, so
+##                              don't bother checking if it can be reused.
+##       * {atom,reuse}       - Reuse Src if a runtime check deduces that it's
+##                              equal to the result.
+##
+##       Note that these are just hints and the implementation is free to
+##       ignore them. More hints may be added in the future.
+181: update_record/5
+
+## @spec bs_match Fail Ctx {commands,Commands}
+## @doc  Match one or more binary segments of fixed size. Commands
+##       can be one of the following:
+##
+##       * {ensure_at_least,Stride,Unit}
+##       * {ensure_exactly,Stride}
+##       * {binary,Live,Flags,Size,Unit,Dst}
+##       * {integer,Live,Flags,Size,Unit,Dst}
+##       * {skip,Stride}
+##       * {get_tail,Live,Unit,Dst}
+##       * {'=:=',Live,Size,Value}.
+182: bs_match/3
+
+# OTP 27
+
+## @spec executable_line Location Index
+## @doc  Provide location for an executable line.
+183: executable_line/2
+
+# OTP 28
+
+## @spec debug_line Kind Location Index Live
+## @doc  Provide location for a place where a break point can be placed.
+##       Kind can be one of:
+##
+##       * {atom,entry}       - Function entry.
+##       * {atom,line}        - Any other line in the function.
+184: debug_line/4
+
+# OTP 29
+
+## @spec bif3 Lbl Bif Arg1 Arg2 Arg3 Reg
+## @doc Call the bif Bif with the arguments Arg1, Arg2, and Arg3,
+##      and store the result in Reg.
+##      On failure jump to Lbl.
+185: bif3/6
+
+## @spec is_any_native_record Lbl Term
+## @doc Check whether Term is a native record. Jump to label Lbl if not.
+186: is_any_native_record/2
+
+## @spec is_native_record Lbl Rec Module Name
+## @doc Check whether record Rec is the record Name defined in module Module.
+##      Jump to label Lbl if not.
+187: is_native_record/4
+
+## @spec get_record_elements Lbl Rec Elements=[FieldName, Register]
+## @doc Extract the values for each field name and store into the corresponding
+##      register. Jump to label if any field name is not in the native record.
+188: get_record_elements/3
+
+## @spec put_record Lbl Id Src Dst Live Updates
+## @doc Create a native record.
+##      If Lbl is 0, raise an exception when creation/update fails; otherwise,
+##      jump to label Lbl after failure.
+##pp
+##      For compatibility with code generated by OTP 29, this instruction
+##      can also update a native record if Src is a register. This
+##      capability will be soon as the OTP 29 release is no longer supported.
+189: put_record/6
+
+## @spec is_record_accessible/2 Lbl Rec Scope
+## @doc Check whether the fields of native record Rec are accessible from
+##      the executing module. Jump to label Lbl if not (Rec is defined in
+##      another module and is not exported).
+##
+##      Scope is any of:
+##
+##      * {atom,external}         - Must always be exported.
+##      * {atom,auto_local}       - Need not be exported if same module.
+190: is_record_accessible/3
+
+## @spec get_record_field/5 Lbl Rec Id Field Dst
+## @doc Get a single field from a record. If Lbl is 0, raise an exception
+##      if extracting the value fails; otherwise, jump to label Lbl if
+##      extraction fails.
+191: get_record_field/5
+
+## @spec get_record_elements_id Fail Id Rec Elements=[FieldName, Register]
+## @doc Extract the values for each field name and store into the
+##      corresponding register.
+##
+##      If Id is an atom, the native record is known to have been
+##      created by the current instant of the current module; that is,
+##      this instruction can't fail and the the position of fields are
+##      known.
+##
+##      If Id is a {Module,Name} tuple, the record name is known,
+##      but it it not guaranteed that its definition known at
+##      load-time is the same as the definition captured in Rec.
+##
+##      If Id is [], this is an anonymous match and nothing is known
+##      about the record definition. The matching must be done using
+##      the captured record definition in Rec.
+192: get_record_elements_id/4
+
+## @spec update_record_id Lbl Hint Id Src Dst Live Updates
+## @doc Update a native record.
+##
+##      If Id is an atom, the native record is known to have been
+##      created by the current instant of the current module; that is,
+##      this instruction can't fail and the the position of fields are
+##      known.
+##
+##      If Id is a {Module,Name} tuple, the record name is known,
+##      but it it not guaranteed that its definition known at
+##      load-time is the same as the definition captured in Rec.
+##
+##      If Id is [], this is an anonymous update and nothing is known
+##      about the record definition. The matching must be done using
+##      the captured record definition in Rec.
+##
+##      Hint has the same meaning as in the update_record/5 instruction.
+##
+##      If Lbl is 0, raise an exception when creation/update fails; otherwise,
+##      jump to label Lbl after failure.
+193: update_record_id/7

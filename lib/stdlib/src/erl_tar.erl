@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -28,6 +30,76 @@
 %%   http://www.gnu.org/software/tar/manual/html_node/Standard.html
 %%   http://pubs.opengroup.org/onlinepubs/9699919799/utilities/pax.html
 -module(erl_tar).
+-moduledoc """
+Unix 'tar' utility for reading and writing tar archives.
+
+This module archives and extract files to and from a tar file. This module
+supports reading most common tar formats, namely v7, STAR, USTAR, and PAX, as
+well as some of GNU tar's extensions to the USTAR format (sparse files most
+notably). It produces tar archives in USTAR format, unless the files being
+archived require PAX format due to restrictions in USTAR (such as unicode
+metadata, filename length, and more). As such, `erl_tar` supports tar archives
+produced by most all modern tar utilities, and produces tarballs which should be
+similarly portable.
+
+By convention, the name of a tar file is to end in "`.tar`". To abide to the
+convention, add "`.tar`" to the name.
+
+Tar files can be created in one operation using function `create/2` or
+`create/3`.
+
+Alternatively, for more control, use functions `open/2`, [`add/3,4`](`add/3`),
+and `close/1`.
+
+To extract all files from a tar file, use function `extract/1`. To extract only
+some files or to be able to specify some more options, use function `extract/2`.
+
+To return a list of the files in a tar file, use function `table/1` or
+`table/2`. To print a list of files to the Erlang shell, use function `t/1` or
+`tt/1`.
+
+To convert an error term returned from one of the functions above to a readable
+message, use function `format_error/1`.
+
+## Unicode Support
+
+If `file:native_name_encoding/0` returns `utf8`, path names are encoded in UTF-8
+when creating tar files, and path names are assumed to be encoded in UTF-8 when
+extracting tar files.
+
+If `file:native_name_encoding/0` returns `latin1`, no translation of path names
+is done.
+
+Unicode metadata stored in PAX headers is preserved
+
+## Other Storage Media
+
+The `m:ftp` module normally accesses the tar file on disk using the `m:file`
+module. When other needs arise, you can define your own low-level Erlang
+functions to perform the writing and reading on the storage media; use function
+`init/3`.
+
+An example of this is the SFTP support in `ssh_sftp:open_tar/3`. This function
+opens a tar file on a remote machine using an SFTP channel.
+
+## Limitations
+
+- If you must remain compatible with the USTAR tar format, you must ensure file
+  paths being stored are less than 255 bytes in total, with a maximum filename
+  component length of 100 bytes. USTAR uses a header field (prefix) in addition
+  to the name field, and splits file paths longer than 100 bytes into two parts.
+  This split is done on a directory boundary, and is done in such a way to make
+  the best use of the space available in those two fields, but in practice this
+  will often mean that you have less than 255 bytes for a path. `erl_tar` will
+  automatically upgrade the format to PAX to handle longer filenames, so this is
+  only an issue if you need to extract the archive with an older implementation
+  of `erl_tar` or `tar` which does not support PAX. In this case, the PAX
+  headers will be extracted as regular files, and you will need to apply them
+  manually.
+- Like the above, if you must remain USTAR compatible, you must also ensure that
+  paths for symbolic/hard links are no more than 100 bytes, otherwise PAX
+  headers will be used.
+""".
 
 -export([init/3,
          create/2, create/3,
@@ -38,9 +110,10 @@
          format_error/1]).
 
 -include_lib("kernel/include/file.hrl").
--include_lib("erl_tar.hrl").
+-include("erl_tar.hrl").
 
 %% Converts the short error reason to a descriptive string.
+-doc "Converts an error reason term to a human-readable error message string.".
 -spec format_error(term()) -> string().
 format_error(invalid_tar_checksum) ->
     "Checksum failed";
@@ -71,6 +144,8 @@ format_error({invalid_gnu_0_1_sparsemap, Format}) ->
     lists:flatten(io_lib:format("Invalid GNU sparse map (version ~s)", [Format]));
 format_error(unsafe_path) ->
     "The path points above the current working directory";
+format_error(too_big) ->
+    "Extraction size exceeds the configured max_size limit";
 format_error({Name,Reason}) ->
     lists:flatten(io_lib:format("~ts: ~ts", [Name,format_error(Reason)]));
 format_error(Atom) when is_atom(Atom) ->
@@ -79,6 +154,79 @@ format_error(Term) ->
     lists:flatten(io_lib:format("~tp", [Term])).
 
 %% Initializes a new reader given a custom file handle and I/O wrappers
+-doc """
+The `Fun` is the definition of what to do when the different storage operations
+functions are to be called from the higher tar handling functions (such as
+[`add/3`](`add/3`), [`add/4`](`add/4`), and [`close/1`](`close/1`)).
+
+The `Fun` is called when the tar function wants to do a low-level operation,
+like writing a block to a file. The `Fun` is called as
+`Fun(Op, {UserData,Parameters...})`, where `Op` is the operation name,
+`UserData` is the term passed as the first argument to `init/1` and
+`Parameters...` are the data added by the tar function to be passed down to the
+storage handling function.
+
+Parameter `UserData` is typically the result of opening a low-level structure
+like a file descriptor or an SFTP channel id. The different `Fun` clauses
+operate on that very term.
+
+The following are the fun clauses parameter lists:
+
+- **`(write, {UserData,DataToWrite})`** - Writes term `DataToWrite` using
+  `UserData`.
+
+- **`(close, UserData)`** - Closes the access.
+
+- **`(read2, {UserData,Size})`** - Reads using `UserData` but only `Size` bytes.
+  Notice that there is only an arity-2 read function, not an arity-1 function.
+
+- **`(position,{UserData,Position})`** - Sets the position of `UserData` as
+  defined for files in `file:position/2`
+
+_Example:_
+
+The following is a complete `Fun` parameter for reading and writing on files
+using the `m:file` module:
+
+```erlang
+ExampleFun =
+   fun(write, {Fd,Data}) ->  file:write(Fd, Data);
+      (position, {Fd,Pos}) -> file:position(Fd, Pos);
+      (read2, {Fd,Size}) -> file:read(Fd, Size);
+      (close, Fd) -> file:close(Fd)
+   end
+```
+
+Here `Fd` was specified to function [`init/3`](`init/3`) as:
+
+```erlang
+{ok,Fd} = file:open(Name, ...).
+{ok,TarDesc} = erl_tar:init(Fd, write, ExampleFun),
+```
+
+`TarDesc` is then used:
+
+```erlang
+erl_tar:add(TarDesc, SomeValueIwantToAdd, FileNameInTarFile),
+...,
+erl_tar:close(TarDesc)
+```
+
+When the `erl_tar` core wants to, for example, write a piece of `Data`, it would
+call `ExampleFun(write, {UserData,Data})`.
+
+> #### Note {: .info }
+>
+> This example with the `file` module operations is not necessary to use
+> directly, as that is what function `open/2` in principle does.
+
+> #### Warning {: .warning }
+>
+> The `TarDescriptor` term is not a file descriptor. You are advised not to rely
+> on the specific contents of this term, as it can change in future Erlang/OTP
+> releases when more features are added to this module.
+""".
+-doc(#{since => <<"OTP 17.4">>}).
 -spec init(UserData :: user_data(), write | read, file_op()) ->
                   {ok, tar_descriptor()} | {error, badarg}.
 init(UserData, AccessMode, Fun) when is_function(Fun, 2) ->
@@ -90,6 +238,29 @@ init(_UserData, _AccessMode, _Fun) ->
 
 %%%================================================================
 %% Extracts all files from the tar file Name.
+-doc """
+Extracts all files from a tar archive.
+
+If argument `Name` is specified as `{binary,Binary}`, the contents of the binary
+is assumed to be a tar archive.
+
+If argument `Name` is specified as `{file,Fd}`, `Fd` is assumed to be a file
+descriptor returned from function `file:open/2`.
+
+Otherwise, `Name` is to be a filename.
+
+> #### Note {: .info }
+>
+> Leading slashes in tar member names will be removed before writing the file.
+> That is, absolute paths will be turned into relative paths. There will be an
+> info message written to the error logger when paths are changed in this way.
+
+> #### Warning {: .warning }
+>
+> The `compressed` and `cooked` flags are invalid when passing a file descriptor
+> with `{file,Fd}`. The file is assumed to have been opened with the appropriate
+> flags.
+""".
 -spec extract(Open :: open_type()) -> ok | {error, term()}.
 extract(Name) ->
     extract(Name, []).
@@ -103,10 +274,64 @@ extract(Name) ->
 %%  - {files, ListOfFilesToExtract}: Only extract ListOfFilesToExtract
 %%  - verbose: Prints verbose information about the extraction,
 %%  - {cwd, AbsoluteDir}: Sets the current working directory for the extraction
--spec extract(Open :: open_type(), [extract_opt()]) ->
-                     {ok, [{string(), binary()}]} |
-                     {error, term()} |
-                     ok.
+-doc """
+Extracts files from a tar archive.
+
+If argument `Name` is specified as `{binary,Binary}`, the contents of the binary
+is assumed to be a tar archive.
+
+If argument `Name` is specified as `{file,Fd}`, `Fd` is assumed to be a file
+descriptor returned from function `file:open/2`.
+
+Otherwise, `Name` is to be a filename.
+
+The following options modify the defaults for the extraction as follows:
+
+- **`{cwd,Cwd}`** - Files with relative filenames are by default extracted to
+  the current working directory. With this option, files are instead extracted
+  into directory `Cwd`.
+
+- **`{files,FileList}`** - By default, all files are extracted from the tar
+  file. With this option, only those files are extracted whose names are
+  included in `FileList`.
+
+- **`compressed`** - With this option, the file is uncompressed while
+  extracting. If the tar file is not compressed, this option is ignored.
+
+- **`cooked`** - By default, function [`open/2`](`open/2`) function opens the
+  tar file in `raw` mode, which is faster but does not allow a remote (Erlang)
+  file server to be used. Adding `cooked` to the mode list overrides the default
+  and opens the tar file without option `raw`.
+
+- **`memory`** - Instead of extracting to a directory, this option gives the
+  result as a list of tuples `{Filename, Binary}`, where `Binary` is a binary
+  containing the extracted data of the file named `Filename` in the tar file.
+
+- **`keep_old_files`** - By default, all existing files with the same name as
+  files in the tar file are overwritten. With this option, existing files are
+  not overwriten.
+
+- **`verbose`** - Prints an informational message for each extracted file.
+
+- **`{chunks,ChunkSize}`** - Sets the chunk size, in bytes, for writing extracted
+  file data to disk. Defaults to 65536 bytes.
+
+- **`{max_size,Size}`** - Sets a limit on the total size of extracted data. If
+  the cumulative size of all extracted files exceeds `Size` bytes, extraction
+  fails with `{error, too_big}`. When extracting a compressed binary archive,
+  the decompressed binary is also subject to this limit. Defaults to `infinity`
+  (no limit).
+
+> #### Warning {: .warning }
+>
+> The `compressed` and `cooked` flags are invalid when passing a file descriptor
+> with `{file,Fd}`. The file is assumed to have been opened with the appropriate
+> flags.
+""".
+-spec extract(Open :: open_type(), []) ->
+                     ok | {error, term()};
+             (Open :: open_type(), [extract_opt(), ...]) ->
+                     ok | {ok, [{string(), binary()}]} | {error, term()}.
 extract({binary, Bin}, Opts) when is_list(Opts) ->
     do_extract({binary, Bin}, Opts);
 extract({file, Fd}, Opts) when is_list(Opts) ->
@@ -118,9 +343,80 @@ extract(Name, Opts) when is_list(Name); is_binary(Name), is_list(Opts) ->
 
 do_extract(Handle, Opts) when is_list(Opts) ->
     Opts2 = extract_opts(Opts),
-    Acc = if Opts2#read_opts.output =:= memory -> []; true -> ok end,
-    foldl_read(Handle, fun extract1/4, Acc, Opts2).
+    case maybe_inflate_with_limit(Handle, Opts2) of
+        {error, _} = Err ->
+            Err;
+        {ok, Handle2, Opts3} ->
+            Acc0 = if Opts3#read_opts.output =:= memory -> []; true -> ok end,
+            Acc = case Opts3#read_opts.max_size of
+                      infinity -> Acc0;
+                      _ -> {size_tracked, 0, Acc0}
+                  end,
+            foldl_read(Handle2, fun extract1/4, Acc, Opts3)
+    end.
 
+maybe_inflate_with_limit({binary, Bin}, #read_opts{max_size=MaxSize}=Opts)
+  when is_integer(MaxSize), is_binary(Bin) ->
+    case lists:member(compressed, Opts#read_opts.open_mode) of
+        true ->
+            case inflate_with_limit(Bin, MaxSize) of
+                {ok, Inflated} ->
+                    OpenMode = Opts#read_opts.open_mode -- [compressed],
+                    {ok, {binary, Inflated}, Opts#read_opts{open_mode=OpenMode}};
+                {error, too_big} ->
+                    {error, too_big}
+            end;
+        false ->
+            {ok, {binary, Bin}, Opts}
+    end;
+maybe_inflate_with_limit(Handle, Opts) ->
+    {ok, Handle, Opts}.
+
+inflate_with_limit(Bin, MaxSize) ->
+    Z = zlib:open(),
+    try
+        zlib:inflateInit(Z, 31, cut),
+        inflate_with_limit_loop(Z, Bin, MaxSize, 0, [])
+    catch
+        _:_ -> {ok, Bin}
+    after
+        zlib:close(Z)
+    end.
+
+inflate_with_limit_loop(Z, Bin, MaxSize, Total, Acc) ->
+    case zlib:safeInflate(Z, Bin) of
+        {finished, Chunks} ->
+            Size = iolist_size(Chunks),
+            NewTotal = Total + Size,
+            if NewTotal > MaxSize -> {error, too_big};
+               true -> {ok, iolist_to_binary(lists:reverse(Acc, Chunks))}
+            end;
+        {continue, Chunks} ->
+            Size = iolist_size(Chunks),
+            NewTotal = Total + Size,
+            if NewTotal > MaxSize -> {error, too_big};
+               true -> inflate_with_limit_loop(Z, <<>>, MaxSize, NewTotal, [Chunks|Acc])
+            end
+    end.
+
+extract1(eof, Reader, _, {size_tracked, _, Acc}) when is_list(Acc) ->
+    {ok, {ok, lists:reverse(Acc)}, Reader};
+extract1(eof, Reader, _, {size_tracked, _, leading_slash}) ->
+    error_logger:info_msg("erl_tar: removed leading '/' from member names\n"),
+    {ok, ok, Reader};
+extract1(eof, Reader, _, {size_tracked, _, Acc}) ->
+    {ok, Acc, Reader};
+extract1(#tar_header{size=Size}=Header, Reader0, Opts,
+         {size_tracked, Total, InnerAcc}) ->
+    NewTotal = Total + Size,
+    case NewTotal > Opts#read_opts.max_size of
+        true -> throw({error, too_big});
+        false -> ok
+    end,
+    case extract1(Header, Reader0, Opts, InnerAcc) of
+        {ok, NewInnerAcc, Reader1} ->
+            {ok, {size_tracked, NewTotal, NewInnerAcc}, Reader1}
+    end;
 extract1(eof, Reader, _, Acc) when is_list(Acc) ->
     {ok, {ok, lists:reverse(Acc)}, Reader};
 extract1(eof, Reader, _, leading_slash) ->
@@ -131,12 +427,18 @@ extract1(eof, Reader, _, Acc) ->
 extract1(#tar_header{name=Name,size=Size}=Header, Reader0, Opts, Acc0) ->
     case check_extract(Name, Opts) of
         true ->
-            case do_read(Reader0, Size) of
-                {ok, Bin, Reader1} ->
-                    Acc = extract2(Header, Bin, Opts, Acc0),
-                    {ok, Acc, Reader1};
-                {error, _} = Err ->
-                    throw(Err)
+            case Opts#read_opts.output of
+                memory ->
+                    case do_read(Reader0, Size) of
+                        {ok, Bin, Reader1} ->
+                            Acc = extract2(Header, Bin, Opts, Acc0),
+                            {ok, Acc, Reader1};
+                        {error, _} = Err ->
+                            throw(Err)
+                    end;
+                file ->
+                    Reader1 = extract_to_file(Header, Reader0, Opts),
+                    {ok, Acc0, Reader1}
             end;
         false ->
             {ok, Acc0, skip_file(Reader0)}
@@ -155,6 +457,79 @@ extract2(Header, Bin, Opts, Acc) ->
             [NameBin | Acc];
         {error, _} = Err ->
             throw(Err)
+    end.
+
+extract_to_file(#tar_header{name=Name0}=Header, Reader0, Opts) ->
+    case typeflag(Header#tar_header.typeflag) of
+        regular ->
+            Name1 = make_safe_path(Name0, Opts),
+            case stream_to_file(Name1, Reader0, Opts) of
+                {ok, Reader1} ->
+                    read_verbose(Opts, "x ~ts~n", [Name0]),
+                    _ = set_extracted_file_info(Name1, Header),
+                    Reader1;
+                {error, _} = Err ->
+                    throw(Err)
+            end;
+        _ ->
+            Reader1 = skip_file(Reader0),
+            _ = write_extracted_element(Header, <<>>, Opts),
+            Reader1
+    end.
+
+stream_to_file(Name, Reader0, Opts) ->
+    Write =
+        case Opts#read_opts.keep_old_files of
+            true ->
+                case file:read_file_info(Name) of
+                    {ok, _} -> false;
+                    _ -> true
+                end;
+            false -> true
+        end,
+    case Write of
+        true ->
+            ChunkSize = Opts#read_opts.chunk_size,
+            case open_output_file(Name) of
+                {ok, Fd} ->
+                    try
+                        stream_to_file_loop(Fd, Reader0, ChunkSize)
+                    after
+                        file:close(Fd)
+                    end;
+                {error, _} = Err ->
+                    Err
+            end;
+        false ->
+            {ok, skip_file(Reader0)}
+    end.
+
+open_output_file(Name) ->
+    case file:open(Name, [write, raw, binary]) of
+        {ok, _} = Ok ->
+            Ok;
+        {error, enoent} ->
+            ok = make_dirs(Name, file),
+            file:open(Name, [write, raw, binary]);
+        {error, _} = Err ->
+            Err
+    end.
+
+stream_to_file_loop(_Fd, #reg_file_reader{num_bytes=0}=Reader, _ChunkSize) ->
+    {ok, Reader};
+stream_to_file_loop(_Fd, #sparse_file_reader{num_bytes=0}=Reader, _ChunkSize) ->
+    {ok, Reader};
+stream_to_file_loop(Fd, Reader, ChunkSize) ->
+    case do_read(Reader, ChunkSize) of
+        {ok, Bin, Reader1} ->
+            case file:write(Fd, Bin) of
+                ok ->
+                    stream_to_file_loop(Fd, Reader1, ChunkSize);
+                {error, _} = Err ->
+                    Err
+            end;
+        {error, _} = Err ->
+            Err
     end.
 
 %% Checks if the file Name should be extracted.
@@ -182,12 +557,14 @@ check_extract(Name, #read_opts{files=Files}) ->
                       Gid :: gid()}.
 
 %% Returns a list of names of the files in the tar file Name.
+-doc(#{equiv => table(Open, [])}).
 -spec table(Open :: open_type()) -> {ok, [name_in_archive()]} | {error, term()}.
 table(Name) ->
     table(Name, []).
 
 %% Returns a list of names of the files in the tar file Name.
 %% Options accepted: compressed, verbose, cooked.
+-doc "Retrieves the names of all files in the tar file `Name`.".
 -spec table(Open :: open_type(), [compressed | verbose | cooked]) ->
                    {ok, [name_in_archive() | tar_entry()]} | {error, term()}.
 table(Name, Opts) when is_list(Opts) ->
@@ -229,6 +606,10 @@ typeflag(_) -> unknown.
 %% meant to be invoked from the shell.
 
 %% Prints each filename in the archive
+-doc """
+Prints the names of all files in the tar file `Name` to the Erlang shell
+(similar to "`tar t`").
+""".
 -spec t(file:filename()) -> ok | {error, term()}.
 t(Name) when is_list(Name); is_binary(Name) ->
     case table(Name) of
@@ -239,6 +620,10 @@ t(Name) when is_list(Name); is_binary(Name) ->
     end.
 
 %% Prints verbose information about each file in the archive
+-doc """
+Prints names and information about all files in the tar file `Name` to the
+Erlang shell (similar to "`tar tv`").
+""".
 -spec tt(open_type()) -> ok | {error, term()}.
 tt(Name) ->
     case table(Name, [verbose]) of
@@ -304,6 +689,39 @@ month(12) -> "Dec".
 -type open_type() :: file:filename_all()
                      | {binary, binary()}
                      | {file, file:io_device()}.
+-doc """
+Creates a tar file for writing (any existing file with the same name is
+truncated).
+
+By convention, the name of a tar file is to end in "`.tar`". To abide to the
+convention, add "`.tar`" to the name.
+
+Except for the `write` atom, the following atoms can be added to `OpenModeList`:
+
+- **`compressed`** - The entire tar file is compressed, as if it has been run
+  through the `gzip` program. To abide to the convention that a compressed tar
+  file is to end in "`.tar.gz`" or "`.tgz`", add the appropriate extension.
+
+- **`cooked`** - By default, the tar file is opened in `raw` mode, which is
+  faster but does not allow a remote (Erlang) file server to be used. Adding
+  `cooked` to the mode list overrides the default and opens the tar file without
+  option `raw`.
+
+To add one file at the time into an opened tar file, use function
+[`add/3,4`](`add/3`). When you are finished adding files, use function `close/1`
+to close the tar file.
+
+> #### Warning {: .warning }
+>
+> The `compressed` and `cooked` flags are invalid when passing a file descriptor
+> with `{file,Fd}`. The file must already be opened with the appropriate flags.
+
+> #### Warning {: .warning }
+>
+> The `TarDescriptor` term is not a file descriptor. You are advised not to rely
+> on the specific contents of this term, as it can change in future Erlang/OTP
+> releases when more features are added to this module.
+""".
 -spec open(Open :: open_type(), [write | compressed | cooked]) ->
                   {ok, tar_descriptor()} | {error, term()}.
 open({binary, Bin}, Mode) when is_binary(Bin) ->
@@ -324,10 +742,17 @@ do_open(Name, Mode) when is_list(Mode) ->
 open1({binary,Bin0}=Handle, read, _Raw, Opts) when is_binary(Bin0) ->
     Bin = case lists:member(compressed, Opts) of
         true ->
+            %% emulate file:open with Modes = [compressed_one ...]
+            Z = zlib:open(),
+            zlib:inflateInit(Z, 31, cut),
             try
-                zlib:gunzip(Bin0)
+                IoList = zlib:inflate(Z, Bin0),
+                zlib:inflateEnd(Z),
+                iolist_to_binary(IoList)
             catch
                 _:_ -> Bin0
+            after
+                zlib:close(Z)
             end;
         false ->
             Bin0
@@ -354,7 +779,13 @@ open1({file, Fd}=Handle, read, [raw], Opts) ->
     end;
 open1({file, _Fd}=Handle, read, [], _Opts) ->
     {error, {Handle, {incompatible_option, cooked}}};
-open1(Name, Access, Raw, Opts) when is_list(Name) or is_binary(Name) ->
+open1(Name, Access, Raw, Opts0) when is_list(Name); is_binary(Name) ->
+    Opts = case lists:member(compressed, Opts0) andalso Access == read of
+               true ->
+                   [compressed_one | (Opts0 -- [compressed])];
+               false ->
+                   Opts0
+           end,
     case file:open(Name, Raw ++ [binary, Access|Opts]) of
         {ok, File} ->
             {ok, #reader{handle=File,access=Access,func=fun file_op/2}};
@@ -392,6 +823,7 @@ file_op(close, Fd) ->
     file:close(Fd).
 
 %% Closes a tar archive.
+-doc "Closes a tar file opened by `open/2`.".
 -spec close(TarDescriptor :: tar_descriptor()) -> ok | {error, term()}.
 close(#reader{access=read}=Reader) ->
     ok = do_close(Reader);
@@ -413,16 +845,43 @@ pad_file(#reader{pos=Pos}=Reader) ->
 %% Creation/modification of tar archives
 
 %% Creates a tar file Name containing the given files.
+-doc """
+Creates a tar file and archives the files whose names are specified in
+`FileList` into it. The files can either be read from disk or be specified as
+binaries.
+""".
 -spec create(file:filename_all(), filelist()) -> ok | {error, {string(), term()}}.
 create(Name, FileList) when is_list(Name); is_binary(Name) ->
     create(Name, FileList, []).
 
 %% Creates a tar archive Name containing the given files.
 %% Accepted options: verbose, compressed, cooked
+-doc """
+Creates a tar file and archives the files whose names are specified in
+`FileList` into it. The files can either be read from disk or be specified as
+binaries.
+
+The options in `OptionList` modify the defaults as follows:
+
+- **`compressed`** - The entire tar file is compressed, as if it has been run
+  through the `gzip` program. To abide to the convention that a compressed tar
+  file is to end in "`.tar.gz`" or "`.tgz`", add the appropriate extension.
+
+- **`cooked`** - By default, function [`open/2`](`open/2`) opens the tar file in
+  `raw` mode, which is faster but does not allow a remote (Erlang) file server
+  to be used. Adding `cooked` to the mode list overrides the default and opens
+  the tar file without option `raw`.
+
+- **`dereference`** - By default, symbolic links are stored as symbolic links in
+  the tar file. To override the default and store the file that the symbolic
+  link points to into the tar file, use option `dereference`.
+
+- **`verbose`** - Prints an informational message about each added file.
+""".
 -spec create(file:filename_all(), filelist(), [create_opt()]) ->
                     ok | {error, term()} | {error, {string(), term()}}.
 create(Name, FileList, Options) when is_list(Name); is_binary(Name) ->
-    Mode = lists:filter(fun(X) -> (X=:=compressed) or (X=:=cooked)
+    Mode = lists:filter(fun(X) -> X =:= compressed orelse X =:= cooked
                         end, Options),
     case open(Name, [write|Mode]) of
         {ok, TarFile} ->
@@ -451,11 +910,14 @@ do_create(TarFile, [Name|Rest], Opts) ->
     end.
 
 %% Adds a file to a tape archive.
--type add_type() :: name_in_archive()
-                  | {name_in_archive(), file:filename_all()}.
--spec add(TarDescriptor, AddType, Options) -> ok | {error, term()} when
+-doc """
+Equivalent to [`add(TarDescriptor, Name, Name, Options)`](`add/4`) if `Name` is `t:name_in_archive/0`.
+
+If `Name` is a two tuple `{NameInArchive, Name}`, then [`add(TarDescriptor, Name, NameInArchive, Options)`](`add/4`) is called.
+""".
+-spec add(TarDescriptor, Name, Options) -> ok | {error, term()} when
     TarDescriptor :: tar_descriptor(),
-    AddType :: add_type(),
+    Name :: name_in_archive() | {name_in_archive(), file:filename_all()},
     Options :: [add_opt()].
 add(Reader, {NameInArchive, Name}, Opts)
   when is_list(NameInArchive), is_list(Name) ->
@@ -466,6 +928,43 @@ add(Reader, {NameInArchive, Bin}, Opts)
 add(Reader, Name, Opts) when is_list(Name) ->
     do_add(Reader, Name, Name, Opts).
 
+-doc """
+Adds a file to a tar file that has been opened for writing by
+[`open/1`](`open/2`).
+
+`NameInArchive` is the name under which the file becomes stored in the tar file.
+The file gets this name when it is extracted from the tar file.
+
+Options:
+
+- **`dereference`** - By default, symbolic links are stored as symbolic links in
+  the tar file. To override the default and store the file that the symbolic
+  link points to into the tar file, use option `dereference`.
+
+- **`verbose`** - Prints an informational message about the added file.
+
+- **`{chunks,ChunkSize}`** - Sets the chunk size, in bytes, for reading data
+  from the file. Defaults to 65536 bytes.
+- **`{atime,non_neg_integer()}`** - Sets the last time, as
+  [POSIX time](`e:erts:time_correction.md#posix-time`), when the file was read.
+  See also `file:read_file_info/1`.
+
+- **`{mtime,non_neg_integer()}`** - Sets the last time, as
+  [POSIX time](`e:erts:time_correction.md#posix-time`), when the file was
+  written. See also `file:read_file_info/1`.
+
+- **`{ctime,non_neg_integer()}`** - Sets the time, as
+  [POSIX time](`e:erts:time_correction.md#posix-time`), when the file was
+  created. See also `file:read_file_info/1`.
+
+- **`{uid,non_neg_integer()}`** - Sets the file owner. `file:read_file_info/1`.
+
+- **`{gid,non_neg_integer()}`** - Sets the group that the file owner belongs to.
+  `file:read_file_info/1`.
+
+- **`{mode,non_neg_integer()}`** - Sets the file permissions.
+  See also `file:read_file_info/1`.
+""".
 -spec add(TarDescriptor, Filename, NameInArchive, Options) ->
         ok | {error, term()} when
     TarDescriptor :: tar_descriptor(),
@@ -500,6 +999,8 @@ add_opts([{mtime,Value}|T], AllOptions, Opts) ->
     add_opts(T, AllOptions, Opts#add_opts{mtime=Value});
 add_opts([{ctime,Value}|T], AllOptions, Opts) ->
     add_opts(T, AllOptions, Opts#add_opts{ctime=Value});
+add_opts([{mode,Value}|T], AllOptions, Opts) ->
+    add_opts(T, AllOptions, Opts#add_opts{mode=Value});
 add_opts([{uid,Value}|T], AllOptions, Opts) ->
     add_opts(T, AllOptions, Opts#add_opts{uid=Value});
 add_opts([{gid,Value}|T], AllOptions, Opts) ->
@@ -520,6 +1021,8 @@ do_apply_file_info_opts([{mtime,Value}|T], FileInfo) ->
     do_apply_file_info_opts(T, FileInfo#file_info{mtime=Value});
 do_apply_file_info_opts([{ctime,Value}|T], FileInfo) ->
     do_apply_file_info_opts(T, FileInfo#file_info{ctime=Value});
+do_apply_file_info_opts([{mode,Value}|T], FileInfo) ->
+    do_apply_file_info_opts(T, FileInfo#file_info{mode=Value});
 do_apply_file_info_opts([{uid,Value}|T], FileInfo) ->
     do_apply_file_info_opts(T, FileInfo#file_info{uid=Value});
 do_apply_file_info_opts([{gid,Value}|T], FileInfo) ->
@@ -577,7 +1080,7 @@ add1(Reader, Bin, NameInArchive, Opts) when is_binary(Bin) ->
                 ctime = add_opts_time(Opts#add_opts.ctime, Now),
                 uid = Opts#add_opts.uid,
                 gid = Opts#add_opts.gid,
-                mode = 8#100644},
+                mode = Opts#add_opts.mode},
     {ok, Reader2} = add_header(Reader, Header, Opts),
     Padding = skip_padding(byte_size(Bin)),
     Data = [Bin, <<0:Padding/unit:8>>],
@@ -771,30 +1274,24 @@ build_pax_entry(Header, PaxAttrs, Opts) ->
 build_pax_file(Keys, PaxAttrs) ->
     build_pax_file(Keys, PaxAttrs, []).
 build_pax_file([], _, Acc) ->
-    unicode:characters_to_binary(Acc);
+    iolist_to_binary(Acc);
 build_pax_file([K|Rest], Attrs, Acc) ->
-    V = maps:get(K, Attrs),
-    Size = sizeof(K) + sizeof(V) + 3,
-    Size2 = sizeof(Size) + Size,
-    Key = to_string(K),
-    Value = to_string(V),
-    Record = unicode:characters_to_binary(io_lib:format("~B ~ts=~ts\n", [Size2, Key, Value])),
-    if byte_size(Record) =/= Size2 ->
-            Size3 = byte_size(Record),
-            Record2 = io_lib:format("~B ~ts=~ts\n", [Size3, Key, Value]),
-            build_pax_file(Rest, Attrs, [Acc, Record2]);
-       true ->
-            build_pax_file(Rest, Attrs, [Acc, Record])
-    end.
+    Key = unicode:characters_to_binary(to_string(K)),
+    Value = unicode:characters_to_binary(to_string(maps:get(K, Attrs))),
+    %% The record length includes its own decimal digits, the separating
+    %% space, "=" and the trailing newline, all counted in bytes
+    Size = pax_record_size(byte_size(Key) + byte_size(Value) + 3),
+    Record = [integer_to_binary(Size), $\s, Key, $=, Value, $\n],
+    build_pax_file(Rest, Attrs, [Acc, Record]).
 
-sizeof(Bin) when is_binary(Bin) ->
-    byte_size(Bin);
-sizeof(List) when is_list(List) ->
-    length(List);
-sizeof(N) when is_integer(N) ->
-    byte_size(integer_to_binary(N));
-sizeof(N) when is_float(N) ->
-    byte_size(float_to_binary(N)).
+pax_record_size(Base) ->
+    pax_record_size(Base, Base).
+
+pax_record_size(Base, Size) ->
+    case Base + byte_size(integer_to_binary(Size)) of
+        Size -> Size;
+        NewSize -> pax_record_size(Base, NewSize)
+    end.
 
 to_string(Bin) when is_binary(Bin) ->
     unicode:characters_to_list(Bin);
@@ -812,7 +1309,7 @@ split_ustar_path(Path) ->
             false;
        true ->
             PathBin = binary:list_to_bin(Path),
-            case binary:split(PathBin, [<<$/>>], [global, trim_all]) of
+            case filename:split(PathBin) of
                 [Part] when byte_size(Part) >= ?V7_NAME_LEN ->
                     false;
                 Parts ->
@@ -832,7 +1329,7 @@ join_split_ustar_path([Part|_], {ok, _, nil})
   when byte_size(Part) > ?USTAR_PREFIX_LEN ->
     false;
 join_split_ustar_path([Part|_], {ok, _Name, Acc})
-  when (byte_size(Part)+byte_size(Acc)) > ?USTAR_PREFIX_LEN ->
+  when (byte_size(Acc)+1+byte_size(Part)) > ?USTAR_PREFIX_LEN ->
     false;
 join_split_ustar_path([Part|Rest], {ok, Name, nil}) ->
     join_split_ustar_path(Rest, {ok, Name, Part});
@@ -1019,11 +1516,14 @@ do_get_format({error, _} = Err, _Bin) ->
 do_get_format(#header_v7{}=V7, Bin)
   when is_binary(Bin), byte_size(Bin) =:= ?BLOCK_SIZE ->
     Checksum = parse_octal(V7#header_v7.checksum),
-    Chk1 = compute_checksum(Bin),
-    Chk2 = compute_signed_checksum(Bin),
-    if Checksum =/= Chk1 andalso Checksum =/= Chk2 ->
+    IsBadChecksum = case compute_checksum(Bin) of
+                        Checksum -> false;
+                        _ -> compute_signed_checksum(Bin) =/= Checksum
+                    end,
+    case IsBadChecksum of
+        true ->
             ?FORMAT_UNKNOWN;
-       true ->
+        false ->
             %% guess magic
             Ustar = to_ustar(V7, Bin),
             Star = to_star(V7, Bin),
@@ -1203,6 +1703,9 @@ compute_signed_checksum(<<H1:?V7_CHKSUM/binary,
 
 %% Returns the checksum of a binary.
 checksum(Bin) -> checksum(Bin, 0).
+
+checksum(<<A/unsigned,B/unsigned,C/unsigned,D/unsigned,Rest/binary>>, Sum) ->
+    checksum(Rest, Sum+A+B+C+D);
 checksum(<<A/unsigned,Rest/binary>>, Sum) ->
     checksum(Rest, Sum+A);
 checksum(<<>>, Sum) -> Sum.
@@ -1251,39 +1754,40 @@ parse_numeric(<<First, _/binary>> = Bin) ->
             parse_octal(Bin)
     end.
 
-parse_octal(Bin) when is_binary(Bin) ->
+parse_octal(<<Bin/binary>>) ->
     %% skip leading/trailing zero bytes and spaces
-    do_parse_octal(Bin, <<>>).
-do_parse_octal(<<>>, <<>>) ->
-    0;
-do_parse_octal(<<>>, Acc) ->
-    case io_lib:fread("~8u", binary:bin_to_list(Acc)) of
-        {error, _} -> throw({error, invalid_tar_checksum});
-        {ok, [Octal], []} -> Octal;
-        {ok, _, _} -> throw({error, invalid_tar_checksum})
-    end;
-do_parse_octal(<<$\s,Rest/binary>>, Acc) ->
+    do_parse_octal(Bin, 0).
+
+do_parse_octal(<<$\s, Rest/binary>>, Acc) ->
     do_parse_octal(Rest, Acc);
 do_parse_octal(<<0, Rest/binary>>, Acc) ->
     do_parse_octal(Rest, Acc);
 do_parse_octal(<<C, Rest/binary>>, Acc) ->
-    do_parse_octal(Rest, <<Acc/binary, C>>).
+    Digit = C - $0,
+    case Digit band 7 of
+        Digit ->
+            do_parse_octal(Rest, Acc bsl 3 bor Digit);
+        _ ->
+            throw({error, invalid_tar_checksum})
+    end;
+do_parse_octal(<<>>, Acc) ->
+    Acc.
 
 parse_string(Bin) when is_binary(Bin) ->
-    do_parse_string(Bin, <<>>).
-do_parse_string(<<>>, Acc) ->
-    case unicode:characters_to_list(Acc) of
+    N = strlen(Bin, 0),
+    <<Prefix:N/binary,_/binary>> = Bin,
+    case unicode:characters_to_list(Prefix) of
         Str when is_list(Str) ->
             Str;
         {incomplete, _Str, _Rest} ->
-            binary:bin_to_list(Acc);
+            binary_to_list(Prefix);
         {error, _Str, _Rest} ->
             throw({error, {bad_header, invalid_string}})
-    end;
-do_parse_string(<<0, _/binary>>, Acc) ->
-    do_parse_string(<<>>, Acc);
-do_parse_string(<<C, Rest/binary>>, Acc) ->
-    do_parse_string(Rest, <<Acc/binary, C>>).
+    end.
+
+strlen(<<>>, N) -> N;
+strlen(<<0, _/binary>>, N) -> N;
+strlen(<<_, Rest/binary>>, N) -> strlen(Rest, N + 1).
 
 convert_header(Bin, #reader{pos=Pos}=Reader)
   when byte_size(Bin) =:= ?BLOCK_SIZE, (Pos rem ?BLOCK_SIZE) =:= 0 ->
@@ -1660,10 +2164,12 @@ make_safe_path(Path0, #read_opts{cwd=Cwd}) ->
         Path -> filename:absname(Path, Cwd)
     end.
 
-safe_link_name(#tar_header{linkname=Path0},#read_opts{cwd=Cwd} ) ->
-    case filelib:safe_relative_path(Path0, Cwd) of
+safe_link_name(#tar_header{name=Name,linkname=Path0},#read_opts{cwd=Cwd} ) ->
+    ParentDir = filename:dirname(Name),
+    ResolvedTarget = filename:join(ParentDir, Path0),
+    case filelib:safe_relative_path(ResolvedTarget, Cwd) of
         unsafe -> throw({error,{Path0,unsafe_symlink}});
-        Path -> Path
+        _Path -> Path0
     end.
 
 create_regular(Name, NameInArchive, Bin, Opts) ->
@@ -1783,9 +2289,6 @@ do_write(#reader{handle=Handle,func=Fun}=Reader0, Data)
             Err
     end.
 
-do_copy(#reader{func=Fun}=Reader, Source, #add_opts{chunk_size=0}=Opts)
-  when is_function(Fun, 2) ->
-    do_copy(Reader, Source, Opts#add_opts{chunk_size=65536});
 do_copy(#reader{func=Fun}=Reader, Source, #add_opts{chunk_size=ChunkSize})
     when is_function(Fun, 2) ->
     case file:open(Source, [read, binary]) of
@@ -1862,6 +2365,8 @@ do_read(#reader{pos=Pos,handle=Handle,func=Fun}=Reader, Len)
 do_sparse_read(Reader, Len) ->
     do_sparse_read(Reader, Len, <<>>).
 
+do_sparse_read(#sparse_file_reader{}=Reader, 0, Acc) ->
+    {ok, Acc, Reader};
 do_sparse_read(#sparse_file_reader{sparse_map=[#sparse_entry{num_bytes=0}|Entries]
                                   }=Reader0, Len, Acc) ->
     %% skip all empty fragments
@@ -1877,12 +2382,10 @@ do_sparse_read(#sparse_file_reader{sparse_map=[],
     do_sparse_read(Reader1, Len-byte_size(Bin), <<Acc/binary,Bin/binary>>);
 do_sparse_read(#sparse_file_reader{sparse_map=[]}=Reader, _Len, Acc) ->
     {ok, Acc, Reader};
-do_sparse_read(#sparse_file_reader{}=Reader, 0, Acc) ->
-    {ok, Acc, Reader};
 do_sparse_read(#sparse_file_reader{sparse_map=[#sparse_entry{offset=Offset}|_],
                                    pos=Pos}=Reader0, Len, Acc)
   when Pos < Offset ->
-    {ok, Bin, Reader1} = read_sparse_hole(Reader0, Offset, Offset-Pos),
+    {ok, Bin, Reader1} = read_sparse_hole(Reader0, Offset, Len),
     do_sparse_read(Reader1, Len-byte_size(Bin), <<Acc/binary,Bin/binary>>);
 do_sparse_read(#sparse_file_reader{sparse_map=[Entry|Entries],
                                    pos=Pos}=Reader0, Len, Acc) ->
@@ -1959,6 +2462,10 @@ extract_opts([cooked|Rest], Opts=#read_opts{open_mode=OpenMode}) ->
     extract_opts(Rest, Opts#read_opts{open_mode=[cooked|OpenMode]});
 extract_opts([verbose|Rest], Opts) ->
     extract_opts(Rest, Opts#read_opts{verbose=true});
+extract_opts([{chunks,N}|Rest], Opts) ->
+    extract_opts(Rest, Opts#read_opts{chunk_size=N});
+extract_opts([{max_size,N}|Rest], Opts) ->
+    extract_opts(Rest, Opts#read_opts{max_size=N});
 extract_opts([Other|Rest], Opts) ->
     extract_opts(Rest, read_opts([Other], Opts));
 extract_opts([], Opts) ->

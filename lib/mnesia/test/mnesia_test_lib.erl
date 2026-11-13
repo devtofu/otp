@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -44,7 +46,7 @@
 %%% specified in the Config, the test case is skipped. If there
 %%% was enough node names in the Config, X of them are selected
 %%% and if some of them happens to be down they are restarted
-%%% via the slave module. When all nodes are up and running a
+%%% via the peer module. When all nodes are up and running a
 %%% disk resident schema is created on all nodes and Mnesia is
 %%% started a on all nodes. This means that all test cases may
 %%% assume that Mnesia is up and running on all acquired nodes.
@@ -62,7 +64,7 @@
 %%% test(TestCases)
 %%%
 %%%    Run parts of the test suite. Uses test/2.
-%%%    Reads Config from mnesia_test.config and starts them if neccessary.
+%%%    Reads Config from mnesia_test.config and starts them if necessary.
 %%%    Kills Mnesia and wipes out the Mnesia directories as a starter.
 %%%
 %%% test(TestCases, Config)
@@ -79,11 +81,12 @@
 	 log/2,
 	 log/4,
 	 verbose/4,
+         match/4,
 	 default_config/0,
 	 diskless/1,
 	 eval_test_case/3,
 	 test_driver/2,
-	 test_case_evaluator/3,
+         test_case_evaluator/4,
 	 activity_evaluator/1,
 	 flush/0,
 	 pick_msg/0,
@@ -97,14 +100,13 @@
 	 select_nodes/4,
 	 init_nodes/3,
 	 error/4,
-	 slave_start_link/0,
-	 slave_start_link/1,
-	 slave_sup/0,
+	 node_sup/0,
 
 	 start_mnesia/1,
 	 start_mnesia/2,
 	 start_appls/2,
 	 start_appls/3,
+	 start_ext_test_server/0,
 	 start_wait/2,
 	 storage_type/2,
 	 stop_mnesia/1,
@@ -132,10 +134,24 @@
 	 struct/1,
 	 init_per_testcase/2,
 	 end_per_testcase/2,
-	 kill_tc/2
+	 kill_tc/2,
+         get_ext_test_server_name/0,
+         set_peer_ref/2,
+         get_peer_ref/1,
+         get_peer_ref/2,
+         has_network_blocker/0,
+         skip_if_no_network_blocker/1,
+         block_peer/2,
+         unblock_peer/2,
+         block_pair/2,
+         unblock_pair/2,
+         remote_call/4
 	]).
 
 -include("mnesia_test_lib.hrl").
+-include("gen_tcp_blocking_dist.hrl").
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -153,6 +169,44 @@ end_per_testcase(_Func, Config) ->
     %% Nodes = select_nodes(all, Config, ?FILE, ?LINE),
     %% rpc:multicall(Nodes, mnesia, lkill, []),
     Config.
+
+
+match(Expr, Match, File, Line) ->
+    try
+        AR_0 = Expr(),
+        case Match(AR_0) of
+            true ->
+                verbose("ok, ~n Result as expected:~p~n",[AR_0], File, Line),
+                {success, AR_0};
+            {false, Pattern} ->
+                error("Expected ~ts Not Matching Actual result was:~n ~p~n",
+                      [Pattern, AR_0], File, Line),
+                {fail, AR_0}
+        end
+    catch
+        exit:{aborted, _ER_1}:Stacktrace when
+              element(1, _ER_1) =:= node_not_running;
+              element(1, _ER_1) =:= bad_commit;
+              element(1, _ER_1) =:= cyclic ->
+            %% Need to re-raise these to restart transaction
+            erlang:raise(exit, {aborted, _ER_1}, Stacktrace);
+        exit:AR_1:Stacktrace ->
+            AR_2 = {'EXIT', AR_1},
+            case Match(AR_2) of
+                true ->
+                    verbose("ok, ~n Result as expected:~p~n",[AR_2], File, Line),
+                    {success, AR_2};
+                {false, Pattern2} ->
+                    error("Expected ~ts Not Matching Actual result was:~n ~p~n ~p~n",
+                          [Pattern2, AR_2, Stacktrace], File, Line),
+                    {fail, AR_2}
+            end;
+        T1:AR_1:Stacktrace ->
+            error("Not Matching Actual result was:~n ~p~n  ~p~n",
+                  [{T1,AR_1}, Stacktrace], File, Line),
+            {fail,{T1,AR_1}}
+    end.
+
 
 %% Use ?log(Format, Args) as wrapper
 log(Format, Args, LongFile, Line) ->
@@ -236,50 +290,46 @@ mk_nodes(N, Nodes) when N > 0 ->
 mk_node(N, Name, Host) ->
     list_to_atom(lists:concat([Name ++ integer_to_list(N) ++ "@" ++ Host])).
 
-slave_start_link() ->
-    slave_start_link(node()).
+node_start_link(Host, Name) ->
+    node_start_link(Host, Name, 10).
 
-slave_start_link(Node) ->
-    [Local, Host] = node_to_name_and_host(Node),
-    Count = erlang:unique_integer([positive]),
-    List = [Local, "_", Count],
-    Name = list_to_atom(lists:concat(List)),
-    slave_start_link(list_to_atom(Host), Name).
-
-slave_start_link(Host, Name) ->
-    slave_start_link(Host, Name, 10).
-
-slave_start_link(Host, Name, Retries) ->
+node_start_link(Host, Name, Retries) ->
     Debug = atom_to_list(mnesia:system_info(debug)),
-    Args = "-mnesia debug " ++ Debug ++
-	" -pa " ++
-	filename:dirname(code:which(?MODULE)) ++
-	" -pa " ++
-	filename:dirname(code:which(mnesia)),
+    Args0 = ["-mnesia", "debug", Debug,
+             "-pa", filename:dirname(code:which(?MODULE)),
+             "-pa", filename:dirname(code:which(mnesia))],
+    Args = case has_network_blocker() of
+               true ->
+                   ?NETWORK_BLOCKER_DIST_OPTS ++ Args0;
+               false ->
+                   Args0
+           end,
     case starter(Host, Name, Args) of
-	{ok, NewNode} ->
-	    ?match(pong, net_adm:ping(NewNode)),
-	    {ok, Cwd} = file:get_cwd(),
-	    Path = code:get_path(),
-	    ok = rpc:call(NewNode, file, set_cwd, [Cwd]),
-	    true = rpc:call(NewNode, code, set_path, [Path]),
-	    ok = rpc:call(NewNode, error_logger, tty, [false]),
-	    spawn_link(NewNode, ?MODULE, slave_sup, []),
-	    rpc:multicall([node() | nodes()], global, sync, []),
-	    {ok, NewNode};
-	{error, Reason} when Retries == 0->
-	    {error, Reason};
-	{error, Reason} ->
-	    io:format("Could not start slavenode ~p ~p retrying~n",
-		      [{Host, Name, Args}, Reason]),
-	    timer:sleep(500),
-	    slave_start_link(Host, Name, Retries - 1)
+        {ok, NewNode} ->
+            ?match(pong, net_adm:ping(NewNode)),
+            {ok, Cwd} = file:get_cwd(),
+            Path = get_existing_code_path(),
+            ok = rpc:call(NewNode, file, set_cwd, [Cwd]),
+            true = rpc:call(NewNode, code, set_path, [Path]),
+            ok = rpc:call(NewNode, error_logger, tty, [false]),
+            spawn_link(NewNode, ?MODULE, node_sup, []),
+            rpc:multicall([node() | nodes()], global, sync, []),
+            {ok, NewNode};
+        {error, Reason} when Retries == 0->
+            {error, Reason};
+        {error, Reason} ->
+            io:format("Could not start node ~p ~p retrying~n",
+                      [{Host, Name, Args}, Reason]),
+            timer:sleep(500),
+            node_start_link(Host, Name, Retries - 1)
     end.
 
 starter(Host, Name, Args) ->
-    slave:start(Host, Name, Args).
+    {ok, Peer, Node} = peer:start(#{host => Host, name => Name, args => Args, connection => 0}),
+    ok = set_peer_ref(Node, Peer),
+    {ok, Node}.
 
-slave_sup() ->
+node_sup() ->
     process_flag(trap_exit, true),
     receive
 	{'EXIT', _, _} ->
@@ -321,23 +371,23 @@ do_doc(_, [], _) ->
     ok.
 
 do_doc(Fd, Module, TestCase, List) ->
-    case get_suite(Module, TestCase) of
-	[] ->
-	    %% Implemented leaf test case
-	    Head = ?flat_format("<A HREF=~p.html#~p_1>{~p, ~p}</A>}",
-				[Module, TestCase, Module, TestCase]),
-	    print_doc(Fd, Module, TestCase, Head);
-	Suite when is_list(Suite) ->
-	    %% Test suite
-	    Head = ?flat_format("{~p, ~p}", [Module, TestCase]),
-	    print_doc(Fd, Module, TestCase, Head),
-	    io:format(Fd, "~n<DL>~n", []),
-	    do_doc(Fd, Suite, [Module | List]),
-	    io:format(Fd, "</DL>~n", []);
-	'NYI' ->
-	    %% Not yet implemented
-	    Head = ?flat_format("<B>{~p, ~p}</B>", [Module, TestCase]),
-	    print_doc(Fd, Module, TestCase, Head)
+    case get_suite1(Module, TestCase, doc) of
+        {[], doc} ->
+            %% Implemented leaf test case
+            Head = ?flat_format("<A HREF=~p.html#~p_1>{~p, ~p}</A>}",
+                                [Module, TestCase, Module, TestCase]),
+            print_doc(Fd, Module, TestCase, Head);
+        {Suite, doc} when is_list(Suite) ->
+            %% Test suite
+            Head = ?flat_format("{~p, ~p}", [Module, TestCase]),
+            print_doc(Fd, Module, TestCase, Head),
+            io:format(Fd, "~n<DL>~n", []),
+            do_doc(Fd, Suite, [Module | List]),
+            io:format(Fd, "</DL>~n", []);
+        'NYI' ->
+            %% Not yet implemented
+            Head = ?flat_format("<B>{~p, ~p}</B>", [Module, TestCase]),
+            print_doc(Fd, Module, TestCase, Head)
     end.
 
 print_doc(Fd, Mod, Fun, Head) ->
@@ -443,45 +493,64 @@ default_module(DefaultModule, TestCases) when is_list(TestCases) ->
 		      T -> {true, {DefaultModule, T}}
 		  end
 	  end,
-    lists:zf(Fun, TestCases).
+    lists:filtermap(Fun, TestCases).
 
-get_suite(Module, TestCase, Config) ->
-    case get_suite(Module, TestCase) of
-	Suite when is_list(Suite), Config == suite ->
-	    Res = test_driver(default_module(Module, Suite), Config),
-	    {{Module, TestCase}, Res};
-	Suite when is_list(Suite) ->
-	    log("Expand test case ~w~n", [{Module, TestCase}]),
-	    Def = default_module(Module, Suite),
-	    {T, Res} = timer:tc(?MODULE, test_driver, [Def, Config]),
-	    Sec = timer:seconds(1) * 1000,
-	    {T div Sec, {{Module, TestCase}, Res}};
-	'NYI' when Config == suite ->
-	    {Module, TestCase, 'NYI'};
-	'NYI' ->
-      	    log("<WARNING> Test case ~w NYI~n", [{Module, TestCase}]),
-	    {0, {skip, {Module, TestCase}, "NYI"}}
+get_suite(Module, TestCase, Config0) ->
+    case get_suite1(Module, TestCase, Config0) of
+        {Suite, Config} when is_list(Suite), Config == suite ->
+            Res = test_driver(default_module(Module, Suite), Config),
+            {{Module, TestCase}, Res};
+        {Suite, Config} when is_list(Suite) ->
+            log("Expand test case ~w~n", [{Module, TestCase}]),
+            Def = default_module(Module, Suite),
+            {T, Res} = timer:tc(?MODULE, test_driver, [Def, Config]),
+            case TestCase of
+                {group, GroupName} ->
+                    apply(Module, end_per_group, [GroupName, Config]);
+                _ ->
+                    ok
+            end,
+            Sec = timer:seconds(1) * 1000,
+            {T div Sec, {{Module, TestCase}, Res}};
+        'skip_group' ->
+            {0, {skip, Module, TestCase}, "skip_group"};
+        'NYI' when Config0 == suite ->
+            {Module, TestCase, 'NYI'};
+        'NYI' ->
+            log("<WARNING> Test case ~w NYI~n", [{Module, TestCase}]),
+            {0, {skip, {Module, TestCase}, "NYI"}}
     end.
 
-%% Returns a list (possibly empty) or the atom 'NYI'
-get_suite(Mod, {group, Suite}) ->
+%% Returns a list (possibly empty) or one of the atoms: 'NYI', 'skip_group'
+get_suite1(Mod, {group, Suite}, Config0) ->
     try
-	Groups = Mod:groups(),
-	{_, _, TCList} = lists:keyfind(Suite, 1, Groups),
-	TCList
+        Groups = Mod:groups(),
+        {_, _, TCList} = lists:keyfind(Suite, 1, Groups),
+        case Config0 of
+            doc ->
+                {TCList, doc};
+            _ ->
+                case apply(Mod, init_per_group, [Suite, Config0]) of
+                    Config when is_list(Config) ->
+                        {TCList, Config};
+                    {skip, _} ->
+                        skip_group
+                end
+        end
     catch
-	_:Reason:Stacktrace ->
-	    io:format("Not implemented ~p ~p (~p ~p)~n",
-		      [Mod,Suite,Reason,Stacktrace]),
-	    'NYI'
+        _:Reason:Stacktrace ->
+            io:format("Not implemented ~p ~p (~p ~p)~n",
+                      [Mod,Suite,Reason,Stacktrace]),
+            'NYI'
     end;
-get_suite(Mod, all) ->
+get_suite1(Mod, all, Config) ->
     case catch (apply(Mod, all, [])) of
-	{'EXIT', _} -> 'NYI';
-	List when is_list(List) -> List
+        {'EXIT', _} -> 'NYI';
+        List when is_list(List) ->
+            {List, Config}
     end;
-get_suite(_Mod, _Fun) ->
-    [].
+get_suite1(_Mod, _Fun, Config) ->
+    {[], Config}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -489,7 +558,8 @@ eval_test_case(Mod, Fun, Config) ->
     flush(),
     global:register_name(mnesia_test_case_sup, self()),
     Flag = process_flag(trap_exit, true),
-    Pid = spawn_link(?MODULE, test_case_evaluator, [Mod, Fun, [Config]]),
+    Parent = self(),
+    Pid = spawn_link(?MODULE, test_case_evaluator, [Parent, Mod, Fun, [Config]]),
     R = wait_for_evaluator(Pid, Mod, Fun, Config),
     global:unregister_name(mnesia_test_case_sup),
     process_flag(trap_exit, Flag),
@@ -502,6 +572,8 @@ flush() ->
 
 wait_for_evaluator(Pid, Mod, Fun, Config) ->
     receive
+    {config, NewConfig} ->
+        wait_for_evaluator(Pid, Mod, Fun, NewConfig);
 	{'EXIT', Pid, {test_case_ok, _PidRes}} ->
 	    Errors = flush(),
 	    Res =
@@ -522,8 +594,9 @@ wait_for_evaluator(Pid, Mod, Fun, Config) ->
 	    {crash, {Mod, Fun}, Reason}
     end.
 
-test_case_evaluator(Mod, Fun, [Config]) ->
+test_case_evaluator(Parent, Mod, Fun, [Config]) ->
     NewConfig = Mod:init_per_testcase(Fun, Config),
+    Parent ! {config, NewConfig},
     try
 	R = apply(Mod, Fun, [NewConfig]),
 	Mod:end_per_testcase(Fun, NewConfig),
@@ -634,6 +707,18 @@ prepare_test_case(Actions, N, Config, File, Line) ->
     NodeList3 = append_unique(NodeList1, NodeList2),
     This = node(),
     All = [This | lists:delete(This, NodeList3)],
+    case has_network_blocker() of
+        true ->
+            Pairs0 = [{A, B} || A <- All, B <- All, A < B],
+            {Local, Remote} = lists:partition(fun({A, B}) ->
+                A =:= node() orelse B =:= node()
+            end, Pairs0),
+            Pairs = Local ++ Remote,
+            %% Unblock local pairs first, so it works if we don't have peer refs
+            [gen_tcp_blocking_dist:unblock_pair_ignore_node_down(Node1, Node2) || {Node1, Node2} <- Pairs];
+        false ->
+            ok
+    end,
     Selected = pick_nodes(N, All, File, Line),
     case diskless(Config) of
 	true ->
@@ -694,6 +779,10 @@ do_prepare([{start_appls, Appls} | Actions], Selected, All, Config, File, Line) 
     do_prepare(Actions, Selected, All, Config, File, Line);
 do_prepare([{reload_appls, Appls} | Actions], Selected, All, Config, File, Line) ->
     reload_appls(Appls, Selected),
+    do_prepare(Actions, Selected, All, Config, File, Line);
+do_prepare([start_ext_test_server | Actions], Selected, All, Config, File, Line) ->
+    Expected = lists:duplicate(length(Selected), ok),
+    {Expected, []} = rpc:multicall(Selected, ?MODULE, start_ext_test_server, []),
     do_prepare(Actions, Selected, All, Config, File, Line).
 
 set_kill_timer(Config) ->
@@ -722,7 +811,7 @@ kill_tc(Pid, Time) ->
 			   "in ~p min~n", [Time div (1000*60)]),
 		    Files = mnesia_lib:dist_coredump(),
 		    ?log("Cores dumped to:~n ~p~n", [Files]),
-		    %% Genarate erlang crashdumps.
+		    %% Generate erlang crashdumps.
 		    %% GenDump = fun(Node) ->
 		    %% 		      File = "CRASH_" ++ atom_to_list(Node) ++ ".dump",
 		    %% 		      rpc:call(Node, os, putenv, ["ERL_CRASH_DUMP", File]),
@@ -731,7 +820,7 @@ kill_tc(Pid, Time) ->
 		    %% [GenDump(Node) || Node <- nodes()],
 
 		    %% erlang:halt("DebugTimeTrap"),
-		    exit(Pid, kill)
+                    erlang:exit_signal(Pid, kill)
 	    end
     end.
 
@@ -755,19 +844,19 @@ pick_nodes(N, [], File, Line) ->
 
 init_nodes([Node | Nodes], File, Line) ->
     case net_adm:ping(Node) of
-	pong ->
-	    [Node | init_nodes(Nodes, File, Line)];
-	pang ->
-	    [Name, Host] = node_to_name_and_host(Node),
-	    case slave_start_link(Host, Name) of
-		{ok, Node1} ->
-		    Path = code:get_path(),
-		    true = rpc:call(Node1, code, set_path, [Path]),
-		    [Node1 | init_nodes(Nodes, File, Line)];
-		Other ->
-		    ?skip("Test case (~p(~p)) ignored: cannot start node ~p: ~p~n",
-			  [File, Line, Node, Other])
-	    end
+        pong ->
+            [Node | init_nodes(Nodes, File, Line)];
+        pang ->
+            [Name, Host] = node_to_name_and_host(Node),
+            case node_start_link(Host, Name) of
+                {ok, Node1} ->
+                    Path = get_existing_code_path(),
+                    true = rpc:call(Node1, code, set_path, [Path]),
+                    [Node1 | init_nodes(Nodes, File, Line)];
+                Other ->
+                    ?skip("Test case (~p(~p)) ignored: cannot start node ~p: ~p~n",
+                          [File, Line, Node, Other])
+            end
     end;
 init_nodes([], _File, _Line) ->
     [].
@@ -807,6 +896,20 @@ start_appls([Appl | Appls], Nodes, Config, Tabs) ->
     Bad ++ start_appls(Appls, Nodes, Config, Tabs);
 start_appls([], _Nodes, _Config, _Tabs) ->
     [].
+
+start_ext_test_server() ->
+    case global:whereis_name(get_ext_test_server_name()) of
+        Pid when is_pid(Pid) ->
+            gen_server:stop({global, get_ext_test_server_name()});
+        _ ->
+            ignore
+    end,
+    {ok, _} = gen_server:start({global, get_ext_test_server_name()}, ext_test_server,
+                                    [self()],
+                                    [{timeout, infinity}
+                                     %%, {debug, [trace]}
+                                    ]),
+    ok.
 
 remote_start(mnesia, Config, Nodes) ->
     case diskless(Config) of
@@ -1044,9 +1147,10 @@ verify_replica_location(Tab, DiscOnly0, Ram0, Disc0, AliveNodes0) ->
     timer:sleep(100),
 
     S1 = ?match(AliveNodes, lists:sort(mnesia:system_info(running_db_nodes))),
-    S2 = ?match(DiscOnly, lists:sort(mnesia:table_info(Tab, disc_only_copies))),
+    S2 = ?match(DiscOnly, lists:sort(mnesia:table_info(Tab, disc_only_copies) ++
+                    mnesia:table_info(Tab, ext_disc_only_copies))),
     S3 = ?match(Ram, lists:sort(mnesia:table_info(Tab, ram_copies) ++
-				    mnesia:table_info(Tab, ext_ets))),
+                    mnesia:table_info(Tab, ext_ram_copies))),
     S4 = ?match(Disc, lists:sort(mnesia:table_info(Tab, disc_copies))),
     S5 = ?match(Write, lists:sort(mnesia:table_info(Tab, where_to_write))),
     S6 = case lists:member(This, Read) of
@@ -1059,7 +1163,7 @@ verify_replica_location(Tab, DiscOnly0, Ram0, Disc0, AliveNodes0) ->
 
 ignore_dead(Nodes, AliveNodes) ->
     Filter = fun(Node) -> lists:member(Node, AliveNodes) end,
-    lists:sort(lists:zf(Filter, Nodes)).
+    lists:sort(lists:filtermap(Filter, Nodes)).
 
 
 remote_activate_debug_fun(N, I, F, C, File, Line) ->
@@ -1083,3 +1187,45 @@ sort({ok, L}) when is_list(L) ->
     {ok, lists:sort(L)};
 sort(W) ->
     W.
+
+get_ext_test_server_name() ->
+    list_to_atom("ext_test_server_" ++ atom_to_list(node())).
+
+set_peer_ref(Node, Ref) ->
+    gen_tcp_blocking_dist:set_peer_ref(Node, Ref).
+
+get_peer_ref(Node) ->
+    gen_tcp_blocking_dist:get_peer_ref(Node).
+
+get_peer_ref(Node, Default) ->
+    gen_tcp_blocking_dist:get_peer_ref(Node, Default).
+
+get_existing_code_path() ->
+    lists:filter(fun filelib:is_dir/1, code:get_path()).
+
+%% Simulate network outage, use this to block/unblock communication between 2 nodes
+has_network_blocker() ->
+    gen_tcp_blocking_dist:has_network_blocker().
+
+skip_if_no_network_blocker(Config) ->
+    case has_network_blocker() of
+        true ->
+            Config;
+        false ->
+            {skip, "Network blocker required"}
+    end.
+
+block_peer(From, To) ->
+    gen_tcp_blocking_dist:block_peer(From, To).
+
+unblock_peer(From, To) ->
+    gen_tcp_blocking_dist:unblock_peer(From, To).
+
+block_pair(Node1, Node2) ->
+    gen_tcp_blocking_dist:block_pair(Node1, Node2).
+
+unblock_pair(Node1, Node2) ->
+    gen_tcp_blocking_dist:unblock_pair(Node1, Node2).
+
+remote_call(Node, M, F, A) ->
+    gen_tcp_blocking_dist:remote_call(Node, M, F, A).

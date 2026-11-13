@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 1996-2016. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 1996-2025. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,7 +16,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * %CopyrightEnd%
  */
 
@@ -66,7 +68,7 @@
  *  This program communicates with Erlang through the standard
  *  input and output file descriptors (0 and 1). These descriptors
  *  (and the standard error descriptor 2) must NOT be closed
- *  explicitely by this program at termination (in UNIX it is
+ *  explicitly by this program at termination (in UNIX it is
  *  taken care of by the operating system itself; in VxWorks
  *  it is taken care of by the spawn driver part of the Emulator).
  *
@@ -176,7 +178,7 @@ static void print_error(const char *,...);
  * PageTables:       9368 kB	2.5.41+
  * VmallocTotal: 34359738367 kB	??	total size of vmalloc memory area
  * VmallocUsed:     57376 kB	??	amount of vmalloc area which is used
- * VmallocChunk: 34359677947 kB	??	largest contigious block of vmalloc area which is free
+ * VmallocChunk: 34359677947 kB	??	largest contiguous block of vmalloc area which is free
  * ReverseMaps:      5738       2.5.41+	number of rmap pte chains
  * SwapCached:          0 kB	2.5.??+	
  * HugePages_Total:     0	2.5.??+
@@ -288,7 +290,6 @@ get_mem_procfs(memory_ext *me){
     int fd, nread;
     char buffer[4097];
     char *bp;
-    unsigned long value;
     
     me->flag = 0;
     
@@ -446,9 +447,10 @@ get_extended_mem_apple(memory_ext *me) {
     }
 
     me->free = vm_stat.free_count * mach_page_size;
+    me->available = (vm_stat.inactive_count + vm_stat.free_count) * mach_page_size;
     me->total = total_memory_size;
     me->pagesize = 1;
-    me->flag = F_MEM_TOTAL | F_MEM_FREE;
+    me->flag = F_MEM_TOTAL | F_MEM_FREE | F_MEM_AVAIL;
 }
 #endif
 
@@ -493,7 +495,7 @@ get_extended_mem(memory_ext *me) {
 static void 
 get_basic_mem(unsigned long *tot, unsigned long *used, unsigned long *pagesize){
 #if defined(_SC_AVPHYS_PAGES)	/* Does this exist on others than Solaris2? */
-    unsigned long avPhys, phys, pgSz;
+    unsigned long avPhys, phys;
     
     phys = sysconf(_SC_PHYS_PAGES);
     avPhys = sysconf(_SC_AVPHYS_PAGES);
@@ -508,7 +510,11 @@ get_basic_mem(unsigned long *tot, unsigned long *used, unsigned long *pagesize){
     }
     *tot      = me.total;
     *pagesize = me.pagesize;
-    *used     = me.total - me.free;
+    if (me.flag & F_MEM_AVAIL) {
+        *used = me.total - me.available;
+    } else {
+        *used = me.total - me.free;
+    }
 #elif defined(BSD4_4)
     struct vmtotal vt;
     long pgsz;
@@ -535,9 +541,9 @@ fail:
 #elif defined(__APPLE__)
     {
         memory_ext me;
-        me.free = 0;
+        me.available = 0;
         get_extended_mem_apple(&me);
-        *used = me.total - me.free;
+        *used = me.total - me.available;
         *tot = total_memory_size;
         *pagesize = 1;
     }
@@ -609,6 +615,8 @@ message_loop(int erlin_fd)
 		    case SHOW_SYSTEM_MEM:
 			extended_show_mem();
 			break;
+		    case EXIT:
+			return;
 		    default:	/* ignore all other messages */
 			break;
 		    }

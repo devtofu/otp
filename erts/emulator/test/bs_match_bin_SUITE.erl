@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1999-2016. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1999-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,24 +16,29 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
 -module(bs_match_bin_SUITE).
 
 -export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1, 
-	 init_per_group/2,end_per_group/2,
-	 byte_split_binary/1,bit_split_binary/1,match_huge_bin/1]).
+         init_per_group/2,end_per_group/2,
+         byte_split_binary/1,bit_split_binary/1,match_huge_bin/1,
+         bs_match_string_edge_case/1,contexts/1,
+         empty_binary/1,small_bitstring/1,
+         known_position/1,units/1]).
 
 -include_lib("common_test/include/ct.hrl").
 
 suite() -> [{ct_hooks,[ts_install_cth]}].
 
-all() -> 
-    [byte_split_binary, bit_split_binary, match_huge_bin].
+all() ->
+    [byte_split_binary, bit_split_binary, match_huge_bin,
+     bs_match_string_edge_case, contexts, empty_binary,
+     small_bitstring,known_position,units].
 
-groups() -> 
+groups() ->
     [].
 
 init_per_suite(Config) ->
@@ -109,14 +116,6 @@ bits_to_list([H|_]=List, Mask) ->
 bits_to_list([], _) -> [].
 
 mkbin(L) when is_list(L) -> list_to_binary(L).
-
-make_unaligned_sub_binary(Bin0) ->
-    Bin1 = <<0:3,Bin0/binary,31:5>>,
-    Sz = size(Bin0),
-    <<0:3,Bin:Sz/binary,31:5>> = id(Bin1),
-    Bin.
-
-id(I) -> I.
 
 match_huge_bin(Config) when is_list(Config) ->
     Bin = <<0:(1 bsl 27),13:8>>,
@@ -214,3 +213,172 @@ overflow_huge_bin_64(<<Bin:2305843009213693952/binary-unit:128,0,_/binary>>) -> 
 overflow_huge_bin_64(<<Bin:4611686018427387904/binary-unit:128,0,_/binary>>) -> {7,Bin}; % 1 bsl 62
 overflow_huge_bin_64(<<Bin:9223372036854775808/binary-unit:128,0,_/binary>>) -> {8,Bin}; % 1 bsl 63
 overflow_huge_bin_64(_) -> nomatch.
+
+-define(MATCH512,
+        "   1   2   3   4   5   6   7   8   9  10  11  12  13  14  15  16  17"
+        "  18  19  20  21  22  23  24  25  26  27  28  29  30  31  32"
+        "  33  34  35  36  37  38  39  40  41  42  43  44  45  46  47  48  49"
+        "  50  51  52  53  54  55  56  57  58  59  60  61  62  63  64"
+        "  65  66  67  68  69  70  71  72  73  74  75  76  77  78  79  80  81"
+        "  82  83  84  85  86  87  88  89  90  91  92  93  94  95  96"
+        "  97  98  99 100 101 102 103 104 105 106 107 108 109 110 111 112 113"
+        " 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128").
+
+%% GH-5871: bs_match_string broke when matching more than 4095 bits (max for a
+%% 12-bit immediate) on ARM.
+bs_match_string_edge_case(_Config) ->
+    Bin = id(<<?MATCH512, " 129 130 131 132 133 134 135 136 137 138">>),
+    <<?MATCH512, Tail0/binary>> = Bin,
+    <<?MATCH512, " ", Tail1/binary>> = Bin,
+    <<" ", Tail1/binary>> = id(Tail0),
+    ok.
+
+contexts(_Config) ->
+    Bytes = rand:bytes(12),
+    _ = [begin
+             <<B:N/binary,_/binary>> = Bytes,
+             B = id(get_binary(B))
+         end || N <- lists:seq(0, 12)],
+    ok.
+
+get_binary(Bin) ->
+    [A,B,C,D,E,F] = id([1,2,3,4,5,6]),
+    {Res,_} = get_binary_memory_ctx(A, B, C, D, E, F, Bin),
+    Res.
+
+
+get_binary_memory_ctx(A, B, C, D, E, F, Bin) ->
+    %% The match context will be in {x,6}, which is not
+    %% a X register backed by a CPU register on any platform.
+    Res = case Bin of
+              <<Res0:0/binary>> -> Res0;
+              <<Res0:1/binary>> -> Res0;
+              <<Res0:2/binary>> -> Res0;
+              <<Res0:3/binary>> -> Res0;
+              <<Res0:4/binary>> -> Res0;
+              <<Res0:5/binary>> -> Res0;
+              <<Res0:6/binary>> -> Res0;
+              <<Res0:7/binary>> -> Res0;
+              <<Res0:8/binary>> -> Res0;
+              <<Res0:9/binary>> -> Res0;
+              <<Res0:10/binary>> -> Res0;
+              <<Res0:11/binary>> -> Res0;
+              <<Res0:12/binary>> -> Res0
+          end,
+    {Res,{A,B,C,D,E,F}}.
+
+empty_binary(_Config) ->
+    _ = do_empty_binary(1_000_000),
+    ok.
+
+do_empty_binary(0) ->
+    ok;
+do_empty_binary(N) ->
+    %% The new bs_match instruction would use more heap space
+    %% than reserved when matching out an empty binary.
+    <<V1:0/bits, V1:0/bitstring, V2:0/bytes, V2:0/bits>> = id(<<>>),
+    [0|do_empty_binary(N-1)].
+
+small_bitstring(_Config) ->
+    %% GH-7292: The new bs_match instruction would reserve insufficient
+    %% heap space for small bitstrings.
+    rand_seed(),
+    Bin = rand:bytes(10_000),
+    ok = small_bitstring_1(id(Bin), id(Bin)),
+    ok = small_bitstring_2(id(Bin), id(7)),
+    ok = small_bitstring_3(id(Bin), id(64)).
+
+small_bitstring_1(<<A1:1/bits,A2:1/bits,A3:2/bits,
+                    A4:3/bits,A5:1/bits,As0/binary>>,
+                  <<A1:1/bits,A2:1/bits,A3:2/bits,
+                    A4:3/bits,A5:1/bits,As1/binary>>) ->
+    small_bitstring_1(As0, As1);
+small_bitstring_1(<<>>, <<>>) ->
+    ok.
+
+small_bitstring_2(<<>>, _) ->
+    ok;
+small_bitstring_2(Bin, N7) ->
+    %% Ensure that matching fixed sizes gives the same result as
+    %% matching dynamic sizes.
+
+    <<A1:3/bits,A2:7/bits,A3:7/bits,
+      A4:15/bits,_:32,As/binary>> = Bin,
+    <<A1:(N7-4)/bits,A2:N7/bits,A3:N7/bits,
+      A4:(N7+N7+1)/bits,_:32,As/binary>> = Bin,
+
+    <<B0:(7+8),B1:3/bits,B2:7/bits,B3:7/bits,
+      B4:15/bits,B5:(7+10),As/binary>> = Bin,
+    <<B0:(N7+8),B1:(N7-4)/bits,B2:N7/bits,B3:N7/bits,
+      B4:(N7+N7+1)/bits,B5:(N7+10),As/binary>> = Bin,
+
+    small_bitstring_2(As, N7).
+
+small_bitstring_3(<<>>, _) ->
+    ok;
+small_bitstring_3(Bin, N64) ->
+    %% Ensure that matching fixed sizes gives the same result as
+    %% matching dynamic sizes for larger sizes.
+
+    <<A1:(64-1)/bits,A2:(64+1)/bits,As/binary>> = Bin,
+    <<A1:(N64-1)/bits,A2:(N64+1)/bits,As/binary>> = Bin,
+
+    <<B1:(64+6)/bits,B2:(64-6)/bits,As/binary>> = Bin,
+    <<B1:(N64+6)/bits,B2:(N64-6)/bits,As/binary>> = Bin,
+
+    <<C0:5,C1:(64+7)/bits,C2:(64-12)/bits,As/binary>> = Bin,
+    <<C0:5,C1:(N64+7)/bits,C2:(N64-12)/bits,As/binary>> = Bin,
+
+    small_bitstring_3(As, N64).
+
+known_position(_Config) ->
+    %% Cover the case of an extracted bitstring having a known position.
+    <<Int:8,BitString:9/binary,$j:8>> = id(<<42:8,"abcdefghij">>),
+    42 = Int,
+    <<"abcdefghi">> = BitString,
+
+    ok.
+
+units(_Config) ->
+    %% GH-10937: It turned out that we didn't have any test for units
+    %% other than 1 and 8.
+    ok = unit_13(<<>>),
+    ok = unit_13(<<42:13>>),
+    ok = unit_13(<<-1:26>>),
+    error = unit_13("a"),
+    error = unit_13("ab"),
+
+    ok = unit_16(<<>>),
+    ok = unit_16(~"ab"),
+    error = unit_16(~"a"),
+    error = unit_16(~"abc"),
+    error = unit_16(<<7:3>>),
+
+    ok.
+
+unit_13(Bin) ->
+    case Bin of
+        <<_/binary-unit:13>> -> ok;
+        _ -> error
+    end.
+
+unit_16(Bin) ->
+    case Bin of
+        <<_/binary-unit:16>> -> ok;
+        _ -> error
+    end.
+
+
+%%%
+%%% Common utilities.
+%%%
+
+rand_seed() ->
+    rand:seed(default),
+    io:format("\n*** rand:export_seed() = ~w\n\n", [rand:export_seed()]),
+    ok.
+
+make_unaligned_sub_binary(Bin) ->
+    erts_debug:unaligned_bitstring(Bin, 3).
+
+id(I) -> I.

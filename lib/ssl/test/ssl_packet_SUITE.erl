@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -60,6 +62,8 @@
          packet_wait_passive/1,
          packet_size_passive/0,
          packet_size_passive/1,
+         packet_size_passive_setgetopts/0,
+         packet_size_passive_setgetopts/1,
          header_decode_one_byte_passive/0,
          header_decode_one_byte_passive/1,
          header_decode_two_bytes_passive/0,
@@ -124,6 +128,8 @@
          packet_wait_active/1,
          packet_size_active/0,
          packet_size_active/1,
+         packet_size_active_setoptsgetopts/0,
+         packet_size_active_setoptsgetopts/1,
          packet_switch/0,
          packet_switch/1,
          header_decode_one_byte_active/0,
@@ -176,13 +182,16 @@
 -export([send_raw/3,
          passive_raw/3,
          passive_recv_packet/3,
+         passive_recv_packet_size/3,
          send/3,
          send_incomplete/3,
+         send_incomplete_after_client/3,
          active_once_raw/4,
          active_once_packet/3,
          active_raw/3,
          active_once_raw/3,
          active_packet/3,
+         active_packet_size/3,
          assert_packet_opt/2,
          server_packet_decode/2,
          client_packet_decode/2,
@@ -218,7 +227,7 @@
 -define(UINT24(X),   X:24/unsigned-big-integer).
 -define(UINT32(X),   X:32/unsigned-big-integer).
 -define(UINT64(X),   X:64/unsigned-big-integer).
--define(STRING(X),   ?UINT32((size(X))), (X)/binary).
+-define(STRING(X),   ?UINT32((byte_size(X))), (X)/binary).
 
 -define(byte(X),   << ?BYTE(X) >> ).
 -define(uint16(X), << ?UINT16(X) >> ).
@@ -227,7 +236,7 @@
 -define(uint64(X), << ?UINT64(X) >> ).
 
 -define(MANY, 1000).
--define(SOME, 50).
+-define(SOME, 102).     %% More than def: {active, N=100}
 -define(BASE_TIMEOUT_SECONDS, 20).
 -define(SOME_SCALE, 2).
 -define(MANY_SCALE, 3).
@@ -246,10 +255,10 @@ all() ->
     ].
 
 groups() ->
-    [{'tlsv1.3', [], socket_packet_tests() ++ protocol_packet_tests()},
-     {'tlsv1.2', [], socket_packet_tests() ++ protocol_packet_tests()},
-     {'tlsv1.1', [], socket_packet_tests() ++ protocol_packet_tests()},
-     {'tlsv1', [], socket_packet_tests() ++ protocol_packet_tests()},
+    [{'tlsv1.3', [parallel], socket_packet_tests() ++ protocol_packet_tests()},
+     {'tlsv1.2', [parallel], socket_packet_tests() ++ protocol_packet_tests()},
+     {'tlsv1.1', [parallel], socket_packet_tests() ++ protocol_packet_tests()},
+     {'tlsv1', [parallel], socket_packet_tests() ++ protocol_packet_tests()},
      %% We will not support any packet types if the transport is
      %% not reliable. We might support it for DTLS over SCTP in the future 
      {'dtlsv1.2', [], [reject_packet_opt]},
@@ -282,6 +291,7 @@ socket_passive_packet_tests() ->
      packet_4_passive_some_big,
      packet_wait_passive,
      packet_size_passive,
+     packet_size_passive_setgetopts,
      %% inet header option should be deprecated!
      header_decode_one_byte_passive,
      header_decode_two_bytes_passive,
@@ -328,6 +338,7 @@ socket_active_packet_tests() ->
      packet_4_active_some_big,
      packet_wait_active,
      packet_size_active,
+     packet_size_active_setoptsgetopts,
      packet_switch,
      %% inet header option should be deprecated!
      header_decode_one_byte_active,
@@ -344,13 +355,11 @@ protocol_active_packet_tests() ->
     ].
 
 init_per_suite(Config) ->
-    catch crypto:stop(),
-    try crypto:start() of
+    catch application:stop(crypto),
+    try application:start(crypto) of
 	ok ->
 	    ssl_test_lib:clean_start(),
-	    {ok, _} = make_certs:all(proplists:get_value(data_dir, Config),
-				     proplists:get_value(priv_dir, Config)),
-	    ssl_test_lib:cert_options(Config)
+            ssl_test_lib:make_rsa_cert(Config)
     catch _:_ ->
 	    {skip, "Crypto did not start"}
     end.
@@ -651,8 +660,8 @@ packet_send_to_large() ->
     [{doc,"Test setting the packet option {packet, 2} on the send side"}].
 
 packet_send_to_large(Config) when is_list(Config) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
 
     Data = lists:append(lists:duplicate(30, "1234567890")),
@@ -679,8 +688,8 @@ packet_wait_active() ->
     [{doc,"Test waiting when complete packages have not arrived"}].
 
 packet_wait_active(Config) when is_list(Config) -> 
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
 
     Data = list_to_binary(lists:duplicate(100, "1234567890")),
@@ -712,8 +721,8 @@ packet_wait_passive() ->
     [{doc,"Test waiting when complete packages have not arrived"}].
 
 packet_wait_passive(Config) when is_list(Config) -> 
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
 
     Data = list_to_binary(lists:duplicate(100, "1234567890")),
@@ -742,8 +751,8 @@ packet_baddata_active() ->
     [{doc,"Test that if a bad packet arrives error msg is sent and socket is closed"}].
 
 packet_baddata_active(Config) when is_list(Config) -> 
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
 
     Data = list_to_binary(lists:duplicate(100, "1234567890")),
@@ -775,8 +784,8 @@ packet_baddata_passive() ->
     [{doc,"Test that if a bad packet arrives error msg is sent and socket is closed"}].
 
 packet_baddata_passive(Config) when is_list(Config) -> 
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
 
     Data = list_to_binary(lists:duplicate(100, "1234567890")),
@@ -811,8 +820,8 @@ packet_size_active() ->
     packet_size arrives error msg is sent and socket is closed"}].
 
 packet_size_active(Config) when is_list(Config) -> 
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
 
     Data = list_to_binary(lists:duplicate(100, "1234567890")),
@@ -838,6 +847,44 @@ packet_size_active(Config) when is_list(Config) ->
 
     ssl_test_lib:close(Server),
     ssl_test_lib:close(Client).
+
+%%--------------------------------------------------------------------
+packet_size_active_setoptsgetopts() ->
+    [{doc, "Test using packet_size with setopts and getopts. Note that we need to synchronization",
+      " with server as we want to test what happens to data sent after options changed at client side."
+      " just changing this kind of option without some kind of synchronization in active mode does not make sense." }].
+
+packet_size_active_setoptsgetopts(Config) when is_list(Config) ->
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
+    {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
+
+    Data = list_to_binary(lists:duplicate(100, "1234567890")),
+
+    Server = ssl_test_lib:start_server([{node, ClientNode}, {port, 0},
+					{from, self()},
+                                        %% Send data after client changed packet opts.
+					{mfa, {?MODULE, send_incomplete_after_client ,[Data, 1]}},
+					{options, [{active, false} | ServerOpts]}]),
+    Port = ssl_test_lib:inet_port(Server),
+    Client = ssl_test_lib:start_client([{node, ServerNode}, {port, Port},
+					{host, Hostname},
+					{from, self()},
+					{mfa, {?MODULE, active_packet_size,
+					       [Data, 30]}},
+					{options, [{active, true},
+                                                   {packet, 4} |
+						   ClientOpts]}]),
+    receive
+	{Client, {ssl_error, _, {invalid_packet, _}}} ->
+            ok;
+	Unexpected ->
+	    ct:fail({unexpected, Unexpected})
+    end,
+
+    ssl_test_lib:close(Server),
+    ssl_test_lib:close(Client).
+
 %%--------------------------------------------------------------------
 
 packet_size_passive() ->
@@ -845,21 +892,21 @@ packet_size_passive() ->
     than packet_size arrives error msg is sent and socket is closed"}].
 
 packet_size_passive(Config) when is_list(Config) -> 
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
 
     Data = list_to_binary(lists:duplicate(100, "1234567890")),
 
-    Server = ssl_test_lib:start_server([{node, ClientNode}, {port, 0}, 
-					{from, self()}, 
+    Server = ssl_test_lib:start_server([{node, ClientNode}, {port, 0},
+					{from, self()},
 					{mfa, {?MODULE, send_incomplete ,[Data, 1]}},
 					{options, ServerOpts}]),
     Port = ssl_test_lib:inet_port(Server),
-    Client = ssl_test_lib:start_client([{node, ServerNode}, {port, Port}, 
+    Client = ssl_test_lib:start_client([{node, ServerNode}, {port, Port},
 					{host, Hostname},
-					{from, self()}, 
-					{mfa, {?MODULE, passive_recv_packet, 
+					{from, self()},
+					{mfa, {?MODULE, passive_recv_packet,
 					       [Data, 1]}},
 					{options, [{active, false},
 						   {packet, 4}, {packet_size, 30} |
@@ -876,12 +923,46 @@ packet_size_passive(Config) when is_list(Config) ->
 
 
 %%--------------------------------------------------------------------
+packet_size_passive_setgetopts() ->
+    [{doc, "Test using packet_size with setopts and getopts"}].
+
+packet_size_passive_setgetopts(Config) when is_list(Config) ->
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
+    {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
+
+    Data = list_to_binary(lists:duplicate(100, "1234567890")),
+
+    Server = ssl_test_lib:start_server([{node, ClientNode}, {port, 0}, 
+					{from, self()}, 
+					{mfa, {?MODULE, send_incomplete ,[Data, 1]}},
+					{options, ServerOpts}]),
+    Port = ssl_test_lib:inet_port(Server),
+    Client = ssl_test_lib:start_client([{node, ServerNode}, {port, Port}, 
+					{host, Hostname},
+					{from, self()}, 
+					{mfa, {?MODULE, passive_recv_packet_size,
+					       [Data, 30]}},
+					{options, [{active, false},
+						   {packet, 4} |
+						   ClientOpts]}]),
+    receive
+	{Client, {error, {invalid_packet, _}}} ->
+            ok;
+	Unexpected ->
+	    ct:fail({unexpected, Unexpected})
+    end,
+
+    ssl_test_lib:close(Server),
+    ssl_test_lib:close(Client).
+
+%%--------------------------------------------------------------------
 packet_switch() ->
-    [{doc,"Test packet option {packet, 2} followd by {packet, 4}"}].
+    [{doc,"Test packet option {packet, 2} followed by {packet, 4}"}].
 
 packet_switch(Config) when is_list(Config) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
 
     Server = ssl_test_lib:start_server([{node, ClientNode}, {port, 0},
@@ -906,8 +987,8 @@ packet_switch(Config) when is_list(Config) ->
 packet_cdr_decode() ->
     [{doc,"Test setting the packet option {packet, cdr}, {mode, binary}"}].
 packet_cdr_decode(Config) when is_list(Config) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
 
     %% A valid cdr packet
@@ -939,8 +1020,8 @@ packet_cdr_decode(Config) when is_list(Config) ->
 packet_cdr_decode_list() ->
     [{doc,"Test setting the packet option {packet, cdr} {mode, list}"}].
 packet_cdr_decode_list(Config) when is_list(Config) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
 
     %% A valid cdr packet
@@ -974,8 +1055,8 @@ packet_http_decode() ->
      "(Body will be binary http strings are lists)"}].
 
 packet_http_decode(Config) when is_list(Config) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
 
     Request = "GET / HTTP/1.1\r\n"
@@ -1056,8 +1137,8 @@ packet_http_decode_list() ->
     [{doc, "Test setting the packet option {packet, http}, {mode, list}"
       "(Body will be list too)"}].
 packet_http_decode_list(Config) when is_list(Config) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
 
     Request = "GET / HTTP/1.1\r\n"
@@ -1113,8 +1194,8 @@ client_http_decode_list(Socket, HttpRequest) ->
 packet_http_bin_decode_multi() ->
     [{doc,"Test setting the packet option {packet, http_bin} with multiple requests"}].
 packet_http_bin_decode_multi(Config) when is_list(Config) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
 
     Request = <<"GET / HTTP/1.1\r\n"
@@ -1203,8 +1284,8 @@ packet_http_error_passive() ->
       " with a incorrect http header."}].
 
 packet_http_error_passive(Config) when is_list(Config) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
 
     Request = "GET / HTTP/1.1\r\n"
@@ -1263,8 +1344,8 @@ packet_httph_active() ->
     [{doc,"Test setting the packet option {packet, httph}"}].
 
 packet_httph_active(Config) when is_list(Config) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
 
     Trailer = "Content-Encoding: gzip\r\n"
@@ -1318,8 +1399,8 @@ client_http_decode_trailer_active(Socket) ->
 packet_httph_bin_active() ->
     [{doc,"Test setting the packet option {packet, httph_bin}"}].
 packet_httph_bin_active(Config) when is_list(Config) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
 
     Trailer = "Content-Encoding: gzip\r\n"
@@ -1368,8 +1449,8 @@ packet_httph_active_once() ->
     [{doc,"Test setting the packet option {packet, httph}"}].
 
 packet_httph_active_once(Config) when is_list(Config) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
 
     Trailer = "Content-Encoding: gzip\r\n"
@@ -1421,8 +1502,8 @@ packet_httph_bin_active_once() ->
     [{doc,"Test setting the packet option {packet, httph_bin}"}].
 
 packet_httph_bin_active_once(Config) when is_list(Config) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
 
     Trailer = "Content-Encoding: gzip\r\n"
@@ -1475,8 +1556,8 @@ packet_httph_passive() ->
     [{doc,"Test setting the packet option {packet, httph}"}].
 
 packet_httph_passive(Config) when is_list(Config) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
 
     Trailer = "Content-Encoding: gzip\r\n"
@@ -1515,8 +1596,8 @@ packet_httph_bin_passive() ->
     [{doc,"Test setting the packet option {packet, httph_bin}"}].
 
 packet_httph_bin_passive(Config) when is_list(Config) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
 
     Trailer = "Content-Encoding: gzip\r\n"
@@ -1555,8 +1636,8 @@ packet_line_decode() ->
     [{doc,"Test setting the packet option {packet, line}, {mode, binary}"}].
 
 packet_line_decode(Config) when is_list(Config) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
 
     Data = list_to_binary(lists:flatten(io_lib:format("Line ends here.~n"
@@ -1591,8 +1672,8 @@ packet_line_decode_list() ->
     [{doc,"Test setting the packet option {packet, line}, {mode, list}"}].
 
 packet_line_decode_list(Config) when is_list(Config) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
 
     Data = lists:flatten(io_lib:format("Line ends here.~n"
@@ -1629,8 +1710,8 @@ packet_asn1_decode() ->
     [{doc,"Test setting the packet option {packet, asn1}"}].
 
 packet_asn1_decode(Config) when is_list(Config) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
     
     File = proplists:get_value(certfile, ServerOpts),
@@ -1664,8 +1745,8 @@ packet_asn1_decode_list() ->
     [{doc,"Test setting the packet option {packet, asn1}"}].
 
 packet_asn1_decode_list(Config) when is_list(Config) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
     
     File = proplists:get_value(certfile, ServerOpts),
@@ -1701,8 +1782,8 @@ packet_tpkt_decode() ->
     [{doc,"Test setting the packet option {packet, tpkt}"}].
 
 packet_tpkt_decode(Config) when is_list(Config) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
     
     Data = list_to_binary(add_tpkt_header("TPKT data")),
@@ -1733,8 +1814,8 @@ packet_tpkt_decode_list() ->
     [{doc,"Test setting the packet option {packet, tpkt}"}].
 
 packet_tpkt_decode_list(Config) when is_list(Config) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
     
     Data = binary_to_list(list_to_binary(add_tpkt_header("TPKT data"))),
@@ -1766,8 +1847,8 @@ packet_tpkt_decode_list(Config) when is_list(Config) ->
 %%     [{doc,"Test setting the packet option {packet, fcgi}"}].
 
 %% packet_fcgi_decode(Config) when is_list(Config) ->
-%%     ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-%%     ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+%%     ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+%%     ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
 %%     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
     
 %%     Data = ...
@@ -1799,8 +1880,8 @@ packet_tpkt_decode_list(Config) when is_list(Config) ->
 packet_sunrm_decode() ->
     [{doc,"Test setting the packet option {packet, sunrm}"}].
 packet_sunrm_decode(Config) when is_list(Config) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
     
     Data = <<11:32, "Hello world">>,
@@ -1831,8 +1912,8 @@ packet_sunrm_decode_list() ->
     [{doc,"Test setting the packet option {packet, sunrm}"}].
 
 packet_sunrm_decode_list(Config) when is_list(Config) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
     
     Data = binary_to_list(list_to_binary([<<11:32>>, "Hello world"])),
@@ -1863,8 +1944,8 @@ header_decode_one_byte_active() ->
     [{doc,"Test setting the packet option {header, 1}"}].
 
 header_decode_one_byte_active(Config) when is_list(Config) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
     
     Data = <<11:8, "Hello world">>,
@@ -1896,8 +1977,8 @@ header_decode_two_bytes_active() ->
     [{doc,"Test setting the packet option {header, 2}"}].
 
 header_decode_two_bytes_active(Config) when is_list(Config) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
     
     Data = <<11:8, "Hello world">>,
@@ -1930,8 +2011,8 @@ header_decode_two_bytes_two_sent_active() ->
     [{doc,"Test setting the packet option {header, 2} and sending two byte"}].
 
 header_decode_two_bytes_two_sent_active(Config) when is_list(Config) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
     
     Data = <<"He">>,
@@ -1964,8 +2045,8 @@ header_decode_two_bytes_one_sent_active() ->
     [{doc,"Test setting the packet option {header, 2} and sending one byte"}].
 
 header_decode_two_bytes_one_sent_active(Config) when is_list(Config) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
     
     Data = <<"H">>,
@@ -1997,8 +2078,8 @@ header_decode_one_byte_passive() ->
     [{doc,"Test setting the packet option {header, 1}"}].
 
 header_decode_one_byte_passive(Config) when is_list(Config) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
 
     Data = <<11:8, "Hello world">>,
@@ -2030,8 +2111,8 @@ header_decode_two_bytes_passive() ->
     [{doc,"Test setting the packet option {header, 2}"}].
 
 header_decode_two_bytes_passive(Config) when is_list(Config) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
 
     Data = <<11:8, "Hello world">>,
@@ -2064,8 +2145,8 @@ header_decode_two_bytes_two_sent_passive() ->
     [{doc,"Test setting the packet option {header, 2} and sending two byte"}].
 
 header_decode_two_bytes_two_sent_passive(Config) when is_list(Config) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
 
     Data = <<"He">>,
@@ -2098,8 +2179,8 @@ header_decode_two_bytes_one_sent_passive() ->
     [{doc,"Test setting the packet option {header, 2} and sending one byte"}].
 
 header_decode_two_bytes_one_sent_passive(Config) when is_list(Config) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
 
     Data = <<"H">>,
@@ -2131,7 +2212,7 @@ reject_packet_opt() ->
 
 reject_packet_opt(Config) when is_list(Config) ->
 
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
        
     {error,{options,{not_supported,{packet,4}}}} = 
         ssl:listen(9999, [{packet, 4} | ServerOpts]),
@@ -2150,8 +2231,8 @@ reject_packet_opt(Config) when is_list(Config) ->
 
 packet(Config, Data, Send, Recv, Quantity, Packet, Active) when Packet == 0;
 								Packet == raw ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
 
     Server = ssl_test_lib:start_server([{node, ClientNode}, {port, 0},
@@ -2173,8 +2254,8 @@ packet(Config, Data, Send, Recv, Quantity, Packet, Active) when Packet == 0;
     ssl_test_lib:close(Client);
 
 packet(Config, Data, Send, Recv, Quantity, Packet, Active) ->
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
 
     Server = ssl_test_lib:start_server([{node, ClientNode}, {port, 0},
@@ -2212,6 +2293,11 @@ passive_raw(Socket, Data, N) ->
     {ok, Data} = ssl:recv(Socket, Length),
     passive_raw(Socket, Data, N-1).
 
+passive_recv_packet_size(Socket, Data, Size) ->
+    ok = ssl:setopts(Socket, [{packet_size, Size}]),
+    {ok, [{packet_size, Size}]} = ssl:getopts(Socket, [packet_size]),
+    passive_recv_packet(Socket, Data, 1).
+
 passive_recv_packet(Socket, _, 0) ->
     case ssl:recv(Socket, 0) of
 	{ok, []} ->
@@ -2229,7 +2315,7 @@ passive_recv_packet(Socket, Data, N) ->
     end.
 
 send(Socket,_, 0) ->
-    ssl:send(Socket, <<>>),
+    ok = ssl:send(Socket, <<>>),
     no_result_msg;
 send(Socket, Data, N) ->
     case ssl:send(Socket, [Data]) of
@@ -2246,10 +2332,14 @@ send_incomplete(Socket, _Data, 0, Prev) ->
     ssl:send(Socket, [?uint32(0)]),
     no_result_msg;
 send_incomplete(Socket, Data, N, Prev) ->
-    Length = size(Data),
+    Length = byte_size(Data),
     <<Part1:42/binary, Rest/binary>> = Data,
     ssl:send(Socket, [Prev, ?uint32(Length), Part1]),
     send_incomplete(Socket, Data, N-1, Rest).
+
+send_incomplete_after_client(Socket, Data, N) ->
+    _ = ssl:recv(Socket, 0),
+    send_incomplete(Socket, Data, N).
 
 active_once_raw(Socket, Data, N) ->
     active_once_raw(Socket, Data, N, []).
@@ -2310,6 +2400,13 @@ active_packet(Socket, Data, N) ->
 	Other ->
 	    Other
     end.
+
+active_packet_size(Socket, Data, Size) ->
+    ok = ssl:setopts(Socket, [{packet_size, Size}]),
+    {ok, [{packet_size, Size}]} = ssl:getopts(Socket, [packet_size]),
+    ssl:send(Socket, "start"),
+    active_packet(Socket, Data, 1).
+
 
 assert_packet_opt(Socket, Type) ->
     {ok, [{packet, Type}]} = ssl:getopts(Socket, [packet]).
@@ -2436,33 +2533,40 @@ client_line_packet_decode(Socket, P1, P2, L1, L2) ->
     end.
 
 add_tpkt_header(Data) when is_binary(Data) ->
-    L = size(Data) + 4,
+    L = byte_size(Data) + 4,
     [3, 0, ((L) bsr 8) band 16#ff, (L) band 16#ff ,Data];
 add_tpkt_header(IOList) when is_list(IOList) ->
     Binary = list_to_binary(IOList),
-    L = size(Binary) + 4,
+    L = byte_size(Binary) + 4,
     [3, 0, ((L) bsr 8) band 16#ff, (L) band 16#ff , Binary].
 
 
 client_reject_packet_opt(Config, PacketOpt) ->
-    ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
-    ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
 
     Server = ssl_test_lib:start_server([{node, ClientNode}, {port, 0},
                                         {from, self()},
-                                        {mfa, {ssl_test_lib, no_result_msg ,[]}},
+                                        {mfa, {ssl_test_lib, no_result, []}},
                                         {options, ServerOpts}]),
     Port = ssl_test_lib:inet_port(Server),
     Client = ssl_test_lib:start_client_error([{node, ServerNode}, {port, Port},
                                               {host, Hostname},
                                               {from, self()},
-                                              {mfa, {ssl_test_lib, no_result_msg, []}},
-                                              {options, [PacketOpt |
-                                                         ClientOpts]}]),
-    
-    ssl_test_lib:check_result(Client, {error, {options, {not_supported, PacketOpt}}}).
+                                              {mfa, {ssl_test_lib, no_result, []}},
+                                              {options, [PacketOpt | ClientOpts]}]),
 
+    ok = ssl_test_lib:check_result(Client, {error, {options, {not_supported, PacketOpt}}}),
+
+    Client2 = ssl_test_lib:start_client([{node, ServerNode}, {port, Port},
+                                         {host, Hostname},
+                                         {from, self()},
+                                         {mfa, {ssl, setopts, [[PacketOpt]]}},
+                                         {options, ClientOpts}]),
+    ssl_test_lib:check_result(Client2, {error, {options, {socket_options, PacketOpt}}}),
+    ssl_test_lib:close(Server),
+    ssl_test_lib:close(Client2).
 
 send_switch_packet(SslSocket, Data, NextPacket) ->
     spawn(fun() -> ssl:send(SslSocket, Data) end),

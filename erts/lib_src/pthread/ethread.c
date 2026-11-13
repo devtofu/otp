@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2010-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2010-2026. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,15 +32,9 @@
 #define ETHR_CHILD_WAIT_SPIN_COUNT 4000
 
 #include <stdio.h>
-#ifdef ETHR_TIME_WITH_SYS_TIME
-#  include <time.h>
+#include <time.h>
+#ifdef ETHR_HAVE_SYS_TIME_H
 #  include <sys/time.h>
-#else
-#  ifdef ETHR_HAVE_SYS_TIME_H
-#    include <sys/time.h>
-#  else
-#    include <time.h>
-#  endif
 #endif
 #include <sys/types.h>
 #include <unistd.h>
@@ -87,7 +83,7 @@ typedef struct {
     void *prep_func_res;
     size_t stacksize;
     char *name;
-    char name_buff[32];
+    char name_buff[ETHR_THR_NAME_MAX + 1];
 } ethr_thr_wrap_data__;
 
 static void *thr_wrapper(void *vtwd)
@@ -152,7 +148,7 @@ ppc_init__(void)
 {
     int pid;
 
-    /* If anything what so ever failes we assume no lwsync for safety */
+    /* If anything what so ever fails we assume no lwsync for safety */
     ethr_runtime__.conf.have_lwsync = 0;
 
     /*
@@ -225,7 +221,7 @@ ethr_x86_cpuid__(int *eax, int *ebx, int *ecx, int *edx)
 #endif
 #if ETHR_SIZEOF_PTR == 4 && defined(__PIC__) && __PIC__
     /*
-     * When position independet code is used in 32-bit mode, the B register
+     * When position independent code is used in 32-bit mode, the B register
      * is used for storage of global offset table address, and we may not
      * use it as input or output in an asm. We need to save and restore the
      * B register explicitly (for some reason gcc doesn't provide this
@@ -340,21 +336,9 @@ ethr_thr_create(ethr_tid *tid, void * (*func)(void *), void *arg,
     twd.stacksize = 0;
 
     if (opts && opts->name) {
-        size_t nlen = sizeof(twd.name_buff);
-#ifdef __HAIKU__
-        if (nlen > B_OS_NAME_LENGTH)
-            nlen = B_OS_NAME_LENGTH;
-#else
-        /*
-         * Length of 16 is known to work. At least pthread_setname_np()
-         * is documented to fail on too long name string, but documentation
-         * does not say what the limit is. Do not have the time to dig
-         * further into that now...
-         */
-        if (nlen > 16)
-            nlen = 16;
-#endif
-        snprintf(twd.name_buff, nlen, "%s", opts->name);
+	if (strlen(opts->name) >= sizeof(twd.name_buff))
+	    return EINVAL;
+	strcpy(twd.name_buff, opts->name);
 	twd.name = twd.name_buff;
     } else
         twd.name = NULL;
@@ -512,12 +496,16 @@ ethr_getname(ethr_tid tid, char *buf, size_t len)
 void
 ethr_setname(char *name)
 {
+    if (strlen(name) > ETHR_THR_NAME_MAX)
+        return;
 #if defined(ETHR_HAVE_PTHREAD_SETNAME_NP_2) 
     pthread_setname_np(ethr_self(), name);
 #elif defined(ETHR_HAVE_PTHREAD_SET_NAME_NP_2)
     pthread_set_name_np(ethr_self(), name);
 #elif defined(ETHR_HAVE_PTHREAD_SETNAME_NP_1)
     pthread_setname_np(name);
+#elif defined(ETHR_HAVE_PTHREAD_SETNAME_NP_3)
+    pthread_setname_np(ethr_self(), "%s", name);
 #elif defined(__HAIKU__)
     thread_id haiku_tid;
     haiku_tid = get_pthread_thread_id(ethr_self());

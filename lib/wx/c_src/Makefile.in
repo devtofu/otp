@@ -1,7 +1,9 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 2008-2016. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 2008-2025. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -66,18 +68,24 @@ else
 	GL_OBJECTS = 
 endif
 
+TARGET_DIR = ../priv/$(SYS_TYPE)
+
 RC_FILE_EXT = @RC_FILE_TYPE@
 ifeq ($(SYS_TYPE),win32)
-RC_FILE     = $(SYS_TYPE)/wxe_win32.$(RC_FILE_EXT)
-else 
-RC_FILE     = 
+	RC_FILE     = $(SYS_TYPE)/wxe_win32.$(RC_FILE_EXT)
+	WEBVIEW_LOADER_DLL_ORIG = @WX_WEBVIEW_DLL@
+else
+	RC_FILE     =
+	WEBVIEW_LOADER_DLL_ORIG =
+endif
+
+ifneq ($(WEBVIEW_LOADER_DLL_ORIG),)
+	WEBVIEW_LOADER_DLL_DEST = ../priv/WebView2Loader.dll
 endif
 
 WX_OBJECTS  =  $(GENERATED_O) $(GENERAL_O) $(RC_FILE)
 
 OBJECTS = $(WX_OBJECTS) $(GL_OBJECTS)
-
-TARGET_DIR = ../priv/$(SYS_TYPE)
 
 # -O2 -funroll-loops  -ffast-math -fomit-frame-pointer 
 
@@ -91,25 +99,25 @@ RESCOMP		= @WX_RESCOMP@
 
 ifeq (@WX_HAVE_STATIC_LIBS@,true)
 OPT_WX_LIBS      =  @WX_LIBS_STATIC@
-DEBUG_WX_LIBS    =  @DEBUG_WX_LIBS_STATIC@
+DEBUG_WX_LIBS    =  @DEBUG_WX_LIBS_STATIC@ @GLIB_LIBS@
 else
-OPT_WX_LIBS      =  @WX_LIBS@
-DEBUG_WX_LIBS    =  @DEBUG_WX_LIBS@
+OPT_WX_LIBS      =  @WX_LIBS@ @GLIB_LIBS@
+DEBUG_WX_LIBS    =  @DEBUG_WX_LIBS@ @GLIB_LIBS@
 endif
 
 ifeq ($(TYPE),debug)
 WX_CFLAGS	= @DEBUG_WX_CFLAGS@
 CFLAGS          = @DEBUG_CFLAGS@
 WX_CXX_FLAGS	= @DEBUG_WX_CXXFLAGS@
-CXX_FLAGS       = @DEBUG_CXXFLAGS@
-CXX_NO_OPT_FLAGS = @DEBUG_CXXFLAGS@
+CXX_FLAGS       = @DEBUG_CXXFLAGS@ @GLIB_CFLAGS@
+CXX_NO_OPT_FLAGS = @DEBUG_CXXFLAGS@ @GLIB_CFLAGS@
 WX_LIBS		= $(DEBUG_WX_LIBS)
 else
 WX_CFLAGS	= @WX_CFLAGS@
 CFLAGS          = @CFLAGS@
 WX_CXX_FLAGS	= @WX_CXXFLAGS@
-CXX_FLAGS       = @CXXFLAGS@
-CXX_NO_OPT_FLAGS = @CXXNOOPTFLAGS@
+CXX_FLAGS       = @CXXFLAGS@ @GLIB_CFLAGS@
+CXX_NO_OPT_FLAGS = @CXXNOOPTFLAGS@ @GLIB_CFLAGS@
 WX_LIBS		= $(OPT_WX_LIBS)
 endif
 
@@ -122,10 +130,10 @@ CXX_O_NO_OPT    = $(V_CXX) -c $(CXX_NO_OPT_FLAGS) $(WX_CXX_FLAGS)  $(COMMON_CFLA
 
 # Targets
 
-opt:     $(TARGET_DIR)/wxe_driver$(SO_EXT) $(TARGET_DIR)/erl_gl$(SO_EXT)
+opt:     $(TARGET_DIR)/wxe_driver$(SO_EXT) $(TARGET_DIR)/erl_gl$(SO_EXT) $(WEBVIEW_LOADER_DLL_DEST)
 
-debug:   
-	@${MAKE} TYPE=debug
+$(filter-out opt, $(TYPES)):
+	@${MAKE} TYPE=$@ opt
 
 clean:  
 	rm -f $(OBJECTS) 
@@ -176,8 +184,10 @@ $(TARGET_DIR)/wxe_driver$(SO_EXT): $(WX_OBJECTS)
 
 $(TARGET_DIR)/erl_gl$(SO_EXT): $(GL_OBJECTS)
 	$(V_at)mkdir -p $(TARGET_DIR)
-	$(V_CC) $(LDFLAGS) $(GL_OBJECTS) $(GL_LIBS) -o $@
+	$(V_CXX) $(LDFLAGS) $(GL_OBJECTS) $(GL_LIBS) -o $@
 
+$(WEBVIEW_LOADER_DLL_DEST): $(WEBVIEW_LOADER_DLL_ORIG)
+	$(INSTALL_PROGRAM) $< $@
 
 # ----------------------------------------------------
 # Release Target
@@ -190,5 +200,12 @@ release_spec: opt
 	$(INSTALL_DATA) ../priv/erlang-logo128.png "$(RELSYSDIR)/priv/"
 	$(INSTALL_PROGRAM) $(TARGET_DIR)/wxe_driver$(SO_EXT) "$(RELSYSDIR)/priv/"
 	$(INSTALL_PROGRAM) $(TARGET_DIR)/erl_gl$(SO_EXT) "$(RELSYSDIR)/priv/"
+ifneq ($(WEBVIEW_LOADER_DLL_ORIG),)
+	$(INSTALL_PROGRAM) $(WEBVIEW_LOADER_DLL_DEST) "$(RELSYSDIR)/priv/"
+endif
+ifeq ($(SYS_TYPE),win32)
+	$(INSTALL_PROGRAM) $(TARGET_DIR)/wxe_driver.pdb "$(RELSYSDIR)/priv/"
+	$(INSTALL_PROGRAM) $(TARGET_DIR)/erl_gl.pdb "$(RELSYSDIR)/priv/"
+endif
 
 release_docs_spec:

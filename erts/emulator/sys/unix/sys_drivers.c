@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 1996-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 1996-2026. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -198,10 +200,6 @@ static ErlDrvData spawn_start(ErlDrvPort, char*, SysDriverOpts*);
 static ErlDrvSSizeT spawn_control(ErlDrvData, unsigned int, char *,
                                   ErlDrvSizeT, char **, ErlDrvSizeT);
 
-/* II.II Vanilla prototypes */
-static ErlDrvData vanilla_start(ErlDrvPort, char*, SysDriverOpts*);
-
-
 /* II.III FD prototypes */
 static ErlDrvData fd_start(ErlDrvPort, char*, SysDriverOpts*);
 static void fd_async(void *);
@@ -271,33 +269,6 @@ struct erl_drv_entry fd_driver_entry = {
     outputv,
     fd_ready_async, /* ready_async */
     fd_flush, /* flush */
-    NULL, /* call */
-    NULL, /* event */
-    ERL_DRV_EXTENDED_MARKER,
-    ERL_DRV_EXTENDED_MAJOR_VERSION,
-    ERL_DRV_EXTENDED_MINOR_VERSION,
-    0, /* ERL_DRV_FLAGs */
-    NULL, /* handle2 */
-    NULL, /* process_exit */
-    stop_select
-};
-
-/* III.III The vanilla driver */
-struct erl_drv_entry vanilla_driver_entry = {
-    NULL,
-    vanilla_start,
-    stop,
-    output,
-    ready_input,
-    ready_output,
-    "vanilla",
-    NULL,
-    NULL,
-    NULL,
-    NULL,
-    NULL,
-    NULL,
-    NULL, /* flush */
     NULL, /* call */
     NULL, /* event */
     ERL_DRV_EXTENDED_MARKER,
@@ -772,11 +743,14 @@ static ErlDrvSSizeT spawn_control(ErlDrvData e, unsigned int cmd, char *buf,
     dd->status = proto->u.sigchld.error_number;
     dd->alive = -1;
 
-    if (dd->ifd)
-        driver_select(dd->port_num, abs(dd->ifd->fd), ERL_DRV_READ | ERL_DRV_USE, 1);
-
     if (dd->ofd)
         driver_select(dd->port_num, abs(dd->ofd->fd), ERL_DRV_WRITE | ERL_DRV_USE, 1);
+
+    /* We call ready_input directly as not all OSs trigger an input event on an
+       fd that already triggered EOF. For example ONESHOT poll on Linux and FreeBSD will not. */
+    if (dd->ifd) {
+        ready_input(e, abs(dd->ifd->fd));
+    }
 
     return 0;
 }
@@ -1059,30 +1033,6 @@ static void fd_flush(ErlDrvData ev)
         dd->terminating = 1;
 }
 
-static ErlDrvData vanilla_start(ErlDrvPort port_num, char* name,
-				SysDriverOpts* opts)
-{
-    int flags, fd;
-    ErlDrvData res;
-
-    flags = (opts->read_write == DO_READ ? O_RDONLY :
-	     opts->read_write == DO_WRITE ? O_WRONLY|O_CREAT|O_TRUNC :
-	     O_RDWR|O_CREAT);
-    if ((fd = open(name, flags, 0666)) < 0)
-	return ERL_DRV_ERROR_GENERAL;
-    if (fd >= sys_max_files()) {
-	close(fd);
-	return ERL_DRV_ERROR_GENERAL;
-    }
-    SET_NONBLOCKING(fd);
-
-    res = (ErlDrvData)(long)create_driver_data(port_num, fd, fd,
-                                               opts->packet_bytes,
-                                               opts->read_write, 0, -1, 0,
-                                               opts);
-    return res;
-}
-
 /* Note that driver_data[fd].ifd == fd if the port was opened for reading, */
 /* otherwise (i.e. write only) driver_data[fd].ofd = fd.  */
 
@@ -1186,7 +1136,7 @@ static void outputv(ErlDrvData e, ErlIOVec* ev)
     /* return 0;*/
 }
 
-/* Used by spawn_driver and vanilla driver */
+/* Used by spawn_driver */
 static void output(ErlDrvData e, char* buf, ErlDrvSizeT len)
 {
     ErtsSysDriverData *dd = (ErtsSysDriverData*)e;
@@ -1283,9 +1233,9 @@ static int port_inp_failure(ErtsSysDriverData *dd, int res)
         if (dd->alive == 1) {
             /*
              * We have eof and want to report exit status, but the process
-             * hasn't exited yet. When it does ready_input will
-             * driver_select() this fd which will make sure that we get
-             * back here with dd->alive == -1 and dd->status set.
+             * hasn't exited yet. When it does spawn_control will call ready_input
+             * which will make sure that we get back here with dd->alive == -1 and
+             * dd->status set.
              */
             return 0;
         }
@@ -1337,7 +1287,6 @@ static void ready_input(ErlDrvData e, ErlDrvEvent ready_fd)
                 return;
             /* hmm, child setup seems to have closed the pipe too early...
                we close the port as there is not much else we can do */
-            driver_select(port_num, ready_fd, ERL_DRV_READ, 0);
             if (res == 0)
                 errno = EPIPE;
             port_inp_failure(dd, -1);
@@ -1635,6 +1584,7 @@ void fd_ready_async(ErlDrvData drv_data,
 /* Forker driver */
 
 static int forker_fd;
+extern struct termios erl_sys_initial_tty_mode;
 
 static ErlDrvData forker_start(ErlDrvPort port_num, char* name,
                                SysDriverOpts* opts)
@@ -1716,6 +1666,28 @@ static ErlDrvData forker_start(ErlDrvPort port_num, char* name,
     erts_free(ERTS_ALC_T_CS_PROG_PATH, child_setup_prog);
 
     close(fds[1]);
+
+    /* If stdin is a tty then we need to restore its settings when we exit.
+       So we send the tty mode to erl_child_setup so that it can cleanup
+       in case the emulator is terminated with SIGKILL. */
+    if (isatty(0) && isatty(1)) {
+        ssize_t res, pos = 0;
+        size_t size = sizeof(struct termios);
+        byte *buff = (byte *)&erl_sys_initial_tty_mode;
+        do {
+            if ((res = write(forker_fd, buff + pos, size - pos)) < 0) {
+                if (errno == ERRNO_BLOCK || errno == EINTR)
+                    continue;
+                erts_exit(ERTS_ABORT_EXIT,
+                          "Could not write tty mode to domain socket in spawn_init: %d\n",
+                          errno);
+            }
+            if (res == 0) {
+                erts_exit(0, "erl_child_setup closed\n");
+            }
+            pos += res;
+        } while (size - pos != 0);
+    }
 
     SET_NONBLOCKING(forker_fd);
 

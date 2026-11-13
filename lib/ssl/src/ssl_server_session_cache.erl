@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2020-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2020-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -25,6 +27,7 @@
 %%----------------------------------------------------------------------
 
 -module(ssl_server_session_cache).
+-moduledoc false.
 -behaviour(gen_server).
 
 -include_lib("kernel/include/logger.hrl").
@@ -43,9 +46,9 @@
          handle_call/3,
          handle_cast/2,
          handle_info/2,
-         terminate/2
+         terminate/2,
          %%code_change/3,
-         %%format_status/2
+         format_status/1
         ]).
 
 -record(state, {store_cb,
@@ -54,7 +57,7 @@
                 max,
                 session_order,
                 id_generator,
-                listner
+                listener
                }).
 
 %%%===================================================================
@@ -65,10 +68,10 @@
                       {error, Error :: {already_started, pid()}} |
                       {error, Error :: term()} |
                       ignore.
-start_link(ssl_unknown_listener = Listner, Map) ->
-    gen_server:start_link({local, Listner}, ?MODULE, [Listner, Map], []);
-start_link(Listner, Map) ->
-    gen_server:start_link(?MODULE, [Listner, Map], []).
+start_link(ssl_unknown_listener = Listener, Map) ->
+    gen_server:start_link({local, Listener}, ?MODULE, [Listener, Map], []);
+start_link(Listener, Map) ->
+    gen_server:start_link(?MODULE, [Listener, Map], []).
 
 %%--------------------------------------------------------------------
 -spec new_session_id(Pid::pid()) -> ssl:session_id().
@@ -103,18 +106,18 @@ reuse_session(Pid, SessionId) ->
 register_session(Pid, Session) ->
     gen_server:cast(Pid, {register_session, Session}).
 
-
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
 -spec init(Args :: term()) -> {ok, State :: term()}.
-init([Listner, #{lifetime := Lifetime,
+init([Listener, #{lifetime := Lifetime,
                  session_cb := Cb,
                  session_cb_init_args := InitArgs,
                  max := Max
                 }]) ->
     process_flag(trap_exit, true),
-    Monitor = monitor_listener(Listner),
+    proc_lib:set_label({pre_tls_13_server_session_cache, Listener}),
+    Monitor = monitor_listener(Listener),
     DbRef = init(Cb, [{role, server} | InitArgs]),
     State = #state{store_cb = Cb,
                    lifetime = Lifetime,
@@ -122,7 +125,7 @@ init([Listner, #{lifetime := Lifetime,
                    max = Max,
                    session_order = gb_trees:empty(),
                    id_generator = crypto:strong_rand_bytes(16),
-                   listner = Monitor
+                   listener = Monitor
                   },
     {ok, State}.
 
@@ -143,13 +146,13 @@ handle_call({reuse_session, SessionId}, _From,  #state{store_cb = Cb,
                 true ->
                     {reply, Session, State0};
                 false ->
-                    Order = invalidate_session(Cb, Store0, Order0, SessionId, InId),
-                    {reply, not_reusable, State0#state{session_order = Order}}
+                    {Store, Order} = invalidate_session(Cb, Store0, Order0, SessionId, InId),
+                    {reply, not_reusable, State0#state{db = Store, session_order = Order}}
             end
     end.
 
 -spec handle_cast(Request :: term(), State :: term()) ->
-           {noreply, NewState :: term()}.
+          {noreply, NewState :: term()}.
 handle_cast({register_session, #session{session_id = SessionId, time_stamp = TimeStamp} = Session0},
             #state{store_cb = Cb,
                    db = Store0,
@@ -191,14 +194,24 @@ handle_cast({register_session, #session{session_id = SessionId, time_stamp = Tim
     {noreply, State}.
 
 -spec handle_info(Info :: timeout() | term(), State :: term()) ->
-          {noreply, NewState :: term()}.
-handle_info({'DOWN', Monitor, _, _, _}, #state{listner = Monitor} = State) ->
+          {noreply, NewState :: term()} |
+          {stop, Reason :: term(), NewState :: term()}.
+handle_info({'DOWN', Monitor, _, _, _}, #state{listener = Monitor} = State) ->
      {stop, normal, State};
 handle_info(_, State) ->
     {noreply, State}.
 
 terminate(_, _) ->
     ok.
+
+-spec format_status(map()) -> map().
+format_status(Status) ->
+    maps:map(
+      fun(state, State) ->
+              State#state{db = ?SECRET_PRINTOUT};
+         (_,Value) ->
+              Value
+      end, Status).
 
 %%%===================================================================
 %%% Internal functions
@@ -213,16 +226,16 @@ call(Pid, Msg) ->
 session_id(Key) ->
     Unique1 = erlang:unique_integer(),
     Unique2 = erlang:unique_integer(),
-    %% Obfuscate to avoid DoS attack possiblities
+    %% Obfuscate to avoid DoS attack possibilities
     %% This id should be unpredictable an 32 bytes
     %% and unique but have no other cryptographic requirements.
     Bin1 = crypto:crypto_one_time(aes_128_ecb, Key, <<Unique1:128>>, true),
     Bin2 = crypto:crypto_one_time(aes_128_ecb, Key, <<Unique2:128>>, true),
     <<Bin1/binary, Bin2/binary>>.
 
-invalidate_session(Cb, Store, Order, SessionId, InternalId) ->
-    Cb:delete(Store, SessionId),
-    gb_trees:delete(InternalId, Order).
+invalidate_session(Cb, Store0, Order, SessionId, InternalId) ->
+    Store = delete(Cb, Store0, SessionId),
+    {Store, gb_trees:delete(InternalId, Order)}.
 
 init(Cb, Options) ->
     Cb:init(Options).
@@ -255,5 +268,5 @@ monitor_listener(ssl_unknown_listener) ->
     %% Backwards compatible Erlang node
     %% global process.
     undefined;
-monitor_listener(Listen) when is_port(Listen) ->
-    erlang:monitor(port, Listen).
+monitor_listener(Listen) ->
+    tls_socket:monitor_socket(Listen).

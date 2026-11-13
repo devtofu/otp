@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2005-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2005-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -24,6 +26,9 @@
 %% over SSH
 
 -module(ssh_cli).
+-moduledoc false.
+
+-compile([{nowarn_deprecated_function, [{erlang,exit,2}]}]).
 
 -behaviour(ssh_server_channel).
 
@@ -38,19 +43,21 @@
 
 %% state
 -record(state, {
-	  cm,
-	  channel,
-	  pty,
-          encoding,
-          deduced_encoding, % OpenSSH sometimes lies about its encodeing. This variable
-                            % is for the process of guessing the peer encoding, taylord
-                            % after the behaviour of openssh.  If it says latin1 it is so.
-                            % It there arrives characters encoded in latin1 it is so. Otherwise
-                            % assume utf8 until otherwise is proved.
-	  group,
-	  buf,
-	  shell,
-	  exec
+                cm,
+                channel,
+                pty,
+                encoding,
+                %% OpenSSH sometimes lies about its encodeing. This variable
+                %% is for the process of guessing the peer encoding, taylord
+                %% after the behaviour of openssh.  If it says latin1 it is so.
+                %% It there arrives characters encoded in latin1 it is so. Otherwise
+                %% assume utf8 until otherwise is proved.
+                deduced_encoding,
+                group,
+                shell,
+                exec = erlang_eval,
+                tty
+
 	 }).
 
 -define(EXEC_ERROR_STATUS, 255).
@@ -65,9 +72,11 @@
 %% Description: Initiates the CLI
 %%--------------------------------------------------------------------
 init([Shell, Exec]) ->
-    {ok, #state{shell = Shell, exec = Exec}};
+    TTY = prim_tty:init_ssh(#{input => false}, {80, 24}, utf8),
+    {ok, #state{shell = Shell, exec = Exec, tty = TTY}};
 init([Shell]) ->
-    {ok, #state{shell = Shell}}.
+    TTY = prim_tty:init_ssh(#{input => false}, {80, 24}, utf8),
+    {ok, #state{shell = Shell, tty = TTY}}.
 
 %%--------------------------------------------------------------------
 %% Function: handle_ssh_msg(Args) -> {ok, State} | {stop, ChannelId, State}
@@ -79,7 +88,7 @@ handle_ssh_msg({ssh_cm, _ConnectionHandler,
 	       #state{group = Group} = State0) ->
     {Enc, State} = guess_encoding(Data, State0),
     List = unicode:characters_to_list(Data, Enc),
-    to_group(List, Group),
+    to_group(List, Group, get_dumb(State#state.pty)),
     {ok, State};
 
 handle_ssh_msg({ssh_cm, ConnectionHandler,
@@ -92,12 +101,12 @@ handle_ssh_msg({ssh_cm, ConnectionHandler,
 				  height = not_zero(Height, 24),
 				  pixel_width = PixWidth,
 				  pixel_height = PixHeight,
-                  modes = Modes},
-             buf = empty_buf()},
+                  modes = Modes}},
+    TTY = prim_tty:init_ssh(#{input => false}, {not_zero(Width, 80), not_zero(Height, 24)}, utf8),
     set_echo(State),
     ssh_connection:reply_request(ConnectionHandler, WantReply,
 				 success, ChannelId),
-    {ok, State};
+    {ok, State#state{tty = TTY}};
 
 handle_ssh_msg({ssh_cm, ConnectionHandler,
 	    {env, ChannelId, WantReply, Var, Value}}, State = #state{encoding=Enc0}) ->
@@ -162,17 +171,19 @@ handle_ssh_msg({ssh_cm, ConnectionHandler,
             _ ->
                 Enc0
         end,
-    {ok, State#state{encoding=Enc}};
+    NewTTY = prim_tty:unicode(State#state.tty, Enc =:= utf8),
+    {ok, State#state{encoding=Enc, tty = NewTTY}};
 
 handle_ssh_msg({ssh_cm, ConnectionHandler,
 	    {window_change, ChannelId, Width, Height, PixWidth, PixHeight}},
-	   #state{buf = Buf, pty = Pty0} = State) ->
+	   #state{pty = Pty0, tty = TTY} = State) ->
     Pty = Pty0#ssh_pty{width = Width, height = Height,
 		       pixel_width = PixWidth,
 		       pixel_height = PixHeight},
-    {Chars, NewBuf} = io_request({window_change, Pty0}, Buf, Pty, undefined),
+    NewTTY = prim_tty:update_geometry(TTY, Width, Height),
+    {Chars, NewTTY1} = io_request(redraw_prompt, NewTTY, State),
     write_chars(ConnectionHandler, ChannelId, Chars),
-    {ok, State#state{pty = Pty, buf = NewBuf}};
+    {ok, State#state{pty = Pty, tty = NewTTY1}};
 
 handle_ssh_msg({ssh_cm, ConnectionHandler,  {shell, ChannelId, WantReply}}, #state{shell=disabled} = State) ->
     write_chars(ConnectionHandler, ChannelId, 1, "Prohibited."),
@@ -204,16 +215,16 @@ handle_ssh_msg({ssh_cm, ConnectionHandler,  {exec, ChannelId, WantReply, Cmd0}},
                 %% The standard I/O is directed from/to the channel ChannelId.
                 exec_direct(ConnectionHandler, ChannelId, Cmd, F, WantReply, S1);
 
-            undefined when S0#state.shell == ?DEFAULT_SHELL ; 
-                           S0#state.shell == disabled ->
-                %% Exec called and the shell is the default shell (= Erlang shell).
-                %% To be exact, eval the term as an Erlang term (but not using the
-                %% ?DEFAULT_SHELL directly). This disables banner, prompts and such.
+            erlang_eval when S0#state.shell == disabled;
+                             S0#state.shell == {shell, start, []} ->
+                %% Exec called and the shell is the Erlang shell or disabled.
+                %% To be exact, eval the term as an Erlang term
+                %% This disables banner, prompts and such.
                 %% The standard I/O is directed from/to the channel ChannelId.
                 exec_in_erlang_default_shell(ConnectionHandler, ChannelId, Cmd, WantReply, S1);
 
-            undefined ->
-                %% Exec called, but the a shell other than the default shell is defined.
+            erlang_eval ->
+                %% Exec called, but the shell is custom (not Erlang shell).
                 %% No new exec shell is defined, so don't execute!
                 %% We don't know if it is intended to use the new shell or not.
                 {"Prohibited.", ?EXEC_ERROR_STATUS, 1};
@@ -278,7 +289,11 @@ handle_msg({Group, set_unicode_state, _Arg}, State) ->
     {ok, State};
 
 handle_msg({Group, get_unicode_state}, State) ->
-    Group ! {self(), get_unicode_state, false},
+    Group ! {self(), get_unicode_state, State#state.encoding =:= utf8},
+    {ok, State};
+
+handle_msg({Group, get_terminal_state}, State) ->
+    Group ! {self(), get_terminal_state, #{ stdout => true, stdin => true }},
     {ok, State};
 
 handle_msg({Group, tty_geometry}, #state{group = Group,
@@ -296,14 +311,16 @@ handle_msg({Group, tty_geometry}, #state{group = Group,
 	    Group ! {self(),tty_geometry,{0,0}}
     end,
     {ok,State};
-    
-handle_msg({Group, Req}, #state{group = Group, buf = Buf, pty = Pty,
-                                cm = ConnectionHandler,
-                                channel = ChannelId} = State) ->
-    {Chars0, NewBuf} = io_request(Req, Buf, Pty, Group),
+handle_msg({Group, {open_editor, _}}, State) ->
+    %% Opening an external editor in ssh is not supported.
+    Group ! {self(), not_supported},
+    {ok,State};
+handle_msg({Group, Req}, #state{group = Group,cm = ConnectionHandler,
+                                channel = ChannelId, tty = TTY} = State) ->
+    {Chars0, NewTTY} = io_request(Req, TTY, State),
     Chars = unicode:characters_to_binary(Chars0, utf8, out_enc(State)),
     write_chars(ConnectionHandler, ChannelId, Chars),
-    {ok, State#state{buf = NewBuf}};
+    {ok, State#state{tty = NewTTY}};
 
 handle_msg({'EXIT', Group, Reason}, #state{group = Group,
 					    cm = ConnectionHandler,
@@ -389,21 +406,28 @@ out_enc(#state{encoding = PeerEnc,
 
 %%--------------------------------------------------------------------
 
-to_group([], _Group) ->
+to_group([], _Group, _Dumb) ->
     ok;
-to_group([$\^C | Tail], Group) ->
+to_group([$\^C | Tail], Group, Dumb) ->
     exit(Group, interrupt),
-    to_group(Tail, Group);
-to_group(Data, Group) ->
+    to_group(Tail, Group, Dumb);
+to_group(Data, Group, Dumb) ->
     Func = fun(C) -> C /= $\^C end,
     Tail = case lists:splitwith(Func, Data) of
         {[], Right} ->
             Right;
         {Left, Right} ->
-            Group ! {self(), {data, Left}},
+            %% Filter out escape sequences, only support Ctrl sequences
+            Left1 = if Dumb -> replace_escapes(Left); true -> Left end,
+            Group ! {self(), {data, Left1}},
             Right
     end,
-    to_group(Tail, Group).
+    to_group(Tail, Group, Dumb).
+replace_escapes(Data) ->
+    lists:flatten([ if C =:= 27 ->
+        [$^,C+64];
+         true -> C
+    end || C <- Data]).
 
 %%--------------------------------------------------------------------
 %%% io_request, handle io requests from the user process,
@@ -414,193 +438,68 @@ to_group(Data, Group) ->
 %%% displaying device...
 %%% We are *not* really unicode aware yet, we just filter away characters 
 %%% beyond the latin1 range. We however handle the unicode binaries...
-io_request({window_change, OldTty}, Buf, Tty, _Group) ->
-    window_change(Tty, OldTty, Buf);
-io_request({put_chars, Cs}, Buf, Tty, _Group) ->
-    put_chars(bin_to_list(Cs), Buf, Tty);
-io_request({put_chars, unicode, Cs}, Buf, Tty, _Group) ->
-    put_chars(unicode:characters_to_list(Cs,unicode), Buf, Tty);
-io_request({insert_chars, Cs}, Buf, Tty, _Group) ->
-    insert_chars(bin_to_list(Cs), Buf, Tty);
-io_request({insert_chars, unicode, Cs}, Buf, Tty, _Group) ->
-    insert_chars(unicode:characters_to_list(Cs,unicode), Buf, Tty);
-io_request({move_rel, N}, Buf, Tty, _Group) ->
-    move_rel(N, Buf, Tty);
-io_request({delete_chars,N}, Buf, Tty, _Group) ->
-    delete_chars(N, Buf, Tty);
-io_request(beep, Buf, _Tty, _Group) ->
-    {[7], Buf};
-
-%% New in R12
-io_request({get_geometry,columns},Buf,Tty, _Group) ->
-    {ok, Tty#ssh_pty.width, Buf};
-io_request({get_geometry,rows},Buf,Tty, _Group) ->
-    {ok, Tty#ssh_pty.height, Buf};
-io_request({requests,Rs}, Buf, Tty, Group) ->
-    io_requests(Rs, Buf, Tty, [], Group);
-io_request(tty_geometry, Buf, Tty, Group) ->
-    io_requests([{move_rel, 0}, {put_chars, unicode, [10]}],
-                Buf, Tty, [], Group);
-     %{[], Buf};
-
-%% New in 18
-io_request({put_chars_sync, Class, Cs, Reply}, Buf, Tty, Group) ->
-    %% We handle these asynchronous for now, if we need output guarantees
-    %% we have to handle these synchronously
-    Group ! {reply, Reply},
-    io_request({put_chars, Class, Cs}, Buf, Tty, Group);
-
-io_request(_R, Buf, _Tty, _Group) ->
-    {[], Buf}.
-
-io_requests([R|Rs], Buf, Tty, Acc, Group) ->
-    {Chars, NewBuf} = io_request(R, Buf, Tty, Group),
-    io_requests(Rs, NewBuf, Tty, [Acc|Chars], Group);
-io_requests([], Buf, _Tty, Acc, _Group) ->
-    {Acc, Buf}.
-
-%%% return commands for cursor navigation, assume everything is ansi
-%%% (vt100), add clauses for other terminal types if needed
-ansi_tty(N, L) ->
-    ["\e[", integer_to_list(N), L].
-
-get_tty_command(up, N, _TerminalType) ->
-    ansi_tty(N, $A);
-get_tty_command(down, N, _TerminalType) ->
-    ansi_tty(N, $B);
-get_tty_command(right, N, _TerminalType) ->
-    ansi_tty(N, $C);
-get_tty_command(left, N, _TerminalType) ->
-    ansi_tty(N, $D).
-
-
--define(PAD, 10).
--define(TABWIDTH, 8).
-
-%% convert input characters to buffer and to writeout
-%% Note that the buf is reversed but the buftail is not
-%% (this is handy; the head is always next to the cursor)
-conv_buf([], AccBuf, AccBufTail, AccWrite, Col, _Tty) ->
-    {AccBuf, AccBufTail, lists:reverse(AccWrite), Col};
-conv_buf([13, 10 | Rest], _AccBuf, AccBufTail, AccWrite, _Col, Tty) ->
-    conv_buf(Rest, [], tl2(AccBufTail), [10, 13 | AccWrite], 0, Tty);
-conv_buf([13 | Rest], _AccBuf, AccBufTail, AccWrite, _Col, Tty) ->
-    conv_buf(Rest, [], tl1(AccBufTail), [13 | AccWrite], 0, Tty);
-conv_buf([10 | Rest], _AccBuf, AccBufTail, AccWrite0, _Col, Tty) ->
-    AccWrite =
-        case pty_opt(onlcr,Tty) of
-            0 -> [10 | AccWrite0];
-            1 -> [10,13 | AccWrite0];
-            undefined -> [10 | AccWrite0]
-        end,
-    conv_buf(Rest, [], tl1(AccBufTail), AccWrite, 0, Tty);
-conv_buf([C | Rest], AccBuf, AccBufTail, AccWrite, Col, Tty) ->
-    conv_buf(Rest, [C | AccBuf], tl1(AccBufTail), [C | AccWrite], Col + 1, Tty).
-
-
-%%% put characters at current position (possibly overwriting
-%%% characters after current position in buffer)
-put_chars(Chars, {Buf, BufTail, Col}, Tty) ->
-    {NewBuf, NewBufTail, WriteBuf, NewCol} =
-	conv_buf(Chars, Buf, BufTail, [], Col, Tty),
-    {WriteBuf, {NewBuf, NewBufTail, NewCol}}.
-
-%%% insert character at current position
-insert_chars([], {Buf, BufTail, Col}, _Tty) ->
-    {[], {Buf, BufTail, Col}};
-insert_chars(Chars, {Buf, BufTail, Col}, Tty) ->
-    {NewBuf, _NewBufTail, WriteBuf, NewCol} =
-	conv_buf(Chars, Buf, [], [], Col, Tty),
-    M = move_cursor(special_at_width(NewCol+length(BufTail), Tty), NewCol, Tty),
-    {[WriteBuf, BufTail | M], {NewBuf, BufTail, NewCol}}.
-
-%%% delete characters at current position, (backwards if negative argument)
-delete_chars(0, {Buf, BufTail, Col}, _Tty) ->
-    {[], {Buf, BufTail, Col}};
-delete_chars(N, {Buf, BufTail, Col}, Tty) when N > 0 ->
-    NewBufTail = nthtail(N, BufTail),
-    M = move_cursor(Col + length(NewBufTail) + N, Col, Tty),
-    {[NewBufTail, lists:duplicate(N, $ ) | M],
-     {Buf, NewBufTail, Col}};
-delete_chars(N, {Buf, BufTail, Col}, Tty) -> % N < 0
-    NewBuf = nthtail(-N, Buf),
-    NewCol = case Col + N of V when V >= 0 -> V; _ -> 0 end,
-    M1 = move_cursor(Col, NewCol, Tty),
-    M2 = move_cursor(special_at_width(NewCol+length(BufTail)-N, Tty), NewCol, Tty),
-    {[M1, BufTail, lists:duplicate(-N, $ ) | M2],
-     {NewBuf, BufTail, NewCol}}.
-
-%%% Window change, redraw the current line (and clear out after it
-%%% if current window is wider than previous)
-window_change(Tty, OldTty, Buf)
-  when OldTty#ssh_pty.width == Tty#ssh_pty.width ->
-     %% No line width change
-    {[], Buf};
-window_change(Tty, OldTty, {Buf, BufTail, Col}) ->
-    case OldTty#ssh_pty.width - Tty#ssh_pty.width of
-        0 ->
-            %% No line width change
-            {[], {Buf,BufTail,Col}};
-
-        DeltaW0 when DeltaW0 < 0,
-                     BufTail == [] ->
-            % Line width is decreased, cursor is at end of input
-            {[], {Buf,BufTail,Col}};
-
-        DeltaW0 when DeltaW0 < 0,
-                     BufTail =/= [] ->
-            % Line width is decreased, cursor is not at end of input
-            {[], {Buf,BufTail,Col}};
-
-        DeltaW0 when DeltaW0 > 0 ->
-            % Line width is increased
-            {[], {Buf,BufTail,Col}}
-        end.
-
-%% move around in buffer, respecting pad characters
-step_over(0, Buf, [?PAD | BufTail], Col) ->
-    {[?PAD | Buf], BufTail, Col+1};
-step_over(0, Buf, BufTail, Col) ->
-    {Buf, BufTail, Col};
-step_over(N, [C | Buf], BufTail, Col) when N < 0 ->
-    N1 = ifelse(C == ?PAD, N, N+1),
-    step_over(N1, Buf, [C | BufTail], Col-1);
-step_over(N, Buf, [C | BufTail], Col) when N > 0 ->
-    N1 = ifelse(C == ?PAD, N, N-1),
-    step_over(N1, [C | Buf], BufTail, Col+1).
-
-%%% an empty line buffer
-empty_buf() -> {[], [], 0}.
-
-%%% col and row from position with given width
-col(N, W) -> N rem W.
-row(N, W) -> N div W.
-
-%%% move relative N characters
-move_rel(N, {Buf, BufTail, Col}, Tty) ->
-    {NewBuf, NewBufTail, NewCol} = step_over(N, Buf, BufTail, Col),
-    M = move_cursor(Col, NewCol, Tty),
-    {M, {NewBuf, NewBufTail, NewCol}}.
-
-%%% give move command for tty
-move_cursor(A, A, _Tty) ->
-    [];
-move_cursor(From, To, #ssh_pty{width=Width, term=Type}) ->
-    Tcol = case col(To, Width) - col(From, Width) of
-	       0 -> "";
-	       I when I < 0 -> get_tty_command(left, -I, Type);
-	       I -> get_tty_command(right, I, Type)
-	end,
-    Trow = case row(To, Width) - row(From, Width) of
-	       0 -> "";
-	       J when J < 0 -> get_tty_command(up, -J, Type);
-	       J -> get_tty_command(down, J, Type)
-	   end,
-    [Tcol | Trow].
-
-%%% Caution for line "breaks"
-special_at_width(From0, #ssh_pty{width=Width}) when (From0 rem Width) == 0 -> From0 - 1;
-special_at_width(From0, _) -> From0.
+%%% 
+%%-spec io_request(term(), prim_tty:state(), state()) -> {list(), prim_tty:state()}.
+io_request({requests,Rs}, TTY, State) ->
+    io_requests(Rs, TTY, State, []);
+io_request(redraw_prompt, TTY, _State) ->
+    prim_tty:handle_request(TTY, redraw_prompt);
+io_request({redraw_prompt, Pbs, Pbs2, LineState}, TTY, _State) ->
+    prim_tty:handle_request(TTY, {redraw_prompt, Pbs, Pbs2, LineState});
+io_request(new_prompt, TTY, _State) ->
+    prim_tty:handle_request(TTY, new_prompt);
+io_request(delete_after_cursor, TTY, _State) ->
+    prim_tty:handle_request(TTY, delete_after_cursor);
+io_request(delete_line, TTY, _State) ->
+    prim_tty:handle_request(TTY, delete_line);
+io_request({put_chars, latin1, Chars}, TTY, _State) ->
+    prim_tty:handle_request(TTY, {putc, unicode:characters_to_binary(Chars, latin1)});
+io_request({put_chars, unicode, Chars}, TTY, _State) ->
+    prim_tty:handle_request(TTY, {putc, unicode:characters_to_binary(Chars)});
+io_request({put_chars_sync, latin1, Chars, Reply}, TTY, State) ->
+    State#state.group ! {reply, Reply, ok},
+    prim_tty:handle_request(TTY, {putc, unicode:characters_to_binary(Chars, latin1)});
+io_request({put_chars_sync, unicode, Chars, Reply}, TTY, State) ->
+    State#state.group ! {reply, Reply, ok},
+    prim_tty:handle_request(TTY, {putc, unicode:characters_to_binary(Chars)});
+io_request({put_expand, unicode, Chars, N}, TTY, _State) ->
+    prim_tty:handle_request(TTY, {expand, unicode:characters_to_binary(Chars), N});
+io_request({move_expand, N}, TTY, _State) ->
+    prim_tty:handle_request(TTY, {move_expand, N});
+io_request({move_rel, N}, TTY, _State) ->
+    prim_tty:handle_request(TTY, {move, N});
+io_request({move_line, R}, TTY, _State) ->
+    prim_tty:handle_request(TTY, {move_line, R});
+io_request({move_combo, V1, R, V2}, TTY, _State) ->
+    prim_tty:handle_request(TTY, {move_combo, V1, R, V2});
+io_request({insert_chars, unicode, Chars}, TTY, _State) ->
+    prim_tty:handle_request(TTY, {insert, unicode:characters_to_binary(Chars)});
+io_request({insert_chars_over, unicode, Chars}, TTY, _State) ->
+    prim_tty:handle_request(TTY, {insert_over, unicode:characters_to_binary(Chars)});
+io_request({delete_chars, N}, TTY, _State) ->
+    prim_tty:handle_request(TTY, {delete, N});
+io_request(clear, TTY, _State) ->
+    prim_tty:handle_request(TTY, clear);
+io_request(beep, TTY, _State) ->
+    prim_tty:handle_request(TTY, beep);
+io_request(Req, TTY, _State) ->
+    erlang:display({unhandled_request, Req}),
+    {[], TTY}.
+io_requests([{insert_chars, unicode, C1},{insert_chars, unicode, C2}|Rs], TTY, State, Acc) ->
+    io_requests([{insert_chars, unicode, [C1,C2]}|Rs], TTY, State, Acc);
+io_requests([{put_chars, unicode, C1},{put_chars, unicode, C2}|Rs], TTY, State, Acc) ->
+    io_requests([{put_chars, unicode, [C1,C2]}|Rs], TTY, State, Acc);
+io_requests([{move_rel, N}, {move_line, R}, {move_rel, M}|Rs], TTY, State, Acc) ->
+    io_requests([{move_combo, N, R, M}|Rs], TTY, State, Acc);
+io_requests([{move_rel, N}, {move_line, R}|Rs], TTY, State, Acc) ->
+    io_requests([{move_combo, N, R, 0}|Rs], TTY, State, Acc);
+io_requests([{move_line, R}, {move_rel, M}|Rs], TTY, State, Acc) ->
+    io_requests([{move_combo, 0, R, M}|Rs], TTY, State, Acc);
+io_requests([R|Rs], TTY, State, Acc) ->
+    {Chars, NewTTY} = io_request(R, TTY, State),
+    io_requests(Rs, NewTTY, State, [Chars|Acc]);
+io_requests([], TTY, _State, Acc) ->
+    {lists:reverse(Acc), TTY}.
 
 %% %%% write out characters
 %% %%% make sure that there is data to send
@@ -621,34 +520,6 @@ has_chars([C|_]) when is_integer(C) -> true;
 has_chars([H|T]) when is_list(H) ; is_binary(H) -> has_chars(H) orelse has_chars(T);
 has_chars(<<_:8,_/binary>>) -> true;
 has_chars(_) -> false.
-    
-
-%%% tail, works with empty lists
-tl1([_|A]) -> A;
-tl1(_) -> [].
-
-%%% second tail
-tl2([_,_|A]) -> A;
-tl2(_) -> [].
-
-%%% nthtail as in lists, but no badarg if n > the length of list
-nthtail(0, A) -> A;
-nthtail(N, [_ | A]) when N > 0 -> nthtail(N-1, A);
-nthtail(_, _) -> [].
-
-ifelse(Cond, A, B) ->
-    case Cond of
-	true -> A;
-	_ -> B
-    end.	    
-
-bin_to_list(B) when is_binary(B) ->
-    binary_to_list(B);
-bin_to_list(L) when is_list(L) ->
-    lists:flatten([bin_to_list(A) || A <- L]);
-bin_to_list(I) when is_integer(I) ->
-    I.
-
 
 %%--------------------------------------------------------------------
 start_shell(ConnectionHandler, State) ->
@@ -666,8 +537,10 @@ start_shell(ConnectionHandler, State) ->
             {_,_,_} = Shell ->
                 Shell
         end,
-    State#state{group = group:start(self(), ShellSpawner, [{echo, get_echo(State#state.pty)}]),
-                buf = empty_buf()}.
+    State#state{group = group:start(self(), ShellSpawner,
+                                    [{dumb, get_dumb(State#state.pty)},
+                                     {expand_below, application:get_env(stdlib, shell_expand_location, below) =:= below},
+                                     {echo, get_echo(State#state.pty)}])}.
 
 %%--------------------------------------------------------------------
 start_exec_shell(ConnectionHandler, Cmd, State) ->
@@ -687,8 +560,8 @@ start_exec_shell(ConnectionHandler, Cmd, State) ->
             {M,F,A} ->
                 {M, F, A++[Cmd]}
         end,
-    State#state{group = group:start(self(), ExecShellSpawner, [{echo,false}]),
-                buf = empty_buf()}.
+    State#state{group = group:start(self(), ExecShellSpawner, [{expand_below, false},
+                                                               {dumb, true}])}.
 
 %%--------------------------------------------------------------------
 exec_in_erlang_default_shell(ConnectionHandler, ChannelId, Cmd, WantReply, State) ->
@@ -771,8 +644,8 @@ exec_in_self_group(ConnectionHandler, ChannelId, WantReply, State, Fun) ->
                           end
                   end)
         end,
-    {ok, State#state{group = group:start(self(), Exec, [{echo,false}]),
-                     buf = empty_buf()}}.
+    {ok, State#state{group = group:start(self(), Exec, [{expand_below, false},
+                                                        {dumb, true}])}}.
     
 
 t2str(T) -> try io_lib:format("~s",[T])
@@ -780,6 +653,13 @@ t2str(T) -> try io_lib:format("~s",[T])
             end.
 
 %%--------------------------------------------------------------------
+get_dumb(Tty) ->
+    try
+        Tty#ssh_pty.term =:= "dumb"
+    catch
+        _:_ -> false
+    end.
+
 % Pty can be undefined if the client never sets any pty options before
 % starting the shell.
 get_echo(Tty) ->
@@ -923,4 +803,3 @@ fmt_kv1({K,h,V}) -> io_lib:format("~n~p: ~s",[K, [$\n|ssh_dbg:hex_dump(V)]]).
 type(0) -> "0 (normal data)";
 type(1) -> "1 (extended data, i.e. errors)";
 type(T) -> T.
-

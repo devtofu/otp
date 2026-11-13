@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2010-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2010-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -45,7 +47,9 @@
 #include "hash_equals.h"
 #include "hmac.h"
 #include "info.h"
+#include "kdf.h"
 #include "math.h"
+#include "pbkdf2_hmac.h"
 #include "pkey.h"
 #include "rand.h"
 #include "rsa.h"
@@ -54,12 +58,16 @@
 /* NIF interface declarations */
 static int load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info);
 static int upgrade(ErlNifEnv* env, void** priv_data, void** old_priv_data, ERL_NIF_TERM load_info);
+#if OPENSSL_VERSION_NUMBER >= PACKED_OPENSSL_VERSION_PLAIN(1,1,0) && !defined(HAS_LIBRESSL)
+static void unload_thread(void* priv_data);
+#endif
 static void unload(ErlNifEnv* env, void* priv_data);
 
 static int library_refc = 0; /* number of users of this dynamic library */
 static int library_initialized = 0;
 
 static ErlNifFunc nif_funcs[] = {
+    {"info_nif", 0, info_nif, 0},
     {"info_lib", 0, info_lib, 0},
     {"info_fips", 0, info_fips, 0},
     {"enable_fips_mode_nif", 1, enable_fips_mode_nif, 0},
@@ -74,17 +82,17 @@ static ErlNifFunc nif_funcs[] = {
     {"hash_init_nif", 1, hash_init_nif, 0},
     {"hash_update_nif", 2, hash_update_nif, 0},
     {"hash_final_nif", 1, hash_final_nif, 0},
+    {"hash_final_xof_nif", 2, hash_final_xof_nif, 0},
     {"mac_nif", 4, mac_nif, 0},
     {"mac_init_nif", 3, mac_init_nif, 0},
     {"mac_update_nif", 2, mac_update_nif, 0},
     {"mac_final_nif", 1, mac_final_nif, 0},
     {"cipher_info_nif", 1, cipher_info_nif, 0},
-    {"ng_crypto_init_nif", 5, ng_crypto_init_nif, 0},
+    {"ng_crypto_init_nif", 4, ng_crypto_init_nif, 0},
     {"ng_crypto_update_nif", 2, ng_crypto_update_nif, 0},
-    {"ng_crypto_update_nif", 3, ng_crypto_update_nif, 0},
     {"ng_crypto_final_nif", 1, ng_crypto_final_nif, 0},
     {"ng_crypto_get_data_nif", 1, ng_crypto_get_data_nif, 0},
-    {"ng_crypto_one_time_nif", 6, ng_crypto_one_time_nif, 0},
+    {"ng_crypto_one_time_nif", 5, ng_crypto_one_time_nif, 0},
     {"strong_rand_bytes_nif", 1, strong_rand_bytes_nif, 0},
     {"strong_rand_range_nif", 1, strong_rand_range_nif, 0},
     {"rand_uniform_nif", 2, rand_uniform_nif, 0},
@@ -93,9 +101,16 @@ static ErlNifFunc nif_funcs[] = {
 
     {"hash_equals_nif", 2, hash_equals_nif, 0},
     
+    {"pbkdf2_hmac_nif", 5, pbkdf2_hmac_nif, 0},
+    {"kdf_nif", 4, kdf_nif, 0},
+    {"kdf_algorithms", 0, kdf_algorithms, 0},
     {"pkey_sign_nif", 5, pkey_sign_nif, 0},
+    {"pkey_sign_heavy_nif", 5, pkey_sign_heavy_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND},
     {"pkey_verify_nif", 6, pkey_verify_nif, 0},
     {"pkey_crypt_nif", 6, pkey_crypt_nif, 0},
+    {"encapsulate_key_nif", 2, encapsulate_key_nif, 0},
+    {"decapsulate_key_nif", 3, decapsulate_key_nif, 0},
+    {"kem_algorithms_nif", 0, kem_algorithms_nif, 0},
     {"rsa_generate_key_nif", 2, rsa_generate_key_nif, 0},
     {"dh_generate_key_nif", 4, dh_generate_key_nif, 0},
     {"dh_compute_key_nif", 3, dh_compute_key_nif, 0},
@@ -106,16 +121,17 @@ static ErlNifFunc nif_funcs[] = {
     {"srp_user_secret_nif", 7, srp_user_secret_nif, 0},
     {"srp_host_secret_nif", 5, srp_host_secret_nif, 0},
 
-    {"ec_key_generate", 2, ec_key_generate, 0},
+    {"ec_generate_key_nif", 2, ec_generate_key_nif, 0},
     {"ecdh_compute_key_nif", 3, ecdh_compute_key_nif, 0},
 
     {"rand_seed_nif", 1, rand_seed_nif, 0},
 
     {"aead_cipher_nif", 7, aead_cipher_nif, 0},
+    {"aead_cipher_nif", 4, aead_cipher_nif, 0},
+    {"aead_cipher_init_nif", 4, aead_cipher_init_nif, 0},
 
     {"engine_by_id_nif", 1, engine_by_id_nif, 0},
     {"engine_init_nif", 1, engine_init_nif, 0},
-    {"engine_finish_nif", 1, engine_finish_nif, 0},
     {"engine_free_nif", 1, engine_free_nif, 0},
     {"engine_load_dynamic_nif", 0, engine_load_dynamic_nif, 0},
     {"engine_ctrl_cmd_strings_nif", 3, engine_ctrl_cmd_strings_nif, 0},
@@ -127,15 +143,25 @@ static ErlNifFunc nif_funcs[] = {
     {"engine_get_next_nif", 1, engine_get_next_nif, 0},
     {"engine_get_id_nif", 1, engine_get_id_nif, 0},
     {"engine_get_name_nif", 1, engine_get_name_nif, 0},
-    {"engine_get_all_methods_nif", 0, engine_get_all_methods_nif, 0}
+    {"engine_get_all_methods_nif", 0, engine_get_all_methods_nif, 0},
+    {"ensure_engine_loaded_nif", 2, ensure_engine_loaded_nif, 0}
 };
+
+#ifdef HAS_3_0_API
+# ifdef FIPS_SUPPORT
+OSSL_PROVIDER *fips_provider;
+# endif
+OSSL_PROVIDER *prov[MAX_NUM_PROVIDERS];
+int prov_cnt;
+#endif
 
 ERL_NIF_INIT(crypto,nif_funcs,load,NULL,upgrade,unload)
 
 
 static int verify_lib_version(void)
 {
-#if OPENSSL_VERSION_NUMBER < PACKED_OPENSSL_VERSION_PLAIN(1,1,0)
+#if OPENSSL_VERSION_NUMBER < PACKED_OPENSSL_VERSION_PLAIN(1,1,0) \
+    || defined(HAS_LIBRESSL)
     const unsigned long libv = SSLeay();
 #else
     const unsigned long libv = OpenSSL_version_num();
@@ -152,6 +178,7 @@ static int verify_lib_version(void)
     return 1;
 }
 
+
 static int initialize(ErlNifEnv* env, ERL_NIF_TERM load_info)
 {
 #if OPENSSL_VERSION_NUMBER < PACKED_OPENSSL_VERSION_PLAIN(1,1,0)
@@ -165,65 +192,114 @@ static int initialize(ErlNifEnv* env, ERL_NIF_TERM load_info)
     int tpl_arity;
     const ERL_NIF_TERM* tpl_array;
     int vernum;
+    ErlNifBinary rt_buf = { 0, NULL };
     ErlNifBinary lib_bin;
 #ifdef HAVE_DYNAMIC_CRYPTO_LIB
     char lib_buf[1000];
     void *handle;
 #endif
+    int ret = -1;
 
-    if (!verify_lib_version())
-	return __LINE__;
-
+    if (!verify_lib_version()) {
+        ret = __LINE__; goto done;
+    }
     /* load_info: {302, <<"/full/path/of/this/library">>,true|false} */
-    if (!enif_get_tuple(env, load_info, &tpl_arity, &tpl_array))
-        return __LINE__;
-    if (tpl_arity != 3)
-        return __LINE__;
-    if (!enif_get_int(env, tpl_array[0], &vernum))
-        return __LINE__;
-    if (vernum != 302)
-        return __LINE__;
-    if (!enif_inspect_binary(env, tpl_array[1], &lib_bin))
-        return __LINE__;
+    if (!enif_get_tuple(env, load_info, &tpl_arity, &tpl_array)) {
+        ret = __LINE__; goto done;
+    }
+    if (tpl_arity != 3) {
+        ret = __LINE__; goto done;
+    }
+    if (!enif_get_int(env, tpl_array[0], &vernum)) {
+        ret = __LINE__; goto done;
+    }
+    if (vernum != 302) {
+        ret = __LINE__; goto done;
+    }
+    if (!enif_inspect_binary(env, tpl_array[1], &lib_bin)) {
+        ret = __LINE__; goto done;
+    }
 
+    if (!enif_alloc_binary(100, &rt_buf)) {
+        ret = __LINE__; goto done;
+    }
 #ifdef HAS_EVP_PKEY_CTX
-    if (!init_mac_ctx(env)) {
-	return __LINE__;
+    if (!init_mac_ctx(env, &rt_buf)) {
+        ret = __LINE__; goto done;
     }
 #else
-    if (!init_hmac_ctx(env)) {
-	return __LINE__;
+    if (!init_hmac_ctx(env, &rt_buf)) {
+	ret = __LINE__; goto done;
     }
 #endif
-    if (!init_hash_ctx(env)) {
-        return __LINE__;
+    if (!init_hash_ctx(env, &rt_buf)) {
+        ret = __LINE__; goto done;
     }
-    if (!init_cipher_ctx(env)) {
-        return __LINE__;
+    if (!init_cipher_ctx(env, &rt_buf)) {
+        ret = __LINE__; goto done;
     }
-    if (!init_engine_ctx(env)) {
-        return __LINE__;
+    if (!init_aead_cipher_ctx(env, &rt_buf)) {
+        ret = __LINE__; goto done;
     }
+
+    if (!init_engine_ctx(env, &rt_buf)) {
+        ret = __LINE__; goto done;
+    }
+    if (!create_engine_mutex(env)) {
+        ret = __LINE__; goto done;
+    }
+    if (!create_curve_mutex()) {
+        ret = __LINE__; goto done;
+    }
+
+#if OPENSSL_VERSION_NUMBER >= PACKED_OPENSSL_VERSION_PLAIN(1,1,0) && !defined(HAS_LIBRESSL)
+    enif_set_option(env, ERL_NIF_OPT_ON_UNLOAD_THREAD, unload_thread);
+#endif
 
     if (library_initialized) {
-	/* Repeated loading of this library (module upgrade).
-	 * Atoms and callbacks are already set, we are done.
-	 */
-	return 0;
+        /* Repeated loading of this library (module upgrade).
+         * Atoms and callbacks are already set, we are done.
+         */
+        ret = 0;
+        goto done;
     }
 
-    if (!init_atoms(env, tpl_array[2], load_info)) {
-        return __LINE__;
+#ifdef HAS_3_0_API
+    prov_cnt = 0;
+# ifdef FIPS_SUPPORT
+    fips_provider = OSSL_PROVIDER_load(NULL, "fips");
+# endif
+    if (!(prov[prov_cnt++] = OSSL_PROVIDER_load(NULL, "default"))) {
+        ret = __LINE__; goto done;
     }
+    if (!(prov[prov_cnt++] = OSSL_PROVIDER_load(NULL, "base"))) {
+            ret = __LINE__; goto done;
+    }
+    if ((prov[prov_cnt] = OSSL_PROVIDER_load(NULL, "legacy"))) {
+        /* Don't fail loading if the legacy provider is missing */
+        prov_cnt++;
+    }
+#endif
+    prefetched_sign_algo_init(env);
 
+    if (!init_atoms(env)) {
+        ret = __LINE__; goto done;
+    }
+    /* Check if enter FIPS mode at module load (happening now) */
+    if (enable_fips_mode(env, tpl_array[2]) != atom_true) {
+        ret = __LINE__; goto done;
+    }
 #ifdef HAVE_DYNAMIC_CRYPTO_LIB
-    if (!change_basename(&lib_bin, lib_buf, sizeof(lib_buf), crypto_callback_name))
-        return __LINE__;
-    if ((handle = enif_dlopen(lib_buf, &error_handler, NULL)) == NULL)
-        return __LINE__;
+    if (!change_basename(&lib_bin, lib_buf, sizeof(lib_buf), crypto_callback_name)) {
+        ret = __LINE__; goto done;
+    }
+    if ((handle = enif_dlopen(lib_buf, &error_handler, NULL)) == NULL) {
+        ret = __LINE__; goto done;
+    }
     if ((funcp = (get_crypto_callbacks_t*) enif_dlsym(handle, "get_crypto_callbacks",
-                                                       &error_handler, NULL)) == NULL)
-        return __LINE__;
+                                                       &error_handler, NULL)) == NULL) {
+        ret = __LINE__; goto done;
+    }
 #else /* !HAVE_DYNAMIC_CRYPTO_LIB */
     funcp = &get_crypto_callbacks;
 #endif
@@ -242,12 +318,13 @@ static int initialize(ErlNifEnv* env, ERL_NIF_TERM load_info)
 
     if (!ccb || ccb->sizeof_me != sizeof(*ccb)) {
 	PRINTF_ERR0("Invalid 'crypto_callbacks'");
-	return __LINE__;
+	ret = __LINE__; goto done;
     }
 
 #ifdef HAS_CRYPTO_MEM_FUNCTIONS
-    if (!CRYPTO_set_mem_functions(ccb->crypto_alloc, ccb->crypto_realloc, ccb->crypto_free))
-        return __LINE__;
+    if (!CRYPTO_set_mem_functions(ccb->crypto_alloc, ccb->crypto_realloc, ccb->crypto_free)) {
+        ret = __LINE__; goto done;
+    }
 #endif
 
 #if OPENSSL_VERSION_NUMBER < PACKED_OPENSSL_VERSION_PLAIN(1,1,0)
@@ -267,9 +344,18 @@ static int initialize(ErlNifEnv* env, ERL_NIF_TERM load_info)
     init_mac_types(env);
     init_cipher_types(env);
     init_algorithms_types(env);
+    init_kdf_types(env);
 
     library_initialized = 1;
-    return 0;
+    ret = 0;
+
+done:
+    ASSERT(ret >= 0);
+
+    if (rt_buf.data)
+        enif_release_binary(&rt_buf);
+
+    return ret;
 }
 
 static int load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)
@@ -302,8 +388,31 @@ static int upgrade(ErlNifEnv* env, void** priv_data, void** old_priv_data,
     return 0;
 }
 
+#if OPENSSL_VERSION_NUMBER >= PACKED_OPENSSL_VERSION_PLAIN(1,1,0) && !defined(HAS_LIBRESSL)
+static void unload_thread(void* priv_data)
+{
+    if (library_refc == 1) {
+        OPENSSL_thread_stop();
+    }
+}
+#endif
+
 static void unload(ErlNifEnv* env, void* priv_data)
 {
-    --library_refc;
+    if (--library_refc == 0) {
+        destroy_curve_mutex();
+        destroy_engine_mutex(env);
+
+        /*
+         * We do not do any OpenSSL cleanup here as we are not sure the lib
+         * will actually be unloaded. For example
+         * + With  musl libc, dlclose() is a no-op.
+         * + On MacOS with statically linked OpenSSL crypto.so has been seen to
+         *   be locked in place after OSSL_provider_load() has been called.
+         *
+         * So, we rely on OpenSSL doing automatic cleanup with its own "atexit"
+         * handler if the lib is actually unloaded.
+         */
+    }
 }
 

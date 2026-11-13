@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1997-2018. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,11 +16,12 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 %%
 -module(httpd_response).
+-moduledoc false.
 -export([generate_and_send_response/1, send_status/3, send_status/4, send_header/3, 
 	 send_body/3, send_chunk/3, send_final_chunk/2, send_final_chunk/3, 
 	 split_header/2, is_disable_chunked_send/1, cache_headers/2, handle_continuation/1]).
@@ -154,8 +157,8 @@ send_response(ModData, Header, Body) ->
 	undefined ->
 	    %% No status code 
 	    %% Ooops this must be very bad:
-	    %% generate a 404 content not availible
-	    send_status(ModData, 404, "The file is not availible");
+	    %% generate a 404 content not available
+	    send_status(ModData, 404, "The file is not available");
 	StatusCode ->
 	    case send_header(ModData, StatusCode, lists:keydelete(code, 1,
 								  Header)) of
@@ -176,7 +179,7 @@ send_header(#mod{socket_type  = Type,
 			    lists:map(fun transform/1, KeyValueTupleHeaders)),
     NewVer = case {Ver, StatusCode} of
 		 {unknown, 408} ->
-		     %% This will proably never happen! It means the
+		     %% This will probably never happen! It means the
 		     %% server has timed out the request without
 		     %% receiving a version for the request!  Send the
 		     %% lowest version so to ensure that the client
@@ -215,7 +218,7 @@ send_body(#mod{socket_type = Type, socket = Socket}, _, nobody) ->
     ok;
 
 send_body(#mod{socket_type = Type, socket = Sock}, 
-	  _StatusCode, Body) when is_list(Body) ->
+	  _StatusCode, Body) when is_list(Body); is_binary(Body) ->
     case httpd_socket:deliver(Type, Sock, Body) of
 	socket_closed ->
 	    done;

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -24,31 +26,40 @@
 -export([default/1,setbag/1,badnew/1,verybadnew/1,named/1,keypos2/1,
 	 privacy/1]).
 -export([empty/1,badinsert/1]).
--export([badlookup/1,lookup_order/1]).
+-export([badlookup/1,lookup_order/1,ordered_set_cached_key/1]).
 -export([delete_elem/1,delete_tab/1,delete_large_tab/1,
 	 delete_large_named_table/1,
 	 evil_delete/1,baddelete/1,match_delete/1,table_leak/1]).
+-export([delete_fixtab_rename_race/1]).
 -export([match_delete3/1]).
 -export([firstnext/1,firstnext_concurrent/1]).
+-export([firstnext_lookup/1,firstnext_lookup_concurrent/1]).
 -export([slot/1]).
--export([hash_clash/1]).
+-export([hash_clash/1, hash_atom_keys/1]).
 -export([match1/1, match2/1, match_object/1, match_object2/1]).
 -export([dups/1, misc1/1, safe_fixtable/1, info/1, tab2list/1]).
 -export([info_binary_stress/1]).
+-export([info_whereis_busy/1]).
+-export([insert_trap_delete/1, insert_trap_rename/1]).
 -export([tab2file/1, tab2file2/1, tabfile_ext1/1,
 	 tabfile_ext2/1, tabfile_ext3/1, tabfile_ext4/1, badfile/1]).
 -export([heavy_lookup/1, heavy_lookup_element/1, heavy_concurrent/1]).
--export([lookup_element_mult/1]).
--export([foldl_ordered/1, foldr_ordered/1, foldl/1, foldr/1, fold_empty/1]).
+-export([lookup_element_mult/1, lookup_element_default/1]).
+-export([foldl_ordered/1, foldr_ordered/1, foldl/1, foldr/1, fold_empty/1,
+         fold_badarg/1]).
 -export([t_delete_object/1, t_init_table/1, t_whitebox/1,
          select_bound_chunk/1, t_delete_all_objects/1, t_test_ms/1,
+         t_delete_all_objects_trap/1,
 	 t_select_delete/1,t_select_replace/1,t_select_replace_next_bug/1,
          t_select_pam_stack_overflow_bug/1,
+         t_select_flatmap_term_copy_bug/1,
+         t_select_hashmap_term_copy_bug/1,
          t_ets_dets/1]).
 -export([t_insert_list/1, t_insert_list_bag/1, t_insert_list_duplicate_bag/1,
          t_insert_list_set/1, t_insert_list_delete_set/1,
          t_insert_list_parallel/1, t_insert_list_delete_parallel/1,
-         t_insert_list_kill_process/1]).
+         t_insert_list_kill_process/1,
+         t_insert_list_insert_order_preserved/1]).
 -export([test_table_size_concurrency/1,test_table_memory_concurrency/1,
          test_delete_table_while_size_snapshot/1, test_delete_table_while_size_snapshot_helper/1,
          test_decentralized_counters_setting/1]).
@@ -56,9 +67,10 @@
 -export([ordered/1, ordered_match/1, interface_equality/1,
 	 fixtable_next/1, fixtable_iter_bag/1,
          fixtable_insert/1, rename/1, rename_unnamed/1, evil_rename/1,
-	 update_element/1, update_counter/1, evil_update_counter/1, partly_bound/1, match_heavy/1]).
+	 update_element/1, update_element_default/1, update_counter/1, evil_update_counter/1, partly_bound/1, match_heavy/1]).
 -export([update_counter_with_default/1]).
--export([update_counter_with_default_bad_pos/1]).
+-export([update_counter_with_default_bad_pos/1,
+	 update_counter_with_default_bad_default/1]).
 -export([update_counter_table_growth/1]).
 -export([member/1]).
 -export([memory/1]).
@@ -91,17 +103,21 @@
 	 exit_many_large_table_owner/1,
 	 exit_many_tables_owner/1,
 	 exit_many_many_tables_owner/1]).
--export([write_concurrency/1, heir/1, give_away/1, setopts/1]).
+-export([write_concurrency/1, heir/1, heir_2/1, give_away/1, setopts/1]).
 -export([bad_table/1, types/1]).
 -export([otp_9932/1]).
 -export([otp_9423/1]).
 -export([otp_10182/1]).
+-export([compress_magic_ref/1]).
 -export([ets_all/1]).
 -export([massive_ets_all/1]).
 -export([take/1]).
 -export([whereis_table/1]).
 -export([ms_excessive_nesting/1]).
+-export([doctests/1]).
 -export([error_info/1]).
+-export([bound_maps/1]).
+-export([racy_rename/1, racy_rename_writer/3]).
 
 -export([init_per_testcase/2, end_per_testcase/2]).
 %% Convenience for manual testing
@@ -110,6 +126,7 @@
 -export([t_select_reverse/1]).
 
 -include_lib("stdlib/include/ms_transform.hrl"). % ets:fun2ms
+-include_lib("stdlib/include/assert.hrl").
 -include_lib("common_test/include/ct.hrl").
 -include_lib("common_test/include/ct_event.hrl").
 
@@ -131,27 +148,32 @@ end_per_testcase(_Func, _Config) ->
 
 suite() ->
     [{ct_hooks,[ts_install_cth]},
-     {timetrap,{minutes,5}}].
+     {timetrap,{minutes,30}}].
 
 all() ->
     [{group, new}, {group, insert}, {group, lookup},
-     {group, delete}, firstnext, firstnext_concurrent, slot, hash_clash,
+     {group, delete}, firstnext, firstnext_concurrent,
+     firstnext_lookup, firstnext_lookup_concurrent, slot, hash_clash, hash_atom_keys,
      {group, match}, t_match_spec_run,
      {group, lookup_element}, {group, misc}, {group, files},
      {group, heavy}, {group, insert_list}, ordered, ordered_match,
      interface_equality, fixtable_next, fixtable_iter_bag, fixtable_insert,
-     rename, rename_unnamed, evil_rename, update_element,
+     rename, rename_unnamed, evil_rename, update_element, update_element_default,
      update_counter, evil_update_counter,
      update_counter_with_default,
      update_counter_with_default_bad_pos,
+     update_counter_with_default_bad_default,
      partly_bound,
      update_counter_table_growth,
      match_heavy, {group, fold}, member, t_delete_object,
      select_bound_chunk,
      t_init_table, t_whitebox, t_delete_all_objects,
+     t_delete_all_objects_trap,
      t_test_ms, t_select_delete, t_select_replace,
      t_select_replace_next_bug,
      t_select_pam_stack_overflow_bug,
+     t_select_flatmap_term_copy_bug,
+     t_select_hashmap_term_copy_bug,
      t_ets_dets, memory, t_select_reverse, t_bucket_disappears,
      t_named_select, select_fixtab_owner_change,
      select_fail, t_insert_new, t_repair_continuation,
@@ -163,24 +185,29 @@ all() ->
      smp_ordered_iteration,
      smp_select_delete, otp_8166, exit_large_table_owner,
      exit_many_large_table_owner, exit_many_tables_owner,
-     exit_many_many_tables_owner, write_concurrency, heir,
+     exit_many_many_tables_owner, write_concurrency, heir, heir_2,
      give_away, setopts, bad_table, types,
      otp_10182,
      otp_9932,
      otp_9423,
+     compress_magic_ref,
      ets_all,
      massive_ets_all,
      take,
      whereis_table,
      delete_unfix_race,
-     %test_throughput_benchmark,
-     %{group, benchmark},
+     test_throughput_benchmark,
+     %%{group, benchmark},
      test_table_size_concurrency,
      test_table_memory_concurrency,
      test_delete_table_while_size_snapshot,
      test_decentralized_counters_setting,
      ms_excessive_nesting,
-     error_info].
+     doctests,
+     error_info,
+     bound_maps,
+     racy_rename
+    ].
 
 
 groups() ->
@@ -188,16 +215,17 @@ groups() ->
       [default, setbag, badnew, verybadnew, named, keypos2,
        privacy]},
      {insert, [], [empty, badinsert]},
-     {lookup, [], [badlookup, lookup_order]},
-     {lookup_element, [], [lookup_element_mult]},
+     {lookup, [], [badlookup, lookup_order, ordered_set_cached_key]},
+     {lookup_element, [], [lookup_element_mult, lookup_element_default]},
      {delete, [],
       [delete_elem, delete_tab, delete_large_tab,
        delete_large_named_table, evil_delete, table_leak,
-       baddelete, match_delete, match_delete3]},
+       baddelete, match_delete, match_delete3,
+       delete_fixtab_rename_race]},
      {match, [],
       [match1, match2, match_object, match_object2]},
      {misc, [],
-      [misc1, safe_fixtable, info, info_binary_stress, dups, tab2list]},
+      [misc1, safe_fixtable, info, info_binary_stress, info_whereis_busy, dups, tab2list]},
      {files, [],
       [tab2file, tab2file2, tabfile_ext1,
        tabfile_ext2, tabfile_ext3, tabfile_ext4, badfile]},
@@ -205,7 +233,7 @@ groups() ->
       [heavy_lookup, heavy_lookup_element, heavy_concurrent]},
      {fold, [],
       [foldl_ordered, foldr_ordered, foldl, foldr,
-       fold_empty]},
+       fold_empty, fold_badarg]},
      {meta_smp, [],
       [meta_lookup_unnamed_read, meta_lookup_unnamed_write,
        meta_lookup_named_read, meta_lookup_named_write,
@@ -216,7 +244,10 @@ groups() ->
       [t_insert_list, t_insert_list_set, t_insert_list_bag,
        t_insert_list_duplicate_bag, t_insert_list_delete_set,
        t_insert_list_parallel, t_insert_list_delete_parallel,
-       t_insert_list_kill_process]}].
+       t_insert_list_kill_process,
+       t_insert_list_insert_order_preserved,
+       insert_trap_delete,
+       insert_trap_rename]}].
 
 init_per_suite(Config) ->
     erts_debug:set_internal_state(available_internal_state, true),
@@ -264,14 +295,16 @@ init_per_group(_GroupName, Config) ->
 end_per_group(benchmark, Config) ->
     T = proplists:get_value(ets_benchmark_result_summary_tab, Config),
     EtsProcess = proplists:get_value(ets_benchmark_result_summary_tab_process, Config),
-    Report = 
-        fun(NOfBenchmarksCtr, TotThroughoutCtr, Name) ->
-                Average =
-                    ets:lookup_element(T, TotThroughoutCtr, 2) / 
-                    ets:lookup_element(T, NOfBenchmarksCtr, 2),
+    Report =
+        fun(NOfBenchmarksCtr, TotThroughputCtr, Name) ->
+                NBench = ets:lookup_element(T, NOfBenchmarksCtr, 2),
+                Average = if
+                    NBench == 0 -> 0;
+                    true -> ets:lookup_element(T, TotThroughputCtr, 2) / NBench
+                end,
                 io:format("~p ~p~n", [Name, Average]),
                 ct_event:notify(
-                  #event{name = benchmark_data, 
+                  #event{name = benchmark_data,
                          data = [{suite,"ets_bench"},
                                  {name, Name},
                                  {value, Average}]})
@@ -583,12 +616,14 @@ t_repair_continuation(Config) when is_list(Config) ->
     repeat_for_opts(fun t_repair_continuation_do/1).
 
 
-t_repair_continuation_do(Opts) ->
+t_repair_continuation_do(OptsIn) ->
     EtsMem = etsmem(),
     MS = [{'_',[],[true]}],
     MS2 = [{{{'$1','_'},'_'},[],['$1']}],
-    (fun() ->
-	     T = ets_new(x,[ordered_set|Opts]),
+    run_if_valid_opts(
+      [ordered_set|OptsIn],
+      fun(Opts) ->
+	     T = ets_new(x, Opts),
 	     F = fun(0,_)->ok;(N,F) -> ets:insert(T,{N,N}), F(N-1,F) end,
 	     F(1000,F),
 	     {_,C} = ets:select(T,MS,5),
@@ -598,9 +633,11 @@ t_repair_continuation_do(Opts) ->
 	     {[true,true,true,true,true],_} = ets:select(C3),
 	     {[true,true,true,true,true],_} = ets:select(C),
 	     true = ets:delete(T)
-     end)(),
-    (fun() ->
-	     T = ets_new(x,[ordered_set|Opts]),
+      end),
+    run_if_valid_opts(
+      [ordered_set|OptsIn],
+      fun(Opts) ->
+	     T = ets_new(x, Opts),
 	     F = fun(0,_)->ok;(N,F) -> ets:insert(T,{N,N}), F(N-1,F) end,
 	     F(1000,F),
 	     {_,C} = ets:select(T,MS,1001),
@@ -609,10 +646,12 @@ t_repair_continuation_do(Opts) ->
 	     '$end_of_table' = ets:select(C3),
 	     '$end_of_table' = ets:select(C),
 	     true = ets:delete(T)
-     end)(),
+      end),
 
-    (fun() ->
-	     T = ets_new(x,[ordered_set|Opts]),
+    run_if_valid_opts(
+      [ordered_set|OptsIn],
+      fun(Opts) ->
+	     T = ets_new(x, Opts),
 	     F = fun(0,_)->ok;(N,F) ->
 			 ets:insert(T,{integer_to_list(N),N}),
 			 F(N-1,F)
@@ -625,9 +664,11 @@ t_repair_continuation_do(Opts) ->
 	     {[true,true,true,true,true],_} = ets:select(C3),
 	     {[true,true,true,true,true],_} = ets:select(C),
 	     true = ets:delete(T)
-     end)(),
-    (fun() ->
-	     T = ets_new(x,[ordered_set|Opts]),
+      end),
+    run_if_valid_opts(
+      [ordered_set|OptsIn],
+      fun(Opts) ->
+	     T = ets_new(x, Opts),
 	     F = fun(0,_)->ok;(N,F) ->
 			 ets:insert(T,{{integer_to_list(N),N},N}),
 			 F(N-1,F)
@@ -640,10 +681,10 @@ t_repair_continuation_do(Opts) ->
 	     {[_,_,_,_,_],_} = ets:select(C3),
 	     {[_,_,_,_,_],_} = ets:select(C),
 	     true = ets:delete(T)
-     end)(),
+      end),
 
     (fun() ->
-	     T = ets_new(x,[set|Opts]),
+	     T = ets_new(x,[set|OptsIn]),
 	     F = fun(0,_)->ok;(N,F) ->
 			 ets:insert(T,{N,N}),
 			 F(N-1,F)
@@ -658,7 +699,7 @@ t_repair_continuation_do(Opts) ->
 	     true = ets:delete(T)
      end)(),
     (fun() ->
-	     T = ets_new(x,[set|Opts]),
+	     T = ets_new(x,[set|OptsIn]),
 	     F = fun(0,_)->ok;(N,F) ->
 			 ets:insert(T,{integer_to_list(N),N}),
 			 F(N-1,F)
@@ -673,7 +714,7 @@ t_repair_continuation_do(Opts) ->
 	     true = ets:delete(T)
      end)(),
     (fun() ->
-	     T = ets_new(x,[bag|Opts]),
+	     T = ets_new(x,[bag|OptsIn]),
 	     F = fun(0,_)->ok;(N,F) ->
 			 ets:insert(T,{integer_to_list(N),N}),
 			 F(N-1,F)
@@ -688,7 +729,7 @@ t_repair_continuation_do(Opts) ->
 	     true = ets:delete(T)
      end)(),
     (fun() ->
-	     T = ets_new(x,[duplicate_bag|Opts]),
+	     T = ets_new(x,[duplicate_bag|OptsIn]),
 	     F = fun(0,_)->ok;(N,F) ->
 			 ets:insert(T,{integer_to_list(N),N}),
 			 F(N-1,F)
@@ -889,14 +930,19 @@ whitebox_1(Opts) ->
     ets:delete(T),
     ok.
 
-whitebox_2(Opts) ->
-    T=ets_new(x,[ordered_set, {keypos,2} | Opts]),
-    T2=ets_new(x,[set, {keypos,2}| Opts]),
-    0 = ets:select_delete(T,[{{hej},[],[true]}]),
-    0 = ets:select_delete(T,[{{hej,hopp},[],[true]}]),
+whitebox_2(OptsIn) ->
+    run_if_valid_opts(
+      [ordered_set, {keypos,2} | OptsIn],
+      fun (Opts) ->
+              T = ets_new(x, Opts),
+              0 = ets:select_delete(T,[{{hej},[],[true]}]),
+              0 = ets:select_delete(T,[{{hej,hopp},[],[true]}]),
+              ets:delete(T)
+      end),
+
+    T2 = ets_new(x,[set, {keypos,2}| OptsIn]),
     0 = ets:select_delete(T2,[{{hej},[],[true]}]),
     0 = ets:select_delete(T2,[{{hej,hopp},[],[true]}]),
-    ets:delete(T),
     ets:delete(T2),
     ok.
 
@@ -953,14 +999,14 @@ t_delete_all_objects(Config) when is_list(Config) ->
 
 get_kept_objects(T) ->
     case ets:info(T,stats) of
-	{_,_,_,_,_,_,KO}  ->
+	{_,_,_,_,_,_,KO,_}  ->
 	    KO;
         _ ->
             0
     end.
 
 t_delete_all_objects_do(Opts) ->
-    KeyRange = 4000,
+    KeyRange = 40_000,
     T=ets_new(x, Opts, KeyRange),
     filltabint(T,KeyRange),
     O=ets:first(T),
@@ -987,12 +1033,12 @@ t_delete_all_objects_do(Opts) ->
     Self = self(),
     Inserters = [spawn_link(fun() -> inserter(T2, 1, Self) end) || _ <- [1,2,3,4]],
     [receive {Ipid, running} -> ok end || Ipid <- Inserters],
-    
+
     ets:delete_all_objects(T2),
     erlang:yield(),
     [Ipid ! stop || Ipid <- Inserters],
     Result = [receive {Ipid, stopped, Highest} -> {Ipid,Highest} end || Ipid <- Inserters],
-    
+
     %% Verify unbroken sequences of objects inserted _after_ ets:delete_all_objects.
     Sum = lists:foldl(fun({Ipid, Highest}, AccSum) ->
                               %% ets:fun2ms(fun({{K,Ipid}}) when K =< Highest -> true end),
@@ -1028,7 +1074,7 @@ inserter(T, Next, Papa) ->
                _ ->
                    0
            end,
-                
+
     ets:insert(T, {{Next, self()}}),
     receive
         stop ->
@@ -1037,6 +1083,85 @@ inserter(T, Next, Papa) ->
     after Wait ->
             inserter(T, Next+1, Papa)
     end.
+
+
+%% Poke table during delete_all_objects
+t_delete_all_objects_trap(Config) when is_list(Config) ->
+    EtsMem = etsmem(),
+    repeat_for_opts_all_set_table_types(
+      fun(Opts) ->
+              delete_all_objects_trap(Config, Opts, unfix),
+              delete_all_objects_trap(Config, Opts, exit),
+              delete_all_objects_trap(Config, Opts, rename)
+      end),
+    verify_etsmem(EtsMem),
+    ok.
+
+delete_all_objects_trap(Config, Opts, Mode) ->
+    io:format("Opts = ~p\nMode = ~p\n", [Opts, Mode]),
+    Tester = self(),
+    KeyRange = 50_000,
+    TableName = delete_all_objects_trap,
+    SkipTraps = case proplists:get_bool(ets_force_trap, Config) of
+                    true -> 1;
+                    false -> 0
+                end,
+    {Tref,T} =
+        case Mode of
+            rename ->
+                TableName = ets_new(TableName, [named_table,public|Opts], KeyRange),
+                {ets:whereis(TableName), TableName};
+            _ ->
+                Tid = ets_new(x, Opts, KeyRange),
+                {Tid,Tid}
+        end,
+    filltabint(T, KeyRange),
+    KeyRange = ets:info(T,size),
+    FixerFun =
+        fun() ->
+                erlang:trace(Tester, true, [running]),
+                case Mode of
+                    rename -> ok;
+                    _ -> ets:safe_fixtable(T, true)
+                end,
+                io:format("Wait for ets:delete_all_objects/1 to yield...\n", []),
+                Tester ! {ready, self()},
+                repeat_while(
+                  fun(N) ->
+                          case receive_any() of
+                              {trace, Tester, out, {ets,internal_delete_all,2}} ->
+                                  %% On DEBUG ignore the first forced trap
+                                  io:format("TRACE OUT N=~p\n", [N]),
+                                  {N =< SkipTraps, N+1};
+                              "delete_all_objects done" ->
+                                  ct:fail("No trap detected");
+                              _M ->
+                                  %%io:format("Ignored msg: ~p\n", [_M]),
+                                  {true, N}
+                          end
+                  end, 1),
+                case Mode of
+                    unfix ->
+                        io:format("Unfix table and then exit...\n",[]),
+                        ets:safe_fixtable(T, false);
+                    exit ->
+                        %%io:format("Exit and do auto-unfix...\n",[]),
+                        exit;
+                    rename ->
+                        %%io:format("Rename table...\n",[]),
+                        renamed = ets:rename(T, renamed)
+                end
+        end,
+    {Fixer, Mon} = spawn_opt(FixerFun, [link, monitor]),
+    {ready, Fixer} = receive_any(),
+    true = ets:delete_all_objects(T),
+    Fixer ! "delete_all_objects done",
+    0 = ets:info(Tref,size),
+    {'DOWN', Mon, process, Fixer, normal} = receive_any(),
+    0 = get_kept_objects(Tref),
+    false = ets:info(Tref,safe_fixed),
+    ets:delete(Tref),
+    ok.
 
 
 %% Test ets:delete_object/2.
@@ -1063,12 +1188,16 @@ t_delete_object_do(Opts) ->
     3999 = ets:info(T,size),
     0 = get_kept_objects(T),
     ets:delete(T),
-    T1 = ets_new(x,[ordered_set | Opts]),
-    filltabint(T1,4000),
-    del_one_by_one_set(T1,1,4001),
-    filltabint(T1,4000),
-    del_one_by_one_set(T1,4000,0),
-    ets:delete(T1),
+    run_if_valid_opts(
+      [ordered_set | Opts],
+      fun (Opts1) ->
+              T1 = ets_new(x, Opts1),
+              filltabint(T1,4000),
+              del_one_by_one_set(T1,1,4001),
+              filltabint(T1,4000),
+              del_one_by_one_set(T1,4000,0),
+              ets:delete(T1)
+      end),
     T2 = ets_new(x,[bag | Opts]),
     filltabint2(T2,4000),
     del_one_by_one_bag(T2,1,4001),
@@ -1131,7 +1260,7 @@ do_fill_dbag_using_lists(T,0) ->
 do_fill_dbag_using_lists(T,N) ->
     ets:insert(T,[{N,integer_to_list(N)},
 		  {N + N rem 2,integer_to_list(N + N rem 2)}]),
-    do_fill_dbag_using_lists(T,N - 1). 
+    do_fill_dbag_using_lists(T,N - 1).
 
 
 %% Test the insert_new function.
@@ -1451,6 +1580,32 @@ t_insert_list_kill_process_do(Opts) ->
                                        fun ets:insert_new/2]],
     ok.
 
+t_insert_list_insert_order_preserved(Config) when is_list(Config) ->
+    insert_list_insert_order_preserved(bag),
+    insert_list_insert_order_preserved(duplicate_bag),
+    ok.
+
+insert_list_insert_order_preserved(Type) ->
+    Tab = ets:new(?FUNCTION_NAME, [Type]),
+    K = a,
+    Values1 = [{K, 1}, {K, 2}, {K, 3}],
+    Values2 = [{K, 4}, {K, 5}, {K, 6}],
+    ets:insert(Tab, Values1),
+    ets:insert(Tab, Values2),
+    [{K, 1}, {K, 2}, {K, 3}, {K, 4}, {K, 5}, {K, 6}] = ets:lookup(Tab, K),
+
+    ets:delete(Tab, K),
+    [] = ets:lookup(Tab, K),
+
+    %% Insert order in duplicate_bag depended on reductions left
+    ITERATIONS_PER_RED = 8,
+    NTuples = 4000 * ITERATIONS_PER_RED + 10,
+    LongList = [{K, V} || V <- lists:seq(1, NTuples)],
+    ets:insert(Tab, LongList),
+    LongList = ets:lookup(Tab, K),
+
+    ets:delete(Tab).
+
 %% Test interface of ets:test_ms/2.
 t_test_ms(Config) when is_list(Config) ->
     EtsMem = etsmem(),
@@ -1577,7 +1732,7 @@ t_select_delete(Config) when is_list(Config) ->
 	       F = case ets:info(Table,type) of
 		       X when X == bag; X == duplicate_bag ->
 			   2;
-		       _ -> 
+		       _ ->
 			   1
 		   end,
 	       xfilltabstr(Table, 4000),
@@ -1906,13 +2061,138 @@ t_select_replace_next_bug(Config) when is_list(Config) ->
 
 
 %% OTP-17379
-t_select_pam_stack_overflow_bug(Config) ->
+t_select_pam_stack_overflow_bug(_Config) ->
     T = ets:new(k, []),
     ets:insert(T,[{x,17}]),
     [{x,18}] = ets:select(T,[{{x,17}, [], [{{{element,1,'$_'},{const,18}}}]}]),
     ets:delete(T),
     ok.
 
+%% When a variable was used as key in ms body, the matched value would
+%% not be copied to the heap of the calling process.
+t_select_flatmap_term_copy_bug(_Config) ->
+    T = ets:new(a,[]),
+    ets:insert(T, {list_to_binary(lists:duplicate(36,$a))}),
+    V1 = ets:select(T, [{{'$1'},[],[#{ '$1' => a }]}]),
+    erlang:garbage_collect(),
+    V1 = ets:select(T, [{{'$1'},[],[#{ '$1' => a }]}]),
+    erlang:garbage_collect(),
+    V2 = ets:select(T, [{{'$1'},[],[#{ a => '$1' }]}]),
+    erlang:garbage_collect(),
+    V2 = ets:select(T, [{{'$1'},[],[#{ a => '$1' }]}]),
+    erlang:garbage_collect(),
+    V3 = ets:select(T, [{{'$1'},[],[#{ '$1' => '$1' }]}]),
+    erlang:garbage_collect(),
+    V3 = ets:select(T, [{{'$1'},[],[#{ '$1' => '$1' }]}]),
+    erlang:garbage_collect(),
+    V4 = ets:select(T, [{{'$1'},[],[#{ a => a }]}]),
+    erlang:garbage_collect(),
+    V4 = ets:select(T, [{{'$1'},[],[#{ a => a }]}]),
+    erlang:garbage_collect(),
+    ets:delete(T),
+    ok.
+
+%% When a variable was used as key or value in ms body,
+%% the matched value would not be copied to the heap of
+%% the calling process.
+t_select_hashmap_term_copy_bug(_Config) ->
+
+    T = ets:new(a,[]),
+    Dollar1 = list_to_binary(lists:duplicate(36,$a)),
+    ets:insert(T, {Dollar1}),
+
+    {LargeMapSize, FlatmapSize} =
+        case erlang:system_info(emu_type) of
+            debug -> {40, 3};
+            _ -> {250, 32}
+        end,
+
+    LM = maps:from_keys(lists:seq(1,LargeMapSize), 1),
+
+    lists:foreach(
+      fun(Key) ->
+              V = ets:select(T, [{{'$1'},[], [LM#{ Key => '$1' }]}]),
+              erlang:garbage_collect(),
+              V = ets:select(T, [{{'$1'},[], [LM#{ Key => '$1' }]}]),
+              erlang:garbage_collect(),
+
+              V = [LM#{ Key => Dollar1 }]
+      end, maps:keys(LM)),
+
+    %% Create a hashmap with enough keys before and after the '$1' for it to
+    %% remain a hashmap when we remove those keys.
+    LMWithDollar = make_lm_with_dollar(LM#{ '$1' => a }, LargeMapSize, FlatmapSize),
+
+    %% Test that hashmap with '$1' in first position works
+    %% We rely on that fact that maps:keys return the keys
+    %% in iteration order.
+    lists:foldl(
+      fun
+          (Key, M = #{ '$1' := A }) when map_size(M) > FlatmapSize ->
+
+              V = ets:select(T, [{{'$1'},[], [M]}]),
+              erlang:garbage_collect(),
+              V = ets:select(T, [{{'$1'},[], [M]}]),
+              erlang:garbage_collect(),
+
+              V = [(maps:remove('$1',M))#{ Dollar1 => A }],
+
+              maps:remove(Key, M);
+          (_, M) when map_size(M) > FlatmapSize ->
+              M
+      end, LMWithDollar, maps:keys(LMWithDollar)),
+
+    %% Test that hashmap with '$1' in last position works
+    %% We rely on that fact that maps:keys return the keys
+    %% in iteration order.
+    lists:foldl(
+      fun
+          (Key, M = #{ '$1' := A }) ->
+
+              V = ets:select(T, [{{'$1'},[], [M]}]),
+              erlang:garbage_collect(),
+              V = ets:select(T, [{{'$1'},[], [M]}]),
+              erlang:garbage_collect(),
+
+              V = [(maps:remove('$1',M))#{ Dollar1 => A }],
+
+              maps:remove(Key, M);
+          (_, M) when map_size(M) > FlatmapSize ->
+              M
+      end, LMWithDollar, lists:reverse(maps:keys(LMWithDollar))),
+
+    %% Test hashmap with a key-value pair that are variable
+    V3 = ets:select(T, [{{'$1'},[], [LM#{ '$1' => '$1' }]}]),
+    erlang:garbage_collect(),
+    V3 = ets:select(T, [{{'$1'},[], [LM#{ '$1' => '$1' }]}]),
+    erlang:garbage_collect(),
+
+    V3 = [LM#{ Dollar1 => Dollar1 }],
+
+    %% Test hashmap with all constant keys and values
+    V4 = ets:select(T, [{{'$1'},[], [LM#{ a => a }]}]),
+    erlang:garbage_collect(),
+    V4 = ets:select(T, [{{'$1'},[], [LM#{ a => a }]}]),
+    erlang:garbage_collect(),
+
+    V4 = [LM#{ a => a }],
+
+    ets:delete(T),
+    ok.
+
+%% Create a hashmap that always has FlatmapSize keys before and after '$1'.
+%% Since the atom index of '$1' is used as hash, we cannot know before the
+%% code is run where exactly it will be placed, so in the rare cases when
+%% there isn't enough keys in the map, we insert more until there are enough.
+make_lm_with_dollar(Map, LargeMapSize, FlatmapSize) ->
+    {KeysBefore, KeysAfter} = lists:splitwith(fun erlang:is_integer/1, maps:keys(Map)),
+    if length(KeysBefore) =< FlatmapSize;
+       length(KeysAfter) - 1 =< FlatmapSize ->
+            NewMap = maps:from_keys(lists:seq(LargeMapSize, LargeMapSize*2), 1),
+            make_lm_with_dollar(maps:merge(Map, NewMap), LargeMapSize*2, FlatmapSize);
+       true ->
+            Map
+    end.
 
 %% Test that partly bound keys gives faster matches.
 partly_bound(Config) when is_list(Config) ->
@@ -1975,7 +2255,7 @@ match_heavy(Config) when is_list(Config) ->
     ok.
 
 %%% Extra safety for the very low probability that this is not
-%%% caught by the random test (Statistically impossible???) 
+%%% caught by the random test (Statistically impossible???)
 drop_match() ->
     EtsMem = etsmem(),
     T = build_table([a,b],[a],1500),
@@ -2036,9 +2316,9 @@ random_test() ->
     io:format(F,"~p. ~n",[Seed]),
     file:close(F),
     io:format("Random seed ~p written to ~s, copy to ~s to rerun with "
-	      "same seed.",[Seed, 
+	      "same seed.",[Seed,
 			    filename:join([WriteDir, "last_random_seed.txt"]),
-			    filename:join([ReadDir, 
+			    filename:join([ReadDir,
 					   "preset_random_seed.txt"])]),
     do_random_test().
 
@@ -2247,11 +2527,16 @@ update_element_opts(Opts) ->
 
 update_element_opts(Tuple,KeyPos,UpdPos,Opts) ->
     Set = ets_new(set,[{keypos,KeyPos} | Opts]),
-    OrdSet = ets_new(ordered_set,[ordered_set,{keypos,KeyPos} | Opts]),
     update_element(Set,Tuple,KeyPos,UpdPos),
-    update_element(OrdSet,Tuple,KeyPos,UpdPos),
     true = ets:delete(Set),
-    true = ets:delete(OrdSet),
+
+    run_if_valid_opts(
+      [ordered_set,{keypos,KeyPos} | Opts],
+      fun (OptsOrdSet) ->
+              OrdSet = ets_new(ordered_set, OptsOrdSet),
+              update_element(OrdSet,Tuple,KeyPos,UpdPos),
+              true = ets:delete(OrdSet)
+      end),
     ok.
 
 update_element(T,Tuple,KeyPos,UpdPos) ->
@@ -2272,56 +2557,71 @@ update_element_do(Tab,Tuple,Key,UpdPos) ->
 
     Big32 = 16#12345678,
     Big64 = 16#123456789abcdef0,
-    Values = { 623, -27, 0, Big32, -Big32, Big64, -Big64, Big32*Big32,
+    RefcBin = list_to_binary(lists:seq(1,100)),
+    BigMap1 = maps:from_list([{N,N} || N <- lists:seq(1,33)]),
+    BigMap2 = BigMap1#{key => RefcBin, RefcBin => value},
+    Values = { 623, -27, Big32, -Big32, Big64, -Big64, Big32*Big32,
 	       -Big32*Big32, Big32*Big64, -Big32*Big64, Big64*Big64, -Big64*Big64,
 	       "A", "Sverker", [], {12,-132}, {},
-	       <<45,232,0,12,133>>, <<234,12,23>>, list_to_binary(lists:seq(1,100)),
+	       <<45,232,0,12,133>>, <<234,12,23>>, RefcBin,
 	       (fun(X) -> X*Big32 end),
-	       make_ref(), make_ref(), self(), ok, update_element, 28, 29 },
-    Length = size(Values),
+	       make_ref(), make_ref(), self(), ok, update_element,
+               #{a => value, "hello" => "world", 1.0 => RefcBin },
+               BigMap1, BigMap2},
+    Length = tuple_size(Values),
+    29 = Length,
 
-    PosValArgF = fun(ToIx, ResList, [Pos | PosTail], Rand, MeF) ->
+    PosValArgF = fun MeF(ToIx, ResList, [Pos | PosTail], Rand) ->
 			 NextIx = (ToIx+Rand) rem Length,
-			 MeF(NextIx, [{Pos,element(ToIx+1,Values)} | ResList], PosTail, Rand, MeF);
+			 MeF(NextIx, [{Pos,element(ToIx+1,Values)} | ResList], PosTail, Rand);
 
-		    (_ToIx, ResList, [], _Rand, _MeF) ->
+		     MeF(_ToIx, ResList, [], _Rand) ->
 			 ResList;
 
-		    (ToIx, [], Pos, _Rand, _MeF) ->
+		     MeF(ToIx, [], Pos, _Rand) ->
 			 {Pos, element(ToIx+1,Values)}   % single {pos,value} arg
 		 end,
 
     UpdateF = fun(ToIx,Rand) ->
-                      PosValArg = PosValArgF(ToIx,[],UpdPos,Rand,PosValArgF),
+                      PosValArg = PosValArgF(ToIx,[],UpdPos,Rand),
                       %%io:format("update_element(~p)~n",[PosValArg]),
                       ArgHash = erlang:phash2({Tab,Key,PosValArg}),
                       true = ets:update_element(Tab, Key, PosValArg),
+                      [DefaultObj] = ets:lookup(Tab, Key),
+                      NewKey = make_ref(),
+                      true = ets:update_element(Tab, NewKey, PosValArg, DefaultObj),
+                      true = [update_tuple({ets:info(Tab, keypos), NewKey}, DefaultObj)] =:= ets:lookup(Tab, NewKey),
                       ArgHash = erlang:phash2({Tab,Key,PosValArg}),
                       NewTuple = update_tuple(PosValArg,Tuple),
-                      [NewTuple] = ets:lookup(Tab,Key)
+                      [NewTuple] = ets:lookup(Tab,Key),
+                      [begin
+                           Elem = element(I, NewTuple),
+                           Elem = ets:lookup_element(Tab, Key, I)
+                       end
+                       || I <- lists:seq(1, tuple_size(NewTuple))]
 	      end,
 
-    LoopF = fun(_FromIx, Incr, _Times, Checksum, _MeF) when Incr >= Length ->
+    LoopF = fun MeF(_FromIx, Incr, _Times, Checksum) when Incr >= Length ->
 		    Checksum; % done
 
-	       (FromIx, Incr, 0, Checksum, MeF) ->
-		    MeF(FromIx, Incr+1, Length, Checksum, MeF);
+		MeF(FromIx, Incr, 0, Checksum) ->
+		    MeF(FromIx, Incr+1, Length, Checksum);
 
-	       (FromIx, Incr, Times, Checksum, MeF) ->
+		MeF(FromIx, Incr, Times, Checksum) ->
 		    ToIx = (FromIx + Incr) rem Length,
 		    UpdateF(ToIx,Checksum),
 		    if
 			Incr =:= 0 -> UpdateF(ToIx,Checksum);  % extra update to same value
 			true -> true
 		    end,
-		    MeF(ToIx, Incr, Times-1, Checksum+ToIx+1, MeF)
+		    MeF(ToIx, Incr, Times-1, Checksum+ToIx+1)
 	    end,
 
     FirstTuple = Tuple,
     true = ets:insert(Tab,FirstTuple),
     [FirstTuple] = ets:lookup(Tab,Key),
 
-    Checksum = LoopF(0, 1, Length, 0, LoopF),
+    Checksum = LoopF(0, 1, Length, 0),
     Checksum = (Length-1)*Length*(Length+1) div 2,  % if Length is a prime
     ok.
 
@@ -2336,18 +2636,27 @@ update_tuple([], Tpl) ->
 
 update_element_neg(Opts) ->
     Set = ets_new(set,Opts),
-    OrdSet = ets_new(ordered_set,[ordered_set | Opts]),
     update_element_neg_do(Set),
-    update_element_neg_do(OrdSet),
     ets:delete(Set),
     {'EXIT',{badarg,_}} = (catch ets:update_element(Set,key,{2,1})),
-    ets:delete(OrdSet),
-    {'EXIT',{badarg,_}} = (catch ets:update_element(OrdSet,key,{2,1})),
+    {'EXIT',{badarg,_}} = (catch ets:update_element(Set,key,{2,1},{a,b})),
+
+    run_if_valid_opts(
+      [ordered_set | Opts],
+      fun(OptsOrdSet) ->
+              OrdSet = ets_new(ordered_set, OptsOrdSet),
+              update_element_neg_do(OrdSet),
+              ets:delete(OrdSet),
+              {'EXIT',{badarg,_}} = (catch ets:update_element(OrdSet,key,{2,1})),
+              {'EXIT',{badarg,_}} = (catch ets:update_element(OrdSet,key2,{2,1},{a,b}))
+      end),
 
     Bag = ets_new(bag,[bag | Opts]),
     DBag = ets_new(duplicate_bag,[duplicate_bag | Opts]),
     {'EXIT',{badarg,_}} = (catch ets:update_element(Bag,key,{2,1})),
+    {'EXIT',{badarg,_}} = (catch ets:update_element(Bag,key,{2,1},{key,0})),
     {'EXIT',{badarg,_}} = (catch ets:update_element(DBag,key,{2,1})),
+    {'EXIT',{badarg,_}} = (catch ets:update_element(DBag,key,{2,1},{key,0})),
     true = ets:delete(Bag),
     true = ets:delete(DBag),
     ok.
@@ -2360,6 +2669,8 @@ update_element_neg_do(T) ->
     UpdateF = fun(Arg3) ->
 		      ArgHash = erlang:phash2({T,key,Arg3}),
 		      {'EXIT',{badarg,_}} = (catch ets:update_element(T,key,Arg3)),
+		      ArgHash = erlang:phash2({T,key,Arg3}),
+		      {'EXIT',{badarg,_}} = (catch ets:update_element(T,key2,Arg3,Object)),
 		      ArgHash = erlang:phash2({T,key,Arg3}),
 		      [Object] = ets:lookup(T,key)
 	      end,
@@ -2385,6 +2696,47 @@ update_element_neg_do(T) ->
     ok.
 
 
+update_element_default(Config) when is_list(Config) ->
+    EtsMem = etsmem(),
+    repeat_for_opts(fun update_element_default_opts/1),
+    verify_etsmem(EtsMem).
+
+
+update_element_default_opts(Opts) ->
+    lists:foreach(
+        fun({Type, {Key, Pos}}) ->
+            run_if_valid_opts(
+                [Type, {keypos, Pos} | Opts],
+		fun(TabOpts) ->
+                    Tab = ets_new(Type, TabOpts),
+		    true = ets:update_element(Tab, Key, {3, b}, {key1, key2, a, x}),
+		    [{key1, key2, b, x}] = ets:lookup(Tab, Key),
+		    true = ets:update_element(Tab, Key, {3, c}, {key1, key2, a, y}),
+		    [{key1, key2, c, x}] = ets:lookup(Tab, Key),
+
+                    BadDefault = list_to_tuple(lists:seq(1, Pos-1)),
+                    badarg = try
+                                 ets:update_element(Tab, key_not_present, {1, x}, BadDefault)
+                             catch
+                                 error:badarg -> badarg
+                             end,
+
+                    %% OTP 29: Reject bad default object even if key may exists
+                    badarg = try
+                                 ets:update_element(Tab, Key, {3, d}, BadDefault)
+                             catch
+                                 error:badarg -> badarg
+                             end,
+
+		    ets:delete(Tab)
+                end
+	    )
+	end,
+	[{Type, KeyPos} || Type <- [set, ordered_set], KeyPos <- [{key1, 1}, {key2, 2}]]
+    ),
+    ok.
+
+
 %% test various variants of update_counter.
 update_counter(Config) when is_list(Config) ->
     EtsMem = etsmem(),
@@ -2393,19 +2745,25 @@ update_counter(Config) when is_list(Config) ->
 
 update_counter_do(Opts) ->
     Set = ets_new(set,Opts),
-    OrdSet = ets_new(ordered_set,[ordered_set | Opts]),
     update_counter_for(Set),
-    update_counter_for(OrdSet),
     ets:delete_all_objects(Set),
-    ets:delete_all_objects(OrdSet),
     ets:safe_fixtable(Set, true),
-    ets:safe_fixtable(OrdSet, true),
     update_counter_for(Set),
-    update_counter_for(OrdSet),
     ets:safe_fixtable(Set, false),
-    ets:safe_fixtable(OrdSet, false),
     ets:delete(Set),
-    ets:delete(OrdSet),
+
+    run_if_valid_opts(
+      [ordered_set | Opts],
+      fun (OptsOrdSet) ->
+              OrdSet = ets_new(ordered_set, OptsOrdSet),
+              update_counter_for(OrdSet),
+              ets:delete_all_objects(OrdSet),
+              ets:safe_fixtable(OrdSet, true),
+              update_counter_for(OrdSet),
+              ets:safe_fixtable(OrdSet, false),
+              ets:delete(OrdSet)
+      end),
+
     update_counter_neg(Opts).
 
 update_counter_for(T) ->
@@ -2443,6 +2801,7 @@ update_counter_for(T) ->
     SmallMax64 = (1 bsl (27+32)) - 1,
     Big1Max32 = (1 bsl 32) - 1,
     Big1Max64 = (1 bsl 64) - 1,
+    VeryBig = 1 bsl 200000,
 
     Steps = 100,
     Obj0 = {a,0,0,0,0},
@@ -2515,6 +2874,7 @@ update_counter_for(T) ->
 	   {5,-SmallMax64*4 div 3},
 	   {3,-SmallMax32*4 div 11},
 	   {5,0},
+           {4, VeryBig},
 	   {4,1},
 	   {5,-SmallMax64*4 div 7,-SmallMax64*2,SmallMax64*2},
 	   {2,Big1Max64*4 div 13,Big1Max64*2,-Big1Max64*2}]),
@@ -2553,13 +2913,18 @@ uc_adder(Init, {_Pos, Add, Thres, Warp}) ->
 
 update_counter_neg(Opts) ->
     Set = ets_new(set,Opts),
-    OrdSet = ets_new(ordered_set,[ordered_set | Opts]),
     update_counter_neg_for(Set),
-    update_counter_neg_for(OrdSet),
     ets:delete(Set),
     {'EXIT',{badarg,_}} = (catch ets:update_counter(Set,key,1)),
-    ets:delete(OrdSet),
-    {'EXIT',{badarg,_}} = (catch ets:update_counter(OrdSet,key,1)),
+
+    run_if_valid_opts(
+      [ordered_set | Opts],
+      fun (OptsOrdSet) ->
+              OrdSet = ets_new(ordered_set, OptsOrdSet),
+              update_counter_neg_for(OrdSet),
+              ets:delete(OrdSet),
+              {'EXIT',{badarg,_}} = (catch ets:update_counter(OrdSet,key,1))
+      end),
 
     Bag = ets_new(bag,[bag | Opts]),
     DBag = ets_new(duplicate_bag,[duplicate_bag | Opts]),
@@ -2684,39 +3049,43 @@ update_counter_with_default_do(Opts) ->
     2 = ets:info(T1, size),
 
     %% Same with ordered set.
-    T2 = ets_new(b, [ordered_set | Opts]),
-    3 = ets:update_counter(T2, foo, 2, {maroilles,1}),
-    1 = ets:info(T2, size),
-    5 = ets:update_counter(T2, foo, 2, {mimolette,1}),
-    1 = ets:info(T2, size),
-    [9] = ets:update_counter(T2, foo, [{2,4}], {morbier,1}),
-    1 = ets:info(T2, size),
-    3 = ets:update_counter(T2, {foo,bar}, 2, {{laguiole},1}),
-    2 = ets:info(T2, size),
-    5 = ets:update_counter(T2, {foo,bar}, 2, {{saint,nectaire},1}),
-    2 = ets:info(T2, size),
-    [9] = ets:update_counter(T2, {foo,bar}, [{2,4}], {{rocamadour},1}),
-    2 = ets:info(T2, size),
-    %% Arithmetically-equal keys.
-    3 = ets:update_counter(T2, 1.0, 2, {1,1}),
-    3 = ets:info(T2, size),
-    5 = ets:update_counter(T2, 1, 2, {1,1}),
-    3 = ets:info(T2, size),
-    7 = ets:update_counter(T2, 1, 2, {1.0,1}),
-    3 = ets:info(T2, size),
-    %% Same with reversed type difference.
-    3 = ets:update_counter(T2, 2, 2, {2.0,1}),
-    4 = ets:info(T2, size),
-    5 = ets:update_counter(T2, 2.0, 2, {2.0,1}),
-    4 = ets:info(T2, size),
-    7 = ets:update_counter(T2, 2.0, 2, {2,1}),
-    4 = ets:info(T2, size),
-    %% default counter is not an integer.
-    {'EXIT',{badarg,_}} = (catch ets:update_counter(T1, qux, 3, {saint,félicien})),
-    4 = ets:info(T2, size),
-    %% No third element in default value.
-    {'EXIT',{badarg,_}} = (catch ets:update_counter(T1, qux, [{3,1}], {roquefort,1})),
-    4 = ets:info(T2, size),
+    run_if_valid_opts(
+      [ordered_set | Opts],
+      fun (Opts2) ->
+              T2 = ets_new(b, Opts2),
+              3 = ets:update_counter(T2, foo, 2, {maroilles,1}),
+              1 = ets:info(T2, size),
+              5 = ets:update_counter(T2, foo, 2, {mimolette,1}),
+              1 = ets:info(T2, size),
+              [9] = ets:update_counter(T2, foo, [{2,4}], {morbier,1}),
+              1 = ets:info(T2, size),
+              3 = ets:update_counter(T2, {foo,bar}, 2, {{laguiole},1}),
+              2 = ets:info(T2, size),
+              5 = ets:update_counter(T2, {foo,bar}, 2, {{saint,nectaire},1}),
+              2 = ets:info(T2, size),
+              [9] = ets:update_counter(T2, {foo,bar}, [{2,4}], {{rocamadour},1}),
+              2 = ets:info(T2, size),
+              %% Arithmetically-equal keys.
+              3 = ets:update_counter(T2, 1.0, 2, {1,1}),
+              3 = ets:info(T2, size),
+              5 = ets:update_counter(T2, 1, 2, {1,1}),
+              3 = ets:info(T2, size),
+              7 = ets:update_counter(T2, 1, 2, {1.0,1}),
+              3 = ets:info(T2, size),
+              %% Same with reversed type difference.
+              3 = ets:update_counter(T2, 2, 2, {2.0,1}),
+              4 = ets:info(T2, size),
+              5 = ets:update_counter(T2, 2.0, 2, {2.0,1}),
+              4 = ets:info(T2, size),
+              7 = ets:update_counter(T2, 2.0, 2, {2,1}),
+              4 = ets:info(T2, size),
+              %% default counter is not an integer.
+              {'EXIT',{badarg,_}} = (catch ets:update_counter(T2, qux, 3, {saint,félicien})),
+              4 = ets:info(T2, size),
+              %% No third element in default value.
+              {'EXIT',{badarg,_}} = (catch ets:update_counter(T2, qux, [{3,1}], {roquefort,1})),
+              4 = ets:info(T2, size)
+      end),
     ok.
 
 %% ERL-1125
@@ -2734,14 +3103,42 @@ update_counter_with_default_bad_pos_do(Opts) ->
     0 = ets:info(T, size),
     ok.
 
+update_counter_with_default_bad_default(Config) when is_list(Config) ->
+    repeat_for_opts_all_set_table_types(fun update_counter_with_default_bad_default_do/1).
+
+update_counter_with_default_bad_default_do(Opts) ->
+    T = ets_new(a, [{keypos, 3} | Opts]),
+    0 = ets:info(T, size),
+    ok = try ets:update_counter(T, key, {2, 1}, {0, 0})
+	 catch
+	     error:badarg -> ok;
+	     Class:Reason -> {Class, Reason}
+	 end,
+    0 = ets:info(T, size),
+
+    %% OTP 29: Reject bad default object even if key exists
+    true = ets:insert(T, {0,0,key}),
+    badarg = try ets:update_counter(T, key, {2, 1}, {0, 0})
+             catch
+                 error:badarg -> badarg
+             end,
+    1 = ets:info(T, size),
+    ok.
+
 update_counter_table_growth(_Config) ->
     repeat_for_opts(fun update_counter_table_growth_do/1).
 
 update_counter_table_growth_do(Opts) ->
     Set = ets_new(b, [set | Opts]),
     [ets:update_counter(Set, N, {2, 1}, {N, 1}) || N <- lists:seq(1,10000)],
-    OrderedSet = ets_new(b, [ordered_set | Opts]),
-    [ets:update_counter(OrderedSet, N, {2, 1}, {N, 1}) || N <- lists:seq(1,10000)],
+
+    run_if_valid_opts(
+      [ordered_set | Opts],
+      fun(OptsOrdSet) ->
+              OrdSet = ets_new(b, OptsOrdSet),
+              [ets:update_counter(OrdSet, N, {2, 1}, {N, 1})
+               || N <- lists:seq(1,10000)]
+      end),
     ok.
 
 %% Check that a first-next sequence always works on a fixed table.
@@ -2855,7 +3252,7 @@ do_fixtable_iter_bag(T) ->
     DelSorted = lists:sort(Deleted),
     DelSorted = lists:usort(Deleted),  %% No duplicates
     NDels = length(Deleted),
-    
+
     %% Nr of keys where all values were deleted.
     NDeletedKeys = lists:sum([factorial(N) || N <- lists:seq(1,MaxValues)]),
 
@@ -2994,8 +3391,9 @@ write_concurrency(Config) when is_list(Config) ->
     YesTreeMem = ets:info(Yes7,memory),
     YesYesTreeMem = ets:info(Yes14,memory),
     NoTreeMem = ets:info(No4,memory),
-    io:format("YesMem=~p NoHashMem=~p NoTreeMem=~p YesTreeMem=~p\n",[YesMem,NoHashMem,
-                                                                     NoTreeMem,YesTreeMem]),
+
+    io:format("YesMem=~p NoHashMem=~p NoTreeMem=~p YesTreeMem=~p YesYesTreeMem=~p\n",
+              [YesMem,NoHashMem,NoTreeMem,YesTreeMem,YesYesTreeMem]),
 
     YesMem = ets:info(Yes2,memory),
     YesMem = ets:info(Yes3,memory),
@@ -3020,14 +3418,26 @@ write_concurrency(Config) when is_list(Config) ->
 
     true = YesMem > YesTreeMem,
 
-    case erlang:system_info(schedulers) > 1 of
-        true ->
+    case erlang:system_info(schedulers) of
+        1 ->
+            YesMem = NoHashMem,
+            YesTreeMem = NoTreeMem,
+            YesYesTreeMem = YesTreeMem;
+        NoSchedulers ->
             true = YesMem > NoHashMem,
             true = YesMem > NoTreeMem,
-            true = YesTreeMem < NoTreeMem,
-            true = YesYesTreeMem > YesTreeMem;
-        _ ->
-            one_scheduler_only
+
+            %% The memory of ordered_set with write concurrency is
+            %% smaller than without write concurrency on 64-bit systems with
+            %% few schedulers.
+            Bits = 8*erlang:system_info(wordsize),
+            if Bits =:= 32;
+               NoSchedulers > 6 ->
+                    true = YesTreeMem >= NoTreeMem;
+               true ->
+                    true = YesTreeMem < NoTreeMem
+            end,
+            true = YesYesTreeMem > YesTreeMem
     end,
 
     {'EXIT',{badarg,_}} = (catch ets_new(foo,[public,{write_concurrency,foo}])),
@@ -3182,6 +3592,38 @@ heir_1(HeirData,Mode,Opts) ->
     Founder ! {go, Heir},
     {'DOWN', Mref, process, Heir, normal} = receive_any().
 
+
+%% Test the heir option without gift data
+heir_2(Config) when is_list(Config) ->
+    repeat_for_opts(fun heir_2_do/1).
+
+
+heir_2_do(Opts) ->
+    Parent = self(),
+
+    FounderFn = fun() ->
+		    Tab = ets:new(foo, [private, {heir, Parent} | Opts]),
+		    true = ets:insert(Tab, {key, 1}),
+		    get_tab = receive_any(),
+		    Parent ! {tab, Tab},
+		    die_please = receive_any(),
+		    ok
+		end,
+
+    {Founder, FounderRef} = my_spawn_monitor(FounderFn),
+
+    Founder ! get_tab,
+    {tab, Tab} = receive_any(),
+    {'EXIT', {badarg, _}} = (catch ets:lookup(Tab, key)),
+
+    Founder ! die_please,
+    {'DOWN', FounderRef, process, Founder, normal} = receive_any(),
+    [{key, 1}] = ets:lookup(Tab, key),
+
+    true = ets:delete(Tab),
+    ok.
+
+
 %% Test ets:give_way/3.
 give_away(Config) when is_list(Config) ->
     repeat_for_opts(fun give_away_do/1).
@@ -3272,17 +3714,18 @@ setopts_do(Opts) ->
     T = ets_new(foo,[named_table, private | Opts]),
     none = ets:info(T,heir),
     Heir = my_spawn_link(fun()->heir_heir(Self) end),
-    ets:setopts(T,{heir,Heir,"Data"}),
+    ets:setopts(T,{heir,Heir}),
     Heir = ets:info(T,heir),
-    ets:setopts(T,{heir,self(),"Data"}),
+    ets:setopts(T,{heir,self()}),
     Self = ets:info(T,heir),
     ets:setopts(T,[{heir,Heir,"Data"}]),
     Heir = ets:info(T,heir),
+    ets:setopts(T,[{heir,self(),"Data"}]),
+    Self = ets:info(T,heir),
     ets:setopts(T,[{heir,none}]),
     none = ets:info(T,heir),
 
     {'EXIT',{badarg,_}} = (catch ets:setopts(T,[{heir,self(),"Data"},false])),
-    {'EXIT',{badarg,_}} = (catch ets:setopts(T,{heir,self()})),
     {'EXIT',{badarg,_}} = (catch ets:setopts(T,{heir,false})),
     {'EXIT',{badarg,_}} = (catch ets:setopts(T,heir)),
     {'EXIT',{badarg,_}} = (catch ets:setopts(T,{heir,false,"Data"})),
@@ -3406,12 +3849,7 @@ bad_table_call(T,{F,Args,_}) ->
 bad_table_call(T,{F,Args,_,tabarg_last}) ->
     {'EXIT',{badarg,_}} = (catch apply(ets, F, Args++[T]));
 bad_table_call(T,{F,Args,_,{return,Return}}) ->
-    try
-	Return = apply(ets, F, [T|Args])
-    catch
-	error:badarg -> ok
-    end.
-
+    Return = apply(ets, F, [T|Args]).
 
 %% Check rename of ets tables.
 rename(Config) when is_list(Config) ->
@@ -3503,6 +3941,132 @@ evil_create_fixed_tab() ->
     ets:safe_fixtable(T, true),
     T.
 
+%% OTP-20462: Race between
+%%   - Deleting a named table (ets:delete/1 or exiting owner)
+%%   - Auto unfix of same table by exiting process (not owner).
+%%   - Lock contention of same name-table lock.
+%% Could cause emulator crash.
+delete_fixtab_rename_race(Config) when is_list(Config) ->
+    case erlang:system_info(schedulers_online) of
+        N when N < 3 ->
+            {skip,"Not relevant when schedulers < 3"};
+        _ ->
+            EtsMem = etsmem(),
+            repeat_for_opts(fun delete_fixtab_rename_race_do/1,
+                            [hash_types, [{write_concurrency,true},
+                                          {write_concurrency,false}]]),
+            verify_etsmem(EtsMem)
+    end.
+
+delete_fixtab_rename_race_do(Opts) ->
+    delete_fixtab_rename_race_loop(10, Opts).
+
+delete_fixtab_rename_race_loop(0, _Opts) ->
+    ok;
+delete_fixtab_rename_race_loop(N, Opts) ->
+    Coord = self(),
+    NSched = case erlang:system_info(schedulers_online) of
+                 SO when SO < 12 -> SO;
+                 _ -> 12
+             end,
+    TabName = delete_fixtab_rename_race,
+
+    {Deleter,_} = my_spawn_opt(
+                    fun () ->
+                            TabName = ets_new(TabName, [named_table, public | Opts]),
+                            Tid = ets:whereis(TabName),
+                            Coord ! {deleter_ready, self(), Tid},
+                            receive
+                                delete ->
+                                    true = ets:delete(Tid);
+                                die ->
+                                    %% Delete table by terminating owner
+                                    exit(normal)
+                            end
+                    end,
+                    [link, monitor, {scheduler, 2}]),
+
+    receive {deleter_ready, Deleter, Tid} -> ok end,
+    ets:insert(Tid, {key, value}),
+
+    %% A gang of table readers. Just to keep the table read locked
+    %% and thereby make the deleter wait for write lock.
+    Readers = [my_spawn_opt(
+                 fun F() ->
+                         catch ets:lookup(Tid, key),
+                         receive die -> ok
+                         after 0 -> F() end
+                 end,
+                 [link, monitor, {scheduler,(I rem NSched)+1}])
+               || I <- lists:seq(1,NSched)],
+
+    %% A gang of table fixers:
+    %% Fixates the table then (on 'die') terminates while the fixation is still
+    %% in place, exercising the auto fixation cleanup.
+    Fixers = [my_spawn_opt(
+                fun() ->
+                        true = ets:safe_fixtable(Tid, true),
+                        Coord ! {fixer_ready, self()},
+                        receive die -> ok end,
+                        %% Exit immediately with the fixation held.
+                        exit(normal)
+                end,
+                [link, monitor, {scheduler,(I rem NSched)+1}])
+              || I <- lists:seq(1,NSched*50)],
+
+    %% Renamer:  Tries to rename another table to TabName, just to get contention
+    %% on the same name lookup lock and make deleter fail the trylock
+    %% when removing the name.
+    [OtherName] = colliding_names(TabName, 1),
+    Renamers = [my_spawn_opt(
+                    fun () ->
+                            %% We don't even bother creating the other table
+                            %% as name table lock is seized before table lookup.
+                            %%OtherName = ets:new(OtherName, [named_table]),
+                            Coord ! {renamer_ready, self()},
+                            die = try_rename_loop(OtherName, TabName)
+                    end,
+                    [link, monitor, {scheduler, (I rem NSched)+1}])
+                   || I <- lists:seq(1,NSched)],
+
+
+    [receive {fixer_ready, Pid}   -> ok end || {Pid,_} <- Fixers],
+    [receive {renamer_ready, Pid} -> ok end || {Pid,_} <- Renamers],
+
+    true = is_process_alive(Deleter),
+    [true = is_process_alive(Reader) || {Reader,_} <- Readers],
+    [true = is_process_alive(Fixer) || {Fixer,_} <- Fixers],
+    [true = is_process_alive(Renamer) || {Renamer,_} <- Renamers],
+
+    DeleteOp = case (N rem 2) of
+                   0 -> delete;
+                   1 -> die
+               end,
+
+    %% Race it!
+    [Fixer ! die || {Fixer,_} <- Fixers],
+    Deleter ! DeleteOp,
+
+    receive {'DOWN', _, process, Deleter, normal} -> ok end,
+    [Reader ! die || {Reader,_} <- Readers],
+    [Renamer ! die || {Renamer,_} <- Renamers],
+    [receive {'DOWN', _, process, Renamer, normal} -> ok end || {Renamer,_} <- Renamers],
+    [receive {'DOWN', _, process, Fixer, normal} -> ok end || {Fixer,_} <- Fixers],
+    [receive {'DOWN', _, process, Reader, normal} -> ok end || {Reader,_} <- Readers],
+
+    delete_fixtab_rename_race_loop(N-1, Opts).
+
+try_rename_loop(From, To) ->
+    try ets:rename(From, To) of
+        To -> ok
+    catch
+        error:badarg ->
+            receive die -> die
+            after 0 -> try_rename_loop(From,To)
+            end
+    end.
+
+
 %% Tests that the return values and errors are equal for set's and
 %% ordered_set's where applicable.
 interface_equality(Config) when is_list(Config) ->
@@ -3511,7 +4075,8 @@ interface_equality(Config) when is_list(Config) ->
 interface_equality_do(Opts) ->
     EtsMem = etsmem(),
     Set = ets_new(set,[set | Opts]),
-    OrderedSet = ets_new(ordered_set,[ordered_set | Opts]),
+    OrderedSet = ets_new(ordered_set,
+                         replace_dbg_hash_fixed_nr_of_locks([ordered_set | Opts])),
     F = fun(X,T,FF) -> case X of
                            0 -> true;
                            _ ->
@@ -3570,7 +4135,7 @@ maybe_sort(Any) ->
 
 %% Test match, match_object and match_delete in ordered set's.
 ordered_match(Config) when is_list(Config)->
-    repeat_for_opts(fun ordered_match_do/1).
+    repeat_for_opts_extra_opt(fun ordered_match_do/1, ordered_set).
 
 ordered_match_do(Opts) ->
     EtsMem = etsmem(),
@@ -3616,7 +4181,7 @@ ordered_match_do(Opts) ->
 
 %% Test basic functionality in ordered_set's.
 ordered(Config) when is_list(Config) ->
-    repeat_for_opts(fun ordered_do/1).
+    repeat_for_opts_extra_opt(fun ordered_do/1, ordered_set).
 
 ordered_do(Opts) ->
     EtsMem = etsmem(),
@@ -3682,23 +4247,23 @@ pick_all_backwards(T) ->
 %% Small test case for both set and bag type ets tables.
 setbag(Config) when is_list(Config) ->
     EtsMem = etsmem(),
-    lists:foreach(fun(SetType) -> 
+    lists:foreach(fun(SetType) ->
                           Set = ets_new(SetType,[SetType]),
                           Bag = ets_new(bag,[bag]),
                           Key = {foo,bar},
-                          
+
                           %% insert some value
                           ets:insert(Set,{Key,val1}),
                           ets:insert(Bag,{Key,val1}),
-                          
+
                           %% insert new value for same key again
                           ets:insert(Set,{Key,val2}),
                           ets:insert(Bag,{Key,val2}),
-                          
+
                           %% check
                           [{Key,val2}] = ets:lookup(Set,Key),
                           [{Key,val1},{Key,val2}] = ets:lookup(Bag,Key),
-                          
+
                           true = ets:delete(Set),
                           true = ets:delete(Bag)
                   end, [set, cat_ord_set,stim_cat_ord_set,ordered_set]),
@@ -3734,7 +4299,7 @@ named(Config) when is_list(Config) ->
 %% Test case to check if specified keypos works.
 keypos2(Config) when is_list(Config) ->
     EtsMem = etsmem(),
-    lists:foreach(fun(SetType) -> 
+    lists:foreach(fun(SetType) ->
                           Tab = make_table(foo,
                                            [SetType,{keypos,2}],
                                            [{val,key}, {val2,key}]),
@@ -3867,6 +4432,54 @@ badinsert_do(Opts) ->
 
 %% Check proper return values from bad lookups in existing/non existing
 %% ets tables.
+%% Iteration seeds the ordered_set path cache. A subsequent operation can
+%% compare against that cached key without needing a full ordering result.
+ordered_set_cached_key(Config) when is_list(Config) ->
+    Prefix = binary:copy(<<97>>, 4096),
+    Keys = [1, 1.0, {1}, {1.0}, [1], [1.0], #{a => 1}, #{a => 1.0},
+            #{1 => a}, #{1.0 => a}, <<>>, Prefix, <<Prefix/binary, 98>>,
+            <<3:5>>, a, [], [a | b]],
+    lists:foreach(
+      fun(Concurrent) ->
+              Tab = ets:new(cached_key, [ordered_set, private,
+                                        {write_concurrency, Concurrent}]),
+              try
+                  lists:foreach(
+                    fun(Key) ->
+                            true = ets:delete_all_objects(Tab),
+                            true = ets:insert(Tab, {Key, found}),
+                            lists:foreach(
+                              fun(Query) ->
+                                      Equal = Key == Query,
+                                      Expected = case Equal of
+                                                     true -> found;
+                                                     false -> missing
+                                                 end,
+                                      Key = ets:first(Tab),
+                                      Expected = ets:lookup_element(Tab, Query,
+                                                                    2, missing),
+                                      Key = ets:last(Tab),
+                                      Equal = ets:member(Tab, Query),
+                                      Next = case Key > Query of
+                                                 true -> Key;
+                                                 false -> '$end_of_table'
+                                             end,
+                                      Key = ets:first(Tab),
+                                      Next = ets:next(Tab, Query),
+                                      Prev = case Key < Query of
+                                                 true -> Key;
+                                                 false -> '$end_of_table'
+                                             end,
+                                      Key = ets:last(Tab),
+                                      Prev = ets:prev(Tab, Query)
+                              end, Keys)
+                    end, Keys)
+              after
+                  ets:delete(Tab)
+              end
+      end, [false, true]),
+    ok.
+
 badlookup(Config) when is_list(Config) ->
     EtsMem = etsmem(),
     {'EXIT',{badarg,_}} = (catch ets:lookup(foo,key)),
@@ -3967,6 +4580,41 @@ fill_tab(Tab,Val) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+lookup_element_default(Config) when is_list(Config) ->
+    EtsMem = etsmem(),
+
+    TabSet = ets_new(foo, [set]),
+    ets:insert(TabSet, {key, 42}),
+    42 = ets:lookup_element(TabSet, key, 2, 13),
+    13 = ets:lookup_element(TabSet, not_key, 2, 13),
+    {'EXIT',{badarg,_}} = catch ets:lookup_element(TabSet, key, 3, 13),
+    true = ets:delete(TabSet),
+
+    TabOrderedSet = ets_new(foo, [ordered_set]),
+    ets:insert(TabOrderedSet, {key, 42}),
+    42 = ets:lookup_element(TabOrderedSet, key, 2, 13),
+    13 = ets:lookup_element(TabOrderedSet, not_key, 2, 13),
+    {'EXIT',{badarg,_}} = catch ets:lookup_element(TabOrderedSet, key, 3, 13),
+    true = ets:delete(TabOrderedSet),
+
+    TabBag = ets_new(foo, [bag]),
+    ets:insert(TabBag, {key, 42}),
+    ets:insert(TabBag, {key, 43, 44}),
+    [42, 43] = ets:lookup_element(TabBag, key, 2, 13),
+    13 = ets:lookup_element(TabBag, not_key, 2, 13),
+    {'EXIT',{badarg,_}} = catch ets:lookup_element(TabBag, key, 3, 13),
+    true = ets:delete(TabBag),
+
+    TabDuplicateBag = ets_new(foo, [duplicate_bag]),
+    ets:insert(TabDuplicateBag, {key, 42}),
+    ets:insert(TabDuplicateBag, {key, 42}),
+    ets:insert(TabDuplicateBag, {key, 43, 44}),
+    [42, 42, 43] = ets:lookup_element(TabDuplicateBag, key, 2, 13),
+    13 = ets:lookup_element(TabDuplicateBag, not_key, 2, 13),
+    {'EXIT',{badarg,_}} = catch ets:lookup_element(TabDuplicateBag, key, 3, 13),
+    true = ets:delete(TabDuplicateBag),
+
+    verify_etsmem(EtsMem).
 
 %% OTP-2386. Multiple return elements.
 lookup_element_mult(Config) when is_list(Config) ->
@@ -3992,7 +4640,7 @@ lem_data() ->
 
 lem_crash(T) ->
     L = ets:lookup_element(T, 'eddie2@boromir', 3),
-    {erlang:phash(L, 256), L}.
+    {erlang:phash2(L, 256), L}.
 
 lem_crash_3(T) ->
     lem_crash(T),
@@ -4053,8 +4701,16 @@ delete_large_tab(Config) when is_list(Config) ->
 
 delete_large_tab_do(Config, Opts,Data) ->
     delete_large_tab_1(Config, foo_hash, Opts, Data, false),
-    delete_large_tab_1(Config, foo_tree, [ordered_set | Opts], Data, false),
-    delete_large_tab_1(Config, foo_tree, [stim_cat_ord_set | Opts], Data, false),
+    run_if_valid_opts(
+      [ordered_set | Opts],
+      fun(OptsOrdSet) ->
+              delete_large_tab_1(Config, foo_tree, OptsOrdSet, Data, false)
+      end),
+    run_if_valid_opts(
+      [stim_cat_ord_set | Opts],
+      fun(OptsCat) ->
+              delete_large_tab_1(Config, foo_tree, OptsCat, Data, false)
+      end),
     delete_large_tab_1(Config, foo_hash_fix, Opts, Data, true).
 
 
@@ -4143,8 +4799,16 @@ delete_large_named_table(Config) when is_list(Config) ->
 
 delete_large_named_table_do(Opts,Data) ->
     delete_large_named_table_1(foo_hash, [named_table | Opts], Data, false),
-    delete_large_named_table_1(foo_tree, [ordered_set,named_table | Opts], Data, false),
-    delete_large_named_table_1(foo_tree, [stim_cat_ord_set,named_table | Opts], Data, false),
+    run_if_valid_opts(
+      [ordered_set,named_table | Opts],
+      fun(OptsOrdSet) ->
+              delete_large_named_table_1(foo_tree, OptsOrdSet, Data, false)
+      end),
+    run_if_valid_opts(
+      [stim_cat_ord_set,named_table | Opts],
+      fun(OptsStimCat) ->
+              delete_large_named_table_1(foo_tree, OptsStimCat, Data, false)
+      end),
     delete_large_named_table_1(foo_hash, [named_table | Opts], Data, true).
 
 delete_large_named_table_1(Name, Flags, Data, Fix) ->
@@ -4316,15 +4980,39 @@ exit_many_tables_owner(Config) when is_list(Config) ->
 exit_many_many_tables_owner(Config) when is_list(Config) ->
     Data = [{erlang:phash2(I, 16#ffffff),I} || I <- lists:seq(1, 50)],
     FEData = fun(Do) -> lists:foreach(Do, Data) end,
-    repeat_for_opts(fun(Opts) -> exit_many_many_tables_owner_do(Opts,FEData,Config) end).
+    repeat_for_opts(fun(Opts) -> exit_many_many_tables_owner_do1(Opts,FEData,Config) end).
 
-exit_many_many_tables_owner_do(Opts,FEData,Config) ->
-    verify_rescheduling_exit(Config, FEData, [named_table | Opts], true, 200, 5),
-    verify_rescheduling_exit(Config, FEData, Opts, false, 200, 5),
+exit_many_many_tables_owner_do1(Opts,FEData,Config) ->
+    case has_fixed_number_of_locks(Opts) of
+        true ->
+            %% Few memory hogging tables => not enough yielding for the test
+            io:format("Skip option combo ~p\n", [Opts]);
+        false ->
+            exit_many_many_tables_owner_do2(Opts,FEData,Config)
+    end.
+
+exit_many_many_tables_owner_do2(Opts,FEData,Config) ->
+    E = ets_new(tmp,Opts),
+    FEData(fun(Data) -> ets:insert(E, Data) end),
+    Mem = ets:info(E,memory) * erlang:system_info(wordsize),
+    ets:delete(E),
+
+    ct:log("Memory per table: ~p bytes",[Mem]),
+
+    Tables =
+        case erlang:system_info(wordsize) of
+            8 ->
+                200;
+            4 ->
+                lists:min([200,2_000_000_000 div (Mem * 5)])
+        end,
+
+    verify_rescheduling_exit(Config, FEData, [named_table | Opts], true, Tables, 5),
+    verify_rescheduling_exit(Config, FEData, Opts, false, Tables, 5),
     wait_for_test_procs(),
     EtsMem = etsmem(),
-    verify_rescheduling_exit(Config, FEData, Opts, true, 200, 5),
-    verify_rescheduling_exit(Config, FEData, [named_table | Opts], false, 200, 5),
+    verify_rescheduling_exit(Config, FEData, Opts, true, Tables, 5),
+    verify_rescheduling_exit(Config, FEData, [named_table | Opts], false, Tables, 5),
     verify_etsmem(EtsMem).
 
 
@@ -4495,35 +5183,59 @@ match_delete3_do(Opts) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 %% Test ets:first/1 & ets:next/2.
-firstnext(Config) when is_list(Config) ->
-    repeat_for_opts_all_set_table_types(fun firstnext_do/1).
 
-firstnext_do(Opts) ->
+ets_first_using_first_lookup(Tab) ->
+    case ets:first_lookup(Tab) of
+        '$end_of_table' ->
+            '$end_of_table';
+        {Key, _} ->
+            Key
+    end.
+
+ets_next_using_next_lookup(Tab, Key) ->
+    case ets:next_lookup(Tab, Key) of
+        '$end_of_table' ->
+            '$end_of_table';
+        {Key2, _} ->
+            Key2
+    end.
+
+firstnext(Config) when is_list(Config) ->
+    repeat_for_opts_all_set_table_types(
+        fun(Opts) -> firstnext_do(Opts, fun ets:first/1, fun ets:next/2) end).
+
+firstnext_lookup(Config) when is_list(Config) ->
+    repeat_for_opts_all_set_table_types(
+        fun(Opts) -> firstnext_do(Opts, fun ets_first_using_first_lookup/1, fun ets_next_using_next_lookup/2) end).
+
+firstnext_do(Opts, FirstKeyFun, NextKeyFun) ->
     EtsMem = etsmem(),
     Tab = ets_new(foo,Opts),
-    [] = firstnext_collect(Tab,ets:first(Tab),[]),
+    [] = firstnext_collect(Tab,FirstKeyFun(Tab),[], NextKeyFun),
     fill_tab(Tab,foo),
     Len = length(ets:tab2list(Tab)),
-    Len = length(firstnext_collect(Tab,ets:first(Tab),[])),
+    Len = length(firstnext_collect(Tab,FirstKeyFun(Tab),[], NextKeyFun)),
     true = ets:delete(Tab),
     verify_etsmem(EtsMem).
 
-firstnext_collect(_Tab,'$end_of_table',List) ->
+firstnext_collect(_Tab,'$end_of_table',List, _NextKeyFun) ->
     List;
-firstnext_collect(Tab,Key,List) ->
-    firstnext_collect(Tab,ets:next(Tab,Key),[Key|List]).
+firstnext_collect(Tab,Key,List, NextKeyFun) ->
+    firstnext_collect(Tab,NextKeyFun(Tab,Key),[Key|List], NextKeyFun).
 
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-%% Tests ets:first/1 & ets:next/2.
 firstnext_concurrent(Config) when is_list(Config) ->
+    firstnext_concurrent_do(Config, fun ets:first/1, fun ets:next/2).
+
+firstnext_lookup_concurrent(Config) when is_list(Config) ->
+    firstnext_concurrent_do(Config, fun ets_first_using_first_lookup/1, fun ets_next_using_next_lookup/2).
+
+firstnext_concurrent_do(Config, FirstKeyFun, NextKeyFun) when is_list(Config) ->
     lists:foreach(
-      fun(TableType) -> 
+      fun(TableType) ->
               register(master, self()),
               TableName = list_to_atom(atom_to_list(?MODULE) ++ atom_to_list(TableType)),
               ets_init(TableName, 20, TableType),
-              [dynamic_go(TableName) || _ <- lists:seq(1, 2)],
+              [dynamic_go(TableName, FirstKeyFun, NextKeyFun) || _ <- lists:seq(1, 2)],
               receive
               after 5000 -> ok
               end,
@@ -4539,18 +5251,18 @@ cycle(Tab, L) ->
     ets:insert(Tab,list_to_tuple(L)),
     cycle(Tab, tl(L)++[hd(L)]).
 
-dynamic_go(TableName) -> my_spawn_link(fun() -> dynamic_init(TableName) end).
+dynamic_go(TableName, FirstKeyFun, NextKeyFun) -> my_spawn_link(fun() -> dynamic_init(TableName, FirstKeyFun, NextKeyFun) end).
 
-dynamic_init(TableName) -> [dyn_lookup(TableName) || _ <- lists:seq(1, 10)].
+dynamic_init(TableName, FirstKeyFun, NextKeyFun) -> [dyn_lookup(TableName, FirstKeyFun, NextKeyFun) || _ <- lists:seq(1, 10)].
 
-dyn_lookup(T) -> dyn_lookup(T, ets:first(T)).
+dyn_lookup(T, FirstKeyFun, NextKeyFun) -> dyn_lookup_next(T, FirstKeyFun(T), NextKeyFun).
 
-dyn_lookup(_T, '$end_of_table') -> [];
-dyn_lookup(T, K) ->
-    NextKey = ets:next(T,K),
-    case ets:next(T,K) of
+dyn_lookup_next(_T, '$end_of_table', _NextKeyFun) -> [];
+dyn_lookup_next(T, K, NextKeyFun) ->
+    NextKey = NextKeyFun(T,K),
+    case NextKeyFun(T,K) of
 	NextKey ->
-	    dyn_lookup(T, NextKey);
+	    dyn_lookup_next(T, NextKey, NextKeyFun);
 	NK ->
 	    io:fwrite("hmmm... ~p =/= ~p~n", [NextKey,NK]),
 	    exit(failed)
@@ -4594,6 +5306,21 @@ hash_clash(Config) when is_list(Config) ->
     Phash = erlang:phash2(<<"123">>, Buckets),
     true = ets:insert(Tab, {<<"123">>, "extra"}),
     [] = ets:slot(Tab, Phash).
+
+%% Atom keys that only differ in the middle of the name must spread over
+%% the buckets like any other key.
+hash_atom_keys(Config) when is_list(Config) ->
+    KeySets = [fun(N) -> "m" ++ integer_to_list(N) ++ "_handler_sup" end,
+               fun(N) -> "node" ++ integer_to_list(N) ++ "@host" end,
+               fun(N) -> "key_" ++ integer_to_list(N) end],
+    [begin
+         Tab = ets:new(tab, [set]),
+         [true = ets:insert(Tab, {list_to_atom(Name(N))})
+          || N <- lists:seq(1, 10000)],
+         ok = verify_table_load(Tab),
+         ets:delete(Tab)
+     end || Name <- KeySets],
+    ok.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -4653,7 +5380,7 @@ match2_do(Opts) ->
     end,
     [[value3_1],[value3_2]] = ets:match(Tab, {'$1', key3}),
     [[key1]] = ets:match(Tab, {value1, '$1'}),
-    [[key2_wannabe],[key2]] = ets:match(Tab, {value2_1, '$2'}),
+    [[key2],[key2_wannabe]] = lists:sort(ets:match(Tab, {value2_1, '$2'})),
     [] = ets:match(Tab,{'$1',nosuchkey}),
     [] = ets:match(Tab,{'$1',kgY2}), % same hash as key2
     [] = ets:match(Tab,{nosuchvalue,'$1'}),
@@ -4889,26 +5616,64 @@ info(Config) when is_list(Config) ->
     {'EXIT',{badarg,_}} = (catch ets:info(make_ref())),
     {'EXIT',{badarg,_}} = (catch ets:info(make_ref(), type)),
 
+    case erlang:system_info(schedulers) of
+        1 -> %% Fine grained locking is not activated when there is only one scheduler
+            lists:foreach(
+              fun(Type) ->
+                      T1 = ets:new(t1, [public, Type, {write_concurrency, auto}]),
+                      false = ets:info(T1, write_concurrency),
+                      T2 = ets:new(t2, [public, Type, {write_concurrency, true}]),
+                      false = ets:info(T2, write_concurrency)
+              end,
+              [set, bag, duplicate_bag, ordered_set]),
+            T2 = ets:new(t2, [public, {write_concurrency, {debug_hash_fixed_number_of_locks, 2049}}]),
+            false = ets:info(T2, write_concurrency);
+        _ ->
+            %% Test that one can set the synchronization granularity level for
+            %% tables of type set
+            T1 = ets:new(t1, [public, {write_concurrency, {debug_hash_fixed_number_of_locks, 1024}}]),
+            {debug_hash_fixed_number_of_locks, 1024} = ets:info(T1, write_concurrency),
+            T2 = ets:new(t2, [public, {write_concurrency, {debug_hash_fixed_number_of_locks, 2048}}]),
+            {debug_hash_fixed_number_of_locks, 2048} = ets:info(T2, write_concurrency),
+            T3 = ets:new(t3, [public, {write_concurrency, {debug_hash_fixed_number_of_locks, 1024}}, {write_concurrency, true}]),
+            true = ets:info(T3, write_concurrency),
+            T4 = ets:new(t4, [private, {write_concurrency, {debug_hash_fixed_number_of_locks, 1024}}]),
+            false = ets:info(T4, write_concurrency),
+            %% Test the auto option
+            lists:foreach(
+              fun(Type) ->
+                      T5 = ets:new(t5, [public, Type, {write_concurrency, auto}]),
+                      auto = ets:info(T5, write_concurrency)
+              end,
+              [set, bag, duplicate_bag, ordered_set]),
+            T6 = ets:new(t6, [private, {write_concurrency, true}]),
+            false = ets:info(T6, write_concurrency),
+            T7 = ets:new(t7, [private, {write_concurrency, auto}]),
+            false = ets:info(T7, write_concurrency),
+            %% Test that the number of locks is rounded down to the nearest power of two
+            T8 = ets:new(t8, [public, {write_concurrency, {debug_hash_fixed_number_of_locks, 2049}}]),
+            {debug_hash_fixed_number_of_locks, 2048} = ets:info(T8, write_concurrency)
+    end,
     ok.
 
 info_do(Opts) ->
     EtsMem = etsmem(),
     TableType = lists:foldl(
-                  fun(Item, Curr) -> 
+                  fun(Item, Curr) ->
                           case Item of
                               set -> set;
                               ordered_set -> ordered_set;
                               cat_ord_set -> ordered_set;
                               stim_cat_ord_set -> ordered_set;
                               bag -> bag;
-                              duplicate_bag -> duplicate_bag; 
+                              duplicate_bag -> duplicate_bag;
                               _ -> Curr
                           end
                   end, set, Opts),
     PublicOrCurr =
         fun(Curr) ->
-                case lists:member({write_concurrency, false}, Opts) or
-                    lists:member(private, Opts) or
+                case lists:member({write_concurrency, false}, Opts) orelse
+                    lists:member(private, Opts) orelse
                     lists:member(protected, Opts) of
                     true -> Curr;
                     false -> public
@@ -4954,7 +5719,6 @@ info_do(Opts) ->
     {value, {id, Tab}} = lists:keysearch(id, 1, Res),
     {value, {decentralized_counters, _DecentralizedCtrs}} =
         lists:keysearch(decentralized_counters, 1, Res),
-
     %% Test 'binary'
     [] = ?ets_info(Tab, binary, SlavePid),
     BinSz = 100,
@@ -4979,7 +5743,6 @@ info_do(Opts) ->
 
     unlink(SlavePid),
     exit(SlavePid,kill),
-
     true = ets:delete(Tab),
     verify_etsmem(EtsMem).
 
@@ -5113,22 +5876,233 @@ test_table_counter_concurrency(WhatToTest, TableOptions) ->
     erts_debug:set_internal_state(available_internal_state, IntStatePrevOn),
     ok.
 
+%% ERIERL-855: Calling info or whereis on a table being busy trapping (insert)
+%% could return 'undefined'.
+info_whereis_busy(Config) when is_list(Config) ->
+    TName = info_whereis_busy,
+    TName = ets:new(TName, [named_table, public]),
+    T = ets:whereis(TName),
+    NKeys = 100_000,
+    Tuples = [{K} || K <- lists:seq(1,NKeys)],
+    _Inserter = spawn_link(fun() ->
+                                   ets:insert(TName, Tuples)
+                           end),
+    repeat_while(fun() ->
+                         Info = ets:info(TName),
+                         false = (Info =:= undefined),
+                         T = ets:whereis(TName),
+                         case lists:keyfind(size, 1, Info) of
+                             {size, NKeys} ->
+                                 false;
+                             {size, _} ->
+                                 true
+                         end
+                 end),
+    ets:delete(T),
+    ok.
+
+%% Delete table during trapping ets:insert
+insert_trap_delete(Config) when is_list(Config) ->
+    repeat_for_opts(fun(Opts) ->
+                            [insert_trap_delete_run1({Opts,InsertFunc,Mode})
+                             || InsertFunc <- [insert,insert_new],
+                                Mode <- [exit, delete]]
+                    end,
+                    [all_non_stim_types, write_concurrency, compressed]),
+    ok.
+
+insert_trap_delete_run1(Params) ->
+    NKeys = 50_000 + rand:uniform(50_000),
+    %% First measure how many traps the insert op will do
+    Traps0 = insert_trap_delete_run3(unlimited, Params, NKeys),
+    %% Then do again and delete table at different moments
+    Decr = (Traps0 div 5) + 1,
+    insert_trap_delete_run2(Traps0-1, Decr, Params, NKeys).
+
+insert_trap_delete_run2(Traps, _Decr, Params, NKeys) when Traps =< 1 ->
+    insert_trap_delete_run3(1, Params, NKeys),
+    ok;
+insert_trap_delete_run2(Traps, Decr, Params, NKeys) ->
+    insert_trap_delete_run3(Traps, Params, NKeys),
+    insert_trap_delete_run2(Traps - Decr, Decr, Params, NKeys).
+
+insert_trap_delete_run3(Traps, {Opts, InsertFunc, Mode}, NKeys) ->
+    io:format("insert_trap_delete_run(~p, ~p, ~p) NKeys=~p\n",
+              [Traps, InsertFunc, Mode, NKeys]),
+    TabName = insert_trap_delete,
+    Tester = self(),
+    Tuples = [{K} || K <- lists:seq(1,NKeys)],
+
+    OwnerFun =
+        fun() ->
+                erlang:trace(Tester, true, [running]),
+                ets_new(TabName, [named_table, public | Opts]),
+                Tester ! {ets_new, ets:whereis(TabName)},
+                io:format("Wait for ets:~p/2 to yield...\n", [InsertFunc]),
+                GotTraps = repeat_while(
+                  fun(N) ->
+                          case receive_any() of
+                              {trace, Tester, out, {ets,InsertFunc,2}} ->
+                                  case N of
+                                      Traps -> {false, Traps};
+                                      _ -> {true, N+1}
+                                  end;
+                              "Insert done" ->
+                                  io:format("Too late! Got ~p traps\n", [N]),
+                                  {false, N};
+                              _M ->
+                                  %%io:format("[~p] Ignored msg: ~p\n", [N,_M]),
+                                  {true, N}
+                          end
+                  end,
+                  0),
+                case Mode of
+                    delete ->
+                        io:format("Delete table and then exit...\n",[]),
+                        ets:delete(TabName);
+                    exit ->
+                        io:format("Exit and let table die...\n",[])
+                end,
+                Tester ! {traps, GotTraps}
+        end,
+    {Owner, Mon} = spawn_opt(OwnerFun, [link, monitor]),
+
+    {ets_new, Tid} = receive_any(),
+    try ets:InsertFunc(TabName, Tuples) of
+        true ->
+            try ets:lookup(Tid, NKeys) of
+                [{NKeys}] -> ok
+            catch
+                error:badarg ->
+                    %% Table must been deleted just after insert finished
+                    undefined = ets:info(Tid, id),
+                    undefined = ets:whereis(TabName)
+            end,
+            Owner ! "Insert done"
+    catch
+        error:badarg ->
+            %% Insert failed, table must have been deleted
+            undefined = ets:info(Tid, id),
+            undefined = ets:whereis(TabName)
+    end,
+    {traps, GotTraps} = receive_any(),
+    {'DOWN', Mon, process, Owner, _} = receive_any(),
+    undefined = ets:whereis(TabName),
+    undefined = ets:info(Tid, id),
+    GotTraps.
+
+%% Rename table during trapping ets:insert
+insert_trap_rename(Config) when is_list(Config) ->
+    repeat_for_opts(fun(Opts) ->
+                            [insert_trap_rename_run1(Opts, InsertFunc)
+                             || InsertFunc <- [insert, insert_new]]
+                    end,
+                    [all_non_stim_types, write_concurrency, compressed]),
+    ok.
+
+insert_trap_rename_run1(Opts, InsertFunc) ->
+    NKeys = 50_000 + rand:uniform(50_000),
+    %% First measure how many traps the insert op will do
+    Traps0 = insert_trap_rename_run3(Opts, unlimited, InsertFunc, NKeys),
+    %% Then do again and rename table at different moments
+    Decr = (Traps0 div 5) + 1,
+    insert_trap_rename_run2(Opts, Traps0-1, Decr, InsertFunc, NKeys),
+    ok.
+
+insert_trap_rename_run2(Opts, Traps, _Decr, InsertFunc, NKeys) when Traps =< 1 ->
+    insert_trap_rename_run3(Opts, 1, InsertFunc, NKeys),
+    ok;
+insert_trap_rename_run2(Opts, Traps, Decr, InsertFunc, NKeys) ->
+    insert_trap_rename_run3(Opts, Traps, InsertFunc, NKeys),
+    insert_trap_rename_run2(Opts, Traps - Decr, Decr, InsertFunc, NKeys).
+
+
+insert_trap_rename_run3(Opts, Traps, InsertFunc, NKeys) ->
+    io:format("insert_trap_rename_run(~p, ~p)\n", [Traps, InsertFunc]),
+    TabName = insert_trap_rename,
+    TabRenamed = insert_trap_rename_X,
+    Tester = self(),
+    Tuples = [{K} || K <- lists:seq(1,NKeys)],
+
+    OwnerFun =
+        fun() ->
+                erlang:trace(Tester, true, [running]),
+                ets_new(TabName, [named_table, public | Opts]),
+                Tester ! {ets_new, ets:whereis(TabName)},
+                io:format("Wait for ets:~p/2 to yield...\n", [InsertFunc]),
+                GotTraps = repeat_while(
+                  fun(N) ->
+                          case receive_any() of
+                              {trace, Tester, out, {ets,InsertFunc,2}} ->
+                                  case N of
+                                      Traps -> {false, ok};
+                                      _ -> {true, N+1}
+                                  end;
+                              "Insert done" ->
+                                  io:format("Too late! Got ~p traps\n", [N]),
+                                  {false, N};
+                              _M ->
+                                  %%io:format("[~p] Ignored msg: ~p\n", [N,_M]),
+                                  {true, N}
+                          end
+                  end,
+                  0),
+                io:format("Rename table and wait...\n",[]),
+                ets:rename(TabName, TabRenamed),
+                ets:delete(TabRenamed, 42),
+                Tester ! {renamed, GotTraps},
+                receive die -> ok end
+        end,
+    {Owner, Mon} = spawn_opt(OwnerFun, [link,monitor]),
+
+    {ets_new, Tid} = receive_any(),
+    try ets:InsertFunc(TabName, Tuples) of
+        true ->
+            io:format("ets:~p succeeded\n", [InsertFunc]),
+            true = ets:member(Tid, 1),
+            true = ets:member(Tid, NKeys)
+    catch
+        error:badarg ->
+            io:format("ets:~p failed\n", [InsertFunc]),
+            false = ets:member(Tid, 1),
+            false = ets:member(Tid, NKeys)
+    end,
+    Owner ! "Insert done",
+    {renamed, GotTraps} = receive_any(),
+    [] = ets:lookup(Tid, 42),
+    undefined = ets:whereis(TabName),
+    Tid = ets:whereis(TabRenamed),
+    Owner ! die,
+    {'DOWN', Mon, process, Owner, _} = receive_any(),
+    undefined = ets:whereis(TabName),
+    undefined = ets:whereis(TabRenamed),
+    GotTraps.
+
+
 test_table_size_concurrency(Config) when is_list(Config) ->
     case erlang:system_info(schedulers) of
         1 -> {skip,"Only valid on smp > 1 systems"};
         _ ->
-            BaseOptions = [public, {write_concurrency, true}],
-            test_table_counter_concurrency(size, [set | BaseOptions]),
-            test_table_counter_concurrency(size, [ordered_set | BaseOptions])
+            lists:foreach(
+              fun(WriteConcurrencyOpt) ->
+                      BaseOptions = [public, {write_concurrency, WriteConcurrencyOpt}],
+                      test_table_counter_concurrency(size, [set | BaseOptions]),
+                      test_table_counter_concurrency(size, [ordered_set | BaseOptions])
+              end,
+              [true, auto])
     end.
 
 test_table_memory_concurrency(Config) when is_list(Config) ->
     case erlang:system_info(schedulers) of
         1 -> {skip,"Only valid on smp > 1 systems"};
         _ ->
-            BaseOptions = [public, {write_concurrency, true}],
-            test_table_counter_concurrency(memory, [set | BaseOptions]),
-            test_table_counter_concurrency(memory, [ordered_set | BaseOptions])
+            lists:foreach(
+              fun(WriteConcurrencyOpt) ->
+                      BaseOptions = [public, {write_concurrency, WriteConcurrencyOpt}],
+                      test_table_counter_concurrency(memory, [set | BaseOptions]),
+                      test_table_counter_concurrency(memory, [ordered_set | BaseOptions])
+              end,
+              [true, auto])
     end.
 
 %% Tests that calling the ets:delete operation on a table T with
@@ -5138,13 +6112,13 @@ test_delete_table_while_size_snapshot(Config) when is_list(Config) ->
     %% Run test case in a slave node as other test suites in stdlib
     %% depend on that pids are ordered in creation order which is no
     %% longer the case when many processes have been started before
-    Node = start_slave(),
+    {ok, Peer, Node} = ?CT_PEER(),
     [ok = rpc:call(Node,
                    ?MODULE,
                    test_delete_table_while_size_snapshot_helper,
                    [TableType])
      || TableType <- [set, ordered_set]],
-    test_server:stop_node(Node),
+    peer:stop(Peer),
     ok.
 
 test_delete_table_while_size_snapshot_helper(TableType) ->
@@ -5181,13 +6155,6 @@ size_process(Table, Parent) ->
         E -> Parent ! {got_unexpected_exception, E}
     end.
 
-start_slave() ->
-    MicroSecs = erlang:monotonic_time(),
-    Name = "ets_" ++ integer_to_list(MicroSecs),
-    Pa = filename:dirname(code:which(?MODULE)),
-    {ok, Node} = test_server:start_node(list_to_atom(Name), slave, [{args, "-pa " ++ Pa}]),
-    Node.
-
 repeat_par(FunToRepeat, NrOfTimes) ->
     repeat_par_help(FunToRepeat, NrOfTimes, NrOfTimes).
 
@@ -5218,25 +6185,42 @@ test_decentralized_counters_setting(Config) when is_list(Config) ->
 do_test_decentralized_counters_setting(TableType) ->
     wait_for_memory_deallocations(),
     FlxCtrMemUsage = erts_debug:get_internal_state(flxctr_memory_usage),
+    FixOptsList =
+        fun(Opts) ->
+                case TableType of
+                    ordered_set ->
+                        replace_dbg_hash_fixed_nr_of_locks(Opts);
+                    set ->
+                        Opts
+                end
+        end,
     lists:foreach(
       fun(OptList) ->
-              T1 = ets:new(t1, [public, TableType] ++ OptList ++ [TableType]),
+              T1 = ets:new(t1, FixOptsList([public, TableType] ++ OptList ++ [TableType])),
               check_decentralized_counters(T1, false, FlxCtrMemUsage),
               ets:delete(T1)
       end,
-      [[{write_concurrency, false}],
-       [{write_concurrency, true}, {decentralized_counters, false}]]),
+      [[{write_concurrency, false}]] ++
+          case TableType of
+              set ->
+                  [[{write_concurrency, true}, {decentralized_counters, false}],
+                   [{write_concurrency, {debug_hash_fixed_number_of_locks, 1024}}, {write_concurrency, true}]];
+              ordered_set -> []
+          end),
     lists:foreach(
       fun(OptList) ->
-              T1 = ets:new(t1, [public,
-                                TableType,
-                                {write_concurrency, true}] ++ OptList ++ [TableType]),
+              T1 = ets:new(t1,
+                           FixOptsList([public,
+                                        TableType,
+                                        {write_concurrency, true}] ++ OptList ++ [TableType])),
               check_decentralized_counters(T1, true, FlxCtrMemUsage),
               ets:delete(T1),
               wait_for_memory_deallocations(),
               FlxCtrMemUsage = erts_debug:get_internal_state(flxctr_memory_usage)
       end,
-      [[{decentralized_counters, true}]]),
+      [[{decentralized_counters, true}],
+       [{write_concurrency, {debug_hash_fixed_number_of_locks, 1024}}],
+       [{write_concurrency, auto}]]),
     ok.
 
 do_test_decentralized_counters_default_setting() ->
@@ -5415,9 +6399,9 @@ tabfile_ext1_do(Opts,Config) ->
     Name = make_ref(),
     [ets:insert(T,{X,integer_to_list(X)}) || X <- L],
     ok = ets:tab2file(T,FName,[{extended_info,[object_count]}]),
-    true = lists:sort(ets:tab2list(T)) =:= 
+    true = lists:sort(ets:tab2list(T)) =:=
 	lists:sort(ets:tab2list(element(2,ets:file2tab(FName)))),
-    true = lists:sort(ets:tab2list(T)) =:= 
+    true = lists:sort(ets:tab2list(T)) =:=
 	lists:sort(ets:tab2list(
 		     element(2,ets:file2tab(FName,[{verify,true}])))),
     {ok,Name} = disk_log:open([{name,Name},{file,FName}]),
@@ -5718,6 +6702,11 @@ fold_empty(Config) when is_list(Config) ->
               verify_etsmem(EtsMem)
       end),
     ok.
+
+fold_badarg(Config) when is_list(Config) ->
+    F = fun(_, _) -> ok end,
+    ?assertError(badarg, ets:foldl(F, [], non_existing)),
+    ?assertError(badarg, ets:foldr(F, [], non_existing)).
 
 foldl(Config) when is_list(Config) ->
     repeat_for_opts_all_table_types(
@@ -6028,7 +7017,8 @@ xfilltabstr(Tab,N) ->
 fill_sets_int(N) ->
     fill_sets_int(N,[]).
 fill_sets_int(N,Opts) ->
-    Tab1 = ets_new(xxx, [ordered_set|Opts]),
+    Tab1 = ets_new(xxx,
+                   replace_dbg_hash_fixed_nr_of_locks([ordered_set|Opts])),
     filltabint(Tab1,N),
     Tab2 = ets_new(xxx, [set|Opts]),
     filltabint(Tab2,N),
@@ -6039,7 +7029,8 @@ fill_sets_int(N,Opts) ->
     [Tab1,Tab2,Tab3,Tab4].
 
 fill_sets_intup(N,Opts) ->
-    Tab1 = ets_new(xxx, [ordered_set|Opts]),
+    Tab1 = ets_new(xxx,
+                   replace_dbg_hash_fixed_nr_of_locks([ordered_set|Opts])),
     filltabintup(Tab1,N),
     Tab2 = ets_new(xxx, [set|Opts]),
     filltabintup(Tab2,N),
@@ -6378,7 +7369,7 @@ meta_wb(Config) when is_list(Config) ->
 
 meta_wb_do(Opts) ->
     %% Do random new/delete/rename of colliding named tables
-    Names0 = [pioneer | colliding_names(pioneer)],
+    Names0 = [pioneer | colliding_names(pioneer, 5)],
 
     %% Remove any names that happen to exist as tables already
     Names = lists:filter(fun(Name) -> ets:info(Name) == undefined end,
@@ -6434,8 +7425,8 @@ meta_wb_rename(Old, New, Tabs, _) ->
     end.
 
 
-colliding_names(Name) ->
-    erts_debug:set_internal_state(colliding_names, {Name,5}).
+colliding_names(Name, N) ->
+    erts_debug:set_internal_state(colliding_names, {Name,N}).
 
 
 %% OTP_6913: Grow and shrink.
@@ -6444,11 +7435,11 @@ grow_shrink(Config) when is_list(Config) ->
     repeat_for_all_set_table_types(
       fun(Opts) ->
               EtsMem = etsmem(),
-              
+
               Set = ets_new(a, Opts, 5000),
               grow_shrink_0(0, 3071, 3000, 5000, Set),
               ets:delete(Set),
-              
+
               verify_etsmem(EtsMem)
       end).
 
@@ -6658,7 +7649,12 @@ smp_insert_do(Opts) ->
     ExecF = fun(_) -> true = ets:insert(smp_insert,{rand:uniform(KeyRange)})
             end,
     FiniF = fun(_) -> ok end,
-    run_smp_workers(InitF,ExecF,FiniF,100000),
+    %% Limit number of concurrent inserters on large multicore machines
+    %% as hash tables have been seen to not keep up with growth.
+    %% But probably not a problem in practice with such massively
+    %% concurrent frequent insertions.
+    MaxWorkers = 150,
+    run_smp_workers(InitF,ExecF,FiniF,100000, #{max => MaxWorkers}),
     verify_table_load(smp_insert),
     ets:delete(smp_insert).
 
@@ -6910,7 +7906,7 @@ verify_table_load(T) ->
         ordered_set -> ok;
         _ ->
             Stats = ets:info(T,stats),
-            {Buckets,AvgLen,StdDev,ExpSD,_MinLen,_MaxLen,_} = Stats,
+            {Buckets,AvgLen,StdDev,ExpSD,_MinLen,_MaxLen,_,_} = Stats,
             ok = if
                      AvgLen > 1.2 ->
                          io:format("Table overloaded: Stats=~p\n~p\n",
@@ -7186,7 +8182,8 @@ maps_sum([L]) ->
 types(Config) when is_list(Config) ->
     init_externals(),
     repeat_for_opts(fun types_do/1, [repeat_for_opts_atom2list(set_types),
-                                     compressed]).
+                                     compressed,
+                                     [ordered_set, compressed]]).
 
 types_do(Opts) ->
     EtsMem = etsmem(),
@@ -7209,6 +8206,38 @@ types_do(Opts) ->
     ets:delete(T),
     verify_etsmem(EtsMem).
 
+
+racy_rename(_Config) ->
+    EtsMem = etsmem(),
+    ets:new(name_a, [named_table, public, {keypos, 1}]),
+    % A writer process does rename(A->B), insert(B, {key, value}), delete(B, key), rename(B->A) in a loop
+    % A reader process does lookup(A, key) in a loop. We want to make sure that it never sees value.
+    Parent = self(),
+    WriterIterations=10000,
+    Reader = spawn_link(fun () -> racy_rename_reader() end),
+    spawn_link(?MODULE, racy_rename_writer, [Parent, Reader, WriterIterations]),
+    receive done -> ok end,
+    true=ets:delete(name_a),
+    verify_etsmem(EtsMem).
+
+racy_rename_writer(Parent, Reader, 0) ->
+    exit(Reader, normal),
+    Parent ! done;
+racy_rename_writer(Parent, Reader, Iterations) ->
+    ets:rename(name_a, name_b),
+    ets:insert(name_b, {key, value}),
+    ets:delete(name_b, key),
+    ets:rename(name_b, name_a),
+    racy_rename_writer(Parent, Reader, Iterations - 1).
+
+racy_rename_reader() ->
+    try ets:lookup(name_a, key) of
+        [] -> ok;
+        Result -> exit({racy_lookup_result, Result})
+    catch
+        _:_ -> ok
+    end,
+    racy_rename_reader().
 
 %% OTP-9932: Memory overwrite when inserting large integers in compressed bag.
 %% Will crash with segv on 64-bit opt if not fixed.
@@ -7247,10 +8276,10 @@ otp_9423(Config) when is_list(Config) ->
                               end
                       end,
               FiniF = fun(R) -> R end,
-              case run_smp_workers(InitF, ExecF, FiniF, infinite, 1) of
+              case run_smp_workers(InitF, ExecF, FiniF, infinite, #{exclude => 1}) of
                   Pids when is_list(Pids) ->
                       %%[P ! start || P <- Pids],
-                      repeat(fun() -> ets_new(otp_9423, [named_table, public, 
+                      repeat(fun() -> ets_new(otp_9423, [named_table, public,
                                                          {write_concurrency,true}|Opts]),
                                       ets:delete(otp_9423)
                              end, 10000),
@@ -7267,7 +8296,7 @@ otp_9423(Config) when is_list(Config) ->
 %% Corrupted binary in compressed table
 otp_10182(Config) when is_list(Config) ->
     repeat_for_opts_all_table_types(
-      fun(Opts) -> 
+      fun(Opts) ->
               Bin = <<"aHR0cDovL2hvb3RzdWl0ZS5jb20vYy9wcm8tYWRyb2xsLWFi">>,
               Key = {test, Bin},
               Value = base64:decode(Bin),
@@ -7279,6 +8308,28 @@ otp_10182(Config) when is_list(Config) ->
               ets:delete(Db),
               In = Out
       end).
+
+%% Verify magic refs in compressed table are reference counted correctly
+compress_magic_ref(Config) when is_list(Config)->
+    F = fun(Opts) ->
+                T = ets:new(banana, Opts),
+                ets:insert(T, {key, atomics:new(2, [])}),
+                erlang:garbage_collect(),  % make really sure no ref on heap
+                [{_, Ref}] = ets:lookup(T, key),
+                #{size := 2} = atomics:info(Ref), % Still alive!
+
+                %% Now test ets:delete will deallocate if last ref
+                WeakRef = term_to_binary(Ref),
+                erlang:garbage_collect(),  % make sure no Ref on heap
+                ets:delete(T, key),
+                StaleRef = binary_to_term(WeakRef),
+                badarg = try atomics:info(StaleRef)
+                         catch error:badarg -> badarg end,
+                ets:delete(T),
+                ok
+          end,
+    repeat_for_opts(F, [[set, ordered_set], compressed]),
+    ok.
 
 %% Test that ets:all include/exclude tables that we know are created/deleted
 ets_all(Config) when is_list(Config) ->
@@ -7406,9 +8457,15 @@ whereis_table(Config) when is_list(Config) ->
     Tid = ets:whereis(whereis_test),
 
     ets:insert(whereis_test, [{hello}, {there}]),
-
-    [[{hello}],[{there}]] = ets:match(whereis_test, '$1'),
-    [[{hello}],[{there}]] = ets:match(Tid, '$1'),
+    CheckMatch =
+        fun(MatchRes) ->
+                case MatchRes of
+                    [[{there}],[{hello}]] -> ok;
+                    [[{hello}],[{there}]] -> ok
+                end
+        end,
+    CheckMatch(ets:match(whereis_test, '$1')),
+    CheckMatch(ets:match(Tid, '$1')),
 
     true = ets:delete_all_objects(Tid),
 
@@ -7472,6 +8529,19 @@ ms_excessive_nesting(Config) when is_list(Config) ->
                   "got system_limit"
           end,
     {comment, "match_spec_compile() "++ENMSC++"; select_replace(_,[ordered_set]) "++SRT++"; select_replace(_,[set]) "++SRH}.
+
+doctests(_Config) ->
+    ct_doctest:module(ets, [{skipped_blocks, 2},
+                             {missing_tests,
+                              [{all, 0},
+                               {delete, 1},
+                               {i, 0},
+                               {i, 1},
+                               {match_spec_run, 2},
+                               {repair_continuation, 2},
+                               {safe_fixtable, 2},
+                               {select, 2},
+                               {tab2list, 1}]}]).
 
 %% The following help functions are used by
 %% throughput_benchmark. They are declared on the top level beacuse
@@ -7674,7 +8744,9 @@ prefill_insert_map_loop(T, RS0, N, ObjFun, InsertMap, NrOfSchedulers) ->
               [set, public],
               [set, public, {write_concurrency, true}],
               [set, public, {read_concurrency, true}],
-              [set, public, {write_concurrency, true}, {read_concurrency, true}]
+              [set, public, {write_concurrency, true}, {read_concurrency, true}],
+              [set, public, {write_concurrency, auto}, {read_concurrency, true}],
+              [set, public, {write_concurrency, {debug_hash_fixed_number_of_locks, 16384}}]
              ],
          etsmem_fun = fun() -> ok end,
          verify_etsmem_fun = fun(_) -> true end,
@@ -8039,10 +9111,15 @@ long_throughput_benchmark(Config) when is_list(Config) ->
               ]
              ],
          table_types =
-             [
-              [ordered_set, public, {write_concurrency, true}, {read_concurrency, true}],
-              [set, public, {write_concurrency, true}, {read_concurrency, true}]
-             ],
+             ([
+               [ordered_set, public, {write_concurrency, true}, {read_concurrency, true}],
+               [set, public, {write_concurrency, true}, {read_concurrency, true}]
+              ] ++
+                  case catch list_to_integer(erlang:system_info(otp_release)) of
+                      Recent when is_integer(Recent), Recent >= 25 ->
+                          [[set, public, {write_concurrency, auto}, {read_concurrency, true}]];
+                      _Old -> []
+                  end),
          etsmem_fun = fun etsmem/0,
          verify_etsmem_fun = fun verify_etsmem/1,
          notify_res_fun =
@@ -8125,11 +9202,15 @@ add_lists([E1|T1], [E2|T2], Acc) ->
     add_lists(T1, T2, [E1+E2 | Acc]).
 
 run_smp_workers(InitF,ExecF,FiniF,Laps) ->
-    run_smp_workers(InitF,ExecF,FiniF,Laps, 0).
-run_smp_workers(InitF,ExecF,FiniF,Laps, Exclude) ->
+    run_smp_workers(InitF,ExecF,FiniF,Laps, #{}).
+
+run_smp_workers(InitF,ExecF,FiniF,Laps, Opts) ->
+    Exclude = maps:get(exclude, Opts, 0),
+    Max = maps:get(max, Opts, infinite),
     case erlang:system_info(schedulers_online) of
         N when N > Exclude ->
-            run_workers_do(InitF,ExecF,FiniF,Laps, N - Exclude);
+            Workers = min(N - Exclude, Max),
+            run_workers_do(InitF, ExecF, FiniF, Laps, Workers);
         _ ->
             {skipped, "Too few schedulers online"}
     end.
@@ -8358,7 +9439,7 @@ pid_status(Pid) ->
 	error:undef ->
 	    erts_debug:set_internal_state(available_internal_state, true),
 	    pid_status(Pid)
-    end. 
+    end.
 
 start_spawn_logger() ->
     case whereis(ets_test_spawn_logger) of
@@ -8438,7 +9519,7 @@ repeat_for_permutations(Fun, List, N) ->
 
 receive_any() ->
     receive M ->
-	    io:format("Process ~p got msg ~p\n", [self(),M]),
+	    %%io:format("Process ~p got msg ~p\n", [self(),M]),
 	    M
     end.
 
@@ -8558,9 +9639,12 @@ test_terms(Test_Func, Mode) ->
     Bin2 = list_to_binary(lists:seq(0, ?heap_binary_size+1)),
     Test_Func(Bin2),
     Bin3 = list_to_binary(lists:seq(0, 255)),
+    %% Test an undersized refc binary. GH-8682
+    Bin4 = erts_debug:set_internal_state(binary, 61),
     garbage_collect(),
     Pib = process_info(self(),binary),
     Test_Func(Bin3),
+    Test_Func(Bin4),
     garbage_collect(),
     case Mode of
 	strict -> Pib = process_info(self(),binary);
@@ -8571,6 +9655,7 @@ test_terms(Test_Func, Mode) ->
     Test_Func(make_unaligned_sub_binary(Bin1)),
     Test_Func(make_unaligned_sub_binary(Bin2)),
     Test_Func(make_unaligned_sub_binary(Bin3)),
+    Test_Func(make_unaligned_sub_binary(Bin4)),
 
     Test_Func(make_sub_binary(lists:seq(42, 43))),
     Test_Func(make_sub_binary([42,43,44])),
@@ -8635,6 +9720,7 @@ error_info(_Config) ->
                                       end),
                            receive T -> T end
                    end,
+    _ = ets:new(name_already_exists, [named_table]),
 
     L = [{delete, ['$Tab']},
          {delete, ['$Tab', no_key], [no_fail]},
@@ -8646,6 +9732,7 @@ error_info(_Config) ->
          {file2tab, 2},                          %Not BIF.
 
          {first, ['$Tab']},
+         {first_lookup, ['$Tab']},
 
          {foldl, 3},                            %Not BIF.
          {foldr, 3},                            %Not BIF.
@@ -8676,6 +9763,8 @@ error_info(_Config) ->
          {insert, ['$Tab', [a|b]]},
          {insert, ['$Tab', {a,b,c}], [no_fail]},
          {insert, ['$Tab', [{a,b,c}]], [no_fail]},
+         {insert, ['$Tab', [{a,b,c},{d,e,f}]], [no_fail]},
+         {insert, ['$Tab', [{I,b,c} || I <- lists:seq(1,10_000)]], [no_fail]},
 
          {insert_new, ['$Tab', bad_object]},
          {insert_new, ['$Tab', {a,b,c}], [no_fail]},
@@ -8688,6 +9777,7 @@ error_info(_Config) ->
          {is_compiled_ms, [bad_ms], [no_fail, no_table]},
 
          {last, ['$Tab']},
+         {last_lookup, ['$Tab']},
 
          {lookup, ['$Tab', no_key], [no_fail]},
 
@@ -8696,6 +9786,9 @@ error_info(_Config) ->
          {lookup_element, ['$Tab', no_key, bad_pos]},
 
          {lookup_element, [OneKeyTab, one, 4]},
+
+         {lookup_element, ['$Tab', no_key, 1, default_value], [no_fail]},
+         {lookup_element, [OneKeyTab, one, 4, default_value]},
 
          {match, [bad_continuation], [no_table]},
 
@@ -8719,16 +9812,22 @@ error_info(_Config) ->
          {new, [name, [a|b]], [no_table]},
          {new, [name, [a,b]], [no_table]},
          {new, [{bad,name}, [a,b]], [no_table]},
+         {new, [name_already_exists, [named_table]], [no_table,
+                                                      {error_term,already_exists}]},
 
          %% For a set, ets:next/2 and ets:prev/2 fails if the key does
          %% not exist.
          {next, [Set, no_key]},
          {prev, [Set, no_key]},
+         {next_lookup, [Set, no_key]},
+         {prev_lookup, [Set, no_key]},
 
-         %% For an ordered set, ets:next/2 and ets:prev/2 succeeds
-         %% even if the key does not exist.
+         % For an ordered set, ets:next/2 and ets:prev/2 succeeds
+         % even if the key does not exist.
          {next, [OrderedSet, no_key], [no_fail]},
          {prev, [OrderedSet, no_key], [no_fail]},
+         {next_lookup, [OrderedSet, no_key], [no_fail]},
+         {prev_lookup, [OrderedSet, no_key], [no_fail]},
 
          {rename, ['$Tab', {bad,name}]},
          {rename, [NamedTable, '$named_table']},
@@ -8805,7 +9904,7 @@ error_info(_Config) ->
          {update_counter, ['$Tab', key, 2, {key,not_integer}]},
          {update_counter, ['$Tab', key, 3, {key,whatever}]},
 
-         {update_counter, ['$Tab', no_key, 1, default]},
+         {update_counter, ['$Tab', no_key, 1, default], [{error_term,default}]},
          {update_counter, ['$Tab', no_key, bad_increment, {tag,0}]},
          {update_counter, ['$Tab', no_key, {1, bad_increment}, {tag,0}]},
          {update_counter, ['$Tab', no_key, {1, 42}, {tag,0}], [{error_term,keypos}]},
@@ -8821,9 +9920,20 @@ error_info(_Config) ->
          {update_element, ['$Tab', no_key, {2, new}], [no_fail]},
          {update_element, [BagTab, no_key, {2, bagged}]},
          {update_element, [OneKeyTab, one, not_tuple]},
-         {update_element, [OneKeyTab, one, {0, new}]},
+         {update_element, [OneKeyTab, one, {0, new}], [{error_term, position}]},
          {update_element, [OneKeyTab, one, {1, new}], [{error_term,keypos}]},
-         {update_element, [OneKeyTab, one, {4, new}]},
+         {update_element, [OneKeyTab, one, {4, new}], [{error_term, position}]},
+
+	 {update_element, ['$Tab', no_key, {2, new}, {no_key, old}], [no_fail]},
+	 {update_element, ['$Tab', no_key, {0, new}, {no_key, old}], [{error_term, position}]},
+	 {update_element, ['$Tab', no_key, {1, new}, {no_key, old}], [{error_term, keypos}]},
+	 {update_element, ['$Tab', no_key, {4, new}, {no_key, old}], [{error_term, position}]},
+	 {update_element, ['$Tab', no_key, {4, new}, not_tuple], [{error_term, default}]},
+	 {update_element, [BagTab, no_key, {1, bagged}, {no_key, old}], []},
+	 {update_element, [OneKeyTab, no_key, {0, new}, {no_key, old}], [{error_term, position}]},
+	 {update_element, [OneKeyTab, no_key, {1, new}, {no_key, old}], [{error_term, keypos}]},
+	 {update_element, [OneKeyTab, no_key, {4, new}, {no_key, old}], [{error_term, position}]},
+	 {update_element, [OneKeyTab, no_key, {4, new}, not_tuple], [{error_term, default}]},
 
          {whereis, [{bad,name}], [no_table]}
         ],
@@ -8834,7 +9944,7 @@ error_info(_Config) ->
         [] ->
             ok;
         [_|_]=Errors ->
-            io:format("~p\n", [Errors]),
+            io:format("~P\n", [Errors, 100]),
             ct:fail({length(Errors),errors})
     end.
 
@@ -8891,8 +10001,9 @@ ets_eval_bif_errors_once(F, Args, Opts) ->
     io:format("\n\n*** ets:~p/~p", [F,length(Args)]),
 
     NoFail = lists:member(no_fail, Opts),
+    ErrorTerm = proplists:get_value(error_term, Opts, none),
     case ets_apply(F, Args, Opts) of
-        {error,none} ->
+        {error,ErrorTerm} when not NoFail ->
             ok;
         {error,Info} ->
             store_error(wrong_failure_reason, MFA, Info);
@@ -9059,7 +10170,18 @@ ets_apply(F, Args, Opts) ->
     end.
 
 ets_format_args(Args) ->
-    lists:join(", ", [io_lib:format("~p", [A]) || A <- Args]).
+    lists:join(", ", [io_lib:format("~P", [A,10]) || A <- Args]).
+
+bound_maps(_Config) ->
+    T = ets:new('__bound_maps__', [ordered_set, public]),
+    Ref = make_ref(),
+    Attrs = [#{}, #{key => value}],
+    [ets:insert_new(T, {{Attr, Ref}, original}) || Attr <- Attrs],
+    Attr = #{},
+    Key = {Attr, Ref},
+    MS = [{{Key, '$1'},[],[{{{element, 1, '$_'}, {const, new}}}]}],
+    2 = ets:select_replace(T, MS),
+    ok.
 
 %%%
 %%% Common utility functions.
@@ -9202,16 +10324,35 @@ make_sub_binary(Bin) when is_binary(Bin) ->
 make_sub_binary(List) ->
     make_sub_binary(list_to_binary(List)).
 
-make_unaligned_sub_binary(Bin0) when is_binary(Bin0) ->
-    Bin1 = <<0:3,Bin0/binary,31:5>>,
-    Sz = size(Bin0),
-    <<0:3,Bin:Sz/binary,31:5>> = id(Bin1),
-    Bin;
+make_unaligned_sub_binary(Bin) when is_binary(Bin) ->
+    erts_debug:unaligned_bitstring(Bin, 3);
 make_unaligned_sub_binary(List) ->
     make_unaligned_sub_binary(list_to_binary(List)).
 
+replace_dbg_hash_fixed_nr_of_locks(Opts) ->
+    [case X of
+         {write_concurrency, {debug_hash_fixed_number_of_locks, _}} ->
+             {write_concurrency, true};
+         _ -> X
+     end || X <- Opts].
+
 %% Repeat test function with different combination of table options
-%%       
+%%
+repeat_for_opts_extra_opt(F, Extra) ->
+    repeat_for_opts(
+      fun(Opts) ->
+              WithExtra =
+                  case erlang:is_list(Extra) of
+                      true -> Extra ++ Opts;
+                      false ->[Extra | Opts]
+                  end,
+              case is_invalid_opts_combo(WithExtra) of
+                  true -> ok;
+                  false -> F(WithExtra)
+              end
+      end,
+      [write_concurrency, read_concurrency, compressed]).
+
 repeat_for_opts(F) ->
     repeat_for_opts(F, [write_concurrency, read_concurrency, compressed]).
 
@@ -9266,21 +10407,49 @@ repeat_for_opts(F, [Atom | Tail], AccList) when is_atom(Atom) ->
     repeat_for_opts(F, [repeat_for_opts_atom2list(Atom) | Tail ], AccList).
 
 repeat_for_opts_atom2list(set_types) -> [set,ordered_set,stim_cat_ord_set,cat_ord_set];
+repeat_for_opts_atom2list(hash_types) -> [set,bag,duplicate_bag];
 repeat_for_opts_atom2list(ord_set_types) -> [ordered_set,stim_cat_ord_set,cat_ord_set];
 repeat_for_opts_atom2list(all_types) -> [set,ordered_set,stim_cat_ord_set,cat_ord_set,bag,duplicate_bag];
 repeat_for_opts_atom2list(all_non_stim_types) -> [set,ordered_set,cat_ord_set,bag,duplicate_bag];
 repeat_for_opts_atom2list(all_non_stim_set_types) -> [set,ordered_set,cat_ord_set];
-repeat_for_opts_atom2list(write_concurrency) -> [{write_concurrency,false},{write_concurrency,true}];
+repeat_for_opts_atom2list(write_concurrency) -> [{write_concurrency,false},
+                                                 {write_concurrency,true},
+                                                 {write_concurrency, {debug_hash_fixed_number_of_locks, 2048}},
+                                                 {write_concurrency,auto}];
 repeat_for_opts_atom2list(read_concurrency) -> [{read_concurrency,false},{read_concurrency,true}];
 repeat_for_opts_atom2list(compressed) -> [void,compressed].
 
+has_fixed_number_of_locks(Opts) ->
+    lists:any(
+      fun({write_concurrency, {debug_hash_fixed_number_of_locks, _}}) ->
+              true;
+         (_) ->
+              false
+      end,
+      Opts).
+
+is_invalid_opts_combo(Opts) ->
+    OrderedSet = lists:member(ordered_set, Opts) orelse
+                 lists:member(stim_cat_ord_set, Opts) orelse
+                 lists:member(cat_ord_set, Opts),
+    OrderedSet andalso has_fixed_number_of_locks(Opts).
+
+run_if_valid_opts(Opts, F) ->
+    case is_invalid_opts_combo(Opts) of
+        true -> ignore;
+        false -> F(Opts)
+    end.
+
 is_redundant_opts_combo(Opts) ->
-    (lists:member(stim_cat_ord_set, Opts) orelse
-     lists:member(cat_ord_set, Opts))
-        andalso
-    (lists:member({write_concurrency, false}, Opts) orelse
-     lists:member(private, Opts) orelse
-     lists:member(protected, Opts)).
+    IsRed1 =
+        ((lists:member(stim_cat_ord_set, Opts) orelse
+          lists:member(cat_ord_set, Opts))
+         andalso
+           (lists:member({write_concurrency, false}, Opts) orelse
+            lists:member(private, Opts) orelse
+            lists:member(protected, Opts))),
+    IsRed2 = is_invalid_opts_combo(Opts),
+    IsRed1 orelse IsRed2.
 
 %% Add fake table option with info about key range.
 %% Will be consumed by ets_new and used for stim_cat_ord_set.
@@ -9311,7 +10480,7 @@ ets_new(Name, Opts0, KeyRange, KeyFun) ->
                     {erlang:system_info(schedulers) > 1,false, false, []},
                     Opts0),
     Opts = lists:reverse(RevOpts),
-    EtsNewHelper = 
+    EtsNewHelper =
         fun (UseOpts) ->
                 case get(ets_new_opts) of
                     UseOpts ->
@@ -9327,12 +10496,12 @@ ets_new(Name, Opts0, KeyRange, KeyFun) ->
         (not lists:member(private, Opts)) andalso
         (not lists:member(protected, Opts)) of
         true ->
-            NewOpts1 = 
+            NewOpts1 =
                 case lists:member({write_concurrency, true}, Opts) of
                     true -> Opts;
                     false -> [{write_concurrency, true}|Opts]
                 end,
-            NewOpts2 = 
+            NewOpts2 =
                 case lists:member(public, NewOpts1) of
                     true -> NewOpts1;
                     false -> [public|NewOpts1]

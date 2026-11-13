@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2009-2017. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2009-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,14 +16,16 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 
-%% This is example of the widgets and usage of wxErlang
+%% This is example of the widgets and usage of Wx.
 %% Hopefully it will contain all implemented widgets, it's event handling
 %% and some tutorials of how to use sizers and other stuff.
 
 -module(demo).
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
 
 -include_lib("wx/include/wx.hrl").
 
@@ -63,7 +67,7 @@ init(Options) ->
     wx:new(Options),
     process_flag(trap_exit, true),
 
-    Frame = wxFrame:new(wx:null(), ?wxID_ANY, "wxErlang widgets", [{size,{1400,800}}]),
+    Frame = wxFrame:new(wx:null(), ?wxID_ANY, "Wx widgets", [{size,{1400,800}}]),
     MB = wxMenuBar:new(),
     File    = wxMenu:new([]),
     wxMenu:append(File, ?wxID_PRINT, "&Print code"),
@@ -82,7 +86,7 @@ init(Options) ->
     wxMenuBar:append(MB, Help, "&Help"),
     wxFrame:setMenuBar(Frame,MB),
 
-    wxFrame:connect(Frame, command_menu_selected),
+    wxFrame:connect(Frame, command_menu_selected, [{skip, true}]),
     wxFrame:connect(Frame, close_window),
 
     _SB = wxFrame:createStatusBar(Frame,[]),

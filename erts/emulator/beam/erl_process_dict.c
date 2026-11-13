@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 1999-2018. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 1999-2025. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,7 +16,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * %CopyrightEnd%
  */
 
@@ -53,25 +55,16 @@
 /* Hash utility macros  */
 #define HASH_RANGE(PDict) ((PDict)->usedSlots)
 
-#define MAKE_HASH(Term)                                \
-    ((is_small(Term)) ? (Uint32) unsigned_val(Term) :  \
-     ((is_atom(Term)) ?                                \
-      (Uint32) atom_val(Term) :                        \
-      make_internal_hash(Term, 0)))
+#define MAKE_HASH(Term)                                      \
+    ((is_small(Term)) ? (erts_ihash_t) unsigned_val(Term) :  \
+     ((is_atom(Term)) ?                                      \
+      (erts_ihash_t) atom_val(Term) :                        \
+      erts_internal_hash(Term)))
 
-#define PD_SZ2BYTES(Sz) (sizeof(ProcDict) + ((Sz) - 1)*sizeof(Eterm))
+#define PD_SZ2BYTES(Sz) (sizeof(ProcDict) + (Sz)*sizeof(Eterm))
 
 #define pd_hash_value(Pdict, Key) \
     pd_hash_value_to_ix(Pdict, MAKE_HASH((Key)))
-
-/* Memory allocation macros */
-#define PD_ALLOC(Sz)				\
-     erts_alloc(ERTS_ALC_T_PROC_DICT, (Sz))
-#define PD_FREE(P, Sz)				\
-     erts_free(ERTS_ALC_T_PROC_DICT, (P))
-#define PD_REALLOC(P, OSz, NSz) 		\
-     erts_realloc(ERTS_ALC_T_PROC_DICT, (P), (NSz))
-
 
 #define TCAR(Term) CAR(list_val(Term))
 #define TCDR(Term) CDR(list_val(Term))
@@ -103,7 +96,7 @@ static void grow(Process *p);
 static void array_shrink(ProcDict **ppd, unsigned int need);
 static void ensure_array_size(ProcDict**, unsigned int size);
 
-static unsigned int pd_hash_value_to_ix(ProcDict *pdict, Uint32 hx);
+static unsigned int pd_hash_value_to_ix(ProcDict *pdict, erts_ihash_t hx);
 static unsigned int next_array_size(unsigned int need);
 
 /*
@@ -436,17 +429,17 @@ static void pd_hash_erase(Process *p, Eterm id, Eterm *ret)
 static void pd_hash_erase_all(Process *p)
 {
     if (p->dictionary != NULL) {
-	PD_FREE(p->dictionary, PD_SZ2BYTES(p->dictionary->size));
+        erts_free(ERTS_ALC_T_PROC_DICT, p->dictionary);
 	p->dictionary = NULL;
     }
 }
 
-Uint32 erts_pd_make_hx(Eterm key)
+erts_ihash_t erts_pd_make_hx(Eterm key)
 {
     return MAKE_HASH(key);
 }
 
-Eterm erts_pd_hash_get_with_hx(Process *p, Uint32 hx, Eterm id)
+Eterm erts_pd_hash_get_with_hx(Process *p, erts_ihash_t hx, Eterm id)
 {
     unsigned int hval;
     ProcDict *pd = p->dictionary;
@@ -965,9 +958,7 @@ static void array_shrink(ProcDict **ppd, unsigned int need)
     if (siz >= (*ppd)->arraySize)
 	return; /* Only shrink */
 
-    *ppd = PD_REALLOC(((void *) *ppd),
-		      PD_SZ2BYTES((*ppd)->arraySize),
-		      PD_SZ2BYTES(siz));
+    *ppd = erts_realloc(ERTS_ALC_T_PROC_DICT, *ppd, PD_SZ2BYTES(siz));
 
     (*ppd)->arraySize = siz;
 }
@@ -981,7 +972,7 @@ static void ensure_array_size(ProcDict **ppdict, unsigned int size)
     if (pd == NULL) {
 	Uint siz = next_array_size(size);
 
-        pd = PD_ALLOC(PD_SZ2BYTES(siz));
+        pd = erts_alloc(ERTS_ALC_T_PROC_DICT, PD_SZ2BYTES(siz));
 	for (i = 0; i < siz; ++i) 
 	    pd->data[i] = NIL;
 	pd->arraySize = siz;
@@ -989,9 +980,8 @@ static void ensure_array_size(ProcDict **ppdict, unsigned int size)
     } else if (size > pd->arraySize) {
 	Uint osize = pd->arraySize;
 	Uint nsize = next_array_size(size);
-	pd = PD_REALLOC(((void *) pd),
-			     PD_SZ2BYTES(osize),
-			     PD_SZ2BYTES(nsize));
+
+        pd = erts_realloc(ERTS_ALC_T_PROC_DICT, pd, PD_SZ2BYTES(nsize));
 	for (i = osize; i < nsize; ++i)
 	    pd->data[i] = NIL;
 	pd->arraySize = nsize;
@@ -1003,7 +993,7 @@ static void ensure_array_size(ProcDict **ppdict, unsigned int size)
 ** Basic utilities
 */
 
-static unsigned int pd_hash_value_to_ix(ProcDict *pdict, Uint32 hx) 
+static unsigned int pd_hash_value_to_ix(ProcDict *pdict, erts_ihash_t hx) 
 { 
     Uint high;
 

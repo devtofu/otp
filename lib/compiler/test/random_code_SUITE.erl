@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2020-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,27 +22,27 @@
 
 -module(random_code_SUITE).
 
--export([all/0, suite/0, groups/0,
+-export([all/0, suite/0,
          init_per_suite/1, end_per_suite/1]).
 
 -export([compile/1]).
+
+-define(NUMTESTS, 1000).
 
 suite() ->
     [{ct_hooks,[ts_install_cth]}].
 
 all() ->
-    [{group,property_tests}].
-
-groups() ->
-    [{property_tests,[parallel],
-      [compile]}].
+    [compile].
 
 init_per_suite(Config0) ->
     case ct_property_test:init_per_suite(Config0) of
         [_|_]=Config ->
-            try proper_erlang_abstract_code:module() of
+            try proplists:get_value(property_test_tool, Config) of
+                Prop when Prop =:= proper; Prop =:= eqc ->
+                    Config;
                 _ ->
-                    Config
+                    {skip,"No proper_erlang_abstract_code module"}
             catch
                 error:undef ->
                     {skip,"No proper_erlang_abstract_code module"}
@@ -53,5 +55,23 @@ end_per_suite(Config) ->
     Config.
 
 compile(Config) ->
-    true = ct_property_test:quickcheck(compile_prop:compile(), Config),
+    NumTests = case os:getenv("ERL_RANDOM_CODE_NUMTESTS") of
+                   false ->
+                       ?NUMTESTS;
+                   NumTests0 ->
+                       list_to_integer(NumTests0)
+               end,
+
+    %% Conservatively assume that we can run 5 tests each
+    %% second.
+    TimeTrap = {seconds, (60 + (NumTests+4) div 5)},
+    ct:timetrap(TimeTrap),
+    io:format("~p tests\n", [NumTests]),
+    case proplists:get_value(property_test_tool, Config) of
+        proper ->
+            Opts = [quiet,{numtests,NumTests}],
+            true = proper:quickcheck(compile_prop:prop_compile(),Opts);
+        eqc ->  %% Half the number of tests for eqc
+            [] = eqc:module({numtests,?NUMTESTS div 2}, compile_prop)
+    end,
     ok.

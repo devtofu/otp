@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2010-2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2010-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -36,20 +38,27 @@
 
 -module(diameter_failover_SUITE).
 
--export([suite/0,
-         all/0]).
+%% testcases, no common_test dependency
+-export([run/0]).
 
-%% testcases
--export([start/1,
-         start_services/1,
-         connect/1,
-         send_ok/1,
-         send_nok/1,
-         send_discard_1/1,
-         send_discard_2/1,
-         stop_services/1,
-         empty/1,
-         stop/1]).
+%% common_test wrapping
+-export([
+         %% Framework functions
+         suite/0,
+         all/0,
+         init_per_suite/1,
+         end_per_suite/1,
+         init_per_testcase/2,
+         end_per_testcase/2,
+         
+         %% The test cases
+         parallel/1]).
+
+%% internal
+-export([send_ok/0,
+         send_nok/0,
+         send_discard_1/0,
+         send_discard_2/0]).
 
 %% diameter callbacks
 -export([pick_peer/4,
@@ -60,11 +69,10 @@
          handle_request/3]).
 
 -include("diameter.hrl").
+-include("diameter_util.hrl").
 -include("diameter_gen_base_rfc3588.hrl").
 
 %% ===========================================================================
-
--define(util, diameter_util).
 
 -define(ADDR, {127,0,0,1}).
 
@@ -109,69 +117,129 @@
 -define(MOVED,    ?'DIAMETER_BASE_TERMINATION-CAUSE_USER_MOVED').
 -define(TIMEOUT,  ?'DIAMETER_BASE_TERMINATION-CAUSE_SESSION_TIMEOUT').
 
+-define(FL(F),    ?FL(F, [])).
+-define(FL(F, A), ?LOG("FAIL", F, A)).
+
+
 %% ===========================================================================
 
 suite() ->
-    [{timetrap, {seconds, 60}}].
+    [{timetrap, {seconds, 90}}].
 
 all() ->
-    [start,
-     start_services,
-     connect,
-     send_ok,
-     send_nok,
-     send_discard_1,
-     send_discard_2,
-     stop_services,
-     empty,
-     stop].
+    [parallel].
+
+init_per_suite(Config) ->
+    ?FL("init_per_suite -> entry with"
+        "~n   Config: ~p", [Config]),
+    ?DUTIL:init_per_suite(Config).
+
+end_per_suite(Config) ->
+    ?FL("end_per_suite -> entry with"
+        "~n   Config: ~p", [Config]),
+    ?DUTIL:end_per_suite(Config).
+
+
+%% This test case can take a *long* time, so if the machine is too slow, skip
+%% init_per_testcase(parallel = Case, Config) when is_list(Config) ->
+%%     ?XL("init_per_testcase(~w) -> entry with"
+%%         "~n   Config: ~p"
+%%         "~n   => check factor", [Case, Config]),
+%%     Key = dia_factor,
+%%     case lists:keysearch(Key, 1, Config) of
+%%         {value, {Key, Factor}} when (Factor > 10) ->
+%%             ?XL("init_per_testcase(~w) -> Too slow (~w) => SKIP",
+%%                 [Case, Factor]),
+%%             {skip, {machine_too_slow, Factor}};
+%%         _ ->
+%%             ?XL("init_per_testcase(~w) -> run test", [Case]),
+%%             Config
+%%     end;
+init_per_testcase(Case, Config) ->
+    ?FL("init_per_testcase(~w) -> entry", [Case]),
+    Config.
+
+
+end_per_testcase(Case, Config) when is_list(Config) ->
+    ?FL("end_per_testcase(~w) -> entry", [Case]),
+    Config.
+
 
 %% ===========================================================================
-%% start/stop testcases
 
-start(_Config) ->
-    ok = diameter:start().
+parallel(_Config) ->
+    ?FL("~w -> entry", [?FUNCTION_NAME]),
+    run().
 
-start_services(_Config) ->
+
+%% ===========================================================================
+
+%% run/0
+
+run() ->
+    ?FL("~w -> entry", [?FUNCTION_NAME]),
+    ok = diameter:start(),
+    try
+        ?FL("~w -> run traffic", [?FUNCTION_NAME]),
+        ?RUN([{fun traffic/0, 60000}])
+    after
+        ok = diameter:stop()
+    end.
+
+%% traffic/0
+
+traffic() ->
+    Servers = start_services(),
+    ok = connect(Servers),
+    [] = send(),
+    [] = stop_services(),
+    [] = ets:tab2list(diameter_request).
+
+%% start_services/0
+
+start_services() ->
+    lists:foreach(fun(S) -> ?DEL_REG(S) end, ?SERVERS ++ ?CLIENTS),
     Servers = [server(N) || N <- ?SERVERS],
     [] = [T || C <- ?CLIENTS,
                T <- [diameter:start_service(C, ?SERVICE(C))],
                T /= ok],
+    Servers.
 
-    {save_config, Servers}.
+%% send/0
 
-connect(Config) ->
-    {start_services, Servers} = proplists:get_value(saved_config, Config),
+send() ->
+    Funs = [send_ok, send_nok, send_discard_1, send_discard_2],
+    ?RUN([[{?MODULE, F, []} || F <- Funs]]).
 
+%% connect/1
+
+connect(Servers) ->
     lists:foreach(fun(C) -> connect(C, Servers) end, ?CLIENTS).
 
-stop_services(_Config) ->
-    [] = [{H,T} || H <- ?CLIENTS ++ ?SERVERS,
-                   T <- [diameter:stop_service(H)],
-                   T /= ok].
+%% stop_services/0
 
-%% Ensure transports have been removed from request table.
-empty(_Config) ->
-    [] = ets:tab2list(diameter_request).
-
-stop(_Config) ->
-    ok = diameter:stop().
+stop_services() ->
+    lists:foreach(fun(S) -> ?DEL_UNREG(S) end, ?CLIENTS ++ ?SERVERS),
+    [{H,T} || H <- ?CLIENTS ++ ?SERVERS,
+              T <- [diameter:stop_service(H)],
+              T /= ok].
 
 %% ----------------------------------------
 
 server(Name) ->
     ok = diameter:start_service(Name, ?SERVICE(Name)),
-    {Name, ?util:listen(Name, tcp)}.
+    {Name, ?LISTEN(Name, tcp)}.
 
 connect(Name, Refs) ->
-    [{{Name, ?util:connect(Name, tcp, LRef)}, T} || {_, LRef} = T <- Refs].
+    [{{Name, ?CONNECT(Name, tcp, LRef)}, T} || {_, LRef} = T <- Refs].
+
 
 %% ===========================================================================
 %% traffic testcases
 
 %% Send an STR and expect success after SERVER3 answers after a couple
 %% of failovers.
-send_ok(_Config) ->
+send_ok() ->
     Req = #diameter_base_STR{'Destination-Realm' = realm(?SERVER1),
                              'Termination-Cause' = ?LOGOUT,
                              'Auth-Application-Id' = ?APP_ID},
@@ -180,19 +248,19 @@ send_ok(_Config) ->
         = call(?CLIENT1, Req).
 
 %% Send an STR and expect failure when both servers fail.
-send_nok(_Config) ->
+send_nok() ->
     Req = #diameter_base_STR{'Destination-Realm' = realm(?SERVER4),
                              'Termination-Cause' = ?LOGOUT,
                              'Auth-Application-Id' = ?APP_ID},
     {failover, ?LOGOUT} = call(?CLIENT1, Req).
 
 %% Send an STR and have prepare_retransmit discard it.
-send_discard_1(_Config) ->
+send_discard_1() ->
     Req = #diameter_base_STR{'Destination-Realm' = realm(?SERVER1),
                              'Termination-Cause' = ?TIMEOUT,
                              'Auth-Application-Id' = ?APP_ID},
     {rejected, ?TIMEOUT} = call(?CLIENT2, Req).
-send_discard_2(_Config) ->
+send_discard_2() ->
     Req = #diameter_base_STR{'Destination-Realm' = realm(?SERVER4),
                              'Termination-Cause' = ?MOVED,
                              'Auth-Application-Id' = ?APP_ID},

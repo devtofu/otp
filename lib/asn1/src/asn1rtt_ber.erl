@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2012-2017. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2012-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -160,22 +162,29 @@ decode_constructed_indefinite(Bin,Acc) ->
 
 %% decode_primitive_incomplete/2 decodes an encoded message incomplete
 %% by help of the pattern attribute (first argument).
-decode_primitive_incomplete([[default,TagNo]],Bin) -> %default
+decode_primitive_incomplete([{default,TagNo}], Bin) ->
     case decode_tag_and_length(Bin) of
 	{Form,TagNo,V,Rest} ->
-	    decode_incomplete2(Form,TagNo,V,[],Rest);
+	    decode_incomplete2(Form, TagNo, V, [], Rest);
 	_ ->
 	    asn1_NOVALUE
     end;
-decode_primitive_incomplete([[default,TagNo,Directives]],Bin) ->
+decode_primitive_incomplete([{default,TagNo,Directives}], Bin) ->
     %% default, constructed type, Directives points into this type
     case decode_tag_and_length(Bin) of
 	{Form,TagNo,V,Rest} ->
-	    decode_incomplete2(Form,TagNo,V,Directives,Rest);
+	    decode_incomplete2(Form, TagNo, V, Directives, Rest);
 	_ ->
 	    asn1_NOVALUE
     end;
-decode_primitive_incomplete([[opt,TagNo]],Bin) ->
+decode_primitive_incomplete([{default_undecoded,[Tag|_]}], Bin) ->
+    case decode_tag_and_length(Bin) of
+	{_,Tag,_,_} ->
+            decode_incomplete_bin(Bin);
+	_ ->
+	    asn1_NOVALUE
+    end;
+decode_primitive_incomplete([{opt,TagNo}],Bin) ->
     %% optional
     case decode_tag_and_length(Bin) of
 	{Form,TagNo,V,Rest} ->
@@ -183,74 +192,79 @@ decode_primitive_incomplete([[opt,TagNo]],Bin) ->
 	_ ->
 	    asn1_NOVALUE
     end;
-decode_primitive_incomplete([[opt,TagNo,Directives]],Bin) ->
+decode_primitive_incomplete([{opt,TagNo,Directives}], Bin) ->
     %% optional
     case decode_tag_and_length(Bin) of
 	{Form,TagNo,V,Rest} ->
-	    decode_incomplete2(Form,TagNo,V,Directives,Rest);
+	    decode_incomplete2(Form, TagNo, V, Directives, Rest);
 	_ ->
 	    asn1_NOVALUE
     end;
 %% An optional that shall be undecoded
-decode_primitive_incomplete([[opt_undec,Tag]],Bin) ->
+decode_primitive_incomplete([{opt_undecoded,[Tag|_]}], Bin) ->
     case decode_tag_and_length(Bin) of
 	{_,Tag,_,_} ->
-	    decode_incomplete_bin(Bin);
+            decode_incomplete_bin(Bin);
 	_ ->
 	    asn1_NOVALUE
     end;
 %% A choice alternative that shall be undecoded
-decode_primitive_incomplete([[alt_undec,TagNo]|RestAlts],Bin) ->
+decode_primitive_incomplete([{alt_undecoded,TagNo}|RestAlts], Bin) ->
     case decode_tag_and_length(Bin) of
 	{_,TagNo,_,_} ->
 	    decode_incomplete_bin(Bin);
 	_ ->
-	    decode_primitive_incomplete(RestAlts,Bin)
+	    decode_primitive_incomplete(RestAlts, Bin)
     end;
-decode_primitive_incomplete([[alt,TagNo]|RestAlts],Bin) ->
+decode_primitive_incomplete([{alt,TagNo}|RestAlts], Bin) ->
     case decode_tag_and_length(Bin) of
 	{_Form,TagNo,V,Rest} ->
 	    {{TagNo,V},Rest};
 	_ ->
 	    decode_primitive_incomplete(RestAlts,Bin)
     end;
-decode_primitive_incomplete([[alt,TagNo,Directives]|RestAlts],Bin) ->
+decode_primitive_incomplete([{alt,TagNo,Directives}|RestAlts], Bin) ->
     case decode_tag_and_length(Bin) of
 	{Form,TagNo,V,Rest} ->
 	    decode_incomplete2(Form,TagNo,V,Directives,Rest);
 	_ ->
 	    decode_primitive_incomplete(RestAlts,Bin)
     end;
-decode_primitive_incomplete([[alt_parts,TagNo]],Bin) ->
+decode_primitive_incomplete([{alt_parts,TagNo}], Bin) ->
     case decode_tag_and_length(Bin) of
 	{_Form,TagNo,V,Rest} ->
 	    {{TagNo,V},Rest};
 	_ ->
 	    asn1_NOVALUE
     end;
-decode_primitive_incomplete([[alt_parts,TagNo]|RestAlts],Bin) ->
+decode_primitive_incomplete([{alt_parts,TagNo}|RestAlts], Bin) ->
     case decode_tag_and_length(Bin) of
 	{_Form,TagNo,V,Rest} ->
 	    {{TagNo,decode_parts_incomplete(V)},Rest};
 	_ ->
-	    decode_primitive_incomplete(RestAlts,Bin)
+	    decode_primitive_incomplete(RestAlts, Bin)
     end;
-decode_primitive_incomplete([[undec,_TagNo]|_RestTag],Bin) ->
-    %% incomlete decode
+decode_primitive_incomplete([{undecoded,_TagNo}|_RestTag], Bin) ->
     decode_incomplete_bin(Bin);
-decode_primitive_incomplete([[parts,TagNo]|_RestTag],Bin) ->
+decode_primitive_incomplete([{parts,[TagNo|MoreTags]}|_RestTag], Bin) ->
     case decode_tag_and_length(Bin) of
 	{_Form,TagNo,V,Rest} ->
-	    {{TagNo,decode_parts_incomplete(V)},Rest};
+            case MoreTags of
+                [] ->
+                    {{TagNo,decode_parts_incomplete(V)},Rest};
+                [TagNo2] ->
+                    {_,TagNo2,V2,<<>>} = decode_tag_and_length(V),
+                    {{TagNo,{TagNo2,decode_parts_incomplete(V2)}},Rest}
+            end;
 	Err ->
 	    {error,{asn1,"tag failure",TagNo,Err}}
     end;
-decode_primitive_incomplete([mandatory|RestTag],Bin) ->
+decode_primitive_incomplete([mandatory|RestTag], Bin) ->
     {Form,TagNo,V,Rest} = decode_tag_and_length(Bin),
     decode_incomplete2(Form,TagNo,V,RestTag,Rest);
 %% A choice that is a toptype or a mandatory component of a
 %% SEQUENCE or SET.
-decode_primitive_incomplete([[mandatory|Directives]],Bin) ->
+decode_primitive_incomplete([{mandatory,Directives}], Bin) ->
     {Form,TagNo,V,Rest} = decode_tag_and_length(Bin),
     decode_incomplete2(Form,TagNo,V,Directives,Rest);
 decode_primitive_incomplete([],Bin) ->
@@ -269,7 +283,7 @@ decode_parts_incomplete(Bin) ->
 
 
 %% decode_incomplete2 checks if V is a value of a constructed or
-%% primitive type, and continues the decode propeerly.
+%% primitive type, and continues the decode properly.
 decode_incomplete2(_Form=2,TagNo,V,TagMatch,_) ->
     %% constructed indefinite length
     {Vlist,Rest2} = decode_constr_indef_incomplete(TagMatch,V,[]),
@@ -288,16 +302,16 @@ decode_constructed_incomplete(_TagMatch,<<>>) ->
 decode_constructed_incomplete([mandatory|RestTag],Bin) ->
     {Tlv,Rest} = decode_primitive(Bin),
     [Tlv|decode_constructed_incomplete(RestTag,Rest)];
-decode_constructed_incomplete(Directives=[[Alt,_]|_],Bin)
-  when Alt =:= alt_undec; Alt =:= alt; Alt =:= alt_parts ->
+decode_constructed_incomplete([{Alt,_}|_]=Directives, Bin)
+  when Alt =:= alt_undecoded; Alt =:= alt; Alt =:= alt_parts ->
     {_Form,TagNo,V,Rest} = decode_tag_and_length(Bin),
     case incomplete_choice_alt(TagNo, Directives) of
-	{alt_undec,_} ->
+	{alt_undecoded,_} ->
 	    LenA = byte_size(Bin) - byte_size(Rest),
 	    <<A:LenA/binary,Rest/binary>> = Bin,
 	    A;
 	{alt,InnerDirectives} ->
-	    {Tlv,Rest} = decode_primitive_incomplete(InnerDirectives,V),
+	    {Tlv,Rest} = decode_primitive_incomplete(InnerDirectives, V),
 	    {TagNo,Tlv};
 	{alt_parts,_} ->
 	    [{TagNo,decode_parts_incomplete(V)}];
@@ -305,7 +319,7 @@ decode_constructed_incomplete(Directives=[[Alt,_]|_],Bin)
             %% if a choice alternative was encoded that
 	    %% was not specified in the config file,
 	    %% thus decode component anonomous.
-	    {Tlv,_}=decode_primitive(Bin),
+	    {Tlv,_} = decode_primitive(Bin),
 	    Tlv
     end;
 decode_constructed_incomplete([TagNo|RestTag],Bin) ->
@@ -337,12 +351,12 @@ decode_incomplete_bin(Bin) ->
     <<IncBin:IncLen/binary,Ret/binary>> = Bin,
     {IncBin,Ret}.
 
-incomplete_choice_alt(TagNo,[[Alt,TagNo]|Directives]) ->
+incomplete_choice_alt(TagNo, [{Alt,TagNo}|Directives]) ->
     {Alt,Directives};
-incomplete_choice_alt(TagNo,[D]) when is_list(D) ->
-    incomplete_choice_alt(TagNo,D);
-incomplete_choice_alt(TagNo,[_H|Directives]) ->
-    incomplete_choice_alt(TagNo,Directives);
+incomplete_choice_alt(TagNo, [D]) when is_list(D) ->
+    incomplete_choice_alt(TagNo, D);
+incomplete_choice_alt(TagNo, [_H|Directives]) ->
+    incomplete_choice_alt(TagNo, Directives);
 incomplete_choice_alt(_,[]) ->
     no_match.
 
@@ -353,35 +367,35 @@ incomplete_choice_alt(_,[]) ->
 %% Returns {ok,Value} or {error,Reason}
 %% Value is a binary that in turn must be decoded to get the decoded
 %% value.
-decode_selective([],Binary) ->
+decode_selective([], Binary) ->
     {ok,Binary};
-decode_selective([skip|RestPattern],Binary)->
-    {ok,RestBinary}=skip_tag(Binary),
-    {ok,RestBinary2}=skip_length_and_value(RestBinary),
-    decode_selective(RestPattern,RestBinary2);
-decode_selective([[skip_optional,Tag]|RestPattern],Binary) ->
-    case skip_optional_tag(Tag,Binary) of
-	{ok,RestBinary} ->
-	    {ok,RestBinary2}=skip_length_and_value(RestBinary),
-	    decode_selective(RestPattern,RestBinary2);
-	missing ->
-	    decode_selective(RestPattern,Binary)
+decode_selective([skip|RestPattern], Binary)->
+    {ok,RestBinary} = skip_tag(Binary),
+    {ok,RestBinary2} = skip_length_and_value(RestBinary),
+    decode_selective(RestPattern, RestBinary2);
+decode_selective([{skip_optional,Tag}|RestPattern], Binary) ->
+    case skip_optional_tag(Tag, Binary) of
+        {ok,RestBinary} ->
+            {ok,RestBinary2} = skip_length_and_value(RestBinary),
+            decode_selective(RestPattern, RestBinary2);
+        missing ->
+            decode_selective(RestPattern, Binary)
     end;
-decode_selective([[choosen,Tag]],Binary) ->
-    return_value(Tag,Binary);
-decode_selective([[choosen,Tag]|RestPattern],Binary) ->
-    case skip_optional_tag(Tag,Binary) of
-	{ok,RestBinary} ->
-	    {ok,Value} = get_value(RestBinary),
-	    decode_selective(RestPattern,Value);
-	missing ->
-	    {ok,<<>>}
+decode_selective([{chosen,Tag}], Binary) ->
+    return_value(Tag, Binary);
+decode_selective([{chosen,Tag}|RestPattern], Binary) ->
+    case skip_optional_tag(Tag, Binary) of
+        {ok,RestBinary} ->
+            {ok,Value} = get_value(RestBinary),
+            decode_selective(RestPattern,Value);
+        missing ->
+            {ok,<<>>}
     end;
 decode_selective(P,_) ->
     {error,{asn1,{partial_decode,"bad pattern",P}}}.
 
 return_value(Tag,Binary) ->
-    {ok,{Tag,RestBinary}}=get_tag(Binary),
+    {ok,{Tag,RestBinary}} = get_tag(Binary),
     {ok,{LenVal,_RestBinary2}} = get_length_and_value(RestBinary),
     {ok,<<Tag/binary,LenVal/binary>>}.
 
@@ -536,21 +550,20 @@ decode_tag_and_length(<<Class:2, Form:1, 31:5, 1:1, TagPart1:7, 0:1, TagPartLast
     << V:Length/binary, RestBuffer2/binary>> = RestBuffer,
     {Form, (Class bsl 16) bor TagNo, V, RestBuffer2};
 decode_tag_and_length(<<Class:2, Form:1, 31:5, Buffer/binary>>) ->
-    {TagNo, Buffer1} = decode_tag(Buffer, 0),
+    {TagNo, Buffer1} = decode_tag(Buffer),
     {Length, RestBuffer} = decode_length(Buffer1),
-    << V:Length/binary, RestBuffer2/binary>> = RestBuffer,
+    <<V:Length/binary, RestBuffer2/binary>> = RestBuffer,
     {Form, (Class bsl 16) bor TagNo, V, RestBuffer2}.
 
+decode_tag(Buffer) ->
+    decode_tag(Buffer, 0, 0).
 
-
-%% last partial tag
-decode_tag(<<0:1,PartialTag:7, Buffer/binary>>, TagAck) ->
+decode_tag(<<0:1, PartialTag:7, Buffer/binary>>, N, TagAck) when N < 32 ->
     TagNo = (TagAck bsl 7) bor PartialTag,
     {TagNo, Buffer};
-%% more tags
-decode_tag(<<_:1,PartialTag:7, Buffer/binary>>, TagAck) ->
+decode_tag(<<_:1, PartialTag:7, Buffer/binary>>, N, TagAck) when N < 32 ->
     TagAck1 = (TagAck bsl 7) bor PartialTag,
-    decode_tag(Buffer, TagAck1).
+    decode_tag(Buffer, N + 1, TagAck1).
 
 %%=======================================================================
 %%
@@ -774,7 +787,7 @@ do_encode_named_bit_string(Size, [FirstVal | RestVal], NamedBitList, TagIn) ->
 %%
 %% bitstring NamedBitList
 %% Val can be  of:
-%% - [identifiers] where only named identifers are set to one,
+%% - [identifiers] where only named identifiers are set to one,
 %%   the Constraint must then have some information of the
 %%   bitlength.
 %% - [list of ones and zeroes] all bits
@@ -1133,7 +1146,7 @@ e_object_identifier(V) when is_tuple(V) ->
     e_object_identifier(tuple_to_list(V));
 
 %%%%%%%%%%%%%%%
-%% e_object_identifier([List of Obect Identifiers]) ->
+%% e_object_identifier([List of Object Identifiers]) ->
 %% {[Encoded Octetlist of ObjIds], IntLength}
 %%
 e_object_identifier([E1,E2|Tail]) ->
@@ -1172,7 +1185,7 @@ mk_object_val(Val, Ack, Len) ->
 
 decode_object_identifier(Tlv, Tags) ->
     Val = match_tags(Tlv, Tags),
-    [AddedObjVal|ObjVals] = dec_subidentifiers(Val,0,[]),
+    [AddedObjVal|ObjVals] = dec_subidentifiers(Val),
     {Val1, Val2} = if
 		       AddedObjVal < 40 ->
 			   {0, AddedObjVal};
@@ -1183,12 +1196,20 @@ decode_object_identifier(Tlv, Tags) ->
 		   end,
     list_to_tuple([Val1, Val2 | ObjVals]).
 
-dec_subidentifiers(<<>>,_Av,Al) ->
-    lists:reverse(Al);
-dec_subidentifiers(<<1:1,H:7,T/binary>>,Av,Al) ->
-    dec_subidentifiers(T,(Av bsl 7) + H,Al);
-dec_subidentifiers(<<H,T/binary>>,Av,Al) ->
-    dec_subidentifiers(T,0,[((Av bsl 7) + H)|Al]).
+dec_subidentifiers(<<Octets/binary>>) ->
+    dec_subidentifiers_1(Octets, 0, 0).
+
+%% Reject overlong OID components to mitigate a DoS vector. This should be
+%% enough bits for all legitimate uses until someone can prove otherwise. For
+%% comparison, golang limits to 30 bits per component.
+dec_subidentifiers_1(<<1:1, H:7, T/binary>>, N, Av0) when N < 16 ->
+    Av = (Av0 bsl 7) bor H,
+    dec_subidentifiers_1(T, N + 1, Av);
+dec_subidentifiers_1(<<H, T/binary>>, N, Av0) when N < 16 ->
+    Av = (Av0 bsl 7) bor H,
+    [Av | dec_subidentifiers_1(T, 0, 0)];
+dec_subidentifiers_1(<<>>, _N, _Av) ->
+    [].
 
 %%============================================================================
 %% RELATIVE-OID, ITU_T X.690 Chapter 8.20
@@ -1215,7 +1236,7 @@ enc_relative_oid(Val) ->
 %%============================================================================
 decode_relative_oid(Tlv, Tags) ->
     Val = match_tags(Tlv, Tags),
-    ObjVals = dec_subidentifiers(Val,0,[]),
+    ObjVals = dec_subidentifiers(Val),
     list_to_tuple(ObjVals).
 
 %%============================================================================
@@ -1411,19 +1432,21 @@ dynamicsort_SETOF(ListOfEncVal) ->
 
 %% multiple octet tag
 dynsort_decode_tag(<<Class:2,_Form:1,31:5,Buffer/binary>>) ->
-    TagNum = dynsort_decode_tag(Buffer, 0),
+    TagNum = dynsort_decode_tag_1(Buffer, 0, 0),
     {Class,TagNum};
 
 %% single tag (< 31 tags)
 dynsort_decode_tag(<<Class:2,_Form:1,TagNum:5,_/binary>>) ->
     {Class,TagNum}.
 
-dynsort_decode_tag(<<0:1,PartialTag:7,_/binary>>, TagAcc) ->
+%% Reject overlong tags to mitigate a DoS vector. This should be enough bits
+%% for all legitimate uses until someone can prove otherwise.
+dynsort_decode_tag_1(<<0:1,PartialTag:7,_/binary>>, N, TagAcc) when N < 16 ->
     (TagAcc bsl 7) bor PartialTag;
-dynsort_decode_tag(<<_:1,PartialTag:7,Buffer/binary>>, TagAcc0) ->
+dynsort_decode_tag_1(<<_:1,PartialTag:7,Buffer/binary>>, N, TagAcc0)
+  when N < 16 ->
     TagAcc = (TagAcc0 bsl 7) bor PartialTag,
-    dynsort_decode_tag(Buffer, TagAcc).
-
+    dynsort_decode_tag_1(Buffer, N + 1, TagAcc).
 
 %%-------------------------------------------------------------------------
 %% INTERNAL HELPER FUNCTIONS (not exported)

@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2000-2016. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2000-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,7 +34,7 @@ public class OtpErlangPort extends OtpErlangObject {
 
     /*
      * Create a unique Erlang port belonging to the local node. Since it isn't
-     * meaninful to do so, this constructor is private...
+     * meaningful to do so, this constructor is private...
      *
      * @param self the local node.
      *
@@ -77,10 +79,10 @@ public class OtpErlangPort extends OtpErlangObject {
      *            an arbitrary number. Only the low order 28 bits will be used.
      *
      * @param creation
-     *            another arbitrary number. Only the low order 2 bits will be used.
+	 *  		  node incarnation number. Avoid values 0 to 3.
      */
     public OtpErlangPort(final String node, final long id, final int creation) {
-        this(OtpExternal.portTag, node, id, creation);
+		this(OtpExternal.newPortTag, node, id, creation);
     }
 
     /**

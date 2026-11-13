@@ -1,35 +1,17 @@
-// AsmJit - Machine code generation for C++
+// This file is part of AsmJit project <https://asmjit.com>
 //
-//  * Official AsmJit Home Page: https://asmjit.com
-//  * Official Github Repository: https://github.com/asmjit/asmjit
-//
-// Copyright (c) 2008-2020 The AsmJit Authors
-//
-// This software is provided 'as-is', without any express or implied
-// warranty. In no event will the authors be held liable for any damages
-// arising from the use of this software.
-//
-// Permission is granted to anyone to use this software for any purpose,
-// including commercial applications, and to alter it and redistribute it
-// freely, subject to the following restrictions:
-//
-// 1. The origin of this software must not be misrepresented; you must not
-//    claim that you wrote the original software. If you use this software
-//    in a product, an acknowledgment in the product documentation would be
-//    appreciated but is not required.
-// 2. Altered source versions must be plainly marked as such, and must not be
-//    misrepresented as being the original software.
-// 3. This notice may not be removed or altered from any source distribution.
+// See <asmjit/core.h> or LICENSE.md for license and copyright information
+// SPDX-License-Identifier: Zlib
 
 #ifndef ASMJIT_ARM_ARMFORMATTER_P_H_INCLUDED
 #define ASMJIT_ARM_ARMFORMATTER_P_H_INCLUDED
 
-#include "../core/api-config.h"
+#include <asmjit/core/api-config.h>
 #ifndef ASMJIT_NO_LOGGING
 
-#include "../core/formatter.h"
-#include "../core/string.h"
-#include "../arm/armglobals.h"
+#include <asmjit/core/formatter.h>
+#include <asmjit/core/string.h>
+#include <asmjit/arm/armglobals.h>
 
 ASMJIT_BEGIN_SUB_NAMESPACE(arm)
 
@@ -37,47 +19,44 @@ ASMJIT_BEGIN_SUB_NAMESPACE(arm)
 //! \addtogroup asmjit_arm
 //! \{
 
-// ============================================================================
-// [asmjit::arm::FormatterInternal]
-// ============================================================================
-
 namespace FormatterInternal {
 
-Error formatFeature(
+Error ASMJIT_CDECL format_feature(
   String& sb,
-  uint32_t featureId) noexcept;
+  uint32_t feature_id) noexcept;
 
-Error formatCondCode(
+Error ASMJIT_CDECL format_cond_code(
   String& sb,
-  uint32_t condCode) noexcept;
+  CondCode cc) noexcept;
 
-Error formatShiftOp(
+Error ASMJIT_CDECL format_shift_op(
   String& sb,
-  uint32_t shiftOp) noexcept;
+  ShiftOp shift_op) noexcept;
 
-Error formatRegister(
+Error ASMJIT_CDECL format_register(
   String& sb,
-  uint32_t flags,
+  FormatFlags flags,
   const BaseEmitter* emitter,
-  uint32_t arch,
-  uint32_t regType,
-  uint32_t regId,
-  uint32_t elementType = 0,
-  uint32_t elementIndex = 0xFFFFFFFFu) noexcept;
+  Arch arch,
+  RegType reg_type,
+  uint32_t reg_id,
+  uint32_t element_type = 0,
+  uint32_t element_index = 0xFFFFFFFF) noexcept;
 
-Error formatOperand(
+Error ASMJIT_CDECL format_register_list(
   String& sb,
-  uint32_t flags,
+  FormatFlags flags,
   const BaseEmitter* emitter,
-  uint32_t arch,
+  Arch arch,
+  RegType reg_type,
+  uint32_t reg_mask) noexcept;
+
+Error ASMJIT_CDECL format_operand(
+  String& sb,
+  FormatFlags flags,
+  const BaseEmitter* emitter,
+  Arch arch,
   const Operand_& op) noexcept;
-
-Error formatInstruction(
-  String& sb,
-  uint32_t flags,
-  const BaseEmitter* emitter,
-  uint32_t arch,
-  const BaseInst& inst, const Operand_* operands, size_t opCount) noexcept;
 
 } // {FormatterInternal}
 

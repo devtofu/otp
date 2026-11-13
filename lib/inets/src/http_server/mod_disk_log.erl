@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1997-2020. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,17 +16,18 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 %%
 -module(mod_disk_log).
+-moduledoc false.
 
 %% Application internal API
 -export([error_log/2, report_error/2, security_log/2]).
 
 %% Callback API
--export([do/1, load/2, store/2, remove/1]).
+-export([do/1, store/2, remove/1]).
 
 -define(VMODULE,"DISK_LOG").
 
@@ -123,102 +126,6 @@ do(Info) ->
 				 0, LogFormat),
 		    {proceed,Info#mod.data}
 	    end
-    end.
-
-%%--------------------------------------------------------------------------
-%% load(Line, Context) ->  eof | ok | {ok, NewContext} | 
-%%                     {ok, NewContext, Directive} | 
-%%                     {ok, NewContext, DirectiveList} | {error, Reason}
-%% Line = string()
-%% Context = NewContext = DirectiveList = [Directive]
-%% Directive = {DirectiveKey , DirectiveValue}
-%% DirectiveKey = DirectiveValue = term()
-%% Reason = term() 
-%%
-%% Description: See httpd(3) ESWAPI CALLBACK FUNCTIONS
-%%-------------------------------------------------------------------------
-load("TransferDiskLogSize " ++ TransferDiskLogSize, []) ->
-    try re:split(TransferDiskLogSize, " ",  [{return, list}]) of
-	[MaxBytes, MaxFiles] ->
-	    case make_integer(MaxBytes) of
-		{ok,MaxBytesInteger} ->
-		    case make_integer(MaxFiles) of
-			{ok,MaxFilesInteger} ->
-			    {ok,[],{transfer_disk_log_size,
-				    {MaxBytesInteger,MaxFilesInteger}}};
-			{error,_} ->
-			    {error,
-			     ?NICE(string:strip(TransferDiskLogSize)++
-				   " is an invalid TransferDiskLogSize")}
-		    end;
-		_ ->
-		    {error,?NICE(string:strip(TransferDiskLogSize)++
-				     " is an invalid TransferDiskLogSize")}
-	    end
-    catch _:_ ->
-	    {error,?NICE(string:strip(TransferDiskLogSize) ++
-			     " is an invalid TransferDiskLogSize")}   
-    end;
-load("TransferDiskLog " ++ TransferDiskLog,[]) ->
-    {ok,[],{transfer_disk_log,string:strip(TransferDiskLog)}};
- 
-load("ErrorDiskLogSize " ++  ErrorDiskLogSize, []) ->
-    try re:split(ErrorDiskLogSize," ", [{return, list}]) of
-	[MaxBytes,MaxFiles] ->
-	    case make_integer(MaxBytes) of
-		{ok,MaxBytesInteger} ->
-		    case make_integer(MaxFiles) of
-			{ok,MaxFilesInteger} ->
-			    {ok,[],{error_disk_log_size,
-				    {MaxBytesInteger,MaxFilesInteger}}};
-			{error,_} ->
-			    {error,?NICE(string:strip(ErrorDiskLogSize)++
-					 " is an invalid ErrorDiskLogSize")}
-		    end;
-		{error,_} ->
-		    {error,?NICE(string:strip(ErrorDiskLogSize)++
-				 " is an invalid ErrorDiskLogSize")}
-	    end
-    catch _:_ ->
-	    {error,?NICE(string:strip(ErrorDiskLogSize) ++
-			     " is an invalid TransferDiskLogSize")}   
-    end;
-load("ErrorDiskLog " ++ ErrorDiskLog, []) ->
-    {ok, [], {error_disk_log, string:strip(ErrorDiskLog)}};
-
-load("SecurityDiskLogSize " ++ SecurityDiskLogSize, []) ->
-    try re:split(SecurityDiskLogSize, " ", [{return, list}]) of
-	[MaxBytes, MaxFiles] ->
-	    case make_integer(MaxBytes) of
-		{ok, MaxBytesInteger} ->
-		    case make_integer(MaxFiles) of
-			{ok, MaxFilesInteger} ->
-			    {ok, [], {security_disk_log_size,
-				      {MaxBytesInteger, MaxFilesInteger}}};
-			{error,_} ->
-			    {error, 
-			     ?NICE(string:strip(SecurityDiskLogSize) ++
-				   " is an invalid SecurityDiskLogSize")}
-		    end;
-		{error, _} ->
-		    {error, ?NICE(string:strip(SecurityDiskLogSize) ++
-				  " is an invalid SecurityDiskLogSize")}
-	    end
-    catch _:_ ->
-	    {error,?NICE(string:strip(SecurityDiskLogSize) ++
-			     " is an invalid SecurityDiskLogSize")}   	
-    end;
-load("SecurityDiskLog " ++ SecurityDiskLog, []) ->
-    {ok, [], {security_disk_log, string:strip(SecurityDiskLog)}};
-
-load("DiskLogFormat " ++ Format, []) ->
-    case string:strip(Format) of
-	"internal" ->
-	    {ok, [], {disk_log_format,internal}};
-	"external" ->
-	    {ok, [], {disk_log_format,external}};
-	_Default ->
-	    {ok, [], {disk_log_format,external}}
     end.
 
 %%--------------------------------------------------------------------------
@@ -336,7 +243,7 @@ create_disk_log(LogFile, SizeTag, ConfigList) ->
 		undefined ->
 		    {error,
 		     ?NICE(Filename++
-			   " is an invalid ErrorLog beacuse ServerRoot "
+			   " is an invalid ErrorLog because ServerRoot "
 			   "is not defined")};
 		ServerRoot ->
 		    AbsoluteFilename = filename:join(ServerRoot,Filename),
@@ -359,7 +266,7 @@ create_disk_log(Filename, MaxBytes, MaxFiles, ConfigList) ->
 %%
 %% When the internal disk log format is used, we will do some extra 
 %% controls. If the files are valid, try to repair them and if 
-%% thats not possible, truncate.
+%% that's not possible, truncate.
 %%----------------------------------------------------------------------
 
 open(Filename, MaxBytes, MaxFiles, internal) ->
@@ -430,11 +337,3 @@ log_internal_info(Info,Date,[{internal_info,Reason}|Rest]) ->
 log_internal_info(Info,Date,[_|Rest]) ->
     log_internal_info(Info,Date,Rest).
 
-make_integer(List) ->
-    try list_to_integer(List) of
-	N ->
-	    {ok, N}
-    catch 
-	_:_ ->
-	    {error, {badarg, list_to_integer, List}}
-    end.

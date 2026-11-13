@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2014-2016. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2014-2026. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -107,7 +109,7 @@ void wxeFifo::DelQueue(unsigned int i)
 
 void wxeFifo::DeleteCmd(wxeCommand *orig)
 {
-  orig->op = -2;  // Assert: will crash if op is negativ
+  orig->op = -2;  // Assert: will crash if op is negative
   enif_clear_env(orig->env);
   free.push_back(orig);
 }
@@ -136,6 +138,7 @@ void wxeFifo::Append(wxeCommand *orig)
   curr->env = orig->env;
   orig->env = temp;
   curr->me_ref = orig->me_ref;
-  orig->op = -1; // Assert: will crash if op is negativ
+  orig->op = -1; // Assert: will crash if op is negative
   m_q.push_back(curr);
+  size++;
 }

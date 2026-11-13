@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1997-2016. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -30,9 +32,7 @@
 -define(cover_total,"total_cover.log").
 -define(variables, "variables").
 -define(cross_variables, "variables-cross").
--define(LF, [10]).                              % Newline in VxWorks script
--define(CHAR_PER_LINE, 60).                     % Characters per VxWorks script building line
 -define(CROSS_COOKIE, "cross").                 % cookie used when cross platform testing
 -define(TS_PORT, 7887).
--define(TEST_SERVER_SCRIPT, "test_server_vx.script").
+
 

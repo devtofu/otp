@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1997-2016. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 %%
@@ -40,6 +42,7 @@
 %%  data structures
 
 -module(asn1ct_pretty_format).
+-moduledoc false.
 
 -export([term/1]).
 
@@ -51,7 +54,7 @@ term(Term) ->
 %%______________________________________________________________________
 %% pretty_format:term(Term, Indent} -> {Indent', Chars}
 %%   Format <Term> -- use <Indent> to indent the *next* line
-%%     Note: Indent' is a new indentaion level (sometimes printing <Term>
+%%     Note: Indent' is a new indentation level (sometimes printing <Term>
 %%     the next line to need an "extra" indent!).
 
 term([], Indent) ->

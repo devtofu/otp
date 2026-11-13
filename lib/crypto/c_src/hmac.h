@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2010-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2010-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,11 +23,11 @@
 #ifndef E_HMAC_H__
 #define E_HMAC_H__ 1
 
-#if !defined(HAS_EVP_PKEY_CTX) || DISABLE_EVP_HMAC
-
 #include "common.h"
 
-int init_hmac_ctx(ErlNifEnv *env);
+#if !defined(HAS_EVP_PKEY_CTX) || DISABLE_EVP_HMAC
+
+int init_hmac_ctx(ErlNifEnv *env, ErlNifBinary* rt_buf);
 
 ERL_NIF_TERM hmac_init_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]);
 ERL_NIF_TERM hmac_update_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]);

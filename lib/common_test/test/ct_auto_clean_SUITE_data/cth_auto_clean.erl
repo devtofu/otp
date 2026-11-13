@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2009-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2009-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -62,7 +64,7 @@ post_end_per_suite(_Suite, _Config, Return, State) ->
     AllProcs = processes(),
     Remaining = AllProcs--proplists:get_value(all_procs, State),
     ct:pal("Final remaining processes = ~p", [Remaining]),
-    %% only the end_per_suite process shoud remain at this point!
+    %% only the end_per_suite process should remain at this point!
     Remaining = [self()],
     {Return, State}.
 

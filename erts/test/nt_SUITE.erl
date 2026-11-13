@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1998-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1998-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -195,7 +197,7 @@ user_env(Config) when is_list(Config) ->
     remove_service(Name),
     ok.
 
-%% Check that services are stopped and started syncronous and that
+%% Check that services are stopped and started synchronous and that
 %% failed stopactions kill the erlang machine anyway.
 synced(Config) when is_list(Config) ->
     Name0 = "test_service_4",

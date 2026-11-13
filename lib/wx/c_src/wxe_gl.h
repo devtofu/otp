@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2008-2016. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2008-2026. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,9 +27,10 @@
 
 void setActiveGL(wxeMemEnv *memenv, ErlNifPid caller, wxGLCanvas *canvas, wxGLContext *context);
 void deleteActiveGL(wxGLCanvas *canvas);
+void deleteActiveGLContext(wxGLContext *context);
 void gl_dispatch(wxeCommand *);
 extern "C" {
-    void wxe_initOpenGL(void * fptr);
+    void wxe_initOpenGL(void * fptr, void *name_fptr);
 }
 
 

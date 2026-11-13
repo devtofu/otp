@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2000-2017. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2000-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,11 +20,15 @@
 %% %CopyrightEnd%
 %%
 -module(file_io_server).
+-moduledoc false.
+
+-compile(nowarn_deprecated_catch).
 
 %% A simple file server for io to one file instance per server instance.
 
 -export([format_error/1]).
 -export([start/3, start_link/3]).
+-export([start_handle/3, start_link_handle/3]).
 
 -export([count_and_find/3]).
 
@@ -55,36 +61,48 @@ start_link(Owner, FileName, ModeList)
   when is_pid(Owner), (is_list(FileName) orelse is_binary(FileName)), is_list(ModeList) ->
     do_start(spawn_link, Owner, FileName, ModeList).
 
+start_handle(Owner, OpenFun, ModeList)
+  when is_pid(Owner), is_function(OpenFun, 2), is_list(ModeList) ->
+    do_start_handle(spawn, Owner, OpenFun, ModeList).
+
+start_link_handle(Owner, OpenFun, ModeList)
+  when is_pid(Owner), is_function(OpenFun, 2), is_list(ModeList) ->
+    do_start_handle(spawn_link, Owner, OpenFun, ModeList).
+
 %%%-----------------------------------------------------------------
 %%% Server starter, dispatcher and helpers
 
 do_start(Spawn, Owner, FileName, ModeList) ->
+    OpenFun = fun(ReadMode, Opts0) ->
+                      Opts = maybe_add_read_ahead(ReadMode, Opts0),
+                      raw_file_io:open(FileName, [raw | Opts])
+              end,
+    do_start_handle(Spawn, Owner, OpenFun, ModeList).
+
+do_start_handle(Spawn, Owner, OpenFun, ModeList) ->
     Self = self(),
     Ref = make_ref(),
     Utag = erlang:dt_spread_tag(true),
-    Pid = 
+    Pid =
 	erlang:Spawn(
 	  fun() ->
 		  erlang:dt_restore_tag(Utag),
-		  %% process_flag(trap_exit, true),
 		  case parse_options(ModeList) of
-                      {ReadMode, UnicodeMode, Opts0} ->
-                          Opts = maybe_add_read_ahead(ReadMode, Opts0),
-			  case raw_file_io:open(FileName, [raw | Opts]) of
-			      {error, Reason} = Error ->
-				  Self ! {Ref, Error},
-				  exit(Reason);
+                      {ReadMode, UnicodeMode, Opts} ->
+                          case OpenFun(ReadMode, Opts) of
 			      {ok, Handle} ->
-				  %% XXX must I handle R6 nodes here?
 				  M = erlang:monitor(process, Owner),
 				  Self ! {Ref, ok},
 				  server_loop(
 				    #state{handle    = Handle,
-					   owner     = Owner, 
-					   mref      = M, 
+					   owner     = Owner,
+					   mref      = M,
 					   buf       = <<>>,
 					   read_mode = ReadMode,
-					   unic = UnicodeMode})
+                                           unic = UnicodeMode});
+                              {error, Reason} = Error ->
+                                  Self ! {Ref, Error},
+                                  exit(Reason)
 			  end;
 		      {error,Reason1} = Error1 ->
 			  Self ! {Ref, Error1},
@@ -321,11 +339,7 @@ file_request({read_handle_info, Opts},
             {stop,Reason,Reply,State};
         Reply ->
             {reply,Reply,State}
-    end;
-file_request(Unknown, 
-	     #state{}=State) ->
-    Reason = {request, Unknown},
-    {error,{error,Reason},State}.
+    end.
 
 %% Standard reply and clear buffer
 std_reply({error,_}=Reply, State) ->
@@ -443,6 +457,10 @@ put_chars(Chars, InEncoding, #state{handle=Handle, unic=OutEncoding}=State) ->
 		    {reply,Reply,NewState}
 	    end;
 	{error,_,_} ->
+	    {stop,no_translation,
+	     {error,{no_translation, InEncoding, OutEncoding}},
+	     NewState};
+	{incomplete,_,_} ->
 	    {stop,no_translation,
 	     {error,{no_translation, InEncoding, OutEncoding}},
 	     NewState}
@@ -671,18 +689,22 @@ get_chars_apply(Mod, Func, XtraArg, S0, OutEnc,
 	error:ErrReason ->
 	   {stop,ErrReason,{error,err_func(Mod, Func, XtraArg)},State}
     end.
-	    
+
 %% A hack that tries to inform the caller about the position where the
-%% error occured.
-invalid_unicode_error(Mod, Func, XtraArg, S) ->
+%% error occurred.
+invalid_unicode_error(Mod = io_lib, Func = get_until,
+                      XtraArg = {erl_scan,tokens,_Args},
+                      {GetUntilState, S})
+  when is_boolean(GetUntilState) ->
     try
-        {erl_scan,tokens,_Args} = XtraArg,
         Location = erl_scan:continuation_location(S),
         {error,{Location, ?MODULE, invalid_unicode},Location}
     catch
         _:_ ->
             {error,err_func(Mod, Func, XtraArg)}
-    end.
+    end;
+invalid_unicode_error(Mod, Func, XtraArg, _S) ->
+    {error,err_func(Mod, Func, XtraArg)}.
 
 %% Convert error code to make it look as before
 err_func(io_lib, get_until, {_,F,_}) ->
@@ -923,7 +945,7 @@ cbv({utf32,big}, <<0:8>>) ->
 cbv({utf32,big}, <<0:8,X:8>>) when X =< 16 ->
     2;
 cbv({utf32,big}, <<0:8,X:8,Y:8>>) 
-  when X =< 16, ((X > 0) or ((Y =< 215) or (Y >= 224))) ->
+  when X =< 16, X > 0 orelse Y =< 215 orelse Y >= 224 ->
     1;
 cbv({utf32,big},_) ->
     false;
@@ -934,7 +956,7 @@ cbv({utf32,little},<<_:8,_:8>>) ->
 cbv({utf32,little},<<X:8,255:8,0:8>>) when X =:= 254; X =:= 255 ->
     false;
 cbv({utf32,little},<<_:8,Y:8,X:8>>) 
-  when X =< 16, ((X > 0) or ((Y =< 215) or (Y >= 224))) ->
+  when X =< 16, X > 0 orelse Y =< 215 orelse Y >= 224 ->
     1;
 cbv({utf32,little},_) ->
     false.

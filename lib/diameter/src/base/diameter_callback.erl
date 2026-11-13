@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2010-2019. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2010-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -49,7 +51,7 @@
 %%
 %%   {module, [diameter_callback, {peer_down, {mymod, down, []}}]}
 %%
-%% The following would result in this module suppying peer_up and
+%% The following would result in this module supplying peer_up and
 %% peer_down callback, others taking place in module mymod.
 %%
 %%   {module, #diameter_callback{peer_up = false,
@@ -69,6 +71,7 @@
 %%
 
 -module(diameter_callback).
+-moduledoc false.
 
 %% Default callbacks when no alternate is specified.
 -export([peer_up/3,

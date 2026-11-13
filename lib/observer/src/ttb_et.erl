@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2002-2018. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2002-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,10 +16,11 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(ttb_et).
+-moduledoc false.
 -author('siri@erix.ericsson.se').
 
 -include("et.hrl").
@@ -52,7 +55,7 @@ collector(Trace) ->
 %% all events backwards and collect call/return information:
 %%
 %% MFA collected from return_to events is added to call and
-%% return_from events as {caller,MFA} and {return_to,MFA} respecively.
+%% return_from events as {caller,MFA} and {return_to,MFA} respectively.
 %% MFA collected from call events is added to return_to events as
 %% {return_from,MFA}
 %%

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -27,7 +29,6 @@
          all/0, groups/0]).
 
 -export([consistency_after_change_table_copy_type/1,
-         consistency_after_rename_of_node/1,
          consistency_after_restart_1_ram/1,
          consistency_after_restart_1_disc/1,
          consistency_after_restart_1_disc_only/1,
@@ -110,9 +111,8 @@ all() ->
      {group, consistency_after_del_replica},
      {group, consistency_after_move_replica},
      {group, consistency_after_transform_table},
-     consistency_after_change_table_copy_type,
+     %% consistency_after_change_table_copy_type,
      {group, consistency_after_restore},
-     consistency_after_rename_of_node,
      {group, checkpoint_retainer_consistency},
      {group, backup_consistency}].
 
@@ -341,7 +341,7 @@ receive_messages(ListOfMsgs) ->
                     ?verbose("I (~p) got msg ~p from ~p ~n", [self(),Msg, Pid]),
                     [{Pid, Msg} | receive_messages(ListOfMsgs -- [Msg])]
             end;
-        Else -> ?warning("Recevied unexpected Msg~n ~p ~n", [Else])
+        Else -> ?warning("Received unexpected Msg~n ~p ~n", [Else])
     after timer:minutes(3) -> 
             ?error("Timeout in receive msgs while waiting for ~p~n", 
                    [ListOfMsgs])
@@ -381,7 +381,7 @@ consistency_after_restart(ReplicaType, NodeConfig, Config) ->
     TpcbConfig = tpcb_config(ReplicaType, NodeConfig, Nodes, [Node1]),
     mnesia_tpcb:init(TpcbConfig),
     A ! fun () -> mnesia_tpcb:run(TpcbConfig) end,
-    timer:sleep(timer:seconds(10)),
+    timer:sleep(timer:seconds(3)),
     mnesia_test_lib:kill_mnesia([Node1]),
     %% Start and wait for tables to be loaded on all nodes
     timer:sleep(timer:seconds(3)),
@@ -408,7 +408,7 @@ consistency_after_dump_tables(ReplicaType, NodeConfig, Config) ->
     TpcbConfig = tpcb_config(ReplicaType, NodeConfig, Nodes, []),
     mnesia_tpcb:init(TpcbConfig),
     A ! fun() -> mnesia_tpcb:run(TpcbConfig) end,
-    timer:sleep(timer:seconds(10)),
+    timer:sleep(timer:seconds(3)),
     ?match({atomic, ok}, rpc:call(Node1, mnesia, dump_tables,
                         [[branch, teller, account, history]])),
     mnesia_tpcb:stop(),
@@ -459,7 +459,7 @@ consistency_after_add_replica(ReplicaType, NodeConfig, Config) ->
     TpcbConfig = tpcb_config(ReplicaType, NodeConfig, Nodes, []),
     mnesia_tpcb:init(TpcbConfig),
     A ! fun () -> mnesia_tpcb:run(TpcbConfig) end,
-    timer:sleep(timer:seconds(10)),
+    timer:sleep(timer:seconds(2)),
     ?match({atomic, ok}, mnesia:add_table_copy(account, AddNode, ReplicaType)),
     mnesia_tpcb:stop(),
     ?match(ok, mnesia_tpcb:verify_tabs()),
@@ -501,7 +501,7 @@ consistency_after_del_replica(ReplicaType, NodeConfig, Config) ->
     TpcbConfig = tpcb_config(ReplicaType, NodeConfig, Nodes, []),
     mnesia_tpcb:init(TpcbConfig),
     A ! fun () -> mnesia_tpcb:run(TpcbConfig) end,
-    timer:sleep(timer:seconds(10)),
+    timer:sleep(timer:seconds(3)),
     ?match({atomic, ok}, mnesia:del_table_copy(account, Node2)),
     mnesia_tpcb:stop(),
     ?match(ok, mnesia_tpcb:verify_tabs()),
@@ -543,7 +543,7 @@ consistency_after_move_replica(ReplicaType, NodeConfig, Config) ->
     TpcbConfig = tpcb_config(ReplicaType, NodeConfig, Nodes -- [Node2], []),
     mnesia_tpcb:init(TpcbConfig),
     A ! fun () -> mnesia_tpcb:run(TpcbConfig) end,
-    timer:sleep(timer:seconds(10)),
+    timer:sleep(timer:seconds(3)),
     ?match({atomic, ok}, mnesia:move_table_copy(account, Node1, Node2)),    
     ?log("First move completed from node ~p to ~p ~n", [Node1, Node2]),
     ?match({atomic, ok}, mnesia:move_table_copy(account, Node2, Node1)),
@@ -585,8 +585,8 @@ consistency_after_transform_table(Type, Config) ->
 	[k,a,n]) || Tab <- Tabs]),
     [?match([k,a,n], mnesia:table_info(Tab, attributes)) || Tab <- Tabs],
 
-    Filter = fun(Tab) -> mnesia:foldl(fun(A, Acc) when size(A) == 3 -> [A|Acc];
-					 (A, Acc) when size(A) == 4 -> Acc
+    Filter = fun(Tab) -> mnesia:foldl(fun(A, Acc) when tuple_size(A) == 3 -> [A|Acc];
+					 (A, Acc) when tuple_size(A) == 4 -> Acc
 				      end, [], Tab)
 	     end,    
 	
@@ -638,7 +638,7 @@ consistency_after_fallback_3_disc_only(Config) when is_list(Config) ->
 consistency_after_fallback(ReplicaType, NodeConfig, Config) ->
     put(mnesia_test_verbose, true),
     %%?verbose("Starting consistency_after_fallback2 at ~p~n", [self()]),
-    Delay = 5,
+    Delay = 3,
     Nodes = ?acquire_nodes(NodeConfig, [{tc_timeout, timer:minutes(10)} | Config]),
     Node1 = hd(Nodes),
     %%?verbose("Mnesia info: ~p~n", [mnesia:info()]),
@@ -821,11 +821,6 @@ restore_verify_tabs([Tab | R]) ->
 restore_verify_tabs([]) ->
     ok.
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-consistency_after_rename_of_node(doc) ->
-    ["Skipped because it is an unimportant case."].
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -867,7 +862,7 @@ updates_during_checkpoint_activation_3_disc_only(Config) when is_list(Config) ->
 
 updates_during_checkpoint_activation(ReplicaType,NodeConfig,Config) ->
     %%?verbose("updates_during_checkpoint_activation2 at ~p~n", [self()]),
-    Delay = 5,
+    Delay = 2,
     Nodes = ?acquire_nodes(NodeConfig, Config),
     Node1 = hd(Nodes),
     %%?verbose("Mnesia info: ~p~n", [mnesia:info()]),
@@ -922,7 +917,7 @@ updates_during_checkpoint_iteration_2_disc_only(Config) when is_list(Config) ->
 
 updates_during_checkpoint_iteration(ReplicaType,NodeConfig,Config) ->
    %?verbose("updates_during_checkpoint_iteration2 at ~p~n", [self()]),
-    Delay = 5,
+    Delay = 2,
     Nodes = ?acquire_nodes(NodeConfig, Config),
     Node1 = hd(Nodes),
    %?verbose("Mnesia info: ~p~n", [mnesia:info()]),
@@ -1178,7 +1173,7 @@ inst_fallback_process_dies(Config) when is_list(Config) ->
     
     A ! fun() -> mnesia:install_fallback(install_backup) end,    
     [{AnsPid,fallback_preswap}] = receive_messages([fallback_preswap]),
-    exit(A, kill),
+    erlang:exit_signal(A, kill),
     AnsPid ! {self(), fallback_continue},
     ?match_receive({'EXIT', A, killed}), 
     timer:sleep(2000),  %% Wait till fallback is installed everywhere
@@ -1246,7 +1241,7 @@ fatal_when_inconsistency(Config) when is_list(Config) ->
         end,    
 
     [{AnsPid,fallback_preswap}] = receive_messages([fallback_preswap]),
-    exit(AnsPid, kill),  %% Kill install-fallback on local node will 
+    erlang:exit_signal(AnsPid, kill),  %% Kill install-fallback on local node will
     AnsPid ! {self(), fallback_continue},
     ?deactivate_debug_fun(DebugId),
         

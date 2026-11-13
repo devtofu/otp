@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 2001-2020. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2001-2025. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,7 +16,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * %CopyrightEnd%
  */
 
@@ -32,7 +34,11 @@ send_format2(char* format, char* p)
 {
     ei_x_buff x;
     ei_x_new(&x);
-    ei_x_format(&x, format, p);
+    if (ei_x_format(&x, format, p) != 0) {
+        x.index = 0;
+        ei_x_format(&x, "{~s, ~s, ~s}", "FAILED ei_x_format", format,
+                    p?p:"NULL");
+    }
     send_bin_term(&x);
     free(x.buff);
 }
@@ -93,6 +99,7 @@ TESTCASE(tuples)
     send_format("{[], a, b, c}");
     send_format("{[], a, [], b, c}");
     send_format("{[], a, '', b, c}");
+    send_format("{[], a, '', b, #{c=>3}}");
 
     report(1);
 }
@@ -123,6 +130,7 @@ TESTCASE(lists)
     send_format("[[], a, '', b, c]");
     send_format("[[x, 2], [y, 3], [z, 4]]");
     send_format("[{a,b},{c,d}]"); /* OTP-4777 */
+    send_format("[{a,b},#{c=>d}]");
 
     ei_x_new(&x);
 /*
@@ -174,6 +182,36 @@ TESTCASE(lists)
     report(1);
 }
 
+TESTCASE(maps)
+{
+    ei_init();
+
+    send_format("#{}");
+    send_format("#{ }");
+    send_format("#{a=>1}");
+    send_format("#{ a => 1 }");
+    send_format("#{a=>1, b=>2}");
+    send_format("#{ a => 1 , b=>2 }");
+    send_format("#{[a]=>1,2=>[b,c],\"3\"=>{c,d}}");
+    send_format("#{ [a] => 1 , 2 => [b,c] , \"3\" => {c,d} }");
+    send_format("#{a=>[],[]=>#{2=>d}}");
+    send_format("#{ a => [] , [] => #{ 2 => d } }");
+
+    /* Incorrect map syntax */
+    send_format("#{a= >1}");
+    send_format("#{,a=>1}");
+    send_format("#{a=>1,}");
+    send_format("#{=>1}");
+    send_format("#{a=>1,,b=>2}");
+    send_format("#{a=>}");
+    send_format("#{a=>1=>2=>3}");
+    send_format("#{a}");
+    send_format("#{a=}");
+    send_format("#{a>}");
+
+    report(1);
+}
+
 TESTCASE(format_wo_ver) {
 /* OTP-6795 
  * make example with format_wo_ver 
@@ -183,7 +221,7 @@ TESTCASE(format_wo_ver) {
     ei_init();
 
     ei_x_new (&x);
-    ei_x_format(&x, "[-1, +2, ~c, {~a,~s},{~a,~i}]", 'c', "a", "b", "c", 10);
+    ei_x_format(&x, "[-1, +2, ~c, {~a,~s},{~a,~i}, #{d=>~i}]", 'c', "a", "b", "c", 10, 32);
     send_bin_term(&x);
 
     free(x.buff);

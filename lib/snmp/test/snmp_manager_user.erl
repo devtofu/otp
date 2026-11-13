@@ -1,8 +1,10 @@
 %% 
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2005-2016. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2005-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %% 
 
@@ -39,28 +41,28 @@
 %% External exports
 %%----------------------------------------------------------------------
 -export([
-         start_link/0, start_link/1, start_link/2, 
-	 start/0, start/1, start/2, 
+         start_link/0, start_link/1, start_link/2,
+	 start/0, start/1, start/2,
 	 stop/0,
-	 info/0, 
-	 system_info/0, 
+	 info/0,
+	 system_info/0,
 	 simulate_crash/1,
-	 register_agent/2, 
-	 unregister_agent/1, 
-	 agent_info/2, 
-	 update_agent_info/3, 
-	 which_all_agents/0, which_own_agents/0, 
-	 load_mib/1, unload_mib/1, 
-         sync_get2/3, 
+	 register_agent/2,
+	 unregister_agent/1,
+	 agent_info/2,
+	 update_agent_info/3,
+	 which_all_agents/0, which_own_agents/0,
+	 load_mib/1, unload_mib/1,
+         sync_get2/3,
          async_get2/3,
          sync_get_next2/3,
          async_get_next2/3,
-         sync_set2/3, 
-         async_set2/3, 
+         sync_set2/3,
+         async_set2/3,
          sync_get_bulk2/5,
          async_get_bulk2/5,
-	 name_to_oid/1, oid_to_name/1, 
-	 purify_oid/1	 
+	 name_to_oid/1, oid_to_name/1,
+	 purify_oid/1
         ]).
 
 
@@ -260,7 +262,9 @@ loop(#state{parent = Parent, id = Id} = S) ->
 	    loop(S);
 
 	{{register_agent, TargetName, Conf}, From, Ref} ->
-	    d("loop -> received register_agent request"),
+	    d("loop -> received register_agent request: "
+              "~n   TargetName: ~p"
+              "~n   Conf:       ~p", [TargetName, Conf]),
 	    Res = snmpm:register_agent(Id, TargetName, Conf),
 	    reply(From, Res, Ref),
 	    loop(S);

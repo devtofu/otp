@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1999-2020. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1999-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,10 +16,13 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(erts_debug).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {file, consult, 1}}]).
 
 %% Low-level debugging support. EXPERIMENTAL!
 
@@ -31,14 +36,17 @@
 
 %%% BIFs
 
--export([breakpoint/2, disassemble/1, display/1, dist_ext_to_term/2,
+-export([breakpoint/2, disassemble/1, dist_ext_to_term/2,
          flat_size/1, get_internal_state/1, instructions/0,
          interpreter_size/0,
          map_info/1, same/2, set_internal_state/2,
-         size_shared/1, copy_shared/1, dirty_cpu/2, dirty_io/2, dirty/3,
+         size_shared/1, copy_shared/1, copy_shared/2,
+         dirty_cpu/2, dirty_io/2, dirty/3,
          lcnt_control/1, lcnt_control/2, lcnt_collect/0, lcnt_clear/0,
-         lc_graph/0, lc_graph_to_dot/2, lc_graph_merge/2,
-         alloc_blocks_size/1]).
+         lc_graph/0, lc_graph_to_dot/2,
+         lc_graph_merge/0, lc_graph_merge/1, lc_graph_merge/2,
+         alloc_blocks_size/1,
+         unaligned_bitstring/2]).
 
 %% Reroutes calls to the given MFA to error_handler:breakpoint/3
 %%
@@ -68,12 +76,6 @@ breakpoint(_, _) ->
 disassemble(_) ->
     erlang:nif_error(undef).
 
--spec display(Term) -> string() when
-      Term :: term().
-
-display(_) ->
-    erlang:nif_error(undef).
-
 -spec dist_ext_to_term(Tuple, Binary) -> term() when
       Tuple :: tuple(),
       Binary :: binary().
@@ -96,7 +98,14 @@ size_shared(_) ->
 -spec copy_shared(Term) -> term() when
       Term :: term().
 
-copy_shared(_) ->
+copy_shared(Term) ->
+    copy_shared(Term, false).
+
+-spec copy_shared(Term, CopyLiterals) -> term() when
+      Term :: term(),
+      CopyLiterals :: true | false.
+
+copy_shared(_, _) ->
     erlang:nif_error(undef).
 
 -spec get_internal_state(W) -> term() when
@@ -226,6 +235,14 @@ dirty_io(_, _) ->
 dirty(_, _, _) ->
     erlang:nif_error(undef).
 
+-spec unaligned_bitstring(Bin0, Offset) -> Bin1 when
+      Bin0 :: bitstring(),
+      Offset :: 1..7,
+      Bin1 :: bitstring().
+
+unaligned_bitstring(_, _) ->
+    erlang:nif_error(undef).
+
 %%% End of BIFs
 
 %% size(Term)
@@ -248,6 +265,10 @@ size([H|T]=Term, Seen0, Sum0) ->
 	    {Sum,Seen} = size(H, Seen1, Sum0+2),
 	    size(T, Seen, Sum)
     end;
+size({}, Seen0, Sum0) ->
+    %% Tuples of size 0 all points to a constant literal so we count
+    %% them as size zero
+    {Sum0,Seen0};
 size(Tuple, Seen0, Sum0) when is_tuple(Tuple) ->
     case remember_term(Tuple, Seen0) of
 	seen -> {Sum0,Seen0};
@@ -432,16 +453,14 @@ lc_graph() ->
 
 %% Convert "lc_graph.<pid>" file to https://www.graphviz.org dot format.
 lc_graph_to_dot(OutFile, InFile) ->
-    {ok, [LL0]} = file:consult(InFile),
-
-    [{"NO LOCK",0} | LL] = LL0,
-    Map = maps:from_list([{Id, Name} || {Name, Id, _, _} <- LL]),
+    LL0 = lcg_read_file(InFile),
+    LL1 = lcg_simplify_graph(LL0),
 
     case file:open(OutFile, [exclusive]) of
         {ok, Out} ->
             ok = file:write(Out, "digraph G {\n"),
 
-            [dot_print_lock(Out, Lck, Map) || Lck <- LL],
+            [dot_print_lock(Out, Lck) || Lck <- LL1],
 
             ok = file:write(Out, "}\n"),
             ok = file:close(Out);
@@ -450,23 +469,25 @@ lc_graph_to_dot(OutFile, InFile) ->
             {"File already exists", OutFile}
     end.
 
-dot_print_lock(Out, {_Name, Id, Lst, _}, Map) ->
-    [dot_print_edge(Out, From, Id, Map) || From <- Lst],
+dot_print_lock(Out, {Name, Direct, _Indirect}) ->
+    [dot_print_edge(Out, From, Name) || From <- Direct],
     ok.
 
-dot_print_edge(_, 0, _, _) ->
-    ignore; % "NO LOCK"
-dot_print_edge(Out, From, To, Map) ->
-    io:format(Out, "~p -> ~p;\n", [maps:get(From,Map), maps:get(To,Map)]).
+dot_print_edge(Out, From, To) ->
+    io:format(Out, "~p -> ~p;\n", [From, To]).
 
 
 %% Merge several "lc_graph" files into one file.
+lc_graph_merge() ->
+    lc_graph_merge("lc_graph.merged").
+
+lc_graph_merge(OutFile) ->
+    lc_graph_merge(OutFile, "lc_graph.*").
+
+lc_graph_merge(OutFile, [C|_]=Wildcard) when is_integer(C) ->
+    lc_graph_merge(OutFile, filelib:wildcard(Wildcard));
 lc_graph_merge(OutFile, InFiles) ->
-    LLs = lists:map(fun(InFile) ->
-                            {ok, [LL]} = file:consult(InFile),
-                            LL
-                    end,
-                    InFiles),
+    LLs = [lcg_read_file(File) || File <- InFiles],
 
     Res = lists:foldl(fun(A, B) -> lcg_merge(A, B) end,
                       hd(LLs),
@@ -483,17 +504,58 @@ lc_graph_merge(OutFile, InFiles) ->
             {"File already exists", OutFile}
     end.
 
+lcg_read_file(File) ->
+    {ok, [LL]} = file:consult(File),
+    lcg_expand_lock_names(LL).
+
+lcg_expand_lock_names([{"NO LOCK", 0} | LL]) ->
+    Map = #{Id => Name || {Name, Id, _, _} <- LL},
+    [begin
+         Direct = [maps:get(From,Map) || From <- DirectIds, From =/= 0],
+         Indirect = [maps:get(From,Map) || From <- IndirectIds, From =/= 0],
+
+         {Name, Direct, Indirect}
+     end
+     || {Name, _Id, DirectIds, IndirectIds} <- LL];
+lcg_expand_lock_names(LL) ->
+    LL. % assume already expanded format
+
 lcg_merge(A, B) ->
     lists:zipwith(fun(LA, LB) -> lcg_merge_locks(LA, LB) end,
                   A, B).
 
 lcg_merge_locks(L, L) ->
     L;
-lcg_merge_locks({Name, Id, DA, IA}, {Name, Id, DB, IB}) ->
-    Direct = lists:umerge(DA, DB),
-    Indirect = lists:umerge(IA, IB),
-    {Name, Id, Direct, Indirect -- Direct}.
+lcg_merge_locks({Name, DA, IA}, {Name, DB, IB}) ->
+    Direct = lists:umerge(lists:sort(DA), lists:sort(DB)),
+    Indirect = lists:umerge(lists:sort(IA), lists:sort(IB)),
+    {Name, Direct -- Indirect, Indirect -- Direct}.
 
+lcg_simplify_graph(LL) ->
+    [lcg_demote_indirects(L, LL) || L <- LL].
+
+lcg_demote_indirects({Name, Directs0, Indirects0}, LL) ->
+    BeforeDirects = lcg_locked_before(Name, Directs0, LL, []),
+    {Demoted, KeptDirects} =
+        lists:partition(fun(Direct) ->
+                                lists:member(Direct, BeforeDirects)
+                        end,
+                        Directs0),
+    %% case Demoted of
+    %%     [] -> ok;
+    %%     _ -> io:format("Lock ~p demoted ~p\n", [Name, Demoted])
+    %% end,
+    {Name, KeptDirects, lists:usort(Indirects0 ++ Demoted)}.
+
+lcg_locked_before(_This, [], _LL, Acc) ->
+    lists:usort(Acc);
+lcg_locked_before(This, [This|Tail], LL, Acc) ->
+    lcg_locked_before(This, Tail, LL, Acc);
+lcg_locked_before(This, [Name|Tail], LL, Acc) ->
+    {Name, Directs0, _Indirects} = lists:keyfind(Name, 1, LL),
+    Directs1 = lists:delete(Name, Directs0),
+    DepthAcc = lcg_locked_before(Name, Directs1, LL, Acc),
+    lcg_locked_before(This, Tail, LL, Directs1 ++ DepthAcc).
 
 lcg_print(Out, LL) ->
     io:format(Out, "[", []),

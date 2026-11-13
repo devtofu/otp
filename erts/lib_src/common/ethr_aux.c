@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2010-2017. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2010-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -106,6 +108,8 @@ x86_init(void)
     eax = ebx = ecx = edx = 0;
 
     ethr_x86_cpuid__(&eax, &ebx, &ecx, &edx);
+
+    ethr_runtime__.conf.have_cpuid = (eax > 0);
 
     if (eax > 0
 	&& (ETHR_IS_X86_VENDOR("GenuineIntel", ebx, ecx, edx)
@@ -752,7 +756,7 @@ ETHR_IMPL_NORETURN__ ethr_fatal_error__(const char *file,
 }
 
 ETHR_IMPL_NORETURN__
-ethr_assert_failed(const char *file, int line, const char *func, char *a)
+ethr_assert_failed(const char *file, int line, const char *func, const char *a)
 {
     fprintf(stderr, "%s:%d: %s(): Assertion failed: %s\n", file, line, func, a);
     ethr_abort__();

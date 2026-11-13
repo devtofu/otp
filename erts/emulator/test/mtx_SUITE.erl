@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2010-2017. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2010-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -28,6 +30,7 @@
 %%-define(line_trace,true).
 
 -include_lib("common_test/include/ct.hrl").
+-include("erts_test_utils.hrl").
 
 -export([all/0,suite/0, init_per_suite/1, end_per_suite/1,
          init_per_testcase/2, end_per_testcase/2]).
@@ -80,15 +83,11 @@ all() ->
 init_per_suite(Config) when is_list(Config) ->
     DataDir = proplists:get_value(data_dir, Config),
     Lib = filename:join([DataDir, atom_to_list(?MODULE)]),
-    case {erlang:load_nif(Lib, none),erlang:system_info(threads)} of
-	{{error,_},false} ->
-	    {skip, "No thread support"};
-	_ ->
-	    Config
-    end.
+    ok = erlang:load_nif(Lib, none),
+    Config.
 
 end_per_suite(Config) when is_list(Config) ->
-    catch erts_debug:set_internal_state(available_internal_state, false),
+    erts_debug:set_internal_state(available_internal_state, false),
     Config.
 
 init_per_testcase(_Case, Config) ->
@@ -275,7 +274,7 @@ hammer_sched_rwlock_test(FreqRead, LockCheck, Blocking, WaitLocked, WaitUnlocked
                 _ ->
                     {_, RunTime} = statistics(runtime),
                     io:format("RunTime=~p~n", [RunTime]),
-                    true = RunTime < 700,
+                    true = RunTime < max(700, Onln*12),
                     {comment,
                      "Run-time during test was "
                      ++ integer_to_list(RunTime)
@@ -468,7 +467,7 @@ repeat_list(Fun, N, Acc) ->
 
 
 handicap() ->
-    X0 = case catch (erlang:system_info(logical_processors_available) >=
+    X0 = case ?Catch(erlang:system_info(logical_processors_available) >=
                      erlang:system_info(schedulers_online)) of
              true -> 1;
              _ -> 2

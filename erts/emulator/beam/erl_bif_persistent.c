@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2018-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2018-2026. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -111,11 +113,11 @@ typedef struct {
 } ErtsPersistentTermCpyTableCtx;
 
 typedef enum {
-    PUT2_TRAP_LOCATION_NEW_KEY
-} ErtsPersistentTermPut2TrapLocation;
+    PUT_COMMON_TRAP_LOCATION_NEW_KEY,
+} ErtsPersistentTermPutCommonTrapLocation;
 
 typedef struct {
-    ErtsPersistentTermPut2TrapLocation trap_location;
+    ErtsPersistentTermPutCommonTrapLocation trap_location;
     Eterm key;
     Eterm term;
     Uint entry_index;
@@ -123,7 +125,7 @@ typedef struct {
     Eterm heap[3];
     Eterm tuple;
     ErtsPersistentTermCpyTableCtx cpy_ctx;
-} ErtsPersistentTermPut2Context;
+} ErtsPersistentTermPutCommonContext;
 
 typedef enum {
     ERASE1_TRAP_LOCATION_TMP_COPY,
@@ -136,7 +138,7 @@ typedef struct {
     HashTable* old_table;
     HashTable* new_table;
     Uint entry_index;
-    Eterm old_term;
+    Eterm old_bucket;
     HashTable* tmp_table;
     int must_shrink;
     ErtsPersistentTermCpyTableCtx cpy_ctx;
@@ -146,8 +148,9 @@ typedef struct {
  * Declarations of local functions.
  */
 
+static Eterm put_common(Process* process, Eterm key, Eterm term, Eterm new);
 static HashTable* create_initial_table(void);
-static Uint lookup(HashTable* hash_table, Eterm key);
+static Uint lookup(HashTable* hash_table, Eterm key, Eterm *bucket);
 static int is_erasable(HashTable* hash_table, Uint idx);
 static HashTable* copy_table(ErtsPersistentTermCpyTableCtx* ctx);
 static int try_seize_update_permission(Process* c_p);
@@ -170,6 +173,8 @@ static int cleanup_trap_data(Binary *bp);
  * Traps
  */
 
+static Export persistent_term_put_common_export;
+static BIF_RETTYPE persistent_term_put_common_trap(BIF_ALIST_3);
 static Export persistent_term_get_all_export;
 static BIF_RETTYPE persistent_term_get_all_trap(BIF_ALIST_2);
 static Export persistent_term_info_export;
@@ -251,6 +256,10 @@ void erts_init_bif_persistent_term(void)
      * Initialize export entry for traps
      */
 
+
+    erts_init_trap_export(&persistent_term_put_common_export,
+			  am_persistent_term, am_put_common_trap, 3,
+			  &persistent_term_put_common_trap);
     erts_init_trap_export(&persistent_term_get_all_export,
 			  am_persistent_term, am_get_all_trap, 2,
 			  &persistent_term_get_all_trap);
@@ -260,10 +269,10 @@ void erts_init_bif_persistent_term(void)
 }
 
 /*
- * Macro used for trapping in persistent_term_put_2 and
- * persistent_term_erase_1
+ * Macro used for trapping in persistent_term_put_2,
+ * persistent_term_put_new_2 and persistent_term_erase_1
  */
-#define TRAPPING_COPY_TABLE(TABLE_DEST, OLD_TABLE, NEW_SIZE, COPY_TYPE, LOC_NAME, TRAP_CODE) \
+#define TRAPPING_COPY_TABLE(TABLE_DEST, OLD_TABLE, NEW_SIZE, COPY_TYPE, LOC_NAME, TRAP_CODE, BIF_PROCESS) \
     do {                                                                \
         ctx->cpy_ctx = (ErtsPersistentTermCpyTableCtx){                 \
             .old_table = OLD_TABLE,                                     \
@@ -277,15 +286,15 @@ void erts_init_bif_persistent_term(void)
         iterations_until_trap -= ctx->cpy_ctx.total_iterations_done;    \
         if (TABLE_DEST == NULL) {                                       \
             ctx->trap_location = LOC_NAME;                              \
-            erts_set_gc_state(BIF_P, 0);                                \
-            BUMP_ALL_REDS(BIF_P);                                       \
+            erts_set_gc_state(BIF_PROCESS, 0);                          \
+            BUMP_ALL_REDS(BIF_PROCESS);                                 \
             TRAP_CODE;                                                  \
         }                                                               \
     } while (0)
 
-static int persistent_term_put_2_ctx_bin_dtor(Binary *context_bin)
+static int persistent_term_put_common_bin_dtor(Binary *context_bin)
 {
-    ErtsPersistentTermPut2Context* ctx = ERTS_MAGIC_BIN_DATA(context_bin);
+    ErtsPersistentTermPutCommonContext* ctx = ERTS_MAGIC_BIN_DATA(context_bin);
     if (ctx->cpy_ctx.new_table != NULL) {
         erts_free(ERTS_ALC_T_PERSISTENT_TERM, ctx->cpy_ctx.new_table);
         release_update_permission(0);
@@ -293,9 +302,9 @@ static int persistent_term_put_2_ctx_bin_dtor(Binary *context_bin)
     return 1;
 }
 /*
- * A linear congruential generator that is used in the debug emulator
- * to trap after a random number of iterations in
- * persistent_term_put_2 and persistent_term_erase_1.
+ * A linear congruential generator that is used in the debug emulator to trap
+ * after a random number of iterations in persistent_term_put_common and
+ * persistent_term_erase_1.
  *
  * https://en.wikipedia.org/wiki/Linear_congruential_generator
  */
@@ -304,137 +313,12 @@ static int persistent_term_put_2_ctx_bin_dtor(Binary *context_bin)
 
 BIF_RETTYPE persistent_term_put_2(BIF_ALIST_2)
 {
-    static const Uint ITERATIONS_PER_RED = 32;
-    ErtsPersistentTermPut2Context* ctx;
-    Eterm state_mref = THE_NON_VALUE;
-    long iterations_until_trap;
-    long max_iterations;
-#define PUT_TRAP_CODE                                                   \
-    BIF_TRAP2(BIF_TRAP_EXPORT(BIF_persistent_term_put_2), BIF_P, state_mref, BIF_ARG_2)
-#define TRAPPING_COPY_TABLE_PUT(TABLE_DEST, OLD_TABLE, NEW_SIZE, COPY_TYPE, LOC_NAME) \
-    TRAPPING_COPY_TABLE(TABLE_DEST, OLD_TABLE, NEW_SIZE, COPY_TYPE, LOC_NAME, PUT_TRAP_CODE)
+    return put_common(BIF_P, BIF_ARG_1, BIF_ARG_2, am_false);
+}
 
-#ifdef DEBUG
-        (void)ITERATIONS_PER_RED;
-        iterations_until_trap = max_iterations =
-            GET_SMALL_RANDOM_INT(ERTS_BIF_REDS_LEFT(BIF_P) + (Uint)&ctx);
-#else
-        iterations_until_trap = max_iterations =
-            ITERATIONS_PER_RED * ERTS_BIF_REDS_LEFT(BIF_P);
-#endif
-    if (is_internal_magic_ref(BIF_ARG_1) &&
-        (ERTS_MAGIC_BIN_DESTRUCTOR(erts_magic_ref2bin(BIF_ARG_1)) ==
-         persistent_term_put_2_ctx_bin_dtor)) {
-        /* Restore state after a trap */
-        Binary* state_bin;
-        state_mref = BIF_ARG_1;
-        state_bin = erts_magic_ref2bin(state_mref);
-        ctx = ERTS_MAGIC_BIN_DATA(state_bin);
-        ASSERT(BIF_P->flags & F_DISABLE_GC);
-        erts_set_gc_state(BIF_P, 1);
-        ASSERT(ctx->trap_location == PUT2_TRAP_LOCATION_NEW_KEY);
-        goto L_PUT2_TRAP_LOCATION_NEW_KEY;
-    } else {
-        /* Save state in magic bin in case trapping is necessary */
-        Eterm* hp;
-        Binary* state_bin = erts_create_magic_binary(sizeof(ErtsPersistentTermPut2Context),
-                                                     persistent_term_put_2_ctx_bin_dtor);
-        hp = HAlloc(BIF_P, ERTS_MAGIC_REF_THING_SIZE);
-        state_mref = erts_mk_magic_ref(&hp, &MSO(BIF_P), state_bin);
-        ctx = ERTS_MAGIC_BIN_DATA(state_bin);
-        /*
-         * IMPORTANT: The following field is used to detect if
-         * persistent_term_put_2_ctx_bin_dtor needs to free memory
-         */
-        ctx->cpy_ctx.new_table = NULL;
-    }
-
-
-    if (!try_seize_update_permission(BIF_P)) {
-	ERTS_BIF_YIELD2(BIF_TRAP_EXPORT(BIF_persistent_term_put_2),
-                        BIF_P, BIF_ARG_1, BIF_ARG_2);
-    }
-    ctx->hash_table = (HashTable *) erts_atomic_read_nob(&the_hash_table);
-
-    ctx->key = BIF_ARG_1;
-    ctx->term = BIF_ARG_2;
-
-    ctx->entry_index = lookup(ctx->hash_table, ctx->key);
-
-    ctx->heap[0] = make_arityval(2);
-    ctx->heap[1] = ctx->key;
-    ctx->heap[2] = ctx->term;
-    ctx->tuple = make_tuple(ctx->heap);
-
-    if (is_nil(get_bucket(ctx->hash_table, ctx->entry_index))) {
-        if (MUST_GROW(ctx->hash_table)) {
-            Uint new_size = ctx->hash_table->allocated * 2;
-            TRAPPING_COPY_TABLE_PUT(ctx->hash_table,
-                                    ctx->hash_table,
-                                    new_size,
-                                    ERTS_PERSISTENT_TERM_CPY_NO_REHASH,
-                                    PUT2_TRAP_LOCATION_NEW_KEY);
-            ctx->entry_index = lookup(ctx->hash_table, ctx->key);
-        }
-        ctx->hash_table->num_entries++;
-    } else {
-        Eterm tuple = get_bucket(ctx->hash_table, ctx->entry_index);
-        Eterm old_term;
-
-        ASSERT(is_tuple_arity(tuple, 2));
-        old_term = boxed_val(tuple)[2];
-        if (EQ(ctx->term, old_term)) {
-            /* Same value. No need to update anything. */
-            release_update_permission(0);
-            BIF_RET(am_ok);
-        }
-    }
-
-    {
-        Uint term_size;
-        Uint lit_area_size;
-        ErlOffHeap code_off_heap;
-        ErtsLiteralArea* literal_area;
-        erts_shcopy_t info;
-        Eterm* ptr;
-        /*
-         * Preserve internal sharing in the term by using the
-         * sharing-preserving functions. However, literals must
-         * be copied in case the module holding them are unloaded.
-         */
-        INITIALIZE_SHCOPY(info);
-        info.copy_literals = 1;
-        term_size = copy_shared_calculate(ctx->tuple, &info);
-        ERTS_INIT_OFF_HEAP(&code_off_heap);
-        lit_area_size = ERTS_LITERAL_AREA_ALLOC_SIZE(term_size);
-        literal_area = erts_alloc(ERTS_ALC_T_LITERAL, lit_area_size);
-        ptr = &literal_area->start[0];
-        literal_area->end = ptr + term_size;
-        ctx->tuple = copy_shared_perform(ctx->tuple, term_size, &info, &ptr, &code_off_heap);
-        ASSERT(tuple_val(ctx->tuple) == literal_area->start);
-        literal_area->off_heap = code_off_heap.first;
-        DESTROY_SHCOPY(info);
-        erts_set_literal_tag(&ctx->tuple, literal_area->start, term_size);
-
-        if (ctx->hash_table == (HashTable *) erts_atomic_read_nob(&the_hash_table)) {
-            /* Schedule fast update in active hash table */
-            fast_update_index = ctx->entry_index;
-            fast_update_term = ctx->tuple;
-        }
-        else {
-            /* Do update in copied table */
-            set_bucket(ctx->hash_table, ctx->entry_index, ctx->tuple);
-        }
-
-        /*
-         * Now wait thread progress before making update visible to guarantee
-         * consistent view of table&term without memory barrier in every get/1.
-         */
-        erts_schedule_thr_prgr_later_op(table_updater, ctx->hash_table, &thr_prog_op);
-        suspend_updater(BIF_P);
-    }
-    BUMP_REDS(BIF_P, (max_iterations - iterations_until_trap) / ITERATIONS_PER_RED);
-    ERTS_BIF_YIELD_RETURN(BIF_P, am_ok);
+BIF_RETTYPE persistent_term_put_new_2(BIF_ALIST_2)
+{
+    return put_common(BIF_P, BIF_ARG_1, BIF_ARG_2, am_true);
 }
 
 BIF_RETTYPE persistent_term_get_0(BIF_ALIST_0)
@@ -471,36 +355,45 @@ BIF_RETTYPE persistent_term_get_0(BIF_ALIST_0)
     }
 }
 
+static ERTS_INLINE Eterm
+persistent_term_get(Eterm key)
+{
+    HashTable* hash_table = (HashTable *) erts_atomic_read_nob(&the_hash_table);
+    Eterm bucket;
+
+    (void)lookup(hash_table, key, &bucket);
+
+    if (is_boxed(bucket)) {
+        ASSERT(is_tuple_arity(bucket, 2));
+        return tuple_val(bucket)[2];
+    }
+
+    return THE_NON_VALUE;
+}
+
+Eterm
+erts_persistent_term_get(Eterm key)
+{
+    return persistent_term_get(key);
+}
+
 BIF_RETTYPE persistent_term_get_1(BIF_ALIST_1)
 {
-    Eterm key = BIF_ARG_1;
-    HashTable* hash_table = (HashTable *) erts_atomic_read_nob(&the_hash_table);
-    Uint entry_index;
-    Eterm term;
-
-    entry_index = lookup(hash_table, key);
-    term = get_bucket(hash_table, entry_index);
-    if (is_boxed(term)) {
-        ASSERT(is_tuple_arity(term, 2));
-        BIF_RET(tuple_val(term)[2]);
+    Eterm result = persistent_term_get(BIF_ARG_1);
+    if (is_non_value(result)) {
+        BIF_ERROR(BIF_P, BADARG);
     }
-    BIF_ERROR(BIF_P, BADARG);
+
+    BIF_RET(result);
 }
 
 BIF_RETTYPE persistent_term_get_2(BIF_ALIST_2)
 {
-    Eterm key = BIF_ARG_1;
-    Eterm result = BIF_ARG_2;
-    HashTable* hash_table = (HashTable *) erts_atomic_read_nob(&the_hash_table);
-    Uint entry_index;
-    Eterm term;
-
-    entry_index = lookup(hash_table, key);
-    term = get_bucket(hash_table, entry_index);
-    if (is_boxed(term)) {
-        ASSERT(is_tuple_arity(term, 2));
-        result = tuple_val(term)[2];
+    Eterm result = persistent_term_get(BIF_ARG_1);
+    if (is_non_value(result)) {
+        result = BIF_ARG_2;
     }
+
     BIF_RET(result);
 }
 
@@ -529,17 +422,17 @@ BIF_RETTYPE persistent_term_erase_1(BIF_ALIST_1)
     long iterations_until_trap;
     long max_iterations;
 #ifdef DEBUG
-        (void)ITERATIONS_PER_RED;
-        iterations_until_trap = max_iterations =
-            GET_SMALL_RANDOM_INT(ERTS_BIF_REDS_LEFT(BIF_P) + (Uint)&ctx);
+    (void)ITERATIONS_PER_RED;
+    iterations_until_trap = max_iterations =
+        GET_SMALL_RANDOM_INT(ERTS_BIF_REDS_LEFT(BIF_P) + (Uint)&ctx);
 #else
-        iterations_until_trap = max_iterations =
-            ITERATIONS_PER_RED * ERTS_BIF_REDS_LEFT(BIF_P);
+    iterations_until_trap = max_iterations =
+        ITERATIONS_PER_RED * ERTS_BIF_REDS_LEFT(BIF_P);
 #endif
 #define ERASE_TRAP_CODE                                                 \
         BIF_TRAP1(BIF_TRAP_EXPORT(BIF_persistent_term_erase_1), BIF_P, state_mref);
 #define TRAPPING_COPY_TABLE_ERASE(TABLE_DEST, OLD_TABLE, NEW_SIZE, REHASH, LOC_NAME) \
-        TRAPPING_COPY_TABLE(TABLE_DEST, OLD_TABLE, NEW_SIZE, REHASH, LOC_NAME, ERASE_TRAP_CODE)
+        TRAPPING_COPY_TABLE(TABLE_DEST, OLD_TABLE, NEW_SIZE, REHASH, LOC_NAME, ERASE_TRAP_CODE, BIF_P)    
     if (is_internal_magic_ref(BIF_ARG_1) &&
         (ERTS_MAGIC_BIN_DESTRUCTOR(erts_magic_ref2bin(BIF_ARG_1)) ==
          persistent_term_erase_1_ctx_bin_dtor)) {
@@ -572,15 +465,15 @@ BIF_RETTYPE persistent_term_erase_1(BIF_ALIST_1)
         ctx->tmp_table = NULL;
     }
     if (!try_seize_update_permission(BIF_P)) {
-	ERTS_BIF_YIELD1(BIF_TRAP_EXPORT(BIF_persistent_term_erase_1),
+        ERTS_BIF_YIELD1(BIF_TRAP_EXPORT(BIF_persistent_term_erase_1),
                         BIF_P, BIF_ARG_1);
     }
 
     ctx->key = BIF_ARG_1;
     ctx->old_table = (HashTable *) erts_atomic_read_nob(&the_hash_table);
-    ctx->entry_index = lookup(ctx->old_table, ctx->key);
-    ctx->old_term = get_bucket(ctx->old_table, ctx->entry_index);
-    if (is_boxed(ctx->old_term)) {
+    ctx->entry_index = lookup(ctx->old_table, ctx->key, &ctx->old_bucket);
+
+    if (is_boxed(ctx->old_bucket)) {
         ctx->must_shrink = MUST_SHRINK(ctx->old_table);
         if (!ctx->must_shrink && is_erasable(ctx->old_table, ctx->entry_index)) {
             /*
@@ -607,7 +500,7 @@ BIF_RETTYPE persistent_term_erase_1(BIF_ALIST_1)
              * temporary table copy of the same size as the old one.
              */
 
-            ASSERT(is_tuple_arity(ctx->old_term, 2));
+            ASSERT(is_tuple_arity(ctx->old_bucket, 2));
             TRAPPING_COPY_TABLE_ERASE(ctx->tmp_table,
                                       ctx->old_table,
                                       ctx->old_table->allocated,
@@ -650,7 +543,7 @@ BIF_RETTYPE persistent_term_erase_1(BIF_ALIST_1)
      * Key is not present. Nothing to do.
      */
 
-    ASSERT(is_nil(ctx->old_term));
+    ASSERT(is_nil(ctx->old_bucket));
     release_update_permission(0);
     BIF_RET(am_false);
 }
@@ -723,10 +616,10 @@ erts_init_persistent_dumping(void)
     erts_persistent_areas = (ErtsLiteralArea **) hash_table->term;
     area_p = erts_persistent_areas;
     for (i = 0; i < hash_table->allocated; i++) {
-        Eterm term = get_bucket(hash_table, i);
+        Eterm bucket = get_bucket(hash_table, i);
 
-        if (is_boxed(term)) {
-            *area_p++ = term_to_area(term);
+        if (is_boxed(bucket)) {
+            *area_p++ = term_to_area(bucket);
         }
     }
     erts_num_persistent_areas = area_p - erts_persistent_areas;
@@ -735,6 +628,160 @@ erts_init_persistent_dumping(void)
 /*
  * Local functions.
  */
+
+/*
+ * put and put_new helpers.
+ */
+
+static BIF_RETTYPE
+persistent_term_put_common_trap(BIF_ALIST_3)
+{
+    return put_common(BIF_P, BIF_ARG_1, BIF_ARG_2, BIF_ARG_3);
+}
+
+static Eterm put_common(Process* c_p, Eterm key, Eterm term, Eterm new)
+{
+    static const Uint ITERATIONS_PER_RED = 32;
+    ErtsPersistentTermPutCommonContext* ctx;
+    Eterm state_mref = THE_NON_VALUE;
+    Eterm old_bucket;
+    long iterations_until_trap;
+    long max_iterations;
+#define PUT_COMMON_TRAP_CODE                                            \
+    BIF_TRAP3(&persistent_term_put_common_export, c_p, state_mref, term, new)
+
+#define TRAPPING_COPY_TABLE_PUT_COMMON(TABLE_DEST, OLD_TABLE, NEW_SIZE, COPY_TYPE, LOC_NAME) \
+    TRAPPING_COPY_TABLE(TABLE_DEST, OLD_TABLE, NEW_SIZE, COPY_TYPE, LOC_NAME, PUT_COMMON_TRAP_CODE, c_p)
+
+#ifdef DEBUG
+    (void)ITERATIONS_PER_RED;
+    iterations_until_trap = max_iterations =
+        GET_SMALL_RANDOM_INT(ERTS_BIF_REDS_LEFT(c_p) + (Uint)&ctx);
+#else
+    iterations_until_trap = max_iterations =
+        ITERATIONS_PER_RED * ERTS_BIF_REDS_LEFT(c_p);
+#endif
+    if (is_internal_magic_ref(key) &&
+        (ERTS_MAGIC_BIN_DESTRUCTOR(erts_magic_ref2bin(key)) ==
+         persistent_term_put_common_bin_dtor)) {
+        /* Restore state after a trap */
+        Binary* state_bin;
+        state_mref = key;
+        state_bin = erts_magic_ref2bin(state_mref);
+        ctx = ERTS_MAGIC_BIN_DATA(state_bin);
+        ASSERT(c_p->flags & F_DISABLE_GC);
+        erts_set_gc_state(c_p, 1);
+        ASSERT(ctx->trap_location == PUT_COMMON_TRAP_LOCATION_NEW_KEY);
+        goto L_PUT_COMMON_TRAP_LOCATION_NEW_KEY;
+    } else {
+        /* Save state in magic bin in case trapping is necessary */
+        Eterm* hp;
+        Binary* state_bin = erts_create_magic_binary(sizeof(ErtsPersistentTermPutCommonContext),
+                                                     persistent_term_put_common_bin_dtor);
+        hp = HAlloc(c_p, ERTS_MAGIC_REF_THING_SIZE);
+        state_mref = erts_mk_magic_ref(&hp, &MSO(c_p), state_bin);
+        ctx = ERTS_MAGIC_BIN_DATA(state_bin);
+        /*
+         * IMPORTANT: The following field is used to detect if
+         * persistent_term_put_common_ctx_bin_dtor needs to free memory
+         */
+        ctx->cpy_ctx.new_table = NULL;
+    }
+
+
+    if (!try_seize_update_permission(c_p)) {
+        ERTS_BIF_YIELD3(&persistent_term_put_common_export, c_p, key, term, new);
+    }
+    ctx->hash_table = (HashTable *) erts_atomic_read_nob(&the_hash_table);
+
+    ctx->key = key;
+    ctx->term = term;
+
+    ctx->entry_index = lookup(ctx->hash_table, ctx->key, &old_bucket);
+
+    ctx->heap[0] = make_arityval(2);
+    ctx->heap[1] = ctx->key;
+    ctx->heap[2] = ctx->term;
+    ctx->tuple = make_tuple(ctx->heap);
+
+    if (is_nil(old_bucket)) {
+        if (MUST_GROW(ctx->hash_table)) {
+            Uint new_size = ctx->hash_table->allocated * 2;
+            TRAPPING_COPY_TABLE_PUT_COMMON(ctx->hash_table,
+                                           ctx->hash_table,
+                                           new_size,
+                                           ERTS_PERSISTENT_TERM_CPY_NO_REHASH,
+                                           PUT_COMMON_TRAP_LOCATION_NEW_KEY);
+            ctx->entry_index = lookup(ctx->hash_table,
+                                      ctx->key,
+                                      &old_bucket);
+        }
+        ctx->hash_table->num_entries++;
+    } else {
+        Eterm old_term;
+
+        ASSERT(is_tuple_arity(old_bucket, 2));
+        old_term = boxed_val(old_bucket)[2];
+
+        if (EQ(ctx->term, old_term)) {
+            /* Same value. No need to update anything. */
+            release_update_permission(0);
+            BIF_RET(am_ok);
+        } else if (new == am_true) {
+            /* Different value. Raise badarg. */
+            release_update_permission(0);
+            BIF_ERROR(c_p, BADARG);
+        }
+    }
+
+    {
+        Uint term_size;
+        Uint lit_area_size;
+        ErlOffHeap code_off_heap;
+        ErtsLiteralArea* literal_area;
+        erts_shcopy_t info;
+        Eterm* ptr;
+        /*
+         * Preserve internal sharing in the term by using the
+         * sharing-preserving functions. However, literals must
+         * be copied in case the module holding them are unloaded.
+         */
+        INITIALIZE_SHCOPY(info);
+        info.copy_literals = 1;
+        term_size = copy_shared_calculate(ctx->tuple, &info);
+        ERTS_INIT_OFF_HEAP(&code_off_heap);
+        lit_area_size = ERTS_LITERAL_AREA_ALLOC_SIZE(term_size);
+        literal_area = erts_alloc(ERTS_ALC_T_LITERAL, lit_area_size);
+        ptr = &literal_area->start[0];
+        literal_area->end = ptr + term_size;
+        ctx->tuple = copy_shared_perform(ctx->tuple, term_size, &info, &ptr, &code_off_heap);
+        ASSERT(tuple_val(ctx->tuple) == literal_area->start);
+        literal_area->off_heap = code_off_heap.first;
+        DESTROY_SHCOPY(info);
+        erts_set_literal_tag(&ctx->tuple, literal_area->start, term_size);
+
+        if (ctx->hash_table == (HashTable *) erts_atomic_read_nob(&the_hash_table)) {
+            /* Schedule fast update in active hash table */
+            fast_update_index = ctx->entry_index;
+            fast_update_term = ctx->tuple;
+        }
+        else {
+            /* Do update in copied table */
+            set_bucket(ctx->hash_table, ctx->entry_index, ctx->tuple);
+        }
+
+        /*
+         * Now wait thread progress before making update visible to guarantee
+         * consistent view of table&term without memory barrier in every get/1.
+         */
+        erts_schedule_thr_prgr_later_op(table_updater, ctx->hash_table,
+                                        &thr_prog_op);
+        suspend_updater(c_p);
+    }
+
+    BUMP_REDS(c_p, (max_iterations - iterations_until_trap) / ITERATIONS_PER_RED);
+    ERTS_BIF_YIELD_RETURN(c_p, am_ok);
+}
 
 static HashTable*
 create_initial_table(void)
@@ -803,7 +850,7 @@ do_get_all(Process* c_p, TrapData* trap_data, Eterm res)
     max_iter = ERTS_BIF_REDS_LEFT(c_p);
 #endif
     remaining = trap_data->remaining < max_iter ?
-        trap_data->remaining : max_iter;
+                trap_data->remaining : max_iter;
     trap_data->remaining -= remaining;
 
     copy_data = (struct copy_term *) erts_alloc(ERTS_ALC_T_TMP,
@@ -812,15 +859,15 @@ do_get_all(Process* c_p, TrapData* trap_data, Eterm res)
     i = 0;
     heap_size = (2 + 3) * remaining;
     while (remaining != 0) {
-        Eterm term;
+        Eterm bucket;
         ASSERT(idx < hash_table->allocated);
-        term = get_bucket(hash_table, idx);
-        if (is_tuple(term)) {
+        bucket = get_bucket(hash_table, idx);
+        if (is_tuple(bucket)) {
             Uint key_size;
             Eterm* tup_val;
 
-            ASSERT(is_tuple_arity(term, 2));
-            tup_val = tuple_val(term);
+            ASSERT(is_tuple_arity(bucket, 2));
+            tup_val = tuple_val(bucket);
             key_size = size_object(tup_val[1]);
             copy_data[i].key_size = key_size;
             copy_data[i].tuple_ptr = tup_val;
@@ -897,13 +944,16 @@ do_info(Process* c_p, TrapData* trap_data)
     remaining = trap_data->remaining < max_iter ? trap_data->remaining : max_iter;
     trap_data->remaining -= remaining;
     while (remaining != 0) {
-        if (is_boxed(get_bucket(hash_table, idx))) {
-            ErtsLiteralArea* area;
-            area = term_to_area(get_bucket(hash_table, idx));
-            trap_data->memory += sizeof(ErtsLiteralArea) +
-                sizeof(Eterm) * (area->end - area->start - 1);
+        Eterm bucket = get_bucket(hash_table, idx);
+
+        if (is_boxed(bucket)) {
+            ErtsLiteralArea* area = term_to_area(bucket);
+
+            trap_data->memory += ERTS_LITERAL_AREA_SIZE(area);
+
             remaining--;
         }
+
         idx++;
     }
     trap_data->idx = idx;
@@ -918,7 +968,7 @@ do_info(Process* c_p, TrapData* trap_data)
         Uint hsz = MAP_SZ(2);
 
         memory = sizeof(HashTable) + (trap_data->table->allocated-1) *
-            sizeof(Eterm) + trap_data->memory;
+                                     sizeof(Eterm) + trap_data->memory;
         (void) erts_bld_uint(NULL, &hsz, hash_table->num_entries);
         (void) erts_bld_uint(NULL, &hsz, memory);
         hp = HAlloc(c_p, hsz);
@@ -953,19 +1003,23 @@ cleanup_trap_data(Binary *bp)
 }
 
 static Uint
-lookup(HashTable* hash_table, Eterm key)
+lookup(HashTable* hash_table, Eterm key, Eterm *bucket)
 {
+    erts_ihash_t idx = erts_internal_hash(key);
     Uint mask = hash_table->mask;
-    Uint32 idx = make_internal_hash(key, 0);
     Eterm term;
 
     while (1) {
         term = get_bucket(hash_table, idx & mask);
-        if (is_nil(term) || EQ(key, (tuple_val(term))[1]))
-            break;
+
+        if (is_nil(term) || EQ(key, (tuple_val(term))[1])) {
+            *bucket = term;
+
+            return idx & mask;
+        }
+
         idx++;
     }
-    return idx & mask;
 }
 
 static int
@@ -1048,12 +1102,19 @@ copy_table(ErtsPersistentTermCpyTableCtx* ctx)
              i < MIN(ctx->iterations_done + ctx->max_iterations,
                      old_size);
              i++) {
-            Eterm term = get_bucket(ctx->old_table, i);
-            if (is_tuple(term)) {
-                Eterm key = tuple_val(term)[1];
-                Uint entry_index = lookup(ctx->new_table, key);
-                ASSERT(is_nil(get_bucket(ctx->new_table, entry_index)));
-                set_bucket(ctx->new_table, entry_index, term);
+            Eterm old_bucket = get_bucket(ctx->old_table, i);
+
+            if (is_tuple(old_bucket)) {
+                Eterm key, assert_empty_bucket;
+                Uint entry_index;
+
+                key = tuple_val(old_bucket)[1];
+                entry_index = lookup(ctx->new_table, key, &assert_empty_bucket);
+
+                ASSERT(is_nil(assert_empty_bucket));
+                (void)assert_empty_bucket;
+
+                set_bucket(ctx->new_table, entry_index, old_bucket);
             }
         }
         ctx->total_iterations_done += (i - ctx->iterations_done);
@@ -1118,7 +1179,7 @@ table_updater(void* data)
     old_table = (HashTable *) erts_atomic_read_nob(&the_hash_table);
     new_table = (HashTable *) data;
     if (new_table == old_table) {
-        Eterm old_term = get_bucket(old_table, fast_update_index);
+        Eterm old_bucket = get_bucket(old_table, fast_update_index);
         ASSERT(is_value(fast_update_term));
         ASSERT(fast_update_index < old_table->allocated);
         set_bucket(old_table, fast_update_index, fast_update_term);
@@ -1126,11 +1187,11 @@ table_updater(void* data)
         fast_update_term = THE_NON_VALUE;
 #endif
 
-        if (is_not_nil(old_term))  {
+        if (is_not_nil(old_bucket))  {
             OldLiteral *olp = alloc_old_literal();
-            ASSERT(is_tuple_arity(old_term,2));
-            olp->term = old_term;
-            olp->area = term_to_area(old_term);
+            ASSERT(is_tuple_arity(old_bucket,2));
+            olp->term = old_bucket;
+            olp->area = term_to_area(old_bucket);
             olp->delete_op.type = DELETE_OP_TUPLE;
             olp->delete_op.is_scheduled = 1;
             append_to_delete_queue(&olp->delete_op);
@@ -1411,9 +1472,9 @@ static void debug_table_foreach_off_heap(HashTable *tbl,
     int i;
     
     for (i = 0; i < tbl->allocated; i++) {
-        Eterm term = get_bucket(tbl, i);
-        if (is_tuple_arity(term, 2)) {
-            debug_area_off_heap(term_to_area(term), func, arg);
+        Eterm bucket = get_bucket(tbl, i);
+        if (is_tuple_arity(bucket, 2)) {
+            debug_area_off_heap(term_to_area(bucket), func, arg);
         }
     }
 }

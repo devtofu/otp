@@ -1,6 +1,15 @@
-%% Licensed under the Apache License, Version 2.0 (the "License"); you may
-%% not use this file except in compliance with the License. You may obtain
-%% a copy of the License at <http://www.apache.org/licenses/LICENSE-2.0>
+%% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0 OR LGPL-2.1-or-later
+%%
+%% Copyright 2006 Richard Carlsson
+%% Copyright Ericsson AB 2009-2025. All Rights Reserved.
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
 %%
 %% Unless required by applicable law or agreed to in writing, software
 %% distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,24 +27,24 @@
 %% above, a recipient may use your version of this file under the terms of
 %% either the Apache License or the LGPL.
 %%
-%% @author Richard Carlsson <carlsson.richard@gmail.com>
-%% @copyright 2006 Richard Carlsson
-%% @private
-%% @see eunit
-%% @doc Test runner process tree functions
+%% %CopyrightEnd%
+%%
+%% Test runner process tree functions
 
 -module(eunit_proc).
+-moduledoc false.
 
 -include("eunit.hrl").
 -include("eunit_internal.hrl").
 
--export([start/4, get_output/0]).
+-export([start/5, get_output/0]).
 
 %% This must be exported; see new_group_leader/1 for details.
 -export([group_leader_process/1]).
 
--record(procstate, {ref, id, super, insulator, parent, order}).
+-export_type([abort_exception/0]).
 
+-record(procstate, {ref, id, super, insulator, parent, order, options}).
 
 %% Spawns test process and returns the process Pid; sends {done,
 %% Reference, Pid} to caller when finished. See the function
@@ -44,12 +53,13 @@
 %% The `Super' process receives a stream of status messages; see
 %% message_super/3 for details.
 
-start(Tests, Order, Super, Reference)
+start(Tests, Order, Super, Reference, Options)
   when is_pid(Super), is_reference(Reference) ->
     St = #procstate{ref = Reference,
 		    id = [],
 		    super = Super,
-		    order = Order},
+		    order = Order,
+                    options = Options},
     spawn_group(local, #group{tests = Tests}, St).
 
 %% Fetches the output captured by the eunit group leader. This is
@@ -82,7 +92,7 @@ get_output() ->
 %%
 %%   {progress, 'end', {Status, Data}}
 %%       Status = 'ok' | {error, Exception} | {skipped, Cause} | integer()
-%%       Data = [{time,integer()}, {output,binary()}]
+%%       Data = [{time,timer:time()}, {output,binary()}]
 %%
 %%       where Time is measured in milliseconds and Output is the data
 %%       written to the standard output stream during the test; if
@@ -95,6 +105,9 @@ get_output() ->
 %%   {cancel, Descriptor}
 %%       where Descriptor can be:
 %%           timeout            a timeout occurred
+%%           {timeout, #{stacktrace := Stacktrace}
+%%                              a timeout occurred and there is a stacktrace
+%%                              of the eunit test
 %%           {blame, Id}        forced to terminate because of item `Id'
 %%           {abort, Cause}     the test or group failed to execute
 %%           {exit, Reason}     the test process terminated unexpectedly
@@ -113,7 +126,7 @@ message_super(Id, Info, St) ->
     St#procstate.super ! {status, Id, Info}.
 
 
-%% @TODO implement synchronized mode for insulator/child execution
+%% TODO implement synchronized mode for insulator/child execution
 
 %% Ideas for synchronized mode:
 %%
@@ -153,8 +166,8 @@ message_super(Id, Info, St) ->
 %% which contains the process id:s of the parent, the insulator, and the
 %% supervisor.
 
-%% @spec (Type, (#procstate{}) -> () -> term(), #procstate{}) -> pid()
-%%   Type = local | {remote, Node::atom()}
+-spec start_task(Type, fun ((#procstate{}) -> fun (() -> any())), #procstate{}) -> pid()
+  when Type :: local | {remote, Node::atom()}.
 
 start_task(Type, Fun, St0) ->
     St = St0#procstate{parent = self()},
@@ -204,8 +217,8 @@ start_task(Type, Fun, St0) ->
 %% insulators must always immediately send an {ok, Reference, self()}
 %% message to the parent as soon as it is spawned.
 
-%% @spec (Type, Fun::() -> term(), St::#procstate{}) -> ok
-%%  Type = local | {remote, Node::atom()}
+-spec insulator_process(Type, Fun::fun ((#procstate{}) -> fun (() -> any())), St::#procstate{}) -> no_return()
+  when Type :: local | {remote, Node::atom()}.
 
 insulator_process(Type, Fun, St0) ->
     process_flag(trap_exit, true),
@@ -241,6 +254,8 @@ insulator_process(Type, Fun, St0) ->
 %% currently active test or group, and is sent along with the 'end'
 %% progress message when the test or group has finished.
 
+-spec insulator_wait(Child::pid(), Parent::pid(), Buf::list(), #procstate{}) -> no_return().
+
 insulator_wait(Child, Parent, Buf, St) ->
     receive
 	{child, Child, Id, {'begin', Type, Data}} ->
@@ -273,7 +288,13 @@ insulator_wait(Child, Parent, Buf, St) ->
 	    io_request(From, ReplyAs, Req, []),
 	    insulator_wait(Child, Parent, Buf, St);
 	{timeout, Child, Id} ->
-	    exit_messages(Id, timeout, St),
+	    Timeout = case process_info(Child, current_stacktrace) of
+			  undefined ->
+			      timeout;
+			  {current_stacktrace, Stack} ->
+			      {timeout, #{stacktrace => Stack}}
+		      end,
+	    exit_messages(Id, Timeout, St),
 	    kill_task(Child, St);
 	{'EXIT', Child, normal} ->
 	    terminate_insulator(St);
@@ -285,14 +306,16 @@ insulator_wait(Child, Parent, Buf, St) ->
 	    kill_task(Child, St)
     end.
 
--spec kill_task(_, _) -> no_return().
+-spec kill_task(pid(), #procstate{}) -> no_return().
 
 kill_task(Child, St) ->
-    exit(Child, kill),
+    erlang:exit_signal(Child, kill),
     terminate_insulator(St).
 
 %% Unlinking before exit avoids polluting the parent process with exit
 %% signals from the insulator. The child process is already dead here.
+
+-spec terminate_insulator(#procstate{}) -> no_return().
 
 terminate_insulator(St) ->
     %% messaging/unlinking is ok even if the parent is already dead
@@ -327,9 +350,21 @@ clear_timeout(Ref) ->
     erlang:cancel_timer(Ref).
 
 with_timeout(undefined, Default, F, St) ->
-    with_timeout(Default, F, St);
+    with_timeout(scale_timeout(Default, St), F, St);
 with_timeout(Time, _Default, F, St) ->
-    with_timeout(Time, F, St).
+    with_timeout(scale_timeout(Time, St), F, St).
+
+scale_timeout(infinity, _St) ->
+    infinity;
+scale_timeout(Time, St) ->
+    case proplists:get_value(scale_timeouts, St#procstate.options) of
+        undefined ->
+            Time;
+        N when is_integer(N) ->
+            N * Time;
+        N when is_float(N) ->
+            round(N * Time)
+    end.
 
 with_timeout(infinity, F, _St) ->
     %% don't start timers unnecessarily
@@ -358,7 +393,7 @@ with_timeout(Time, F, St) when is_integer(Time) ->
 %% the test code is allowed to enable signal trapping as it pleases.
 %% Note that I/O is redirected to the insulator process.
 
-%% @spec (() -> term(), #procstate{}) -> ok
+-spec child_process(fun (() -> any()), #procstate{}) -> ok.
 
 child_process(Fun, St) ->
     group_leader(St#procstate.insulator, self()),
@@ -380,8 +415,9 @@ child_test_() ->
       ?_assertMatch(false, process_flag(trap_exit, false))}].
 -endif.
 
-%% @throws abortException()
-%% @type abortException() = {eunit_abort, Cause::term()}
+-type abort_exception() :: {eunit_abort, Cause::any()}.
+
+%% Throws abort_exception()
 
 abort_task(Cause) ->
     throw({eunit_abort, Cause}).
@@ -427,7 +463,7 @@ wait_for_tasks(PidSet, St) ->
 %% TODO: Flow control, starting new job as soon as slot is available
 
 tests(T, St) ->
-    I = eunit_data:iter_init(T, St#procstate.id),
+    I = eunit_data:iter_init(T, St#procstate.id, St#procstate.options),
     case St#procstate.order of
 	inorder -> tests_inorder(I, St);
 	inparallel -> tests_inparallel(I, 0, St);
@@ -515,8 +551,8 @@ handle_test(T, St) ->
     message_insulator({'end', Status, Time}, St),
     ok.
 
-%% @spec (#test{}) -> ok | {error, eunit_lib:exception()}
-%%                  | {skipped, eunit_test:wrapperError()}
+-spec run_test(#test{}) -> ok | {error, eunit_lib:exception()}
+              | {skipped, eunit_test:wrapper_error()}.
 
 run_test(#test{f = F}) ->
     try eunit_test:run_testfun(F) of

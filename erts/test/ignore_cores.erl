@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -145,11 +147,15 @@ restore(Config) ->
 						 []))
 	end
     after
-	catch file:set_cwd(OrgCWD),
-	catch code:set_path(OrgPath),
+        try
+            file:set_cwd(OrgCWD),
+            code:set_path(OrgPath)
+        catch
+            _:_ -> ok
+        end,
 	case OrgPWD of
 	    false -> ok;
-	    _ -> catch os:putenv("PWD", OrgPWD)
+            _ -> try os:putenv("PWD", OrgPWD) catch _:_ -> ok end
 	end
     end.
 

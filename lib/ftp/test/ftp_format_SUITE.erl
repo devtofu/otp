@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2005-2018. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2005-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 %%
@@ -64,7 +66,7 @@ end_per_testcase(_, _) ->
 %%-------------------------------------------------------------------------
 
 ftp_150() ->
-    [{doc, "Especially check that respons can be devided in a random place."}].
+    [{doc, "Especially check that a response can be divided in a random place."}].
 ftp_150(Config) when is_list(Config) ->
     FtpResponse = ["150 ASCII data conn", "ection for /bin/ls ",
 		   "(134.138.177", ".89,50434) (0 bytes).\r\n"],
@@ -75,7 +77,7 @@ ftp_150(Config) when is_list(Config) ->
     {pos_prel, _} = ftp_response:interpret(Msg).
    
 ftp_200() ->
-    [{doc, "Especially check that respons can be devided after the first status "
+    [{doc, "Especially check that a response can be divided after the first status "
     "code character and in the end delimiter."}].
 ftp_200(Config) when is_list(Config) ->
     FtpResponse = ["2", "00 PORT command successful.", [?CR], [?LF]], 
@@ -86,8 +88,8 @@ ftp_200(Config) when is_list(Config) ->
     ok.
 
 ftp_220() ->
-    [{doc, "Especially check that respons can be devided after the "
-     "first with space "}].
+    [{doc, "Especially check that a response can be divided after the "
+     "first white space "}].
 ftp_220(Config) when is_list(Config) ->
     FtpResponse = ["220 ","fingon FTP server (SunOS 5.8) ready.\r\n"], 
     
@@ -97,7 +99,7 @@ ftp_220(Config) when is_list(Config) ->
     ok.
 
 ftp_226() ->
-    [{doc, "Especially check that respons can be devided after second status code"
+    [{doc, "Especially check that a response can be divided after second status code"
     " character and in the end delimiter."}].
 ftp_226(Config) when is_list(Config) ->
     FtpResponse = ["22" "6 Transfer complete.\r", [?LF]],
@@ -118,7 +120,7 @@ ftp_257(Config) when is_list(Config) ->
     ok.
 
 ftp_331() ->
-    [{doc, "Especially check that respons can be devided after the third status "
+    [{doc, "Especially check that a response can be divided after the third status "
     " status code character."}].
 ftp_331(Config) when is_list(Config) ->
     %% Brake before white space after code
@@ -151,7 +153,7 @@ ftp_multiple_lines_status_in_msg(Config) when is_list(Config) ->
     ok.
 
 ftp_multiple_lines() ->
-    [{doc, "Especially check multiple lines devided in significant places"}].
+    [{doc, "Especially check multiple lines divided in significant places"}].
 ftp_multiple_lines(Config) when is_list(Config) ->
     FtpResponse =   ["21", "4","-The",
 		     " following commands are recognized:\r\n"
@@ -231,9 +233,9 @@ ftp_multiple_lines(Config) when is_list(Config) ->
 
 ftp_other_status_codes() ->
     [{doc, "Check that other valid status codes, than the ones above, are handled"
-     "by ftp_response:interpret/1. Note there are som ftp status codes" 
-     "that will not be received with the current ftp instruction support," 
-     "they are not included here."}].
+     "by ftp_response:interpret/1. Note that there are some ftp status codes" 
+     "that will not be received with the current ftp instruction support." 
+     "They are not included here."}].
 ftp_other_status_codes(Config) when is_list(Config) ->
 
     %% 1XX

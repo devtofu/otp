@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -56,7 +58,8 @@
 %%------------------------------------------------------------------------
 
 -type dlog_format()      :: 'external' | 'internal'.
--type dlog_format_type() :: 'halt_ext' | 'halt_int' | 'wrap_ext' | 'wrap_int'.
+-type dlog_format_type() :: 'halt_ext' | 'halt_int' | 'wrap_ext' | 'wrap_int'
+                          | 'rotate_ext'.
 -type dlog_head()        :: 'none' | {'ok', binary()} | mfa().
 -type dlog_head_opt()    :: none | term() | iodata().
 -type log()              :: term().  % XXX: refine
@@ -83,7 +86,7 @@
                           | {MaxNoBytes :: pos_integer(),
                              MaxNoFiles :: pos_integer()}.
 -type dlog_status()      :: 'ok' | {'blocked', 'false' | [_]}. %QueueLogRecords
--type dlog_type()        :: 'halt' | 'wrap'.
+-type dlog_type()        :: 'halt' | 'wrap' | 'rotate'.
 
 %%------------------------------------------------------------------------
 %% Records
@@ -129,7 +132,7 @@
 				%% time the wrap log has filled the 
 				%% Dir/Name.NewMaxF file.
 	 curB     :: non_neg_integer(),	%% Number of bytes on current file.
-	 curF     :: integer(), 	%% Current file number.
+	 curF     :: integer(), 	%% Current file number
 	 cur_fdc  :: #cache{}, 	 	%% Current file descriptor.
 	 cur_name :: file:filename(),	%% Current file name for error reports.
 	 cur_cnt  :: non_neg_integer(),	%% Number of items on current file,
@@ -143,8 +146,20 @@
 					%% since log was opened if info/1
 					%% has not yet been used on this log.
 	 accFull  :: non_neg_integer()}	%% noFull+accFull is number of
-					%% oveflows since the log was opened.
+					%% overflows since the log was opened.
        ).
+
+-record(rotate_handle,
+        {file :: file:filename(),
+         cur_fdc :: #cache{},
+         inode,
+         file_check,
+         maxB :: pos_integer(),
+         maxF :: pos_integer() | {pos_integer(),pos_integer()},
+	 curB = 0 :: non_neg_integer(),
+         firstPos :: non_neg_integer(),
+         compress_on_rotate = true}
+        ).
 
 -record(log,
 	{status = ok       :: dlog_status(),
@@ -160,8 +175,8 @@
 	                      %%  called when wraplog wraps
 	 mode		   :: dlog_mode(),
 	 size,                %% value of open/1 option 'size' (never changed)
-	 extra             :: #halt{} | #handle{}, %% type of the log
-	 version           :: integer()}	   %% if wrap log file
+	 extra             :: #halt{} | #handle{} | #rotate_handle{}, %% type of the log
+	 version           :: integer() | undefined}	   %% if wrap log file, undefined for halt and rotate
 	).
 
 -record(continuation,         %% Chunk continuation.

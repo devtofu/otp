@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2017-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2017-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -37,7 +39,7 @@
     PACKED_OPENSSL_VERSION(MAJ,MIN,FIX,('a'-1))
 
 #if OPENSSL_VERSION_NUMBER < PACKED_OPENSSL_VERSION_PLAIN(1,1,0) \
-    || defined(LIBRESSL_VERSION_NUMBER)
+    || (defined(LIBRESSL_VERSION_NUMBER) && LIBRESSL_VERSION_NUMBER < 0x3050000fL)
 # define OLD
 #endif
 
@@ -59,6 +61,7 @@
 /* If OPENSSL_NO_EC is set, there will be an error in ec.h included from engine.h
    So if EC is disabled, you can't use Engine either....
 */
+
 #include <openssl/engine.h>
 #include <openssl/pem.h>
 
@@ -86,31 +89,68 @@ EVP_PKEY* test_pubkey_load(ENGINE *eng, const char *id, UI_METHOD *ui_method, vo
 
 EVP_PKEY* test_key_load(ENGINE *er, const char *id, UI_METHOD *ui_method, void *callback_data, int priv);
 
+static int init_test_md5(void);
+static void finish_test_md5(void);
+
 /*----------------------------------------------------------------*/
 
 static int test_init(ENGINE *e) {
     printf("OTP Test Engine Initializatzion!\r\n");
-    
+
 #if defined(FAKE_RSA_IMPL)
+    if ((test_rsa_method = RSA_meth_new("OTP test RSA method", 0)) == NULL) {
+        fprintf(stderr, "RSA_meth_new failed\r\n");
+        goto err;
+    }
+
     if (!RSA_meth_set_finish(test_rsa_method, test_rsa_free))
         goto err;
     if (!RSA_meth_set_sign(test_rsa_method, test_rsa_sign))
         goto err;
     if (!RSA_meth_set_verify(test_rsa_method, test_rsa_verify))
         goto err;
+
+    if (!ENGINE_set_RSA(e, test_rsa_method))
+        goto err;
+
 #endif /* if defined(FAKE_RSA_IMPL) */
 
+    if (!init_test_md5())
+        goto err;
+
+#if OPENSSL_VERSION_NUMBER < PACKED_OPENSSL_VERSION_PLAIN(1,1,0)
     /* Load all digest and cipher algorithms. Needed for password protected private keys */
     OpenSSL_add_all_ciphers();
     OpenSSL_add_all_digests();
+#endif
 
     return 111;
 
-#if defined(FAKE_RSA_IMPL)
 err:
-    fprintf(stderr, "Setup RSA_METHOD failed\r\n");
-    return 0;
+#if defined(FAKE_RSA_IMPL)
+    if (test_rsa_method)
+        RSA_meth_free(test_rsa_method);
+    test_rsa_method = NULL;
 #endif
+    return 0;
+}
+
+static int test_finish(ENGINE *e) {
+    printf("OTP Test Engine Finish!\r\n");
+
+#if defined(FAKE_RSA_IMPL)
+    if (test_rsa_method) {
+        RSA_meth_free(test_rsa_method);
+        test_rsa_method = NULL;
+    }
+#endif
+
+    finish_test_md5();
+
+    //    EVP_cleanup();
+
+    return 111;
+
 }
 
 static void add_test_data(unsigned char *md, unsigned int len)
@@ -178,6 +218,8 @@ static int test_engine_md5_final(EVP_MD_CTX *ctx,unsigned char *md) {
 #endif
 }
 
+static EVP_MD *test_engine_md5_ptr = NULL;
+
 #ifdef OLD
 static EVP_MD test_engine_md5_method=  {
         NID_md5,                      /* The name ID for MD5 */
@@ -192,9 +234,46 @@ static EVP_MD test_engine_md5_method=  {
         EVP_PKEY_NULL_method,         /* IGNORED: pkey methods */
         MD5_CBLOCK,                   /* Internal blocksize, see rfc1321/md5.h */
         sizeof(EVP_MD *) + sizeof(MD5_CTX),
+# if OPENSSL_VERSION_NUMBER >= PACKED_OPENSSL_VERSION_PLAIN(1,0,0)
         NULL,                          /* IGNORED: control function */
+# endif
 };
 #endif
+
+static int init_test_md5(void)
+{
+#ifdef OLD
+    test_engine_md5_ptr = &test_engine_md5_method;
+#else
+    EVP_MD *md;
+
+    if ((md = EVP_MD_meth_new(NID_md5, NID_undef)) == NULL)
+        return 0;
+    EVP_MD_meth_set_result_size(md, MD5_DIGEST_LENGTH);
+    EVP_MD_meth_set_flags(md, 0);
+    EVP_MD_meth_set_init(md, test_engine_md5_init);
+    EVP_MD_meth_set_update(md, test_engine_md5_update);
+    EVP_MD_meth_set_final(md, test_engine_md5_final);
+    EVP_MD_meth_set_copy(md, NULL);
+    EVP_MD_meth_set_cleanup(md, NULL);
+    EVP_MD_meth_set_input_blocksize(md, MD5_CBLOCK);
+    EVP_MD_meth_set_app_datasize(md, sizeof(EVP_MD *) + sizeof(MD5_CTX));
+    EVP_MD_meth_set_ctrl(md, NULL);
+
+    test_engine_md5_ptr = md;
+#endif
+    return 1;
+}
+
+static void finish_test_md5(void)
+{
+#ifndef OLD
+    if (test_engine_md5_ptr) {
+        EVP_MD_meth_free(test_engine_md5_ptr);
+        test_engine_md5_ptr = NULL;
+    }
+#endif
+}
 
 static int test_digest_ids[] = {NID_md5};
 
@@ -207,41 +286,12 @@ static int test_engine_digest_selector(ENGINE *e, const EVP_MD **digest,
     }
     fprintf(stderr, "Digest no %d requested\r\n",nid);
     if (nid == NID_md5) {
-#ifdef OLD
-        *digest = &test_engine_md5_method;
-#else
-        EVP_MD *md;
-
-        if ((md = EVP_MD_meth_new(NID_md5, NID_undef)) == NULL)
-            goto err;
-        if (EVP_MD_meth_set_result_size(md, MD5_DIGEST_LENGTH) != 1)
-            goto err;
-        if (EVP_MD_meth_set_flags(md, 0) != 1)
-            goto err;
-        if (EVP_MD_meth_set_init(md, test_engine_md5_init) != 1)
-            goto err;
-        if (EVP_MD_meth_set_update(md, test_engine_md5_update) != 1)
-            goto err;
-        if (EVP_MD_meth_set_final(md, test_engine_md5_final) != 1)
-            goto err;
-        if (EVP_MD_meth_set_copy(md, NULL) != 1)
-            goto err;
-        if (EVP_MD_meth_set_cleanup(md, NULL) != 1)
-            goto err;
-        if (EVP_MD_meth_set_input_blocksize(md, MD5_CBLOCK) != 1)
-            goto err;
-        if (EVP_MD_meth_set_app_datasize(md, sizeof(EVP_MD *) + sizeof(MD5_CTX)) != 1)
-            goto err;
-        if (EVP_MD_meth_set_ctrl(md, NULL) != 1)
-            goto err;
-
-        *digest = md;
-#endif
+        *digest = test_engine_md5_ptr;
     }
     else {
         goto err;
     }
-    
+
     return 1;
 
  err:
@@ -251,18 +301,13 @@ static int test_engine_digest_selector(ENGINE *e, const EVP_MD **digest,
 
 static int bind_helper(ENGINE * e, const char *id)
 {
-#if defined(FAKE_RSA_IMPL)
-    if ((test_rsa_method = RSA_meth_new("OTP test RSA method", 0)) == NULL) {
-        fprintf(stderr, "RSA_meth_new failed\r\n");
-        goto err;
-    }
-#endif /* if defined(FAKE_RSA_IMPL) */
-
     if (!ENGINE_set_id(e, test_engine_id))
         goto err;
     if (!ENGINE_set_name(e, test_engine_name))
         goto err;
     if (!ENGINE_set_init_function(e, test_init))
+        goto err;
+    if (!ENGINE_set_finish_function(e, test_finish))
         goto err;
     if (!ENGINE_set_digests(e, &test_engine_digest_selector))
         goto err;
@@ -272,19 +317,9 @@ static int bind_helper(ENGINE * e, const char *id)
     if (!ENGINE_set_load_pubkey_function(e, &test_pubkey_load))
         goto err;
 
-#if defined(FAKE_RSA_IMPL)
-    if (!ENGINE_set_RSA(e, test_rsa_method))
-        goto err;
-#endif /* if defined(FAKE_RSA_IMPL) */
-
     return 1;
 
  err:
-#if defined(FAKE_RSA_IMPL)
-    if (test_rsa_method)
-        RSA_meth_free(test_rsa_method);
-    test_rsa_method = NULL;
-#endif
     return 0;
 }
 
@@ -312,6 +347,8 @@ EVP_PKEY* test_key_load(ENGINE *eng, const char *id, UI_METHOD *ui_method, void 
     EVP_PKEY *pkey = NULL;
     FILE *f = fopen(id, "r");
 
+    fprintf(stderr, "%s:%d test_key_load(id=%s,priv=%d)\r\n", __FILE__,__LINE__,id, priv);
+
     if (!f) {
         fprintf(stderr, "%s:%d fopen(%s) failed\r\n", __FILE__,__LINE__,id);
         return NULL;
@@ -323,10 +360,10 @@ EVP_PKEY* test_key_load(ENGINE *eng, const char *id, UI_METHOD *ui_method, void 
         : PEM_read_PUBKEY(f, NULL, NULL, NULL);
 
     fclose(f);
-    
+
     if (!pkey) {
         fprintf(stderr, "%s:%d Key read from file %s failed.\r\n", __FILE__,__LINE__,id);
-        if (callback_data) 
+        if (callback_data)
             fprintf(stderr, "Pwd = \"%s\".\r\n", (char *)callback_data);
         fprintf(stderr, "Contents of file \"%s\":\r\n",id);
         f = fopen(id, "r");
@@ -344,13 +381,13 @@ EVP_PKEY* test_key_load(ENGINE *eng, const char *id, UI_METHOD *ui_method, void 
         fclose(f);
         return NULL;
     }
-    
+
     return pkey;
 }
 
 
-int pem_passwd_cb_fun(char *buf, int size, int rwflag, void *password) 
-{ 
+int pem_passwd_cb_fun(char *buf, int size, int rwflag, void *password)
+{
     size_t i;
 
     if (size < 0)
@@ -382,10 +419,10 @@ int pem_passwd_cb_fun(char *buf, int size, int rwflag, void *password)
 static unsigned char fake_flag[] = {255,3,124,180,35,10,180,151,101,247,62,59,80,122,220,
                              142,24,180,191,34,51,150,112,27,43,142,195,60,245,213,80,179};
 
-int test_rsa_sign(int dtype, 
+int test_rsa_sign(int dtype,
                   /* The digest to sign */
                   const unsigned char *m, unsigned int m_len,
-                  /* The allocated buffer to fill with the signature */ 
+                  /* The allocated buffer to fill with the signature */
                   unsigned char *sigret, unsigned int *siglen,
                   /* The key */
                   const RSA *rsa)
@@ -421,10 +458,10 @@ int test_rsa_sign(int dtype,
     return -1;
 }
 
-int test_rsa_verify(int dtype, 
+int test_rsa_verify(int dtype,
                     /* The digest to verify */
                     const unsigned char *m, unsigned int m_len,
-                    /* The signature */ 
+                    /* The signature */
                     const unsigned char *sigret, unsigned int siglen,
                     /* The key */
                     const RSA *rsa)

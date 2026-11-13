@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -27,6 +29,7 @@
 %% ----------------------------------------------------------------------
 
 -module(ssh_fsm_userauth_client).
+-moduledoc false.
 
 -include("ssh.hrl").
 -include("ssh_transport.hrl").
@@ -55,18 +58,22 @@ callback_mode() ->
 
 %%% ######## {userauth, client} ####
 
-%%---- #ssh_msg_ext_info could follow after the key exchange, both the intial and the re-negotiation
+%%---- #ssh_msg_ext_info could follow after the key exchange, both the initial and the re-negotiation
 handle_event(internal, #ssh_msg_ext_info{}=Msg, {userauth,client}, D0) ->
     %% FIXME: need new state to receive this msg!
     D = ssh_connection_handler:handle_ssh_msg_ext_info(Msg, D0),
     {keep_state, D};
 
-%%---- recevied userauth success from the server
+%%---- received userauth success from the server
 handle_event(internal, #ssh_msg_userauth_success{}, {userauth,client}, D0=#data{ssh_params = Ssh}) ->
     ssh_auth:ssh_msg_userauth_result(success),
     ssh_connection_handler:handshake(ssh_connected, D0),
     D = D0#data{ssh_params=Ssh#ssh{authenticated = true}},
-    {next_state, {connected,client}, D, {change_callback_module,ssh_connection_handler}};
+    {_AliveCount, AliveInterval} = ?GET_ALIVE_OPT(Ssh#ssh.opts),
+    {next_state, {connected,client}, D,
+     [{{timeout, alive}, AliveInterval, none},
+      {change_callback_module,ssh_connection_handler}]};
+
 
 
 %%---- userauth failure response to clientfrom the server
@@ -80,7 +87,7 @@ handle_event(internal, #ssh_msg_userauth_failure{}, {userauth,client}=StateName,
 
 handle_event(internal, #ssh_msg_userauth_failure{authentications = Methods}, StateName={userauth,client},
 	     D0 = #data{ssh_params = Ssh0}) ->
-    %% The prefered authentication method failed, try next method
+    %% The preferred authentication method failed, try next method
     Ssh1 = case Ssh0#ssh.userauth_methods of
 	       none ->
 		   %% Server tells us which authentication methods that are allowed
@@ -105,7 +112,10 @@ handle_event(internal, #ssh_msg_userauth_failure{authentications = Methods}, Sta
     end;
 
 %%---- banner to client
-handle_event(internal, #ssh_msg_userauth_banner{message = Msg}, {userauth,client}, D) ->
+handle_event(internal, #ssh_msg_userauth_banner{message = Msg}, {S,client}, D)
+  when S == userauth; S == userauth_keyboard_interactive;
+       S == userauth_keyboard_interactive_extra;
+       S == userauth_keyboard_interactive_info_response ->
     case D#data.ssh_params#ssh.userauth_quiet_mode of
 	false -> io:format("~s", [Msg]);
 	true -> ok

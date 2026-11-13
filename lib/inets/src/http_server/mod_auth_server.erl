@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2001-2016. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2001-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,12 +16,13 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 %%
 
 -module(mod_auth_server).
+-moduledoc false.
 
 -include("httpd.hrl").
 -include("httpd_internal.hrl").
@@ -177,7 +180,7 @@ handle_call({delete_group_member, Addr, Port, Profile, Dir, Group, User, AuthPwd
 		     AuthPwd, State), 
     {reply, Reply, State};
 
-%% List all users thats standalone users
+%% List all users that's standalone users
 handle_call({list_users, Addr, Port, Profile, Dir, AuthPwd}, _From, State) ->
     Reply = api_call(Addr, Port, Profile, Dir, list_users, [], AuthPwd, State),
     {reply, Reply, State};
@@ -258,7 +261,8 @@ api_call(Addr, Port, Profile, Dir, Func, Args,Password,State) ->
 	    case ets:match_object(ConfigName, {directory, {Dir, '$1'}}) of
 		[{directory, {Dir, DirData}}] ->
 		    AuthMod = auth_mod_name(DirData),
-		    (catch apply(AuthMod, Func, [DirData|Args]));
+                    DirDataWithPath = [{path, Dir} | DirData],
+		    (catch apply(AuthMod, Func, [DirDataWithPath|Args]));
 		_ ->
 		    {error, no_such_directory}
 	    end;

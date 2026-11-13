@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1997-2018. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,16 +16,19 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 %%
 -module(httpd_example).
+-moduledoc false.
 
 -export([print/3, 
          get/3, 
+         get_reply_headers/3,
          put/3,
          patch/3,
+         options/3,
          post/3, 
          yahoo/3, 
          test1/3, 
@@ -78,6 +83,24 @@ do_get(_Env,[]) ->
 do_get(Env,Input) ->
   default(Env,Input).
 %% ------------------------------------------------------
+get_reply_headers(SessionID, Env, Input) ->
+    mod_esi:deliver(SessionID, do_get_reply_headers(Env, Input)).
+do_get_reply_headers(Env,[]) ->
+    EncodingVal = proplists:get_value(http_accept_encoding, Env),
+    Other = proplists:get_value(http_other, Env),
+    NotExistingVal = proplists:get_value("notexistingheader_1", Other),
+    [header("text/html", "Accept-Encoding: " ++ EncodingVal ++ " \r\n" ++
+                "NotExistingheader_1: " ++ NotExistingVal ++ " \r\n"),
+     top("GET Example"),
+     "<FORM ACTION=\"/cgi-bin/erl/httpd_example:get\" METHOD=GET>
+<B>Input:</B> <INPUT TYPE=\"text\" NAME=\"input1\">
+<INPUT TYPE=\"text\" NAME=\"input2\">
+<INPUT TYPE=\"submit\"><BR>
+</FORM>" ++ "\n",
+     footer()];
+do_get_reply_headers(Env,Input) ->
+    default(Env,Input).
+%% ------------------------------------------------------
 put(SessionID, Env, Input) ->
     mod_esi:deliver(SessionID, do_put(Env, Input)).
 
@@ -94,6 +117,15 @@ do_patch(Env,{Input,_Body}) ->
     default(Env,Input);
 do_patch(Env,Input) ->
     default(Env,Input).
+
+%% ------------------------------------------------------
+options(SessionID, Env, Input) ->
+    mod_esi:deliver(SessionID, do_options(Env, Input)).
+
+do_options(Env, {Input, _Body}) ->
+    default(Env, Input);
+do_options(Env, Input) ->
+    default(Env, Input).
 
 %% ------------------------------------------------------
 get_bin(SessionID, Env, Input) ->
@@ -206,7 +238,7 @@ newformat(SessionID,_,_) ->
 %% ------------------------------------------------------
 
 delay(SessionID,_, _) ->
-    sleep(10000),
+    sleep(2000),
     Reply = delay_reply("delay ok"),
     mod_esi:deliver(SessionID, Reply).
 

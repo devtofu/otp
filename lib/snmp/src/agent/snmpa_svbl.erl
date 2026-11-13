@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1996-2016. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,10 +16,11 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(snmpa_svbl).
+-moduledoc false.
 
 -include("snmp_types.hrl").
 
@@ -91,7 +94,7 @@ insert_key(Key, Value, []) ->
     [{Key, [Value]}].
 
 %%-----------------------------------------------------------------
-%% Tranforms a list of {Oid, Vb} to a 2-tuple with all
+%% Transforms a list of {Oid, Vb} to a 2-tuple with all
 %% Oids and all Vbs. These lists will be reversed.
 %%-----------------------------------------------------------------
 sa_split(Vbs) -> sa_split(Vbs, [], []).
@@ -137,7 +140,7 @@ unpack(Rest, [Row | Rows], []) ->
 
 %% OrgIndex should not be present when we call the is_set_ok/set/undo
 %% table functions. They just see the list of cols, and if an error
-%% occurs, they return the column nunber.
+%% occurs, they return the column number.
 %% Also, delete duplicate columns.  If a SET is performed with duplicate
 %% columns, it is undefined which column to use.  We just pick one.
 delete_org_index([{RowIndex, Cols} | Rows]) ->

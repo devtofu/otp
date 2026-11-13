@@ -1,3 +1,25 @@
+<!--
+%% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2013-2025. All Rights Reserved.
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%
+%% %CopyrightEnd%
+-->
+
 Delayed Dealloc
 ===============
 
@@ -89,7 +111,7 @@ same location in memory.
 
 The head contains pointers to beginning of the list (`head.first`), and
 to the first block which other threads may refer to
-(`head.unref_end`). Blocks between these pointers are only refered to
+(`head.unref_end`). Blocks between these pointers are only referred to
 by the head part of the data structure which is only used by the
 thread owning the allocator instance. When these two pointers are not
 equal the thread owning the allocator instance deallocate block after
@@ -137,7 +159,7 @@ If no new memory blocks are inserted into the list, it should
 eventually be emptied. All pointers to the list however expect to
 always point to something. This is solved by inserting an empty
 "marker" element, which only has to purpose of being there in the
-absense of other elements. That is when the list is empty it only
+absence of other elements. That is when the list is empty it only
 contains this "marker" element.
 
 ### Contention ###

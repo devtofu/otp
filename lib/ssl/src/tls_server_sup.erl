@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2019-2019. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2019-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,6 +23,7 @@
 %%
 
 -module(tls_server_sup).
+-moduledoc false.
 
 -behaviour(supervisor).
 
@@ -35,7 +38,6 @@
 %%%=========================================================================
 
 -spec start_link() -> {ok, pid()} | ignore | {error, term()}.
-			
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
@@ -43,18 +45,17 @@ start_link() ->
 %%%  Supervisor callback
 %%%=========================================================================
 
-init([]) ->    
-    ListenTracker = listen_options_tracker_child_spec(),
-    SessionTracker = tls_server_session_child_spec(),
-    Pre_1_3SessionTracker = ssl_server_session_child_spec(),
-    Pre_1_3UpgradeSessionTracker = ssl_upgrade_server_session_child_spec(),
-
-    {ok, {{one_for_all, 10, 3600}, [ListenTracker, 
-				    SessionTracker,
-                                    Pre_1_3SessionTracker,
-                                    Pre_1_3UpgradeSessionTracker
-				   ]}}.
-
+init([]) ->
+    ChildSpecs = [listen_options_tracker_child_spec(),
+                tls_server_session_child_spec(), %% TLS-1.3 Session ticket handling
+                ssl_server_session_child_spec(), %% PRE TLS-1.3 session handling
+                ssl_upgrade_server_session_child_spec() %% PRE TLS-1.3 session handling for upgrade servers
+               ],
+    SupFlags = #{strategy  => one_for_all,
+                 intensity =>   10,
+                 period    => 3600
+                },
+    {ok, {SupFlags, ChildSpecs}}.
 
 %%--------------------------------------------------------------------
 %%% Internal functions
@@ -63,37 +64,37 @@ init([]) ->
 %% Handles emulated options so that they inherited by the accept
 %% socket, even when setopts is performed on the listen socket
 listen_options_tracker_child_spec() ->
-    Name = tls_socket,  
-    StartFunc = {ssl_listen_tracker_sup, start_link, []},
-    Restart = permanent, 
-    Shutdown = 4000,
-    Modules = [ssl_listen_tracker_sup],
-    Type = supervisor,
-    {Name, StartFunc, Restart, Shutdown, Type, Modules}.
+    #{id       => ssl_listen_tracker_sup,
+      start    => {ssl_listen_tracker_sup, start_link, []},
+      restart  => permanent,
+      shutdown => infinity,
+      modules  => [ssl_listen_tracker_sup],
+      type     => supervisor
+     }.
 
 tls_server_session_child_spec() ->
-    Name = tls_server_session_ticket,  
-    StartFunc = {tls_server_session_ticket_sup, start_link, []},
-    Restart = permanent, 
-    Shutdown = 4000,
-    Modules = [tls_server_session_ticket_sup],
-    Type = supervisor,
-    {Name, StartFunc, Restart, Shutdown, Type, Modules}.
+    #{id       => tls_server_session_ticket,
+      start    => {tls_server_session_ticket_sup, start_link, []},
+      restart  => permanent,
+      shutdown => infinity,
+      modules  => [tls_server_session_ticket_sup],
+      type     => supervisor
+     }.
 
 ssl_server_session_child_spec() ->
-    Name = ssl_server_session_cache_sup,
-    StartFunc = {ssl_server_session_cache_sup, start_link, []},
-    Restart = permanent,
-    Shutdown = 4000,
-    Modules = [ssl_server_session_cache_sup],
-    Type = supervisor,
-    {Name, StartFunc, Restart, Shutdown, Type, Modules}.
+    #{id       => ssl_server_session_cache_sup,
+      start    => {ssl_server_session_cache_sup, start_link, []},
+      restart  => permanent,
+      shutdown => infinity,
+      modules  => [ssl_server_session_cache_sup],
+      type     => supervisor
+     }.
 
 ssl_upgrade_server_session_child_spec() ->
-    Name = ssl_upgrade_server_session_cache_sup,
-    StartFunc = {ssl_upgrade_server_session_cache_sup, start_link, []},
-    Restart = permanent,
-    Shutdown = 4000,
-    Modules = [ssl_upgrade_server_session_cache_sup],
-    Type = supervisor,
-    {Name, StartFunc, Restart, Shutdown, Type, Modules}.
+    #{id       => ssl_upgrade_server_session_cache_sup,
+      start    => {ssl_upgrade_server_session_cache_sup, start_link, []},
+      restart  => permanent,
+      shutdown => infinity,
+      modules  => [ssl_upgrade_server_session_cache_sup],
+      type     => supervisor
+     }.

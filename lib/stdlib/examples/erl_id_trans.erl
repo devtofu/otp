@@ -1,4 +1,10 @@
-%% ``Licensed under the Apache License, Version 2.0 (the "License");
+%% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1999-2025. All Rights Reserved.
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
 %%
@@ -9,14 +15,43 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
-%% The Initial Developer of the Original Code is Ericsson Utvecklings AB.
-%% Portions created by Ericsson are Copyright 1999, Ericsson Utvecklings
-%% AB. All Rights Reserved.''
-%% 
-%%     $Id$
 %%
+%% %CopyrightEnd%
 -module(erl_id_trans).
+
+-moduledoc """
+This module performs an identity parse transformation of Erlang code.
+
+It is included as an example for users who wants to write their own
+parse transformers. If option `{parse_transform,Module}` is passed
+to the compiler, a user-written function `parse_transform/2`
+is called by the compiler before the code is checked for errors.
+
+Before the function `parse_transform/2` is called, the Erlang
+Compiler checks if the parse transformation can handle abstract code
+with column numbers: If the function `parse_transform_info/0`
+is implemented and returns a map where the key `error_location` is
+associated with the value `line`, the compiler removes
+column numbers from the abstract code before calling the parse
+transform. Otherwise, the compiler passes the abstract code on
+without modification.
+
+## Parse Transformations
+
+Parse transformations are used if a programmer wants to use
+Erlang syntax, but with different semantics. The original Erlang
+code is then transformed into other Erlang code.
+
+> #### Note {: .info }
+>
+> Programmers are strongly advised not to engage in parse
+> transformations. No support is offered for problems encountered.
+>
+
+## See Also
+
+`m:erl_parse` and `m:compile`.
+""".
 
 %% An identity transformer of Erlang abstract syntax.
 
@@ -27,9 +62,17 @@
 
 -export([parse_transform/2, parse_transform_info/0]).
 
+-doc "Performs an identity transformation on Erlang forms, as an example.".
+-spec parse_transform(Forms, Options) -> NewForms when
+      Forms :: [erl_parse:abstract_form() | erl_parse:form_info()],
+      NewForms :: Forms,
+      Options :: [compile:option()].
 parse_transform(Forms, _Options) ->
     forms(Forms).
 
+-doc "Returns information about the parse transform itself.".
+-doc(#{since => <<"OTP 24.0">>}).
+-spec parse_transform_info() -> #{ 'error_location' => 'column' | 'line' }.
 parse_transform_info() ->
     #{error_location => column}.
 
@@ -279,7 +322,7 @@ guard0([]) -> [].
 
 guard_test(Expr={call,Anno,{atom,Aa,F},As0}) ->
     case erl_internal:type_test(F, length(As0)) of
-	true -> 
+	true ->
 	    As1 = gexpr_list(As0),
 	    {call,Anno,{atom,Aa,F},As1};
 	_ ->
@@ -338,9 +381,9 @@ gexpr({call,Anno,{atom,Aa,F},As0}) ->
     end;
 % Guard bif's can be remote, but only in the module erlang...
 gexpr({call,Anno,{remote,Aa,{atom,Ab,erlang},{atom,Ac,F}},As0}) ->
-    case erl_internal:guard_bif(F, length(As0)) or
-	 erl_internal:arith_op(F, length(As0)) or 
-	 erl_internal:comp_op(F, length(As0)) or
+    case erl_internal:guard_bif(F, length(As0)) orelse
+	 erl_internal:arith_op(F, length(As0)) orelse
+	 erl_internal:comp_op(F, length(As0)) orelse
 	 erl_internal:bool_op(F, length(As0)) of
 	true -> As1 = gexpr_list(As0),
 		{call,Anno,{remote,Aa,{atom,Ab,erlang},{atom,Ac,F}},As1}
@@ -349,7 +392,7 @@ gexpr({bin,Anno,Fs}) ->
     Fs2 = pattern_grp(Fs),
     {bin,Anno,Fs2};
 gexpr({op,Anno,Op,A0}) ->
-    case erl_internal:arith_op(Op, 1) or 
+    case erl_internal:arith_op(Op, 1) orelse
 	 erl_internal:bool_op(Op, 1) of
 	true -> A1 = gexpr(A0),
 		{op,Anno,Op,A1}
@@ -360,8 +403,8 @@ gexpr({op,Anno,Op,L0,R0}) when Op =:= 'andalso'; Op =:= 'orelse' ->
     R1 = gexpr(R0),			%They see the same variables
     {op,Anno,Op,L1,R1};
 gexpr({op,Anno,Op,L0,R0}) ->
-    case erl_internal:arith_op(Op, 2) or
-	  erl_internal:bool_op(Op, 2) or 
+    case erl_internal:arith_op(Op, 2) orelse
+	  erl_internal:bool_op(Op, 2) orelse
 	  erl_internal:comp_op(Op, 2) of
 	true ->
 	    L1 = gexpr(L0),
@@ -409,13 +452,17 @@ expr({cons,Anno,H0,T0}) ->
     T1 = expr(T0),				%They see the same variables
     {cons,Anno,H1,T1};
 expr({lc,Anno,E0,Qs0}) ->
-    Qs1 = lc_bc_quals(Qs0),
-    E1 = expr(E0),
+    Qs1 = comprehension_quals(Qs0),
+    E1 = expr_or_exprs(E0),
     {lc,Anno,E1,Qs1};
 expr({bc,Anno,E0,Qs0}) ->
-    Qs1 = lc_bc_quals(Qs0),
+    Qs1 = comprehension_quals(Qs0),
     E1 = expr(E0),
     {bc,Anno,E1,Qs1};
+expr({mc,Anno,E0,Qs0}) ->
+    Qs1 = comprehension_quals(Qs0),
+    E1 = expr_or_exprs(E0),
+    {mc,Anno,E1,Qs1};
 expr({tuple,Anno,Es0}) ->
     Es1 = expr_list(Es0),
     {tuple,Anno,Es1};
@@ -502,6 +549,17 @@ expr({'catch',Anno,E0}) ->
     %% No new variables added.
     E1 = expr(E0),
     {'catch',Anno,E1};
+expr({'maybe',MaybeAnno,Es0}) ->
+    Es = exprs(Es0),
+    {'maybe',MaybeAnno,Es};
+expr({'maybe',MaybeAnno,Es0,{'else',ElseAnno,Cs0}}) ->
+    Es = exprs(Es0),
+    Cs = clauses(Cs0),
+    {'maybe',MaybeAnno,Es,{'else',ElseAnno,Cs}};
+expr({maybe_match,Anno,P0,E0}) ->
+    E = expr(E0),
+    P = pattern(P0),
+    {maybe_match,Anno,P,E};
 expr({match,Anno,P0,E0}) ->
     E1 = expr(E0),
     P1 = pattern(P0),
@@ -531,6 +589,14 @@ expr_list([E0|Es]) ->
     [E1|expr_list(Es)];
 expr_list([]) -> [].
 
+%% -type expr_or_exprs(Expression) -> Expression.
+%% -type expr_or_exprs([Expression]) -> [Expression].
+%%  Comprehensions can have a single or multiple emitting expressions
+expr_or_exprs(Es) when is_list(Es) ->
+    expr_list(Es);
+expr_or_exprs(E) ->
+    expr(E).
+
 %% -type record_inits([RecordInit]) -> [RecordInit].
 %%  N.B. Field names are full expressions here but only atoms are allowed
 %%  by the *linter*!.
@@ -559,21 +625,40 @@ icr_clauses([C0|Cs]) ->
     [C1|icr_clauses(Cs)];
 icr_clauses([]) -> [].
 
-%% -type lc_bc_quals([Qualifier]) -> [Qualifier].
+%% -type comprehension_quals([Qualifier]) -> [Qualifier].
 %%  Allow filters to be both guard tests and general expressions.
 
-lc_bc_quals([{generate,Anno,P0,E0}|Qs]) ->
+comprehension_quals([{generate,Anno,P0,E0}|Qs]) ->
     E1 = expr(E0),
     P1 = pattern(P0),
-    [{generate,Anno,P1,E1}|lc_bc_quals(Qs)];
-lc_bc_quals([{b_generate,Anno,P0,E0}|Qs]) ->
+    [{generate,Anno,P1,E1}|comprehension_quals(Qs)];
+comprehension_quals([{generate_strict,Anno,P0,E0}|Qs]) ->
     E1 = expr(E0),
     P1 = pattern(P0),
-    [{b_generate,Anno,P1,E1}|lc_bc_quals(Qs)];
-lc_bc_quals([E0|Qs]) ->
+    [{generate_strict,Anno,P1,E1}|comprehension_quals(Qs)];
+comprehension_quals([{b_generate,Anno,P0,E0}|Qs]) ->
     E1 = expr(E0),
-    [E1|lc_bc_quals(Qs)];
-lc_bc_quals([]) -> [].
+    P1 = pattern(P0),
+    [{b_generate,Anno,P1,E1}|comprehension_quals(Qs)];
+comprehension_quals([{b_generate_strict,Anno,P0,E0}|Qs]) ->
+    E1 = expr(E0),
+    P1 = pattern(P0),
+    [{b_generate_strict,Anno,P1,E1}|comprehension_quals(Qs)];
+comprehension_quals([{m_generate,Anno,P0,E0}|Qs]) ->
+    E1 = expr(E0),
+    P1 = pattern(P0),
+    [{m_generate,Anno,P1,E1}|comprehension_quals(Qs)];
+comprehension_quals([{m_generate_strict,Anno,P0,E0}|Qs]) ->
+    E1 = expr(E0),
+    P1 = pattern(P0),
+    [{m_generate_strict,Anno,P1,E1}|comprehension_quals(Qs)];
+comprehension_quals([{zip,Anno,Gens0}|Qs]) ->
+    Gens1 = comprehension_quals(Gens0),
+    [{zip,Anno,Gens1}|comprehension_quals(Qs)];
+comprehension_quals([E0|Qs]) ->
+    E1 = expr(E0),
+    [E1|comprehension_quals(Qs)];
+comprehension_quals([]) -> [].
 
 %% -type fun_clauses([Clause]) -> [Clause].
 

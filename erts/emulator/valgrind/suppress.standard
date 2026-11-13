@@ -1,3 +1,23 @@
+# %CopyrightBegin%
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 2011-2025. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# %CopyrightEnd%
+
 {
    libc internal error
    Memcheck:Addr8
@@ -293,6 +313,38 @@ fun:process_main
 fun:sched_thread_func
 }
 {
+Loading problem again. Now after PR
+Memcheck:Leak
+fun:malloc
+...
+fun:valid_curve
+fun:init_curves
+fun:get_curve_cnt
+fun:init_curve_types
+fun:init_algorithms_types
+fun:initialize
+fun:load
+fun:erts_load_nif
+fun:process_main
+}
+{
+Compiler before PR
+Memcheck:Leak
+fun:malloc
+fun:erts_sys_alloc
+fun:erts_alloc_fnf
+fun:erl_drv_mutex_create
+fun:enif_mutex_create
+fun:init_algorithms_types
+fun:initialize
+fun:load
+fun:erts_load_nif
+fun:process_main
+fun:sched_thread_func
+fun:thr_wrapper
+fun:start_thread
+}
+{
 Crypto internal.. loading pecularities revisited
 Memcheck:Leak
 fun:malloc
@@ -306,6 +358,25 @@ fun:process_main
 fun:sched_thread_func
 fun:thr_wrapper
 fun:start_thread
+}
+{
+Crypto Internal.. OpenSSL Error handling again
+Memcheck:Leak
+fun:malloc
+fun:CRYPTO_malloc
+fun:lh_new
+fun:
+fun:
+fun:ERR_get_state
+fun:ERR_put_error
+fun:EVP_CIPHER_CTX_set_key_length
+fun:get_init_args
+fun:ng_crypto_init_nif
+fun:process_main
+fun:sched_thread_func
+fun:thr_wrapper
+fun:start_thread
+fun:
 }
 {
 Prebuilt constant terms in os_info_init (PossiblyLost)
@@ -380,7 +451,7 @@ fun:erts_print_scheduler_info
 fun:erts_exit
 fun:broken_halt_test
 fun:erts_debug_set_internal_state_2
-fun:process_main
+...
 }
 
 {

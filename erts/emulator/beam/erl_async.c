@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2000-2018. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2000-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -115,17 +117,6 @@ typedef struct {
     ErtsAlgndAsyncReadyQ *ready_queue;
 } ErtsAsyncData;
 
-#if defined(USE_VM_PROBES)
-
-/*
- * Some compilers, e.g. GCC 4.2.1 and -O3, will optimize away DTrace
- * calls if they're the last thing in the function.  :-(
- * Many thanks to Trond Norbye, via:
- * https://github.com/memcached/memcached/commit/6298b3978687530bc9d219b6ac707a1b681b2a46
- */
-static unsigned gcc_optimizer_hack = 0;
-#endif
-
 int erts_async_max_threads; /* Initialized by erl_init.c */
 int erts_async_thread_suggested_stack_size; /* Initialized by erl_init.c */
 
@@ -210,7 +201,7 @@ erts_init_async(void)
 	for (i = 0; i < erts_async_max_threads; i++) {
 	    ErtsAsyncQ *aq = async_q(i);
 
-            erts_snprintf(thr_opts.name, sizeof(thr_name), "async_%d", i+1);
+            erts_snprintf(thr_opts.name, sizeof(thr_name), "erts_async_%d", i+1);
 
 	    erts_thr_create(&aq->thr_id, async_main, (void*) aq, &thr_opts);
 	}
@@ -238,10 +229,6 @@ erts_get_async_ready_queue(Uint sched_id)
 
 static ERTS_INLINE void async_add(ErtsAsync *a, ErtsAsyncQ* q)
 {
-#ifdef USE_VM_PROBES
-    int len;
-#endif
-
     if (is_internal_port(a->port)) {
 	ErtsAsyncReadyQ *arq = async_ready_q(a->sched_id);
 	a->q.prep_enq = erts_thr_q_prepare_enqueue(&arq->thr_q);
@@ -263,9 +250,6 @@ static ERTS_INLINE ErtsAsync *async_get(ErtsThrQ_t *q,
 {
     int saved_fin_deq = 0;
     ErtsThrQFinDeQ_t fin_deq;
-#ifdef USE_VM_PROBES
-    int len;
-#endif
 
     while (1) {
 	ErtsAsync *a = (ErtsAsync *) erts_thr_q_dequeue(q);
@@ -386,7 +370,12 @@ static ERTS_INLINE void async_reply(ErtsAsync *a, ErtsThrQPrepEnQ_t *prep_enq)
 static void
 async_wakeup(void *vtse)
 {
-    erts_tse_set((erts_tse_t *) vtse);
+    /*
+     * 'vtse' might be NULL if we are called after an async thread
+     * has unregistered from thread progress prior to termination.
+     */
+    if (vtse)
+        erts_tse_set((erts_tse_t *) vtse);
 }
 
 static erts_tse_t *async_thread_init(ErtsAsyncQ *aq)
@@ -448,6 +437,7 @@ static void *async_main(void* arg)
 	async_reply(a, prep_enq);
     }
 
+    erts_thr_progress_unregister_unmanaged_thread();
     return NULL;
 }
 
@@ -546,7 +536,7 @@ unsigned int driver_async_port_key(ErlDrvPort port)
 **      key            pointer to secedule queue (NULL means round robin)
 **      async_invoke   function to run in thread
 **      async_data     data to pass to invoke function
-**      async_free     function for relase async_data in case of failure
+**      async_free     function for release async_data in case of failure
 */
 long driver_async(ErlDrvPort ix, unsigned int* key,
 		  void (*async_invoke)(void*), void* async_data,

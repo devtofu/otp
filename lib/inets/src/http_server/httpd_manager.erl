@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2000-2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2000-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,8 +22,10 @@
 %%
 
 -module(httpd_manager).
+-moduledoc false.
 
 -include("httpd.hrl").
+-include("../http_lib/http_internal.hrl").
 
 -behaviour(gen_server).
 
@@ -224,8 +228,8 @@ handle_call({unblock, Blocker}, _, #state{blocker_ref = {Blocker, Monitor},
 handle_call({unblock, _}, _, State) ->
     {reply, {error, only_blocker_may_unblock}, State};
 
-handle_call({new_connection, Pid}, _From, State) ->
-    {Status, NewState} = handle_new_connection(State, Pid),
+handle_call({new_connection, _Pid}, _From, State) ->
+    {Status, NewState} = handle_new_connection(State),
     {reply, Status, NewState};
 
 handle_call(Request, From, State) ->
@@ -304,6 +308,8 @@ handle_info(Info, State) ->
     report_error(State, String),
     {noreply, State}.
 
+terminate(_, #state{config_db = undefined}) ->
+    ok;
 terminate(_, #state{config_db = Db}) -> 
     httpd_conf:remove_all(Db),
     ok.
@@ -317,22 +323,16 @@ code_change(_FromVsn, State, _Extra) ->
 %%%--------------------------------------------------------------------
 %%% Internal functions
 %%%--------------------------------------------------------------------
-handle_new_connection(#state{admin_state = AdminState} = State, Handler) ->
-    UsageState = get_ustate(State),
-    handle_new_connection(UsageState, AdminState, State, Handler).
-
-handle_new_connection(_UsageState, unblocked, 
-		      #state{config_db = Db, connection_sup = CSup} = 
-			  State, _) ->
-    Max = httpd_util:lookup(Db, max_clients),
-    case count_children(CSup) of
-	Count when Count =< Max ->
-	    {{ok, accept}, State};
+handle_new_connection(#state{admin_state = unblocked, config_db = Db} = State) ->
+    Children = count_children(State#state.connection_sup),
+    case httpd_util:lookup(Db, max_clients, ?HTTP_MAX_CLIENTS) of
+        MaxClients when MaxClients < Children ->
+           {{reject, busy}, State};
 	_ ->
-	    {{reject, busy}, State}
+           {{ok, accept}, State}
     end;
 
-handle_new_connection(_UsageState, _AdminState, State, _Handler) ->
+handle_new_connection(State) ->
     {{reject, blocked}, State}.
 
 handle_block(disturbing, infinity, 
@@ -376,18 +376,21 @@ handle_reload(Config, State) ->
 
 do_reload(Config, #state{config_db = Db} = State) ->
     case (catch check_constant_values(Db, Config)) of
-	ok ->
-	    %% If something goes wrong between the remove 
-	    %% and the store where fu-ed
-	    httpd_conf:remove_all(Db),
-	    case httpd_conf:store(Config) of
-		{ok, NewConfigDB} ->
-		    {continue, ok, State#state{config_db = NewConfigDB}};
-		Error ->
-		    {stop, Error, State}
-	    end;
-	Error ->
-	    {continue, Error, State}
+        ok ->
+            case httpd_conf:validate_config(Config) of
+                ok ->
+                    httpd_conf:remove_all(Db),
+                    case httpd_conf:store(Config) of
+                        {ok, NewConfigDB} ->
+                            {continue, ok, State#state{config_db = NewConfigDB}};
+                        Error ->
+                            {stop, Error, State#state{config_db = undefined}}
+                    end;
+                Error ->
+                    {continue, Error, State}
+            end;
+        Error ->
+            {continue, Error, State}
     end.
 
 check_constant_values(Db, Config) ->
@@ -419,28 +422,6 @@ check_constant_values(Db, Config) ->
     end,
     ok.
 
-
-%% get_ustate(State) -> idle | active | busy
-%%
-%% Retrieve the usage state of the HTTP server:
-%%   0 active connection            -> idle
-%%   max_clients active connections -> busy
-%%   Otherwise                      -> active
-%%
-get_ustate(State) ->
-    get_ustate(count_children(State#state.connection_sup),State).
-
-get_ustate(0,_State) ->
-    idle;
-get_ustate(ConnectionCnt,State) ->
-    ConfigDB = State#state.config_db,
-    case httpd_util:lookup(ConfigDB, max_clients, 150) of
-	ConnectionCnt ->
-	    busy;
-	_ ->
-	    active
-    end.
-
 make_name(Addr, Port, Profile) ->
     httpd_util:make_name("httpd", Addr, Port, Profile).
 
@@ -454,28 +435,37 @@ report_error(State,String) ->
 call(ServerRef, Request) ->
     try gen_server:call(ServerRef, Request, infinity) 
     catch
-	exit:_ ->
-	    {error, closed} 
+	exit:Reason:Stacktrace ->
+            String =
+                lists:flatten(
+                  io_lib:format(
+                    "Request"
+                    "~n   ~p"
+                    "~nto manager (~p) from ~p failed:"
+                    "~n   ~p"
+                    "~n   ~p",
+                    [Request, ServerRef, self(), Reason, Stacktrace])),
+            error_logger:warning_report(String),
+	    {error, Reason}
     end.
 
 count_children(Sup) ->
     Children = supervisor:count_children(whereis(Sup)),
     proplists:get_value(workers, Children).
 
-shutdown_connections(Sup) ->
-    Children = [Child || {_,Child,_,_} <- supervisor:which_children(Sup)],
-    lists:foreach(fun(Pid) -> exit(Pid, kill) end,
-		  Children).
+shutdown_connections(CSup) ->
+    Children = [Child || {_,Child,_,_} <- supervisor:which_children(CSup)],
+    lists:foreach(
+      fun(Child) ->
+              _ = supervisor:terminate_child(CSup, Child)
+      end, Children).
 
-wait_for_shutdown(CSup, Manager) ->	      
-    case count_children(CSup) of
-	0 ->
-	    Manager ! connections_terminated;
-	_ ->
-	    receive 
-	    after 500 ->
-		    ok
-	    end,
-	    wait_for_shutdown(CSup, Manager)
-    end.	
-
+wait_for_shutdown(CSup, Manager) ->
+    Children = [Child || {_,Child,_,_} <- supervisor:which_children(CSup)],
+    Monitors = [erlang:monitor(process, Child) || Child <- Children],
+    lists:foreach(
+      fun(Mref) ->
+              receive {'DOWN', Mref, _, _, _} -> ok end
+      end, Monitors),
+    Manager ! connections_terminated,
+    ok.

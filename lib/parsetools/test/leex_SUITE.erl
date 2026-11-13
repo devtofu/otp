@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2010-2020. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2010-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(leex_SUITE).
@@ -22,13 +24,13 @@
 %-define(debug, true).
 
 -include_lib("stdlib/include/erl_compile.hrl").
+-include_lib("stdlib/include/assert.hrl").
 -include_lib("kernel/include/file.hrl").
 
 -ifdef(debug).
 -define(config(X,Y), foo).
 -define(datadir, "leex_SUITE_data").
 -define(privdir, "leex_SUITE_priv").
--define(t, test_server).
 -else.
 -include_lib("common_test/include/ct.hrl").
 -define(datadir, ?config(data_dir, Config)).
@@ -40,18 +42,18 @@
 	 init_per_testcase/2, end_per_testcase/2]).
 
 -export([
-	 file/1, compile/1, syntax/1,
+	 file/1, compile/1, syntax/1, deterministic/1,
 	 
 	 pt/1, man/1, ex/1, ex2/1, not_yet/1,
 	 line_wrap/1,
 	 otp_10302/1, otp_11286/1, unicode/1, otp_13916/1, otp_14285/1,
-         otp_17023/1]).
+         otp_17023/1, compiler_warnings/1, column_support/1]).
 
 % Default timetrap timeout (set in init_per_testcase).
--define(default_timeout, ?t:minutes(1)).
+-define(default_timeout, test_server:minutes(1)).
 
 init_per_testcase(_Case, Config) ->
-    Dog = ?t:timetrap(?default_timeout),
+    Dog = test_server:timetrap(?default_timeout),
     [{watchdog, Dog} | Config].
 
 end_per_testcase(_Case, Config) ->
@@ -65,9 +67,10 @@ all() ->
     [{group, checks}, {group, examples}, {group, tickets}, {group, bugs}].
 
 groups() -> 
-    [{checks, [], [file, compile, syntax]},
-     {examples, [], [pt, man, ex, ex2, not_yet, unicode]},
-     {tickets, [], [otp_10302, otp_11286, otp_13916, otp_14285, otp_17023]},
+    [{checks, [], [file, compile, syntax, deterministic]},
+     {examples, [], [pt, man, ex, ex2, not_yet, unicode, column_support]},
+     {tickets, [], [otp_10302, otp_11286, otp_13916, otp_14285, otp_17023,
+                    compiler_warnings]},
      {bugs, [], [line_wrap]}].
 
 init_per_suite(Config) ->
@@ -116,6 +119,17 @@ file(Config) when is_list(Config) ->
         (catch leex:file(Filename, {return,foo})),
     {'EXIT', {badarg, _}} = 
         (catch leex:file(Filename, includefile)),
+
+    {'EXIT', {badarg, _}} =
+        (catch leex:file(Filename, {tab_size,0})),
+    {'EXIT', {badarg, _}} =
+        (catch leex:file(Filename, {tab_size,"4"})),
+    {'EXIT', {badarg, _}} =
+        (catch leex:file(Filename, {tab_size,3.5})),
+    {'EXIT', {badarg, _}} =
+        (catch leex:file(Filename, {error_location,{line,column}})),
+    {'EXIT', {badarg, _}} =
+        (catch leex:file(Filename, {error_location,col})),
 
     Mini = <<"Definitions.\n"
              "D  = [0-9]\n"
@@ -368,6 +382,42 @@ syntax(Config) when is_list(Config) ->
         leex:file(Filename, Ret),
     ok.
 
+deterministic(doc) ->
+    "Check leex respects the +deterministic flag.";
+deterministic(suite) -> [];
+deterministic(Config) when is_list(Config) ->
+    Dir = ?privdir,
+    Filename = filename:join(Dir, "file.xrl"),
+    Scannerfile = filename:join(Dir, "file.erl"),
+    Mini = <<"Definitions.\n"
+             "D  = [0-9]\n"
+             "Rules.\n"
+             "{L}+  : {token,{word,TokenLine,TokenChars}}.\n"
+             "Erlang code.\n">>,
+    ok = file:write_file(Filename, Mini),
+
+    %% Generated leex scanners include the leexinc.hrl header file by default,
+    %% so we'll get a -file attribute corresponding to that include. In
+    %% deterministic mode, that include should only use the basename,
+    %% "leexinc.hrl", but otherwise, it should contain the full path.
+
+    %% Matches when OTP is not installed (e.g. /lib/parsetools/include/leexinc.hrl)
+    %% and when it is (e.g. /lib/parsetools-2.3.2/include/leexinc.hrl)
+    AbsolutePathSuffix = ".*/lib/parsetools.*/include/leexinc\.hrl",
+
+    ok = leex:compile(Filename, Scannerfile, #options{specific=[deterministic]}),
+    {ok, FormsDet} = epp:parse_file(Scannerfile,[]),
+    ?assertMatch(false, search_for_file_attr(AbsolutePathSuffix, FormsDet)),
+    ?assertMatch({value, _}, search_for_file_attr("leexinc\.hrl", FormsDet)),
+    file:delete(Scannerfile),
+
+    ok = leex:compile(Filename, Scannerfile, #options{}),
+    {ok, Forms} = epp:parse_file(Scannerfile,[]),
+    ?assertMatch({value, _}, search_for_file_attr(AbsolutePathSuffix, Forms)),
+    file:delete(Scannerfile),
+
+    file:delete(Filename),
+    ok.
 
 pt(doc) ->
     "Pushing back characters.";
@@ -380,17 +430,17 @@ pt(Config) when is_list(Config) ->
             "L  = [a-z]\n"
 
             "Rules.\n"
-            "{L}+  : {token,{word,TokenLine,TokenChars}}.\n"
+            "{L}+  : {token,{word,TokenLoc,TokenChars}}.\n"
             "abc{D}+  : {skip_token,\"sture\" ++ string:substr(TokenChars, 4)}.\n"
-            "{D}+  : {token,{integer,TokenLine,list_to_integer(TokenChars)}}.\n"
+            "{D}+  : {token,{integer,TokenLoc,list_to_integer(TokenChars)}}.\n"
             "\\s  : .\n"
             "\\r\\n  : {end_token,{crlf,TokenLine}}.\n"
 
             "Erlang code.\n"
             "-export([t/0]).\n"
             "t() ->
-                 {ok,[{word,1,\"sture\"},{integer,1,123}],1} =
-                     string(\"abc123\"), ok. ">>,
+                {ok,[{word,{1,7},\"sture\"},{integer,{1,12},123}],{1,15}} =
+                    string(\"abc123\"), ok. ">>,
            default,
            ok}],
 
@@ -405,10 +455,10 @@ unicode(Config) when is_list(Config) ->
 	     "Definitions.\n"
 	     "RTLarrow    = (â)\n"
 	     "Rules.\n"
-	     "{RTLarrow}  : {token,{\"â\",TokenLine}}.\n"
+	     "{RTLarrow}  : {token,{\"â\",TokenLoc}}.\n"
 	     "Erlang code.\n"
 	     "-export([t/0]).\n"
-	     "t() -> {ok, [{\"â\", 1}], 1} = string(\"â\"), ok.">>,
+	     "t() -> {ok, [{\"â\", {1,1}}], {1,4}} = string(\"â\"), ok.">>,
            default,
            ok}],
 
@@ -423,34 +473,33 @@ man(Config) when is_list(Config) ->
      <<"Definitions.\n"
        "Rules.\n"
        "[a-z][0-9a-zA-Z_]* :\n"
-       "    {token,{atom,TokenLine,list_to_atom(TokenChars)}}.\n"
+       "    {token,{atom,TokenLoc,list_to_atom(TokenChars)}}.\n"
        "[A-Z_][0-9a-zA-Z_]* :\n"
-       "    {token,{var,TokenLine,list_to_atom(TokenChars)}}.\n"
+       "    {token,{var,TokenLoc,list_to_atom(TokenChars)}}.\n"
        "(\\+|-)?[0-9]+\\.[0-9]+((E|e)(\\+|-)?[0-9]+)? : \n"
-       "   {token,{float,TokenLine,list_to_float(TokenChars)}}.\n"
+       "   {token,{float,TokenLoc,list_to_float(TokenChars)}}.\n"
        "\\s : skip_token.\n"
        "Erlang code.\n"
        "-export([t/0]).\n"
        "t() ->\n"
-       "    {ok,[{float,1,3.14},{atom,1,atom},{var,1,'V314'}],1} =\n"
+       "    {ok,[{float,{1,1},3.14},{atom,{1,5},atom},{var,{1,10},'V314'}],{1,14}} =\n"
        "        string(\"3.14atom V314\"),\n"
        "    ok.\n">>,
            default,
            ok},
-
-          {man_2,
+        {man_2,
      <<"Definitions.\n"
        "D = [0-9]\n"
        "Rules.\n"
        "{D}+ :\n"
-       "  {token,{integer,TokenLine,list_to_integer(TokenChars)}}.\n"
+       "  {token,{integer,TokenLoc,list_to_integer(TokenChars)}}.\n"
        "{D}+\\.{D}+((E|e)(\\+|\\-)?{D}+)? :\n"
-       "  {token,{float,TokenLine,list_to_float(TokenChars)}}.\n"
+       "  {token,{float,TokenLoc,list_to_float(TokenChars)}}.\n"
        "\\s : skip_token.\n"
        "Erlang code.\n"
        "-export([t/0]).\n"
        "t() ->\n"
-       "    {ok,[{float,1,3.14},{integer,1,314}],1} = \n"
+       "    {ok,[{float,{1,1},3.14},{integer,{1,6},314}],{1,9}} = \n"
        "        string(\"3.14 314\"),\n"
        "    ok.\n">>,
            default,
@@ -468,13 +517,13 @@ ex(Config) when is_list(Config) ->
         "D = [0-543-705-982]\n"
         "Rules.\n"
         "{D}+ :\n"
-        "  {token,{integer,TokenLine,list_to_integer(TokenChars)}}.\n"
+        "  {token,{integer,TokenLoc,list_to_integer(TokenChars)}}.\n"
         "[^235]+ :\n"
-        "  {token,{list_to_atom(TokenChars),TokenLine}}.\n"
+        "  {token,{list_to_atom(TokenChars),TokenLoc}}.\n"
         "Erlang code.\n"
         "-export([t/0]).\n"
         "t() ->\n"
-        "    {ok,[{integer,1,12},{' c\\na',1},{integer,2,34},{b789a,2}],2} =\n"
+        "    {ok,[{integer,{1,1},12},{' c\\na',{1,3}},{integer,{2,2},34},{b789a,{2,4}}],{2,9}} =\n"
         "        string(\"12 c\\na34b789a\"),\n"
         "    ok.\n">>,
            default,
@@ -491,7 +540,7 @@ ex(Config) when is_list(Config) ->
         "Erlang code.\n"
         "-export([t/0]).\n"
         "t() ->\n"
-        "    {ok,[chars,zyx],1} = string(\"abcdef zyx123\"),\n"
+        "    {ok,[chars,zyx],{1,14}} = string(\"abcdef zyx123\"),\n"
         "    ok.\n">>,
            default,
            ok},
@@ -504,7 +553,7 @@ ex(Config) when is_list(Config) ->
         "Erlang code.\n"
         "-export([t/0]).\n"
         "t() ->\n"
-        "     {ok,[],1} = string(\"\"), ok.\n">>, % string("a") would loop...
+        "     {ok,[],{1,1}} = string(\"\"), ok.\n">>, % string("a") would loop...
            default,
            ok},
 
@@ -537,12 +586,12 @@ ex(Config) when is_list(Config) ->
         "Erlang code.\n"
         "-export([t/0]).\n"
         "t() ->\n"
-        "    {ok,[{white,\"\\b\\f\"}],1} = string(\"\\b\\f\"),\n"
-        "    {ok,[{form,\"ff\\f\"}],1} = string(\"ff\\f\"),\n"
-        "    {ok,[{string,\"\\\"foo\\\"\"}],1} = string(\"\\\"foo\\\"\"),\n"
-        "    {ok,[{char,\"$.\"}],1} = string(\"$\\.\"),\n"
-        "    {ok,[{list,\"[a,b,c]\"}],1} = string(\"[a,b,c]\"),\n"
-        "    {ok,[{other,\"$^\\\\\"}],1} = string(\"$^\\\\\"),\n"
+        "    {ok,[{white,\"\\b\\f\"}],{1,3}} = string(\"\\b\\f\"),\n"
+        "    {ok,[{form,\"ff\\f\"}],{1,4}} = string(\"ff\\f\"),\n"
+        "    {ok,[{string,\"\\\"foo\\\"\"}],{1,6}} = string(\"\\\"foo\\\"\"),\n"
+        "    {ok,[{char,\"$.\"}],{1,3}} = string(\"$\\.\"),\n"
+        "    {ok,[{list,\"[a,b,c]\"}],{1,8}} = string(\"[a,b,c]\"),\n"
+        "    {ok,[{other,\"$^\\\\\"}],{1,4}} = string(\"$^\\\\\"),\n"
         "    ok.\n">>,
            default,
            ok},
@@ -570,7 +619,7 @@ ex(Config) when is_list(Config) ->
         "Erlang code.\n"
         "-export([t/0]).\n"
         "t() ->\n"
-        "    {ok,[{hex,[17,171,48,172]}],1} =\n"
+        "    {ok,[{hex,[17,171,48,172]}],{1,7}} =\n"
         "        string(\"\\x{11}\\xab0\\xac\"),\n"
         "    ok.\n">>,
           default,
@@ -600,47 +649,47 @@ WS  = ([\\000-\\s]|%.*)
  
 Rules.
 {D}+\\.{D}+((E|e)(\\+|\\-)?{D}+)? :
-      {token,{float,TokenLine,list_to_float(TokenChars)}}.
-{D}+#{H}+  :  base(TokenLine, TokenChars).
-{D}+    :  {token,{integer,TokenLine,list_to_integer(TokenChars)}}.
+      {token,{float,TokenLoc,list_to_float(TokenChars)}}.
+{D}+#{H}+  :  base(TokenLoc, TokenChars).
+{D}+    :  {token,{integer,TokenLoc,list_to_integer(TokenChars)}}.
 {L}{A}*    :  Atom = list_to_atom(TokenChars),
       {token,case reserved_word(Atom) of
-         true -> {Atom,TokenLine};
-         false -> {atom,TokenLine,Atom}
+         true -> {Atom,TokenLoc};
+         false -> {atom,TokenLoc,Atom}
        end}.
 '(\\\\\\^.|\\\\.|[^'])*' :
       %% Strip quotes.
       S = lists:sublist(TokenChars, 2, TokenLen - 2),
       case catch list_to_atom(string_gen(S)) of
        {'EXIT',_} -> {error,\"illegal atom \" ++ TokenChars};
-       Atom -> {token,{atom,TokenLine,Atom}}
+       Atom -> {token,{atom,TokenLoc,Atom}}
       end.
-({U}|_){A}*  :  {token,{var,TokenLine,list_to_atom(TokenChars)}}.
+({U}|_){A}*  :  {token,{var,TokenLoc,list_to_atom(TokenChars)}}.
 \"(\\\\\\^.|\\\\.|[^\"])*\" :
       %% Strip quotes.
       S = lists:sublist(TokenChars, 2, TokenLen - 2),
-      {token,{string,TokenLine,string_gen(S)}}.
+      {token,{string,TokenLoc,string_gen(S)}}.
 \\$(\\\\{O}{O}{O}|\\\\\\^.|\\\\.|.) :
-      {token,{char,TokenLine,cc_convert(TokenChars)}}.
-->    :  {token,{'->',TokenLine}}.
-:-    :  {token,{':-',TokenLine}}.
-\\|\\|    :  {token,{'||',TokenLine}}.
-<-    :  {token,{'<-',TokenLine}}.
-\\+\\+    :  {token,{'++',TokenLine}}.
---    :  {token,{'--',TokenLine}}.
-=/=    :  {token,{'=/=',TokenLine}}.
-==    :  {token,{'==',TokenLine}}.
-=:=    :  {token,{'=:=',TokenLine}}.
-/=    :  {token,{'/=',TokenLine}}.
->=    :  {token,{'>=',TokenLine}}.
-=<    :  {token,{'=<',TokenLine}}.
-<=    :  {token,{'<=',TokenLine}}.
-<<    :  {token,{'<<',TokenLine}}.
->>    :  {token,{'>>',TokenLine}}.
-::    :  {token,{'::',TokenLine}}.
+      {token,{char,TokenLoc,cc_convert(TokenChars)}}.
+->    :  {token,{'->',TokenLoc}}.
+:-    :  {token,{':-',TokenLoc}}.
+\\|\\|    :  {token,{'||',TokenLoc}}.
+<-    :  {token,{'<-',TokenLoc}}.
+\\+\\+    :  {token,{'++',TokenLoc}}.
+--    :  {token,{'--',TokenLoc}}.
+=/=    :  {token,{'=/=',TokenLoc}}.
+==    :  {token,{'==',TokenLoc}}.
+=:=    :  {token,{'=:=',TokenLoc}}.
+/=    :  {token,{'/=',TokenLoc}}.
+>=    :  {token,{'>=',TokenLoc}}.
+=<    :  {token,{'=<',TokenLoc}}.
+<=    :  {token,{'<=',TokenLoc}}.
+<<    :  {token,{'<<',TokenLoc}}.
+>>    :  {token,{'>>',TokenLoc}}.
+::    :  {token,{'::',TokenLoc}}.
 []()[}{|!?/;:,.*+#<>=-] :
-      {token,{list_to_atom(TokenChars),TokenLine}}.
-\\.{WS}    :  {end_token,{dot,TokenLine}}.
+      {token,{list_to_atom(TokenChars),TokenLoc}}.
+\\.{WS}    :  {end_token,{dot,TokenLoc}}.
 {WS}+    :  skip_token.
  
 Erlang code.
@@ -733,12 +782,12 @@ escape_char($e) -> $\\e;        %\\e = ESC
 escape_char($s) -> $\\s;        %\\s = SPC
 escape_char($d) -> $\\d;        %\\d = DEL
 escape_char(C) -> C.
-      ">>,
+      ">>, % "
     Dir = ?privdir,
     XrlFile = filename:join(Dir, "erlang_scan.xrl"),
     ok = file:write_file(XrlFile, Xrl),
     ErlFile = filename:join(Dir, "erlang_scan.erl"),
-    {ok, _} = leex:file(XrlFile, []),
+    {ok, _} = leex:file(XrlFile, [{error_location, column}]),
     {ok, _} = compile:file(ErlFile, [{outdir,Dir}]),
     code:purge(erlang_scan),
     AbsFile = filename:rootname(ErlFile, ".erl"),
@@ -748,79 +797,79 @@ escape_char(C) -> C.
                 erlang_scan:tokens(Cont, Chars, Location)
         end,
     F1 = fun(Cont, Chars, Location) ->
-                 erlang_scan:token(Cont, Chars, Location)
-         end,
+                erlang_scan:token(Cont, Chars, Location)
+        end,
     fun() ->
             S = "ab cd. ",
-            {ok, Ts, 1} = scan_tokens_1(S, F, 1),
-            {ok, Ts, 1} = scan_token_1(S, F1, 1),
-            {ok, Ts, 1} = scan_tokens(S, F, 1),
-            {ok, Ts, 1} = erlang_scan:string(S, 1)
+            {ok, Ts, {1,8}} = scan_tokens_1(S, F, {1,1}),
+            {ok, Ts, {1,8}} = scan_token_1(S, F1, {1,1}),
+            {ok, Ts, {1,8}} = scan_tokens(S, F, {1,1}),
+            {ok, Ts, {1,8}} = erlang_scan:string(S, {1,1})
     end(),
     fun() ->
             S = "'ab\n cd'. ",
-            {ok, Ts, 2} = scan_tokens_1(S, F, 1),
-            {ok, Ts, 2} = scan_token_1(S, F1, 1),
-            {ok, Ts, 2} = scan_tokens(S, F, 1),
-            {ok, Ts, 2} = erlang_scan:string(S, 1)
+            {ok, Ts, {2,7}} = scan_tokens_1(S, F, {1,1}),
+            {ok, Ts, {2,7}} = scan_token_1(S, F1, {1,1}),
+            {ok, Ts, {2,7}} = scan_tokens(S, F, {1,1}),
+            {ok, Ts, {2,7}} = erlang_scan:string(S, {1,1})
     end(),
     fun() ->
             S = "99. ",
-            {ok, Ts, 1} = scan_tokens_1(S, F, 1),
-            {ok, Ts, 1} = scan_token_1(S, F1, 1),
-            {ok, Ts, 1} = scan_tokens(S, F, 1),
-            {ok, Ts, 1} = erlang_scan:string(S, 1)
+            {ok, Ts, {1,5}} = scan_tokens_1(S, F, {1,1}),
+            {ok, Ts, {1,5}} = scan_token_1(S, F1, {1,1}),
+            {ok, Ts, {1,5}} = scan_tokens(S, F, {1,1}),
+            {ok, Ts, {1,5}} = erlang_scan:string(S, {1,1})
     end(),
-    {ok,[{integer,1,99},{dot,1}],1} = erlang_scan:string("99. "),
+    {ok,[{integer,{1,1},99},{dot,{1,3}}],{1,5}} = erlang_scan:string("99. "),
     fun() ->
             Atom = "'" ++ lists:duplicate(1000,$a) ++ "'",
             S = Atom ++ ". ",
             Reason = "illegal atom " ++ Atom,
-            Err = {error,{1,erlang_scan,{user,Reason}},1},
-            {done,Err,[]} = scan_tokens_1(S, F, 1),
-            {done,Err,[]} = scan_token_1(S, F1, 1),
-            {done,Err,[]} = scan_tokens(S, F, 1),
-            Err = erlang_scan:string(S, 1)
+            Err = {error,{{1,1003},erlang_scan,{user,Reason}},{1,1003}},
+            {done,Err,[]} = scan_tokens_1(S, F, {1,1}),
+            {done,Err,[]} = scan_token_1(S, F1, {1,1}),
+            {done,Err,[]} = scan_tokens(S, F, {1,1}),
+            Err = erlang_scan:string(S, {1,1})
     end(),
     fun() ->
             S = "\x{aaa}. ",
-            Err = {error,{1,erlang_scan,{illegal,[2730]}},1},
-            {done,Err,[]} = scan_tokens_1(S, F, 1),
-            {done,Err,[_]} = scan_token_1(S, F1, 1), % Note: Rest non-empty
-            {done,Err,[]} = scan_tokens(S, F, 1),
-            Err = erlang_scan:string(S, 1)
+            Err = {error,{{1,1},erlang_scan,{illegal,[2730]}},{1,1}},
+            {done,Err,[]} = scan_tokens_1(S, F, {1,1}),
+            {done,Err,[_]} = scan_token_1(S, F1, {1,1}), % Note: Rest non-empty
+            {done,Err,[]} = scan_tokens(S, F, {1,1}),
+            Err = erlang_scan:string(S, {1,1})
     end(),
     fun() ->
             S = "\x{aaa} + 1. 34",
-            Err = {error,{1,erlang_scan,{illegal,[2730]}},1},
-            {done,Err,[]} = scan_tokens_1(S, F, 1),
-            {done,Err,[_]} = scan_token_1(S, F1, 1), % Note: Rest non-empty
-            {done,Err,"34"} = scan_tokens(S, F, 1),
-            Err = erlang_scan:string(S, 1)
+            Err = {error,{{1,1},erlang_scan,{illegal,[2730]}},{1,1}},
+            {done,Err,[]} = scan_tokens_1(S, F, {1,1}),
+            {done,Err,[_]} = scan_token_1(S, F1, {1,1}), % Note: Rest non-empty
+            {done,Err,"34"} = scan_tokens(S, F, {1,1}),
+            Err = erlang_scan:string(S, {1,1})
     end(),
     fun() ->
             S = "\x{aaa} \x{bbb}. 34",
-            Err = {error,{1,erlang_scan,{illegal,[2730]}},1},
-            {done,Err,[]} = scan_tokens_1(S, F, 1),
-            {done,Err,[_]} = scan_token_1(S, F1, 1), % Note: Rest non-empty
-            {done,Err,"34"} = scan_tokens(S, F, 1),
-            Err = erlang_scan:string(S, 1)
+            Err = {error,{{1,1},erlang_scan,{illegal,[2730]}},{1,1}},
+            {done,Err,[]} = scan_tokens_1(S, F, {1,1}),
+            {done,Err,[_]} = scan_token_1(S, F1, {1,1}), % Note: Rest non-empty
+            {done,Err,"34"} = scan_tokens(S, F, {1,1}),
+            Err = erlang_scan:string(S, {1,1})
     end(),
     fun() ->
             S = "\x{aaa} 18#34. 34",
-            Err = {error,{1,erlang_scan,{illegal,[2730]}},1},
-            {done,Err,[]} = scan_tokens_1(S, F, 1),
-            {done,Err,[_]} = scan_token_1(S, F1, 1), % Note: Rest non-empty
-            {done,Err,"34"} = scan_tokens(S, F, 1),
-            Err = erlang_scan:string(S, 1)
+            Err = {error,{{1,1},erlang_scan,{illegal,[2730]}},{1,1}},
+            {done,Err,[]} = scan_tokens_1(S, F, {1,1}),
+            {done,Err,[_]} = scan_token_1(S, F1, {1,1}), % Note: Rest non-empty
+            {done,Err,"34"} = scan_tokens(S, F, {1,1}),
+            Err = erlang_scan:string(S, {1,1})
     end(),
     fun() ->
             S = "\x{aaa}"++eof,
-            Err = {error,{1,erlang_scan,{illegal,[2730]}},1},
-            {done,Err,eof} = scan_tokens_1(S, F, 1),
-            {done,Err,[_]} = scan_token_1(S, F1, 1), % Note: Rest non-empty
-            {done,Err,eof} = scan_tokens(S, F, 1),
-            Err = erlang_scan:string(S, 1)
+            Err = {error,{{1,1},erlang_scan,{illegal,[2730]}},{1,1}},
+            {done,Err,eof} = scan_tokens_1(S, F, {1,1}),
+            {done,Err,[_]} = scan_token_1(S, F1, {1,1}), % Note: Rest non-empty
+            {done,Err,eof} = scan_tokens(S, F, {1,1}),
+            Err = erlang_scan:string(S, {1,1})
     end(),
     ok.
 
@@ -875,8 +924,8 @@ line_wrap(Config) when is_list(Config) ->
      <<"
 Definitions.
 Rules.
-[a]+[\\n]*= : {token, {first, TokenLine}}.
-[a]+ : {token, {second, TokenLine}}.
+[a]+[\\n]*= : {token, {first, TokenLoc}}.
+[a]+ : {token, {second, TokenLoc}}.
 [\\s\\r\\n\\t]+ : skip_token.
 Erlang code.
       ">>,
@@ -891,20 +940,20 @@ Erlang code.
     code:load_abs(AbsFile, test_line_wrap),
     fun() ->
             S = "aaa\naaa",
-            {ok,[{second,1},{second,2}],2} = test_line_wrap:string(S)
+            {ok,[{second,{1,1}},{second,{2,1}}],2} = test_line_wrap:string(S)
     end(),
     fun() ->
             S = "aaa\naaa",
-            {ok,[{second,3},{second,4}],4} = test_line_wrap:string(S, 3)
+            {ok,[{second,{3,1}},{second,{4,1}}],4} = test_line_wrap:string(S, 3)
     end(),
     fun() ->
-            {done,{ok,{second,1},1},"\na"} = test_line_wrap:token([], "a\na"),
+            {done,{ok,{second,{1,1}},1},"\na"} = test_line_wrap:token([], "a\na"),
             {more,Cont1} = test_line_wrap:token([], "\na"),
-            {done,{ok,{second,2},2},eof} = test_line_wrap:token(Cont1, eof)
+            {done,{ok,{second,{2,1}},2},eof} = test_line_wrap:token(Cont1, eof)
     end(),
     fun() ->
             {more,Cont1} = test_line_wrap:tokens([], "a\na"),
-            {done,{ok,[{second,1},{second,2}],2},eof} = test_line_wrap:tokens(Cont1, eof)
+            {done,{ok,[{second,{1,1}},{second,{2,1}}],2},eof} = test_line_wrap:tokens(Cont1, eof)
     end(),
     ok.
 
@@ -1007,7 +1056,7 @@ otp_10302(Config) when is_list(Config) ->
          "-export([t/0]).\n"
          "t() ->\n"
          "    %% HÃ¤pp, 'HÃ¤pp',\"\\x{400}B\",\"Ã¶rn_Ð\"\n"
-         "    {ok, [R], 1} = string(\"tip\"),\n"
+         "    {ok, [R], {1,4}} = string(\"tip\"),\n"
          "    {tip,foo,'HÃ¤pp',[1024,66],[246,114,110,95,1024]} = R,\n"
          "    HÃ¤pp = foo,\n"
          "    {tip, HÃ¤pp, 'HÃ¤pp',\"\\x{400}B\",\"Ã¶rn_Ð\"} = R,\n"
@@ -1028,7 +1077,7 @@ otp_10302(Config) when is_list(Config) ->
          "-export([t/0]).\n"
          "t() ->\n"
          "    %% Häpp, 'Häpp',\"\\x{400}B\",\"Ã¶rn_Ð\"\n"
-         "    {ok, [R], 1} = string(\"tip\"),\n"
+         "    {ok, [R], {1,4}} = string(\"tip\"),\n"
          "    {tip,foo,'Häpp',[1024,66],[195,182,114,110,95,208,128]} = R,\n"
          "    Häpp = foo,\n"
          "    {tip, Häpp, 'Häpp',\"\\x{400}B\",\"Ã¶rn_Ð\"} = R,\n"
@@ -1043,7 +1092,7 @@ otp_11286(doc) ->
     "OTP-11286. A Unicode filename bug; both Leex and Yecc.";
 otp_11286(suite) -> [];
 otp_11286(Config) when is_list(Config) ->
-    Node = start_node(otp_11286, "+fnu"),
+    {ok, Peer, Node} = ?CT_PEER(["+fnu"]),
     Dir = ?privdir,
     UName = [1024] ++ "u",
     UDir = filename:join(Dir, UName),
@@ -1087,7 +1136,7 @@ otp_11286(Config) when is_list(Config) ->
     {ok,_,_} = rpc:call(Node, compile, file,
                   [Scannerfile,[basic_validation,return]]),
 
-    true = test_server:stop_node(Node),
+    peer:stop(Peer),
     ok.
 
 otp_13916(doc) ->
@@ -1102,23 +1151,23 @@ otp_13916(Config) when is_list(Config) ->
              "Rules.\n"
              "%% mark line break(s) and empty lines by token 'break'\n"
              "%% in order to use as delimiters\n"
-             "{B}({S}*{B})+ : {token, {break,   TokenLine}}.\n"
-             "{B}           : {token, {break,   TokenLine}}.\n"
-             "{S}+          : {token, {blank,   TokenLine, TokenChars}}.\n"
-             "{W}+          : {token, {word,    TokenLine, TokenChars}}.\n"
+             "{B}({S}*{B})+ : {token, {break,   TokenLoc}}.\n"
+             "{B}           : {token, {break,   TokenLoc}}.\n"
+             "{S}+          : {token, {blank,   TokenLoc, TokenChars}}.\n"
+             "{W}+          : {token, {word,    TokenLoc, TokenChars}}.\n"
              "Erlang code.\n"
              "-export([t/0]).\n"
              "t() ->\n"
-             "    {ok,[{break,1},{blank,4,\"  \"},{word,4,\"breaks\"}],4} =\n"
+             "    {ok,[{break,{1,1}},{blank,{4,1},\"  \"},{word,{4,3},\"breaks\"}],{4,9}} =\n"
              "        string(\"\\n\\n  \\n  breaks\"),\n"
-             "    {ok,[{break,1},{word,4,\"works\"}],4} =\n"
+             "{ok,[{break,{1,1}},{word,{4,1},\"works\"}],{4,6}} =\n"
              "        string(\"\\n\\n  \\nworks\"),\n"
-             "    {ok,[{break,1},{word,4,\"L4\"},{break,4},\n"
-             "         {word,5,\"L5\"},{break,5},{word,7,\"L7\"}], 7} =\n"
+             "    {ok,[{break,{1,1}},{word,{4,1},\"L4\"},{break,{4,3}},\n"
+             "         {word,{5,1},\"L5\"},{break,{5,3}},{word,{7,1},\"L7\"}], {7,3}} =\n"
              "        string(\"\\n\\n  \\nL4\\nL5\\n\\nL7\"),\n"
-             "    {ok,[{break,1},{blank,4,\" \"},{word,4,\"L4\"},\n"
-             "         {break,4},{blank,5,\" \"},{word,5,\"L5\"},\n"
-             "         {break,5},{blank,7,\" \"},{word,7,\"L7\"}], 7} =\n"
+             "{ok,[{break,{1,1}},{blank,{4,1},\" \"},{word,{4,2} ,\"L4\"},\n"
+             "     {break,{4,4}},{blank,{5,1},\" \"},{word,{5,2},\"L5\"},\n"
+             "     {break,{5,4}},{blank,{7,1},\" \"},{word,{7,2},\"L7\"}], {7,4}} =\n"
              "        string(\"\\n\\n  \\n L4\\n L5\\n\\n L7\"),\n"
              "    ok.\n">>,
            default,
@@ -1127,8 +1176,7 @@ otp_13916(Config) when is_list(Config) ->
     ok.
 
 otp_14285(Config) ->
-    Dir = ?privdir,
-
+    %% x{400} takes 2 bytes to represent
     Ts = [{otp_14285_1,
            <<"%% encoding: latin-1\n"
              "Definitions.\n"
@@ -1138,11 +1186,11 @@ otp_14285(Config) ->
              "U = [\\x{400}]\n"
              "Rules.\n"
              "{L}+ : {token,l}.\n"
-             "{U}+ : {token,'\\x{400}'}.\n"
+             "{U}+ : {token,{TokenLine,'\\x{400}'}}.\n"
              "Erlang code.\n"
              "-export([t/0]).\n"
              "t() ->\n"
-             "    {ok,['\\x{400}'],1} = string(\"\\x{400}\"), ok.\n">>,
+             "    {ok,[{1,'\\x{400}'}],{1,3}} = string(\"\\x{400}\"), ok.\n">>,
            default,
            ok},
           {otp_14285_2,
@@ -1158,7 +1206,7 @@ otp_14285(Config) ->
              "Erlang code.\n"
              "-export([t/0]).\n"
              "t() ->\n"
-             "    {ok,['\x{400}'],1} = string(\"\x{400}\"), ok.\n">>,
+             "    {ok,['\x{400}'],{1,3}} = string(\"\x{400}\"), ok.\n"/utf8>>,
            default,
            ok}],
     run(Config, Ts),
@@ -1190,16 +1238,73 @@ otp_17023(Config) ->
     end,
     ok.
 
-start_node(Name, Args) ->
-    [_,Host] = string:tokens(atom_to_list(node()), "@"),
-    ct:log("Trying to start ~w@~s~n", [Name,Host]),
-    case test_server:start_node(Name, peer, [{args,Args}]) of
-	{error,Reason} ->
-	    test_server:fail(Reason);
-	{ok,Node} ->
-	    ct:log("Node ~p started~n", [Node]),
-	    Node
-    end.
+%% Additional tests added with column support
+column_support(Config) ->
+    Ts = [{token_col_var,
+        <<"Definitions.\n"
+        "D = [0-9]\n"
+        "W = [\\s\\n]\n"
+        "Rules.\n"
+        "{W}+ :\n"
+        "skip_token.\n"
+        "{D}+ :\n"
+        "{token,{integer,{TokenLine,TokenCol},list_to_integer(TokenChars)}}.\n"
+        "{D}+\\.{D}+((E|e)(\\+|\\-)?{D}+)? :\n"
+        "{token,{float,{TokenLine,TokenCol},list_to_float(TokenChars)}}.\n"
+        "Erlang code.\n"
+        "-export([t/0]).\n"
+        "t() ->\n"
+        "{ok,[{float, {2,1}, 4.44},{integer, {3,3}, 5},{integer, {7,3}, 7}],{8,2}}"
+        "= string(\"\n4.44  \n  5 \n  \n\n\n  7 \n \"), ok.\n">>,
+            default,
+            ok},
+        {tab,
+        <<"Definitions.\n"
+            "Rules.\n"
+            "[a]+[\\n]*= : {token, {first, TokenLoc}}.\n"
+            "[a]+ : {token, {second, TokenLoc}}.\n"
+            "[\\s\\r\\n\\t]+ : skip_token.\n"
+            "Erlang code.\n"
+            "-export([t/0]).\n"
+            "t() ->\n"
+            "{ok,[{second,{1,27}},{second,{2,19}}],{2,25}} = string(\"   \t \t\t  a\\n \t \t  aaa\t\"), ok.\n">>,
+        default,
+        ok},
+        {tab_custom_size,
+        <<"Definitions.\n"
+            "Rules.\n"
+            "[a]+[\\n]*= : {token, {first, TokenLoc}}.\n"
+            "[a]+ : {token, {second, TokenLoc}}.\n"
+            "[\\s\\r\\n\\t]+ : skip_token.\n"
+            "Erlang code.\n"
+            "-export([t/0]).\n"
+            "t() ->\n"
+            "{ok,[{second,{1,15}},{second,{2,9}}],{2,16}} = string(\"   \t \t\t  a\\n \t \t  aaa\t\"), ok.\n">>,
+            default,
+            [{tab_size,3}],
+        ok}],
+    run(Config, Ts),
+    ok.
+
+%% OTP-17499. GH-4918.
+compiler_warnings(Config) ->
+    Xrl =
+        <<"
+Definitions.
+Rules.
+/(\\\\.|[^\\\\/]|\\[(/|\\\\.|[^\\\\/])+\\]|\\((\\\\.|/|[^\\\\/])+\\)+)*/ : a.
+/\\*([^*][\\r\\n]|(\\*+([^*/]|[\\r\\n])))*\\*+/ : b.
+Erlang code.
+         ">>,
+    Dir = ?privdir,
+    XrlFile = filename:join(Dir, "compiler_warnings.xrl"),
+    ok = file:write_file(XrlFile, Xrl),
+    ErlFile = filename:join(Dir, "compiler_warnings.erl"),
+erlang:display({xrlfile,XrlFile}),
+    {ok, _} = leex:file(XrlFile, []),
+erlang:display({erlfile,ErlFile}),
+    {ok, compiler_warnings, []} = compile:file(ErlFile, [return]),
+    ok.
 
 unwritable(Fname) ->
     {ok, Info} = file:read_file_info(Fname),
@@ -1212,19 +1317,23 @@ writable(Fname) ->
     ok = file:write_file_info(Fname, Info#file_info{mode = Mode}).
 
 run(Config, Tests) ->
-    F = fun({N,P,Pre,E}) ->
-                case catch run_test(Config, P, Pre) of
-                    E -> 
-                        ok;
-                    Bad -> 
-                        ?t:format("~nTest ~p failed. Expected~n  ~p~n"
-                                  "but got~n  ~p~n", [N, E, Bad]),
-			fail()
-                end
+    F = fun F({N,P,Pre,E}) ->
+                F({N,P,Pre,[],E});
+            F({N,P,Pre,Opts,E}) ->
+            case catch run_test(Config,P,Pre,Opts) of
+                E ->
+                    ok;
+                Bad ->
+                    ct:fail("~nTest ~p failed. Expected~n  ~p~n"
+                              "but got~n  ~p~n", [N, E, Bad])
+            end
         end,
     lists:foreach(F, Tests).
 
 run_test(Config, Def, Pre) ->
+    run_test(Config, Def, Pre, []).
+
+run_test(Config, Def, Pre, LOpts0) ->
     %% io:format("testing ~s~n", [binary_to_list(Def)]),
     DefFile = 'leex_test.xrl',
     Filename = 'leex_test.erl',
@@ -1233,14 +1342,14 @@ run_test(Config, Def, Pre) ->
     ErlFile = filename:join(DataDir, Filename),
     Opts = [return, warn_unused_vars,{outdir,DataDir}],
     ok = file:write_file(XrlFile, Def),
-    LOpts = [return, {report, false} | 
+    LOpts = LOpts0 ++ [return, {report, false} |
              case Pre of
                  default ->
                      [];
                  _ ->
                      [{includefile,Pre}]
              end],
-    XOpts = [verbose, dfa_graph], % just to get some code coverage...
+    XOpts = [verbose, dfa_graph, {error_location, column}], % just to get some code coverage...
     LRet = leex:file(XrlFile, XOpts ++ LOpts),
     case LRet of
         {ok, _Outfile, _LWs} ->
@@ -1267,5 +1376,12 @@ extract(File, {error, Es, Ws}) ->
 extract(File, Ts) ->
     lists:append([T || {F, T} <- Ts,  F =:= File]).
 
-fail() ->
-    ?t:fail().
+search_for_file_attr(PartialFilePathRegex, Forms) ->
+    lists:search(fun
+                   ({attribute, _, file, {FileAttr, _}}) ->
+                      case re:run(FileAttr, PartialFilePathRegex, [unicode]) of
+                        nomatch -> false;
+                        _ -> true
+                      end;
+                   (_) -> false end,
+                 Forms).

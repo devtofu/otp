@@ -1,5 +1,12 @@
 %% -*- erlang-indent-level: 2 -*-
 %%
+%% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2009-2026. All Rights Reserved.
+%% Copyright 2004-2010 held by the authors. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -11,6 +18,8 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
+%%
+%% %CopyrightEnd%
 
 %%%-------------------------------------------------------------------
 %%% File    : dialyzer_codeserver.erl
@@ -20,42 +29,44 @@
 %%% Created :  4 Apr 2005 by Tobias Lindahl <tobiasl@it.uu.se>
 %%%-------------------------------------------------------------------
 -module(dialyzer_codeserver).
+-moduledoc false.
 
 -export([delete/1,
-	 store_temp_contracts/4,
+         store_temp_contracts/4,
          give_away/2,
-	 finalize_contracts/1,
+         finalize_contracts/1,
          finalize_exported_types/2,
-	 finalize_records/1,
-	 get_contracts/1,
-	 get_callbacks/1,
-         get_exported_types/1,
+         finalize_records/1,
+         get_contracts/1,
+         get_callbacks/1,
+         get_exported_types_table/1,
          extract_exported_types/1,
-	 get_exports/1,
-	 get_records_table/1,
+         get_exports/1,
+         get_records_table/1,
          extract_records/1,
-	 get_next_core_label/1,
+         get_next_core_label/1,
          get_temp_contracts/2,
          all_temp_modules/1,
          store_contracts/4,
          get_temp_exported_types/1,
          get_temp_records_table/1,
-	 lookup_temp_mod_records/2,
-	 insert/3,
-	 insert_exports/2,
+         lookup_temp_mod_records/2,
+         insert/3,
+         insert_exports/2,
          insert_temp_exported_types/2,
          insert_fun_meta_info/2,
-	 is_exported/2,
-	 lookup_mod_code/2,
-	 lookup_mfa_code/2,
-	 lookup_mfa_var_label/2,
-	 lookup_mod_records/2,
-	 lookup_mod_contracts/2,
-	 lookup_mfa_contract/2,
+         is_exported/2,
+         is_member_meta_info/2,
+         lookup_mod_code/2,
+         lookup_mfa_code/2,
+         lookup_mfa_var_label/2,
+         lookup_mod_records/2,
+         lookup_mod_contracts/2,
+         lookup_mfa_contract/2,
          lookup_meta_info/2,
-	 new/0,
-	 set_next_core_label/2,
-	 store_temp_records/3,
+         new/0,
+         set_next_core_label/2,
+         store_temp_records/3,
          translate_fake_file/3]).
 
 -export_type([codeserver/0, fun_meta_info/0, contracts/0]).
@@ -73,7 +84,7 @@
 -type contracts()     :: #{mfa() => dialyzer_contracts:file_contract()}.
 
 %% A property-list of data compiled from -compile and -dialyzer attributes.
--type meta_info()     :: [{{'nowarn_function' | dial_warn_tag()},
+-type meta_info()     :: [{'nowarn_function' | dial_warn_tag(),
                            'mod' | 'func'}].
 -type fun_meta_info() :: [{mfa(), meta_info()}
                           | {module(), [dial_warn_tag()]}].
@@ -96,11 +107,11 @@
 
 %%--------------------------------------------------------------------
 
+%% We KNOW that `error` is not a valid value in the table.
 ets_dict_find(Key, Table) ->
-  try ets:lookup_element(Table, Key, 2) of
-      Val -> {ok, Val}
-  catch
-    _:_ -> error
+  case ets:lookup_element(Table, Key, 2, error) of
+    error -> error;
+    Val -> {ok, Val}
   end.
 
 ets_map_store(Key, Element, Table) ->
@@ -112,7 +123,7 @@ ets_dict_to_dict(Table) ->
   ets:foldl(Fold, dict:new(), Table).
 
 ets_set_is_element(Key, Table) ->
-  ets:lookup(Table, Key) =/= [].
+  ets:member(Table, Key).
 
 ets_set_insert_set(Set, Table) ->
   ets_set_insert_list(sets:to_list(Set), Table).
@@ -132,12 +143,15 @@ new() ->
   CodeOptions = [compressed, public, {read_concurrency, true}],
   Code = ets:new(dialyzer_codeserver_code, CodeOptions),
   ReadOptions = [compressed, {read_concurrency, true}],
-  [Contracts, Callbacks, Records, ExportedTypes] =
+  [Records, ExportedTypes] =
     [ets:new(Name, ReadOptions) ||
-      Name <- [dialyzer_codeserver_contracts,
-               dialyzer_codeserver_callbacks,
-               dialyzer_codeserver_records,
+      Name <- [dialyzer_codeserver_records,
                dialyzer_codeserver_exported_types]],
+  ReadWriteOptions = [public | ReadOptions],
+  [Contracts, Callbacks] =
+    [ets:new(Name, ReadWriteOptions) ||
+      Name <- [dialyzer_codeserver_contracts,
+               dialyzer_codeserver_callbacks]],
   TempOptions = [public, {write_concurrency, true}],
   [Exports, FunMetaInfo, TempExportedTypes, TempRecords, TempContracts,
    TempCallbacks] =
@@ -211,10 +225,10 @@ insert_fun_meta_info(List, #codeserver{fun_meta_info = FunMetaInfo} = CS) ->
 is_exported(MFA, #codeserver{exports = Exports}) ->
   ets_set_is_element(MFA, Exports).
 
--spec get_exported_types(codeserver()) -> sets:set(mfa()).
+-spec get_exported_types_table(codeserver()) -> map_ets().
 
-get_exported_types(#codeserver{exported_types = ExpTypes}) ->
-  ets_set_to_set(ExpTypes).
+get_exported_types_table(#codeserver{exported_types = ExpTypes}) ->
+  ExpTypes.
 
 -spec extract_exported_types(codeserver()) -> {codeserver(), set_ets()}.
 
@@ -263,10 +277,7 @@ set_next_core_label(NCL, CS) ->
 -spec lookup_mod_records(atom(), codeserver()) -> types().
 
 lookup_mod_records(Mod, #codeserver{records = RecDict}) when is_atom(Mod) ->
-  case ets_dict_find(Mod, RecDict) of
-    error -> maps:new();
-    {ok, Map} -> Map
-  end.
+  ets:lookup_element(RecDict, Mod, 2, #{}).
 
 -spec get_records_table(codeserver()) -> map_ets().
 
@@ -295,10 +306,7 @@ get_temp_records_table(#codeserver{temp_records = TempRecDict}) ->
 -spec lookup_temp_mod_records(module(), codeserver()) -> types().
 
 lookup_temp_mod_records(Mod, #codeserver{temp_records = TempRecDict}) ->
-  case ets_dict_find(Mod, TempRecDict) of
-    error -> maps:new();
-    {ok, Map} -> Map
-  end.
+  ets:lookup_element(TempRecDict, Mod, 2, #{}).
 
 -spec finalize_records(codeserver()) -> codeserver().
 
@@ -317,14 +325,8 @@ finalize_records(#codeserver{temp_records = TmpRecords,
 
 lookup_mod_contracts(Mod, #codeserver{contracts = ContDict})
   when is_atom(Mod) ->
-  case ets_dict_find(Mod, ContDict) of
-    error -> maps:new();
-    {ok, Keys} ->
-      maps:from_list([get_file_contract(Key, ContDict)|| Key <- Keys])
-  end.
-
-get_file_contract(Key, ContDict) ->
-  {Key, ets:lookup_element(ContDict, Key, 2)}.
+  Keys = ets:lookup_element(ContDict, Mod, 2, []),
+  #{Key => ets:lookup_element(ContDict, Key, 2) || Key <- Keys}.
 
 -spec lookup_mfa_contract(mfa(), codeserver()) ->
          'error' | {'ok', dialyzer_contracts:file_contract()}.
@@ -337,6 +339,11 @@ lookup_mfa_contract(MFA, #codeserver{contracts = ContDict}) ->
 
 lookup_meta_info(MorMFA, #codeserver{fun_meta_info = FunMetaInfo}) ->
   ets_dict_find(MorMFA, FunMetaInfo).
+
+-spec is_member_meta_info(module() | mfa(), codeserver()) -> boolean().
+
+is_member_meta_info(MorMFA, #codeserver{fun_meta_info = FunMetaInfo}) ->
+  ets_set_is_element(MorMFA, FunMetaInfo).
 
 -spec get_contracts(codeserver()) ->
                        dict:dict(mfa(), dialyzer_contracts:file_contract()).
@@ -451,6 +458,12 @@ compress_file_anno({file, F}, Fs) when is_list(F) ->
 compress_file_anno(T, Fs) when is_tuple(T) ->
   {NFs, NL} = compress_file_anno(tuple_to_list(T), Fs),
   {NFs, list_to_tuple(NL)};
+compress_file_anno(T, Fs) when is_record(T) ->
+  {M, N} = {records:get_module(T), records:get_name(T)},
+  FNs = records:get_field_names(T),
+  Vs = [{FN, records:get(FN, T)} || FN <- FNs],
+  {NFs, NL} = compress_file_anno(Vs, Fs),
+  {NFs, records:update(T, M, N, maps:from_list(NL))};
 compress_file_anno([E|L], Fs) ->
   {Fs1, NE} = compress_file_anno(E, Fs),
   {NFs, NL} = compress_file_anno(L, Fs1),

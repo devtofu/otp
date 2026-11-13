@@ -1,7 +1,16 @@
 %% =====================================================================
-%% Licensed under the Apache License, Version 2.0 (the "License"); you may
-%% not use this file except in compliance with the License. You may obtain
-%% a copy of the License at <http://www.apache.org/licenses/LICENSE-2.0>
+%% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0 OR LGPL-2.1-or-later
+%%
+%% Copyright Ericsson AB 2009-2026. All Rights Reserved.
+%% Copyright 2001-2003 Richard Carlsson
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
 %%
 %% Unless required by applicable law or agreed to in writing, software
 %% distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,8 +28,9 @@
 %% above, a recipient may use your version of this file under the terms of
 %% either the Apache License or the LGPL.
 %%
+%% %CopyrightEnd%
+%%
 %% @private
-%% @copyright 2001-2003 Richard Carlsson
 %% @author Richard Carlsson <carlsson.richard@gmail.com>
 %% @see edoc
 %% @end
@@ -42,7 +52,7 @@
 %% and the resulting text easier to read. The wiki notation should be a
 %% small bag of easy-to-remember tricks for making XHTML documentation
 %% easier to write, not a complete markup language in itself. As a
-%% typical example, it is hardly worthwile to introduce a special
+%% typical example, it is hardly worthwhile to introduce a special
 %% notation like say, ""..."" for emphasized text, since <em>...</em> is
 %% not much harder to write, not any less readable, and no more
 %% difficult to remember, especially since emphasis is not very often
@@ -69,6 +79,9 @@
 %% Whole leading lines of whitespace are however skipped.
 
 -module(edoc_wiki).
+
+-compile([{nowarn_unsafe_function, {xmerl_scan, string, 2}},
+          nowarn_deprecated_catch]).
 
 -export([parse_xml/2, expand_text/2]).
 
@@ -273,7 +286,7 @@ expand_uri(Cs, L, As) ->
     expand(Cs, L, [$[ | As]).
 
 expand_uri([$] | Cs], L, Us, As) ->
-    expand(Cs, L, push_uri(Us, ">tt/<" ++ Us ++ ">tt<", As));
+    expand(Cs, L, push_uri(Us, ">edoc/<" ++ Us ++ ">edoc<", As));
 expand_uri([$\s = C | Cs], L, Us, As) ->
     expand_uri(Cs, 0, L, [C], Us, As);
 expand_uri([$\t = C | Cs], L, Us, As) ->

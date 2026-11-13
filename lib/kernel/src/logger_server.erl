@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2017-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2017-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,6 +20,7 @@
 %% %CopyrightEnd%
 %%
 -module(logger_server).
+-moduledoc false.
 
 -behaviour(gen_server).
 
@@ -197,15 +200,15 @@ handle_call({add_handler,Id,Module,HConfig}, From, #state{tid=Tid}=State) ->
 handle_call({remove_handler,HandlerId}, From, #state{tid=Tid}=State) ->
     case logger_config:get(Tid,HandlerId) of
         {ok,#{module:=Module}=HConfig} ->
-            {ok,Config} = logger_config:get(Tid,primary),
-            Handlers0 = maps:get(handlers,Config,[]),
-            Handlers = lists:delete(HandlerId,Handlers0),
             call_h_async(
               fun() ->
                       %% inform the handler
                       call_h(Module,removing_handler,[HConfig],ok)
               end,
               fun(_Res) ->
+                      {ok,Config} = logger_config:get(Tid,primary),
+                      Handlers0 = maps:get(handlers,Config,[]),
+                      Handlers = lists:delete(HandlerId,Handlers0),
                       logger_config:set(Tid,primary,Config#{handlers=>Handlers}),
                       logger_config:delete(Tid,HandlerId),
                       ok
@@ -623,7 +626,7 @@ do_internal_log(Level,Location,Log,[Report] = Data) ->
 do_internal_log(Level,Location,Log,[Fmt,Args] = Data) ->
     do_internal_log(Level,Location,Log,Data,{Fmt,Args}).
 do_internal_log(Level,Location,Log,Data,Msg) ->
-    Meta = logger:add_default_metadata(maps:merge(Location,maps:get(meta,Log,#{}))),
+    Meta = logger:add_default_metadata(Location),
     %% Spawn these to avoid deadlocks
     case Log of
         #{ meta := #{ internal_log_event := true } } ->

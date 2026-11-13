@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2005-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2005-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -32,11 +34,20 @@
 %-define(line_trace, 1).
 
 -include_lib("common_test/include/ct.hrl").
+-include("erts_test_utils.hrl").
+
+%% Slot count per page of a loader index table (see erts/emulator/beam/index.h).
+%% The table only enforces its limit when a new page must be allocated, so a
+%% limit that is a multiple of the page size is reached at exactly that many
+%% entries.
+-define(INDEX_PAGE_SIZE, 1024).
 
 -export([all/0, suite/0]).
 
 -export([process_count/1, system_version/1, misc_smoke_tests/1,
          heap_size/1, wordsize/1, memory/1, ets_limit/1, atom_limit/1,
+         module_limit/1, export_limit/1,
+         module_limit_barrier/1, export_limit_barrier/1,
          procs_bug/1,
          ets_count/1, atom_count/1, system_logger/1]).
 
@@ -48,9 +59,10 @@ suite() ->
     [{ct_hooks,[ts_install_cth]},
      {timetrap, {minutes, 2}}].
 
-all() -> 
+all() ->
     [process_count, system_version, misc_smoke_tests,
      ets_count, heap_size, wordsize, memory, ets_limit, atom_limit, atom_count,
+     module_limit, export_limit, module_limit_barrier, export_limit_barrier,
      procs_bug,
      system_logger].
 
@@ -62,15 +74,15 @@ init_per_testcase(_, Config) ->
 
 end_per_testcase(procs_bug, Config) ->
     procs_bug(end_per_testcase, Config);
-end_per_testcase(_, _) ->
-    ok.
+end_per_testcase(_, Config) ->
+    erts_test_utils:ept_check_leaked_nodes(Config).
 
 %%%
 %%% The test cases -------------------------------------------------------------
 %%%
 
 process_count(Config) when is_list(Config) ->
-    case catch erlang:system_info(modified_timing_level) of
+    case ?Catch(erlang:system_info(modified_timing_level)) of
 	Level when is_integer(Level) ->
 	    {skipped,
 	     "Modified timing (level " ++ integer_to_list(Level)
@@ -206,7 +218,7 @@ memory(Config) when is_list(Config) ->
     after
 	process_flag(min_heap_size, MinHeapSize),
 	process_flag(priority, Prio),
-	catch erts_debug:set_internal_state(available_internal_state, false)
+        erts_debug:set_internal_state(available_internal_state, false)
     end.
 
 memory_test(_Config) ->
@@ -502,16 +514,6 @@ mapn(_Fun, 0) ->
 mapn(Fun, N) ->
     [Fun(N) | mapn(Fun, N-1)].
 
-
-get_node_name(Config) ->
-    list_to_atom(atom_to_list(?MODULE)
-		 ++ "-"
-		 ++ atom_to_list(proplists:get_value(testcase, Config))
-		 ++ "-"
-		 ++ integer_to_list(erlang:system_time(second))
-		 ++ "-"
-		 ++ integer_to_list(erlang:unique_integer([positive]))).
-
 ets_count(Config) when is_list(Config) ->
     [ets_count_do([Type | Named])
      || Type <- [set, bag, duplicate_bag, ordered_set],
@@ -530,81 +532,176 @@ ets_count_do(Opts) ->
 
 %% Verify system_info(ets_limit) reflects max ETS table settings.
 ets_limit(Config0) when is_list(Config0) ->
-    Config = [{testcase,ets_limit}|Config0],
-    true = is_integer(get_ets_limit(Config)),
-    12345 = get_ets_limit(Config, 12345),
+    true = is_integer(get_ets_limit(0)),
+    12345 = get_ets_limit(12345),
     ok.
 
-get_ets_limit(Config) ->
-    get_ets_limit(Config, 0).
-get_ets_limit(Config, EtsMax) ->
+get_ets_limit(EtsMax) ->
     Envs = case EtsMax of
                0 -> [];
-               _ -> [{"ERL_MAX_ETS_TABLES", integer_to_list(EtsMax)}]
+               _ -> ["-env", "ERL_MAX_ETS_TABLES", integer_to_list(EtsMax)]
            end,
-    {ok, Node} = start_node_ets(Config, Envs),
-    Me = self(),
-    Ref = make_ref(),
-    spawn_link(Node,
-               fun() ->
-                       Res = erlang:system_info(ets_limit),
-                       unlink(Me),
-                       Me ! {Ref, Res}
-               end),
-    receive
-        {Ref, Res} ->
-            Res
-    end,
-    stop_node(Node),
+    {ok, Peer, Node} = ?CT_PEER(Envs),
+    Res = rpc:call(Node, erlang, system_info, [ets_limit]),
+    peer:stop(Peer),
     Res.
 
-start_node_ets(Config, Envs) when is_list(Config) ->
-    Pa = filename:dirname(code:which(?MODULE)),
-    test_server:start_node(get_node_name(Config), peer,
-			   [{args, "-pa "++Pa}, {env, Envs}]).
 
-start_node_atm(Config, AtomsMax) when is_list(Config) ->
-    Pa = filename:dirname(code:which(?MODULE)),
-    test_server:start_node(get_node_name(Config), peer,
-			   [{args, "-pa "++ Pa ++ AtomsMax}]).
-
-stop_node(Node) ->
-    test_server:stop_node(Node).
-
-
-%% Verify system_info(atom_limit) reflects max atoms settings
-%% (using " +t").
+%% Verify system_info(atom_limit) reflects max atoms settings (using " +t"),
+%% reported as the effective limit (the requested size rounded up to a whole
+%% number of index-table pages of 1024 entries).
 atom_limit(Config0) when is_list(Config0) ->
-    Config = [{testcase,atom_limit}|Config0],
-    2186042 = get_atom_limit(Config, " +t 2186042 "),
-    ok.
-
-get_atom_limit(Config, AtomsMax) ->
-    {ok, Node} = start_node_atm(Config, AtomsMax),
-    Me = self(),
-    Ref = make_ref(),
-    spawn_link(Node,
-        fun() ->
-            Res = erlang:system_info(atom_limit),
-            unlink(Me),
-            Me ! {Ref, Res}
-        end),
-    receive
-        {Ref, Res} ->
-            Res
-    end,
-    stop_node(Node),
-    Res.
+    {ok, Peer, Node} = ?CT_PEER(["+t", "2186042"]),
+    %% 2186042 rounded up to a multiple of 1024 = 2135 * 1024.
+    2186240 = rpc:call(Node, erlang, system_info, [atom_limit]),
+    peer:stop(Peer).
 
 %% Verify that system_info(atom_count) works.
 atom_count(Config) when is_list(Config) ->
     Limit = erlang:system_info(atom_limit),
     Count1 = erlang:system_info(atom_count),
-    list_to_atom(integer_to_list(erlang:unique_integer())),
+    _ = list_to_atom(integer_to_list(erlang:unique_integer())),
     Count2 = erlang:system_info(atom_count),
     true = Limit >= Count2,
     true = Count2 > Count1,
     ok.
+
+
+%% Verify system_info(module_limit) reflects the +zmml setting, reported as
+%% the effective limit (rounded up to a whole number of index pages), and
+%% that the default (no option) is 65536.
+module_limit(Config) when is_list(Config) ->
+    {ok, Peer, Node} = ?CT_PEER(["+zmml", "70000"]),
+    %% 70000 rounded up to a multiple of 1024 = 69 * 1024.
+    70656 = rpc:call(Node, erlang, system_info, [module_limit]),
+    peer:stop(Peer),
+    {ok, DPeer, DNode} = ?CT_PEER([]),
+    65536 = rpc:call(DNode, erlang, system_info, [module_limit]),
+    peer:stop(DPeer),
+    ok.
+
+%% Verify system_info(export_limit) reflects the +zmel setting, reported as
+%% the effective limit (rounded up to a whole number of index pages), and
+%% that the default (no option) is 524288.
+export_limit(Config) when is_list(Config) ->
+    {ok, Peer, Node} = ?CT_PEER(["+zmel", "600000"]),
+    %% 600000 rounded up to a multiple of 1024 = 586 * 1024.
+    600064 = rpc:call(Node, erlang, system_info, [export_limit]),
+    peer:stop(Peer),
+    {ok, DPeer, DNode} = ?CT_PEER([]),
+    524288 = rpc:call(DNode, erlang, system_info, [export_limit]),
+    peer:stop(DPeer),
+    ok.
+
+%% Verify that the module_code table holds at most 'limit' entries:
+%% filling it exactly to the limit succeeds, the next insert crashes
+%% the node.
+module_limit_barrier(Config) when is_list(Config) ->
+    %% Probe a default peer to learn the boot-time module count.
+    {ok, PPeer, PNode} = ?CT_PEER([]),
+    Used = rpc:call(PNode, erlang, system_info, [module_count]),
+    peer:stop(PPeer),
+    %% Use a limit that is a multiple of the index page size and strictly
+    %% above the boot-time count, so the table is crashed at exactly Limit
+    %% entries (the limit is only enforced at a page boundary).
+    Limit = page_aligned_limit_above(Used),
+
+    %% Start the real peer with a tight module limit.
+    {ok, Peer, Node} = ?CT_PEER(["+zmml", integer_to_list(Limit)]),
+    Limit = rpc:call(Node, erlang, system_info, [module_limit]),
+
+    %% Fill the table exactly to the limit. H is exact for this node
+    %% regardless of probe accuracy.
+    C0 = rpc:call(Node, erlang, system_info, [module_count]),
+    H = Limit - C0,
+    true = H >= 0,
+    [begin
+         Name = list_to_atom("mod_barrier_" ++ integer_to_list(I)),
+         Bin = gen_mod(Name, 0),
+         {module, Name} =
+             rpc:call(Node, code, load_binary,
+                      [Name, "mod_barrier.beam", Bin])
+     end || I <- lists:seq(1, H)],
+    %% Boundary reached: table is exactly full, no crash.
+    Limit = rpc:call(Node, erlang, system_info, [module_count]),
+
+    %% One more module overflows the table and crashes the node.
+    erlang:monitor_node(Node, true),
+    OverName = list_to_atom("mod_barrier_" ++ integer_to_list(H + 1)),
+    OverBin = gen_mod(OverName, 0),
+    catch rpc:call(Node, code, load_binary,
+                   [OverName, "mod_barrier.beam", OverBin]),
+    receive
+        {nodedown, Node} -> ok
+    after 30000 ->
+            ct:fail("node did not crash when module_code table overflowed")
+    end,
+    catch peer:stop(Peer),
+    ok.
+
+%% Verify that the export_list table holds at most 'limit' entries:
+%% filling it exactly to the limit succeeds, the next insert crashes
+%% the node.
+export_limit_barrier(Config) when is_list(Config) ->
+    %% Probe a default peer to learn the boot-time export count.
+    {ok, PPeer, PNode} = ?CT_PEER([]),
+    Used = rpc:call(PNode, erlang, system_info, [export_count]),
+    peer:stop(PPeer),
+    %% Use a limit that is a multiple of the index page size and strictly
+    %% above the boot-time count, so the table is crashed at exactly Limit
+    %% entries (the limit is only enforced at a page boundary).
+    Limit = page_aligned_limit_above(Used),
+
+    %% Start the real peer with a tight export limit (module limit
+    %% stays at the default).
+    {ok, Peer, Node} = ?CT_PEER(["+zmel", integer_to_list(Limit)]),
+    Limit = rpc:call(Node, erlang, system_info, [export_limit]),
+
+    %% Fill the table exactly to the limit with a single module. A
+    %% module exporting K user functions adds K + 2 export entries
+    %% (compiler auto-adds module_info/0 and module_info/1), so export
+    %% H - 2 user functions to reach exactly Limit.
+    C0 = rpc:call(Node, erlang, system_info, [export_count]),
+    H = Limit - C0,
+    true = H >= 2,
+    FillName = exp_barrier_fill,
+    FillBin = gen_mod(FillName, H - 2),
+    {module, FillName} =
+        rpc:call(Node, code, load_binary,
+                 [FillName, "exp_barrier_fill.beam", FillBin]),
+    %% Self-validates the +2 accounting: if it is off this fails clearly.
+    Limit = rpc:call(Node, erlang, system_info, [export_count]),
+
+    %% One more module with at least one export overflows the table and
+    %% crashes the node.
+    erlang:monitor_node(Node, true),
+    OverName = exp_barrier_over,
+    OverBin = gen_mod(OverName, 1),
+    catch rpc:call(Node, code, load_binary,
+                   [OverName, "exp_barrier_over.beam", OverBin]),
+    receive
+        {nodedown, Node} -> ok
+    after 30000 ->
+            ct:fail("node did not crash when export_list table overflowed")
+    end,
+    catch peer:stop(Peer),
+    ok.
+
+%% Smallest multiple of the index page size strictly greater than N.
+page_aligned_limit_above(N) ->
+    ((N div ?INDEX_PAGE_SIZE) + 1) * ?INDEX_PAGE_SIZE.
+
+%% Generate a trivial module exporting NExports zero-arity functions,
+%% each returning 'ok'. Returns the compiled beam binary.
+gen_mod(Name, NExports) ->
+    Exports = [{list_to_atom("f" ++ integer_to_list(I)), 0}
+               || I <- lists:seq(1, NExports)],
+    Forms = [{attribute,0,module,Name},
+             {attribute,0,export,Exports}]
+        ++ [{function,0,F,0,[{clause,0,[],[],[{atom,0,ok}]}]}
+            || {F,_} <- Exports],
+    {ok, Name, Bin} = compile:forms(Forms, [return_errors]),
+    Bin.
 
 
 system_logger(Config) when is_list(Config) ->

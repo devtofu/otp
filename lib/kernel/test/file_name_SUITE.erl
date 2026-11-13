@@ -2,7 +2,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -203,9 +205,9 @@ normal(Config) when is_list(Config) ->
 
 %% Check file operations on normal file names regardless of unicode mode.
 icky(Config) when is_list(Config) ->
-    case hopeless_darwin() of
+    case hopeless_icky() of
 	true ->
-	    {skipped,"This version of darwin does not support icky names at all."};
+	    {skipped,"This OS/FS does not support icky names at all."};
 	false ->
 	    {ok,Dir} = file:get_cwd(),
 	    try
@@ -222,9 +224,9 @@ icky(Config) when is_list(Config) ->
     end.
 %% Check file operations on normal file names regardless of unicode mode.
 very_icky(Config) when is_list(Config) ->
-    case hopeless_darwin() of
+    case hopeless_icky() of
 	true ->
-	    {skipped,"This version of darwin does not support icky names at all."};
+	    {skipped,"This OS/FS does not support icky names at all."};
 	false ->
 	    {ok,Dir} = file:get_cwd(),
 	    try
@@ -346,7 +348,7 @@ check_icky(Mod) ->
 	%% 	    {ok,LLL} when is_list(LLL) ->
 	%% 		ok
 	%% 	end,
-	[ true = ((is_list(El) or (UniMode and is_binary(El))))  || El <- L1],
+        [ true = is_list(El) orelse UniMode andalso is_binary(El)  || El <- L1],
 	Syms = [ {S,conv(Targ),list_to_binary(get_data(Targ,IckyDir))}
 		 || {T,S,Targ} <- IckyDir, T =:= symlink ],
 	[ {ok, Cont} = Mod:read_file(SymL) || {SymL,_,Cont} <- Syms ],
@@ -382,8 +384,8 @@ check_icky(Mod) ->
 	end,
 
 	_ = make_icky_dir(Mod, treat_icky(<<"åäö_dir"/utf8>>)),
-	if 
-	    UniMode and (OS =/= win32) ->
+        if
+            UniMode andalso OS =/= win32 ->
 		{error,enoent} = Mod:set_cwd("åäö_dir");
 	    true ->
 		ok
@@ -423,7 +425,7 @@ check_icky(Mod) ->
         Mod:rename("åäö2",treat_icky(<<"åäö_fil1">>)),
         {ok, <<"åäö2">>} = Mod:read_file(treat_icky(<<"åäö_fil1">>)),
 	if
-	    UniMode and (OS =/= win32) ->
+            UniMode andalso OS =/= win32 ->
 		{error,enoent} = Mod:read_file("åäö_fil1");
 	    true ->
 		ok
@@ -472,7 +474,7 @@ check_very_icky(Mod) ->
 	Expected = lists:sort(Actual),
 	{ok,D2} = Mod:get_cwd(),
 	true = is_list(D2),
-	[ true = ((is_list(El) or is_binary(El)))  || El <- Expected],
+        [ true = is_list(El) orelse is_binary(El)  || El <- Expected],
 	Syms = [{S,conv(Targ),list_to_binary(get_data(Targ, VeryIckyDir))}
 		|| {symlink,S,Targ} <- VeryIckyDir],
 	[ {ok, Cont} = Mod:read_file(SymL) || {SymL,_,Cont} <- Syms ],
@@ -630,15 +632,32 @@ make_icky_dir(Mod, IckyDirName) ->
     ok = Mod:set_cwd(IckyDirName),
     make_dir_contents(Icky, Mod).
 
+hopeless_icky() ->
+    hopeless_darwin() orelse hopeless_zfs().
+
 hopeless_darwin() ->
     case {os:type(),os:version()} of
         {{unix,darwin},{Major,_,_}} ->
             %% icky file names worked between 10 and 17, but started returning
-            %% EILSEQ in 18. The check against 18..19 is exact in case newer
+            %% EILSEQ in 18. The check against 18..21 is exact in case newer
             %% versions of Darwin support them again.
-            Major < 9 orelse (Major >= 18 andalso Major =< 19);
+            Major < 9 orelse (Major >= 18 andalso Major =< 25);
         _ ->
             false
+    end.
+
+hopeless_zfs() ->
+    %% If we are using utf8only on zfs then we cannot create latin1 characters.
+    case os:find_executable("zfs") of
+        false ->
+            false;
+        _Zfs ->
+            case os:cmd("zfs get utf8only `pwd` | grep utf8only | awk '{print $3}'") of
+                "on" ++ _ ->
+                    true;
+                _ ->
+                    false
+            end
     end.
 
 make_very_icky_dir(Mod, DirName) ->

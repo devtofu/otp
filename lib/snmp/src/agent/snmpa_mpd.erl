@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,6 +20,18 @@
 %% %CopyrightEnd%
 %%
 -module(snmpa_mpd).
+-moduledoc """
+Message Processing and Dispatch module for the SNMP agent
+
+The module `snmpa_mpd` implements the version independent Message Processing and
+Dispatch functionality in SNMP for the agent. It is supposed to be used from a
+Network Interface process ([Definition of Agent Net if](snmp_agent_netif.md)).
+
+## DATA TYPES
+
+For more information, see the
+[data types in `snmpa_conf`](`m:snmpa_conf#types`).
+""".
 
 -export([init/1, reset/0, inc/1, counters/0, 
 	 discarded_pdu/1,
@@ -27,6 +41,23 @@
 	 generate_discovery_msg/4, 
 	 process_taddrs/1, 
 	 generate_req_id/0]).
+
+%% This is just for debugging and testing
+-export([
+         empty_msg/0,
+         empty_msg_size/0
+        ]).
+
+-export_type([
+              logger/0,
+              msg_data/0,
+              msg_data_cmy/0,
+              msg_data_ctx/0,
+              acm_data/0,
+              acm_data_cmy/0,
+              acm_data_v3/0,
+              mpd_state/0
+             ]).
 
 -define(SNMP_USE_V3, true).
 -include("snmp_types.hrl").
@@ -39,7 +70,11 @@
 -include("snmp_verbosity.hrl").
 -include("snmpa_internal.hrl").
 
+-ifdef(empty_pdu_size).
+-define(empty_msg_size, ?empty_pdu_size + 3).
+-else.
 -define(empty_msg_size, 24).
+-endif.
 
 -record(state, {v1 = false, v2c = false, v3 = false}).
 -record(note, {sec_engine_id, 
@@ -51,9 +86,73 @@
 	       disco = false, 
 	       req_id}).
 
-					
+
+-doc """
+This is the message specific data used in the SNMP message. This value is
+received in a [`send_pdu`](snmp_agent_netif.md#im_send_pdu) or
+[`send_pdu_req`](snmp_agent_netif.md#im_send_pdu_req) message from the agent (by
+the net-if process).
+""".
+-type   msg_data() :: msg_data_cmy() | msg_data_ctx().
+-doc """
+This is the message specific data used in the SNMP message. In SNMPv1 and
+SNMPv2c, this message data is the community string.
+""".
+-opaque msg_data_cmy() ::
+          {community,
+           Community       :: snmp_community_mib:name()}.
+-doc """
+This is the message specific data used in the SNMP message. In SNMPv3, it is the
+context information.
+""".
+-opaque msg_data_ctx() ::
+          {v3,
+           ContextEngineID :: snmp_framework_mib:engine_id(),
+           ContextName     :: snmp_community_mib:context_name()}.
+-doc """
+This is the message specific data used in the SNMP message. This value is
+received in a [`send_pdu`](snmp_agent_netif.md#im_send_pdu) or
+[`send_pdu_req`](snmp_agent_netif.md#im_send_pdu_req) message from the agent (by
+the net-if process).
+""".
+-type   acm_data() :: acm_data_cmy() | acm_data_v3().
+-doc "This is the message specific data used in the SNMPv1 and SNMPv2c message.".
+-opaque acm_data_cmy() ::
+          {community,
+           SecModel  :: snmp_framework_mib:security_model(),
+           Community :: snmp_community_mib:name(),
+           TDomain   :: snmpa_conf:transportDomain(),
+           TAddress  :: snmpa_conf:transportAddress()}.
+-doc """
+This is the message specific data used in the SNMPv3 message.
+
+""".
+-opaque acm_data_v3() ::
+          {v3,
+           MsgID            :: snmp_pdus:msg_id(),
+           MsgSecurityModel :: snmp_pdus:msg_security_model(),
+           SecName          :: snmp_community_mib:name(),
+           %% Actually the identifier for the security level; 1 | 2 | 3
+           %% snmp_framework_mib:security_level(),
+           SecLevel         :: non_neg_integer(),
+           ContextEngineID  :: snmp_framework_mib:engine_id(),
+           ContextName      :: snmp_community_mib:context_name(),
+           SecData          :: term()}.
+
+-doc "A `fun` that handles audit trail logging.".
+-type logger() ::
+        fun((Type :: snmp_pdus:pdu_type(),
+             Data :: binary() |
+                     {V3Hdr          :: snmp_pdus:v3_hdr(),
+                      ScopedPDUBytes :: binary()}) -> snmp:void()).
+
+-opaque mpd_state() :: #state{}.
+
+
+
+
 %%%-----------------------------------------------------------------
-%%% This module implemets the Message Processing and Dispatch part of
+%%% This module implements the Message Processing and Dispatch part of
 %%% the multi-lingual SNMP agent.
 %%%
 %%% The MPD is responsible for:
@@ -70,9 +169,20 @@
 %%% the counters only, it does not provide instrumentation functions
 %%% for the counters.
 %%%
-%%% With the terms defined in rfc2271, this module implememts part
+%%% With the terms defined in rfc2271, this module implements part
 %%% of the Dispatcher and the Message Processing functionality.
 %%%-----------------------------------------------------------------
+
+-doc """
+This function can be called from the net_if process at start-up. The options
+list defines which versions to use.
+
+It also initializes some SNMP counters.
+""".
+-spec init(Vsns) -> MPDState when
+      Vsns     :: [snmp:version()],
+      MPDState :: mpd_state().
+
 init(Vsns) ->
     ?vlog("init -> entry with"
 	"~n   Vsns: ~p", [Vsns]),
@@ -83,19 +193,19 @@ init(Vsns) ->
     init_versions(Vsns, #state{}).
 
 
+-doc false.
 reset() ->
     reset_counters(),
     ok.
 
 
-%%-----------------------------------------------------------------
-%% Purpose: We must calculate the length of a
-%%          message with an empty Pdu, and zero-length community
-%%          string.  This length is used to calculate the max
-%%          pdu size allowed for each request. This size is 
-%%          dependent on two dynamic fields, the community string
-%%          and the pdu (varbinds actually). It is calculated
-%%          as EmptySize + length(CommunityString) + 4.
+%%--------------------------------------------------------------------------
+%% Purpose: We must calculate the length of a message with an empty Pdu
+%%          and zero-length community string.
+%%          This length is used to calculate the max pdu size allowed for
+%%          each request. This size is dependent on two dynamic fields;
+%%          the community string and the pdu (varbinds actually).
+%%          It is calculated as EmptySize + length(CommunityString) + 4.
 %%          We assume that the length of the CommunityString is
 %%          less than 128 (thus requiring just one octet for the
 %%          length field (the same as the zero-length community
@@ -104,13 +214,30 @@ reset() ->
 %%          expressed. One 7bit octet is already present in the
 %%          empty msg, leaving 4 more 7bit octets.
 %% Actually, this function is not used, we use a constant instead.
-%%-----------------------------------------------------------------
+%%--------------------------------------------------------------------------
 %% Ret: 24
-%empty_msg() ->
-%    M = #message{version = 'version-1', community = "", data = 
-%		 #pdu{type = 'get-response', request_id = 1,
-%		      error_status = noError, error_index = 0, varbinds = []}},
-%    length(snmp_pdus:enc_message(M)) + 4.
+%%empty_msg() ->
+%%    M = #message{version = 'version-1', community = "", data = 
+%%		 #pdu{type = 'get-response', request_id = 1,
+%%		      error_status = noError, error_index = 0, varbinds = []}},
+%%    length(snmp_pdus:enc_message(M)) + 4.
+
+-ifdef(SNMP_USE_V3).
+-doc false.
+empty_msg() ->
+    {message, 'version-1', "", snmpa_get:empty_pdu()}.
+-else.
+empty_msg() ->
+    #message{version   = 'version-1',
+             community = "",
+             data      = snmpa_get:empty_pdu()}.
+-endif.
+
+-doc false.
+empty_msg_size() ->
+    ?empty_msg_size.
+
+
 
 %%-----------------------------------------------------------------
 %% Func: process_packet(Packet, Domain, Address, State, Log) ->
@@ -122,19 +249,90 @@ reset() ->
 %% Purpose: This is the main Message Dispatching function. (see
 %%          section 4.2.1 in rfc2272)
 %%-----------------------------------------------------------------
+
+-doc(#{equiv => process_packet/6}).
+-doc(#{since => <<"OTP 17.3">>}).
+-spec process_packet(Packet, From, State, NoteStore, Log) ->
+          {ok, Vsn, Pdu, PduMS, ACMData} |
+          {discarded, Reason} |
+          {discovery, DiscoPacket} when
+      Packet      :: binary(),
+      From        :: {TDomain, TAddress},
+      TDomain     :: snmpa_conf:transportDomain(),
+      TAddress    :: {IpAddr, IpPort},
+      IpAddr      :: inet:ip_address(),
+      IpPort      :: inet:port_number(),
+      State       :: mpd_state(),
+      NoteStore   :: pid(),
+      Log         :: logger(),
+      Vsn         :: snmp_pdus:version(),
+      Pdu         :: snmp_pdus:pdu(),
+      PduMS       :: pos_integer(),
+      ACMData     :: acm_data(),
+      Reason      :: term(),
+      DiscoPacket :: binary().
+
 process_packet(Packet, From, State, NoteStore, Log) ->
     LocalEngineID = ?DEFAULT_LOCAL_ENGINE_ID, 
     process_packet(Packet, From, LocalEngineID, State, NoteStore, Log).
 
-process_packet(
-  Packet, Domain, Address, LocalEngineID, State, NoteStore, Log) ->
-    From = {Domain, Address},
-    process_packet(Packet, From, LocalEngineID, State, NoteStore, Log).
 
-process_packet(Packet, Domain, Address, State, NoteStore, Log)
-  when is_atom(Domain) ->
+-doc """
+Processes an incoming packet. Performs authentication and decryption as
+necessary. The return values should be passed to the agent.
+
+> #### Note {: .info }
+>
+> Note that the use of the LocalEngineID argument is only intended for special
+> cases, if the agent is to "emulate" multiple EngineIDs\! By default, the agent
+> uses the value of `SnmpEngineID` (see SNMP-FRAMEWORK-MIB).
+
+""".
+-doc(#{since => <<"OTP R14B">>}).
+-spec process_packet(Packet, TDomain, TAddress, State, NoteStore, Log) ->
+          {ok, Vsn, Pdu, PduMS, ACMData} |
+          {discarded, Reason} |
+          {discovery, DiscoPacket} when
+      Packet      :: binary(),
+      TDomain     :: snmpa_conf:transportDomain(),
+      TAddress    :: {IpAddr, IpPort},
+      IpAddr      :: inet:ip_address(),
+      IpPort      :: inet:port_number(),
+      State       :: mpd_state(),
+      NoteStore   :: pid(),
+      Log         :: logger(),
+      Vsn         :: snmp_pdus:version(),
+      Pdu         :: snmp_pdus:pdu(),
+      PduMS       :: pos_integer(),
+      ACMData     :: acm_data(),
+      Reason      :: term(),
+      DiscoPacket :: binary();
+                    (Packet, From, LocalEngineID, State, NoteStore, Log) ->
+          {ok, Vsn, Pdu, PduMS, ACMData} |
+          {discarded, Reason} |
+          {discovery, DiscoPacket} when
+      Packet        :: binary(),
+      From          :: {TDomain, TAddress},
+      TDomain       :: snmpa_conf:transportDomain(),
+      TAddress      :: {IpAddr, IpPort},
+      IpAddr        :: inet:ip_address(),
+      IpPort        :: inet:port_number(),
+      LocalEngineID :: snmp_framework_mib:engine_id(),
+      State         :: mpd_state(),
+      NoteStore     :: pid(),
+      Log           :: logger(),
+      Vsn           :: snmp_pdus:version(),
+      Pdu           :: snmp_pdus:pdu(),
+      PduMS         :: pos_integer(),
+      ACMData       :: acm_data(),
+      Reason        :: term(),
+      DiscoPacket   :: binary().
+
+
+process_packet(Packet, TDomain, TAddress, State, NoteStore, Log)
+  when is_atom(TDomain) ->
     LocalEngineID = ?DEFAULT_LOCAL_ENGINE_ID,
-    From = {Domain, Address},
+    From = {TDomain, TAddress},
     process_packet(Packet, From, LocalEngineID, State, NoteStore, Log);
 process_packet(Packet, From, LocalEngineID, State, NoteStore, Log) ->
     inc(snmpInPkts),
@@ -198,6 +396,21 @@ process_packet(Packet, From, LocalEngineID, State, NoteStore, Log) ->
 	    inc(snmpInBadVersions),
 	    {discarded, snmpInBadVersions}
     end.
+
+-doc false.
+process_packet(
+  Packet, Domain, Address, LocalEngineID, State, NoteStore, Log) ->
+    From = {Domain, Address},
+    process_packet(Packet, From, LocalEngineID, State, NoteStore, Log).
+
+
+
+-doc """
+Increments the variable associated with a discarded pdu. This function can be
+used when the net_if process receives a `discarded_pdu` message from the agent.
+""".
+-spec discarded_pdu(Variable) -> snmp:void() when
+      Variable :: snmpa:name() | false.
 
 discarded_pdu(false) -> ok;
 discarded_pdu(Variable) -> inc(Variable).
@@ -616,12 +829,46 @@ get_scoped_pdu(D) ->
 %%-----------------------------------------------------------------
 %% Executed when a response or report message is generated.
 %%-----------------------------------------------------------------
-generate_response_msg(Vsn, RePdu, Type, ACMData, Log) ->
-    generate_response_msg(Vsn, RePdu, Type, ACMData, Log, 1).
 
-generate_response_msg(Vsn, RePdu, Type, ACMData, Log, N) when is_integer(N) ->
-    LocalEngineID = ?DEFAULT_LOCAL_ENGINE_ID, 
-    generate_response_msg(Vsn, RePdu, Type, ACMData, LocalEngineID, Log, N);
+-doc(#{equiv => generate_response_msg/6}).
+-doc(#{since => <<"OTP R14B">>}).
+-spec generate_response_msg(Vsn, RePdu, Type, ACMData, Log) ->
+          {ok, Packet} | {discarded, Reason} when
+      Vsn     :: snmp_pdus:version(),
+      RePdu   :: snmp_pdus:pdu(),
+      Type    :: snmp_pdus:pdu_type(),
+      ACMData :: acm_data(),
+      Log     :: logger(),
+      Packet  :: binary(),
+      Reason  :: term().
+
+generate_response_msg(Vsn, RePdu, Type, ACMData, Log) ->
+    LocalEngineID = ?DEFAULT_LOCAL_ENGINE_ID,
+    generate_response_msg(Vsn, RePdu, Type, ACMData, LocalEngineID, Log, 1).
+
+-doc """
+Generates a possibly encrypted response packet to be sent to the network. `Type`
+is the `#pdu.type` of the original request.
+
+> #### Note {: .info }
+>
+> Note that the use of the LocalEngineID argument is only intended for special
+> cases, if the agent is to "emulate" multiple EngineIDs\! By default, the agent
+> uses the value of `SnmpEngineID` (see SNMP-FRAMEWORK-MIB).
+
+""".
+-doc(#{since => <<"OTP R14B">>}).
+-spec generate_response_msg(Vsn, RePdu, Type, ACMData, LocalEngineID, Log) ->
+          {ok, Packet} | {discarded, Reason} when
+      Vsn           :: snmp_pdus:version(),
+      RePdu         :: snmp_pdus:pdu(),
+      Type          :: snmp_pdus:pdu_type(),
+      ACMData       :: acm_data(),
+      LocalEngineID :: snmp_framework_mib:engine_id(),
+      Log           :: logger(),
+      Packet        :: binary(),
+      Reason        :: term().
+
 generate_response_msg(Vsn, RePdu, Type, ACMData, LocalEngineID, Log) ->
     generate_response_msg(Vsn, RePdu, Type, ACMData, LocalEngineID, Log, 1).
 
@@ -648,7 +895,7 @@ generate_response_msg(Vsn, RePdu, Type,
 			{discarded, Reason};
 		    Packet ->
 			MMS = get_engine_max_message_size(LocalEngineID),
-			case size(Packet) of
+			case byte_size(Packet) of
 			    Len when Len =< MMS ->
 				Log(Type, Packet),
 				inc_snmp_cnt_vars(Type, RePdu),
@@ -717,7 +964,7 @@ generate_response_msg(Vsn, RePdu, Type,
 		    %% because of the calculation we do when we
 		    %% receive the bulk-request.
 		    Packet = list_to_binary(OutMsg),
-		    case size(Packet) of
+		    case byte_size(Packet) of
 			Len when Len =< AgentMS ->
 			    if
 				SecLevel =:= 3 -> 
@@ -893,11 +1140,69 @@ set_vb_null([]) ->
 %% Executed when a message that isn't a response is generated, i.e.
 %% a trap or an inform.
 %%-----------------------------------------------------------------
-generate_msg(Vsn, NoteStore, Pdu, ACMData, To) ->
-    LocalEngineID = ?DEFAULT_LOCAL_ENGINE_ID, 
-    generate_msg(Vsn, NoteStore, Pdu, ACMData, LocalEngineID, To).
 
-generate_msg(Vsn, _NoteStore, Pdu, {community, Community}, LocalEngineID, To) ->
+-doc(#{equiv => generate_msg/6}).
+-doc(#{since => <<"OTP R14B">>}).
+-spec generate_msg(Vsn, NoteStore, Pdu, MsgData, To) ->
+          {ok, PacketsAndAddresses} | {discarded, Reason} when
+      Vsn                 :: snmp_pdus:version(),
+      NoteStore           :: pid(),
+      Pdu                 :: snmp_pdus:pdu(),
+      MsgData             :: msg_data(),
+      To                  :: [{Domain, Address}],
+      PacketsAndAddresses :: [{Domain, Address, Packet}],
+      Domain              :: snmpa_conf:transportDomain(),
+      Address             :: snmpa_conf:transportAddress(),
+      Packet              :: binary(),
+      Reason              :: term().
+
+generate_msg(Vsn, NoteStore, Pdu, MsgData, To) ->
+    LocalEngineID = ?DEFAULT_LOCAL_ENGINE_ID, 
+    generate_msg(Vsn, NoteStore, Pdu, MsgData, LocalEngineID, To).
+
+
+-doc """
+Generates a possibly encrypted request packet to be sent to the network.
+
+`MsgData` is the message specific data used in the SNMP message. This value is
+received in a [`send_pdu`](snmp_agent_netif.md#im_send_pdu) or
+[`send_pdu_req`](snmp_agent_netif.md#im_send_pdu_req) message from the agent. In
+SNMPv1 and SNMPv2c, this message data is the [community](`t:msg_data_cmy/0`)
+string. In SNMPv3, it is the [context](`t:msg_data_ctx/0`) information.
+
+`To` is a list of destination addresses and their corresponding security
+parameters. This value is received in the same message from the agent and then
+transformed through [`process_taddrs`](`process_taddrs/1`) before
+passed to this function.
+
+> #### Note {: .info }
+>
+> Note that the use of the LocalEngineID argument is only intended for special
+> cases, if the agent is to "emulate" multiple EngineIDs\! By default, the agent
+> uses the value of `SnmpEngineID` (see SNMP-FRAMEWORK-MIB).
+
+""".
+-doc(#{since => <<"OTP R14B">>}).
+-spec generate_msg(Vsn, NoteStore, Pdu, MsgData, LocalEngineID, To) ->
+          {ok, PacketsAndAddresses} | {discarded, Reason} when
+      Vsn                 :: snmp_pdus:version(),
+      NoteStore           :: pid(),
+      Pdu                 :: snmp_pdus:pdu(),
+      MsgData             :: msg_data(),
+      LocalEngineID       :: snmp_framework_mib:engine_id(),
+      To                  :: [DestAddr],
+      DestAddr            :: {Domain, Address} |
+                             {{Domain, Address}, SecData},
+      SecData             :: term(),
+      PacketsAndAddresses :: [{Domain, Address, Packet}],
+      Domain              :: snmpa_conf:transportDomain(),
+      Address             :: snmpa_conf:transportAddress(),
+      Packet              :: binary(),
+      Reason              :: term().
+
+generate_msg(Vsn, _NoteStore, Pdu,
+             {community, Community},
+             LocalEngineID, To) ->
     Message = #message{version = Vsn, vsn_hdr = Community, data = Pdu},
     case catch list_to_binary(snmp_pdus:enc_message(Message)) of
 	{'EXIT', Reason} ->
@@ -907,7 +1212,7 @@ generate_msg(Vsn, _NoteStore, Pdu, {community, Community}, LocalEngineID, To) ->
 	    {discarded, Reason};
 	Packet ->
 	    AgentMax = get_engine_max_message_size(LocalEngineID),
-	    case size(Packet) of
+	    case byte_size(Packet) of
 		Len when Len =< AgentMax ->
 		    {ok, mk_v1_v2_packet_list(To, Packet, Len, Pdu)};
 		Len ->
@@ -919,7 +1224,8 @@ generate_msg(Vsn, _NoteStore, Pdu, {community, Community}, LocalEngineID, To) ->
 	    end
     end;
 generate_msg('version-3', NoteStore, Pdu, 
-	     {v3, ContextEngineID, ContextName}, LocalEngineID, To) ->
+	     {v3, ContextEngineID, ContextName},
+             LocalEngineID, To) ->
     %% rfc2272: 7.1 step 6
     ScopedPDU = #scopedPdu{contextEngineID = LocalEngineID, 
 			   contextName = ContextName,
@@ -937,6 +1243,7 @@ generate_msg('version-3', NoteStore, Pdu,
     end.
 
 
+-doc false.
 generate_discovery_msg(NoteStore, Pdu, MsgData, To) ->
     Timeout = 1500, 
     generate_discovery_msg(NoteStore, Pdu, MsgData, Timeout, To).
@@ -1136,6 +1443,27 @@ transform_taddr(BadTDomain, TAddress) ->
     end.
 
 
+-doc """
+Transforms addresses from internal MIB format to one more useful to
+[Agent Net if](snmp_agent_netif.md).
+
+See also [`generate_msg`.](`generate_msg/6`)
+
+""".
+-doc(#{since => <<"OTP 17.3">>}).
+-spec process_taddrs(InDests) -> OutDests when
+      InDests    :: [InDest],
+      InDest     :: {{InDomain, InAddress}, SecData} |
+                    {InDomain, InAddress},
+      InDomain   :: term(),
+      InAddress  :: term(),
+      SecData    :: term(),
+      OutDests   :: [OutDest],
+      OutDest    :: {{OutDomain, OutAddress}, SecData} |
+                    {OutDomain, OutAddress},
+      OutDomain  :: snmpa_conf:transportDomain(),
+      OutAddress :: snmpa_conf:transportAddress().
+
 process_taddrs(Dests) ->
     ?vtrace("process_taddrs -> entry with"
 	    "~n   Dests: ~p", [Dests]),
@@ -1296,7 +1624,7 @@ mk_v3_packet_entry(NoteStore, Domain, Addr,
 	    %% Store in cache for 150 sec.
 	    Packet = list_to_binary(OutMsg),
 	    ?vdebug("mk_v3_packet_entry -> generated: ~w bytes", 
-		    [size(Packet)]),
+		    [byte_size(Packet)]),
 	    Data = 
 		if
 		    SecLevel =:= 3 -> 
@@ -1385,6 +1713,7 @@ mk_v3_packet_list(NoteStore,
 generate_msg_id() ->
     gen(msg_id).
 
+-doc false.
 generate_req_id() ->
     gen(req_id).
 
@@ -1441,6 +1770,7 @@ maybe_create_counter(Counter) ->
 init_counter(Counter) -> 
     ets:insert(snmp_agent_table, {Counter, 0}).
 
+-doc false.
 counters() ->
     [
      snmpInPkts,
@@ -1484,6 +1814,7 @@ counters() ->
 %%  inc(VariableName) increments the variable (Counter) in
 %%  the local mib. (e.g. snmpInPkts)
 %%-----------------------------------------------------------------
+-doc false.
 inc(Name)    -> ets:update_counter(snmp_agent_table, Name, 1).
 inc(Name, N) -> ets:update_counter(snmp_agent_table, Name, N).
 
@@ -1535,3 +1866,4 @@ user_err(F, A) ->
 
 config_err(F, A) ->
     snmpa_error:config_err(F, A).
+

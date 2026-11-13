@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2015-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2015-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,6 +20,7 @@
 %% %CopyrightEnd%
 %%
 -module(beam_block_SUITE).
+-include_lib("stdlib/include/assert.hrl").
 
 -export([all/0,suite/0,groups/0,init_per_suite/1,end_per_suite/1,
 	 init_per_group/2,end_per_group/2,
@@ -206,8 +209,8 @@ repro([{Temp, Slot}|Xs], TempNames, Slots0) ->
 
 encode_wildcards3([],[],_,_) -> [];
 encode_wildcards3([Level|Levels],[BitsInLevel|BitsRest],LevelNo,TotSize) ->
-    case (catch ?MODULE:encode_wildcard(Level,BitsInLevel,TotSize-BitsInLevel,
-					length(Levels))) of
+    case catch ?MODULE:encode_wildcard(Level,BitsInLevel,TotSize-BitsInLevel,
+                                       length(Levels)) of
 	{'EXIT',{Reason,Info}} ->
 	    exit({Reason,{LevelNo,Info}});
 
@@ -307,14 +310,52 @@ second_block_pass(_Config) ->
 second_1(Fs, TS) ->
     [F#{dts=>DTS / TS} || #{dts:=DTS} = F <- Fs].
 
-coverage(_Config) ->
+coverage(Config) ->
     [] = coverage_1(),
+
+    [42,Config] = (coverage_2(Config))({fun id/1}),
+
+    {b,a,badarith} = coverage_3(a, b),
+    ok = coverage_3(0, 1),
+
+    ?assertError(badarg, coverage_4(a, b)),
+
+    ~"true" = coverage_5(id(latin1), id(true)),
+    ~"true" = coverage_5(id(utf8), id(false)),
+    ?assertError(badarg, coverage_5(id(42), id(42))),
+
     ok.
 
 coverage_1() ->
     [(bnot head):bar(hdr, case kind of
                               [] -> whatever
                           end) || 7 <- []].
+
+coverage_2(Cmds) ->
+    fun({CollecFun}) ->
+            [id(42), CollecFun(Cmds)]
+    end.
+
+coverage_3(Node, Nodes) ->
+    try id(Node) + 1 of
+	_ ->
+            ok
+    catch
+        _:Reason ->
+	    coverage_3(Nodes, Node, Reason)
+    end.
+
+coverage_3(A, B, C) ->
+    id({A,B,C}).
+
+coverage_4(A, B) ->
+    do_coverage_4(ok, (ok xor ok)#{ok := ok}, B, ok) =:= A.
+
+do_coverage_4(_, _, _, _) ->
+    ok.
+
+coverage_5(B, A) ->
+    atom_to_binary((A or A) == A, B).
 
 %%%
 %%% Common functions.

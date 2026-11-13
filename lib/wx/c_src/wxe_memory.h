@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2014-2016. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2014-2026. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -68,6 +70,7 @@ class wxeMemEnv {
     };
     void create() {
         ref2ptr = (void **) enif_alloc(128*sizeof(void *));
+        if(!ref2ptr) { max = 0; next = 0; return; };
 	ref2ptr[0] = NULL;
 	next = 1;
 	max = 128;

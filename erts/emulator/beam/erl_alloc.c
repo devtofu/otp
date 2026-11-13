@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2002-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2002-2026. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -38,7 +40,6 @@
 #include "erl_db.h"
 #include "erl_binary.h"
 #include "erl_bits.h"
-#include "erl_mtrace.h"
 #include "erl_mseg.h"
 #include "erl_monitor_link.h"
 #include "erl_hl_timer.h"
@@ -80,6 +81,9 @@
 #define ERTS_ALC_DEFAULT_ACUL_EHEAP_ALLOC ERTS_ALC_DEFAULT_ENABLED_ACUL_EHEAP_ALLOC
 #define ERTS_ALC_DEFAULT_ACUL_LL_ALLOC ERTS_ALC_DEFAULT_ENABLED_ACUL_LL_ALLOC
 
+#define ERTS_ALC_DEFAULT_ENABLED_ACFUL ERTS_ALC_DEFAULT_ENABLED_ACUL - 20
+#define ERTS_ALC_DEFAULT_ENABLED_ACFUL_EHEAP_ALLOC ERTS_ALC_DEFAULT_ENABLED_ACUL_EHEAP_ALLOC - 20
+#define ERTS_ALC_DEFAULT_ENABLED_ACFUL_LL_ALLOC ERTS_ALC_DEFAULT_ENABLED_ACUL_LL_ALLOC - 20
 
 #ifdef DEBUG
 static Uint install_debug_functions(void);
@@ -148,13 +152,16 @@ ERTS_SCHED_PREF_QUICK_ALLOC_IMPL(aireq,
                                  ERTS_ALC_T_AINFO_REQ)
 
 ErtsAlcType_t erts_fix_core_allocator_ix;
+erts_tsd_key_t erts_thr_alloc_data_key;
+
+Uint ERTS_WRITE_UNLIKELY(erts_no_dirty_alloc_instances);
 
 struct au_init {
     int enable;
     int thr_spec;
-    int disable_allowed;
-    int thr_spec_allowed;
-    int carrier_migration_allowed;
+    bool disable_allowed;
+    bool thr_spec_allowed;
+    bool carrier_migration_allowed;
     ErtsAlcStrat_t	astrat;
     struct {
 	AllctrInit_t	util;
@@ -164,10 +171,10 @@ struct au_init {
 	AOFFAllctrInit_t aoff;
     } init;
     struct {
-	int mmbcs;
-	int lmbcs;
-	int smbcs;
-	int mmmbc;
+        bool mmbcs;
+        bool lmbcs;
+        bool smbcs;
+        bool mmmbc;
     } default_;
 };
 
@@ -180,17 +187,13 @@ struct au_init {
 }
 
 typedef struct {
-    int erts_alloc_config;
 #if HAVE_ERTS_MSEG
     ErtsMsegInit_t mseg;
 #endif
     int trim_threshold;
     int top_pad;
+    int dirty_alloc_insts;
     AlcUInit_t alloc_util;
-    struct {
-	char *mtrace;
-	char *nodename;
-    } instr;
     struct au_init sl_alloc;
     struct au_init std_alloc;
     struct au_init ll_alloc;
@@ -204,9 +207,19 @@ typedef struct {
     struct au_init test_alloc;
 } erts_alc_hndl_args_init_t;
 
-#define ERTS_AU_INIT__ {0, 0, 1, 1, 1, \
-                        ERTS_ALC_S_GOODFIT, DEFAULT_ALLCTR_INIT, \
-                        {1,1,1,1}}
+#define ERTS_AU_INIT__ {\
+    .enable = 0,\
+    .thr_spec = 0,\
+    .disable_allowed = true,\
+    .thr_spec_allowed = true,\
+    .carrier_migration_allowed = true,\
+    .astrat = ERTS_ALC_S_GOODFIT,\
+    .init = DEFAULT_ALLCTR_INIT,\
+    .default_.mmbcs = true,\
+    .default_.lmbcs = true,\
+    .default_.smbcs = true,\
+    .default_.mmmbc = true\
+}
 
 #define SET_DEFAULT_ALLOC_OPTS(IP)					\
 do {									\
@@ -261,7 +274,7 @@ set_default_ll_alloc_opts(struct au_init *ip)
     ip->thr_spec		= 0;
     ip->astrat			= ERTS_ALC_S_BESTFIT;
     ip->init.bf.ao		= 1;
-    ip->init.util.ramv		= 0;
+    ip->init.util.ramv		= false;
     ip->init.util.mmsbc		= 0;
     ip->init.util.sbct		= ~((UWord) 0);
     ip->init.util.name_prefix	= "ll_";
@@ -290,12 +303,12 @@ set_default_literal_alloc_opts(struct au_init *ip)
     ip->enable			= 1;
 #endif
     ip->thr_spec		= 0;
-    ip->disable_allowed         = 0;
-    ip->thr_spec_allowed        = 0;
-    ip->carrier_migration_allowed = 0;
+    ip->disable_allowed         = false;
+    ip->thr_spec_allowed        = false;
+    ip->carrier_migration_allowed = false;
     ip->astrat			= ERTS_ALC_S_BESTFIT;
     ip->init.bf.ao		= 1;
-    ip->init.util.ramv		= 0;
+    ip->init.util.ramv		= false;
     ip->init.util.mmsbc		= 0;
     ip->init.util.sbct		= ~((UWord) 0);
     ip->init.util.name_prefix	= "literal_";
@@ -311,6 +324,7 @@ set_default_literal_alloc_opts(struct au_init *ip)
     ip->init.util.rsbcmt	= 0;
     ip->init.util.rmbcmt	= 0;
     ip->init.util.acul		= 0;
+    ip->init.util.acful		= 0;
 
 #if defined(ARCH_32)
 # if HAVE_ERTS_MSEG
@@ -339,8 +353,8 @@ set_default_temp_alloc_opts(struct au_init *ip)
     SET_DEFAULT_ALLOC_OPTS(ip);
     ip->enable			= AU_ALLOC_DEFAULT_ENABLE(1);
     ip->thr_spec		= 1;
-    ip->disable_allowed         = 0;
-    ip->carrier_migration_allowed = 0;
+    ip->disable_allowed         = false;
+    ip->carrier_migration_allowed = false;
     ip->astrat			= ERTS_ALC_S_AFIT;
     ip->init.util.name_prefix	= "temp_";
     ip->init.util.alloc_no	= ERTS_ALC_A_TEMPORARY;
@@ -404,7 +418,7 @@ set_default_ets_alloc_opts(struct au_init *ip)
     ip->init.util.name_prefix	= "ets_";
     ip->init.util.alloc_no	= ERTS_ALC_A_ETS;
     ip->init.util.cp            = ERTS_ALC_A_ETS;
-    ip->init.util.mmbc0         = 0;
+    ip->init.util.mmbc0         = false;
 #ifndef SMALL_MEMORY
     ip->init.util.mmbcs 	= 128*1024; /* Main carrier size */
 #else
@@ -461,7 +475,7 @@ set_default_test_alloc_opts(struct au_init *ip)
 {
     SET_DEFAULT_ALLOC_OPTS(ip);
     ip->enable			= 0; /* Disabled by default */
-    ip->thr_spec		= -1 * erts_no_schedulers;
+    ip->thr_spec		= -1;
     ip->astrat			= ERTS_ALC_S_FIRSTFIT;
     ip->init.aoff.crr_order     = FF_AOFF;
     ip->init.aoff.blk_order     = FF_BF;
@@ -488,10 +502,10 @@ set_default_test_alloc_opts(struct au_init *ip)
 
 
 static void
-adjust_tpref(struct au_init *ip, int no_sched)
+adjust_tpref(struct au_init *ip, int no_sched, int no_dirty_inst)
 {
     if (ip->thr_spec) {
-	ip->thr_spec = no_sched;
+        ip->thr_spec = no_sched + no_dirty_inst;
 	ip->thr_spec *= -1; /* thread preferred */
 
 	/* If default ... */
@@ -593,6 +607,9 @@ adjust_carrier_migration_support(struct au_init *auip)
 	    auip->init.aoff.blk_order = FF_BF;
 	}
     }
+    if (auip->init.util.acful > auip->init.util.acul) {
+        auip->init.util.acful = auip->init.util.acul;
+    }
 }
 
 void
@@ -601,12 +618,12 @@ erts_alloc_init(int *argc, char **argv, ErtsAllocInitOpts *eaiop)
     UWord extra_block_size = 0;
     int i, ncpu;
     erts_alc_hndl_args_init_t init = {
-	0,
 #if HAVE_ERTS_MSEG
 	ERTS_MSEG_INIT_DEFAULT_INITIALIZER,
 #endif
 	ERTS_DEFAULT_TRIM_THRESHOLD,
 	ERTS_DEFAULT_TOP_PAD,
+	0, /* Default dirty alloc instances */
 	ERTS_DEFAULT_ALCU_INIT,
     };
     size_t fix_type_sizes[ERTS_ALC_NO_FIXED_SIZES] = {0};
@@ -639,19 +656,20 @@ erts_alloc_init(int *argc, char **argv, ErtsAllocInitOpts *eaiop)
 	= ERTS_MAGIC_BIN_UNALIGNED_SIZE(sizeof(ErtsMagicIndirectionWord));
     fix_type_sizes[ERTS_ALC_FIX_TYPE_IX(ERTS_ALC_T_RECV_MARK_BLK)]
         = sizeof(ErtsRecvMarkerBlock);
+    fix_type_sizes[ERTS_ALC_FIX_TYPE_IX(ERTS_ALC_T_SIGQ_BUFFERS)]
+        = sizeof(ErtsSignalInQueueBufferArray);
 
 #ifdef HARD_DEBUG
     hdbg_init();
 #endif
+
+    erts_tsd_key_create(&erts_thr_alloc_data_key, "erts_alc_data_key");
 
     lock_all_physical_memory = 0;
 
     ncpu = eaiop->ncpu;
     if (ncpu < 1)
 	ncpu = 1;
-
-    erts_tsd_key_create(&erts_allctr_prelock_tsd_key,
-			"erts_allctr_prelock_tsd_key");
 
     erts_sys_alloc_init();
     erts_init_utils_mem();
@@ -686,9 +704,11 @@ erts_alloc_init(int *argc, char **argv, ErtsAllocInitOpts *eaiop)
 #endif
     }
 
+    erts_no_dirty_alloc_instances = init.dirty_alloc_insts;
 
     /* Make adjustments for carrier migration support */
     init.temp_alloc.init.util.acul = 0;
+    init.temp_alloc.init.util.acful = 0;
     adjust_carrier_migration_support(&init.sl_alloc);
     adjust_carrier_migration_support(&init.std_alloc);
     adjust_carrier_migration_support(&init.ll_alloc);
@@ -699,48 +719,21 @@ erts_alloc_init(int *argc, char **argv, ErtsAllocInitOpts *eaiop)
     adjust_carrier_migration_support(&init.fix_alloc);
     adjust_carrier_migration_support(&init.literal_alloc);
 
-    if (init.erts_alloc_config) {
-	/* Adjust flags that erts_alloc_config won't like */
-
-	/* No thread specific instances */
-	init.temp_alloc.thr_spec = 0;
-	init.sl_alloc.thr_spec = 0;
-	init.std_alloc.thr_spec = 0;
-	init.ll_alloc.thr_spec = 0;
-	init.eheap_alloc.thr_spec = 0;
-	init.binary_alloc.thr_spec = 0;
-	init.ets_alloc.thr_spec = 0;
-	init.driver_alloc.thr_spec = 0;
-	init.fix_alloc.thr_spec = 0;
-        init.literal_alloc.thr_spec = 0;
-
-	/* No carrier migration */
-	init.temp_alloc.init.util.acul = 0;
-	init.sl_alloc.init.util.acul = 0;
-	init.std_alloc.init.util.acul = 0;
-	init.ll_alloc.init.util.acul = 0;
-	init.eheap_alloc.init.util.acul = 0;
-	init.binary_alloc.init.util.acul = 0;
-	init.ets_alloc.init.util.acul = 0;
-	init.driver_alloc.init.util.acul = 0;
-	init.fix_alloc.init.util.acul = 0;
-        init.literal_alloc.init.util.acul = 0;
-    }
-
     /* Only temp_alloc can use thread specific interface */
     if (init.temp_alloc.thr_spec)
-	init.temp_alloc.thr_spec = erts_no_schedulers;
+        init.temp_alloc.thr_spec = erts_no_schedulers + init.dirty_alloc_insts;
 
     /* Others must use thread preferred interface */
-    adjust_tpref(&init.sl_alloc, erts_no_schedulers);
-    adjust_tpref(&init.std_alloc, erts_no_schedulers);
-    adjust_tpref(&init.ll_alloc, erts_no_schedulers);
-    adjust_tpref(&init.eheap_alloc, erts_no_schedulers);
-    adjust_tpref(&init.binary_alloc, erts_no_schedulers);
-    adjust_tpref(&init.ets_alloc, erts_no_schedulers);
-    adjust_tpref(&init.driver_alloc, erts_no_schedulers);
-    adjust_tpref(&init.fix_alloc, erts_no_schedulers);
-    adjust_tpref(&init.literal_alloc, erts_no_schedulers);
+    adjust_tpref(&init.sl_alloc, erts_no_schedulers, init.dirty_alloc_insts);
+    adjust_tpref(&init.std_alloc, erts_no_schedulers, init.dirty_alloc_insts);
+    adjust_tpref(&init.ll_alloc, erts_no_schedulers, init.dirty_alloc_insts);
+    adjust_tpref(&init.eheap_alloc, erts_no_schedulers, init.dirty_alloc_insts);
+    adjust_tpref(&init.binary_alloc, erts_no_schedulers, init.dirty_alloc_insts);
+    adjust_tpref(&init.ets_alloc, erts_no_schedulers, init.dirty_alloc_insts);
+    adjust_tpref(&init.driver_alloc, erts_no_schedulers, init.dirty_alloc_insts);
+    adjust_tpref(&init.fix_alloc, erts_no_schedulers, init.dirty_alloc_insts);
+    adjust_tpref(&init.literal_alloc, erts_no_schedulers, init.dirty_alloc_insts);
+    adjust_tpref(&init.test_alloc, erts_no_schedulers, init.dirty_alloc_insts);
 
 
     /*
@@ -756,13 +749,14 @@ erts_alloc_init(int *argc, char **argv, ErtsAllocInitOpts *eaiop)
     refuse_af_strategy(&init.driver_alloc);
     refuse_af_strategy(&init.fix_alloc);
     refuse_af_strategy(&init.literal_alloc);
+    refuse_af_strategy(&init.test_alloc);
 
     if (!init.temp_alloc.thr_spec)
 	refuse_af_strategy(&init.temp_alloc);
 
-    erts_mtrace_pre_init();
 #if HAVE_ERTS_MSEG
     init.mseg.nos = erts_no_schedulers;
+    init.mseg.ndai = init.dirty_alloc_insts;
     erts_mseg_init(&init.mseg);
 #endif
 
@@ -815,8 +809,6 @@ erts_alloc_init(int *argc, char **argv, ErtsAllocInitOpts *eaiop)
     sys_alloc_opt(SYS_ALLOC_OPT_TRIM_THRESHOLD, init.trim_threshold);
     sys_alloc_opt(SYS_ALLOC_OPT_TOP_PAD, init.top_pad);
 
-    erts_mtrace_init(init.instr.mtrace, init.instr.nodename);
-
     start_au_allocator(ERTS_ALC_A_TEMPORARY,
 		       &init.temp_alloc,
 		       &temp_alloc_state);
@@ -858,8 +850,6 @@ erts_alloc_init(int *argc, char **argv, ErtsAllocInitOpts *eaiop)
 		       &init.test_alloc,
 		       &test_alloc_state);
 
-    erts_mtrace_install_wrapper_functions();
-
     init_aireq_alloc();
 
 #ifdef DEBUG
@@ -875,7 +865,7 @@ erts_alloc_late_init(void)
 }
 
 static void *
-erts_realloc_fixed_size(ErtsAlcType_t type, void *extra, void *p, Uint size)
+erts_realloc_fixed_size(ErtsAlcType_t type, void *extra, void *p, size_t size)
 {
     erts_exit(ERTS_ABORT_EXIT,
 	     "Attempt to reallocate a block of the fixed size type %s\n",
@@ -1038,12 +1028,12 @@ start_au_allocator(ErtsAlcType_t alctr_n,
 	    if (!as0)
 		continue;
 	    if (init->thr_spec < 0) {
-		init->init.util.ts = i == 0;
+		init->init.util.ts = (i == 0 || erts_no_schedulers < i);
 		init->init.util.tspec = 0;
 		init->init.util.tpref = -1*init->thr_spec + 1;
 	    }
 	    else {
-		if (i != 0)
+		if (0 < i && i <= erts_no_schedulers)
 		    init->init.util.ts = 0;
 		else {
 		    if (astrat == ERTS_ALC_S_AFIT)
@@ -1174,24 +1164,24 @@ get_bool_value(char *param_end, char** argv, int* ip)
     return -1;
 }
 
-static Uint kb_to_bytes(Sint kb, Uint *bytes)
+static size_t kb_to_bytes(Sint kb, size_t *bytes)
 {
-    const Uint max = ((~((Uint) 0))/1024) + 1;
+    const size_t max = ((~((size_t) 0))/1024) + 1;
 
-    if (kb < 0 || (Uint)kb > max)
+    if (kb < 0 || (size_t)kb > max)
         return 0;
-    if ((Uint)kb == max)
-        *bytes = ~((Uint) 0);
+    if ((size_t)kb == max)
+        *bytes = ~((size_t) 0);
     else
-        *bytes = ((Uint) kb)*1024;
+        *bytes = ((size_t) kb)*1024;
     return 1;
 }
 
-static Uint
+static size_t
 get_kb_value(char *param_end, char** argv, int* ip)
 {
     Sint tmp;
-    Uint bytes = 0;
+    size_t bytes = 0;
     char *rest;
     char *param = argv[*ip]+1;
     char *value = get_value(param_end, argv, ip);
@@ -1222,7 +1212,7 @@ get_mb_value(char *param_end, char** argv, int* ip)
 
 
 #if 0
-static Uint
+static size_t
 get_byte_value(char *param_end, char** argv, int* ip)
 {
     Sint tmp;
@@ -1233,7 +1223,7 @@ get_byte_value(char *param_end, char** argv, int* ip)
     tmp = (Sint) ErtsStrToSint(value, &rest, 10);
     if (errno != 0 || rest == value || tmp < 0)
 	bad_value(param, param_end, value);
-    return (Uint) tmp;
+    return (size_t) tmp;
 }
 #endif
 
@@ -1275,6 +1265,30 @@ get_acul_value(struct au_init *auip, char *param_end, char** argv, int* ip)
     return (Uint) tmp;
 }
 
+static Uint
+get_acful_value(struct au_init *auip, char *param_end, char** argv, int* ip)
+{
+    Sint tmp;
+    char *rest;
+    char *param = argv[*ip]+1;
+    char *value = get_value(param_end, argv, ip);
+    if (sys_strcmp(value, "de") == 0) {
+	switch (auip->init.util.alloc_no) {
+	case ERTS_ALC_A_LONG_LIVED:
+	    return ERTS_ALC_DEFAULT_ENABLED_ACFUL_LL_ALLOC;
+	case ERTS_ALC_A_EHEAP:
+	    return ERTS_ALC_DEFAULT_ENABLED_ACFUL_EHEAP_ALLOC;
+	default:
+	    return ERTS_ALC_DEFAULT_ENABLED_ACFUL;
+	}
+    }
+    errno = 0;
+    tmp = (Sint) ErtsStrToSint(value, &rest, 10);
+    if (errno != 0 || rest == value || tmp < 0 || 100 < tmp)
+	bad_value(param, param_end, value);
+    return (Uint) tmp;
+}
+
 static void
 handle_au_arg(struct au_init *auip,
 	      char* sub_param,
@@ -1303,6 +1317,10 @@ handle_au_arg(struct au_init *auip,
             else if (has_prefix("acfml", sub_param)) {
                 value = get_amount_value(sub_param + 5, argv, ip);
                 wp = &auip->init.util.acfml;
+            }
+            else if (has_prefix("acful", sub_param)) {
+                value = get_acful_value(auip, sub_param + 5, argv, ip);
+                wp = &auip->init.util.acful;
             }
             else
                 goto bad_switch;
@@ -1370,10 +1388,40 @@ handle_au_arg(struct au_init *auip,
                     bad_value(param, sub_param + 1, alg);
                 }
 	    }
-	    if (!strategy_support_carrier_migration(auip))
+	    if (!strategy_support_carrier_migration(auip)) {
 		auip->init.util.acul = 0;
+		auip->init.util.acful = 0;
+            }
 	} else if (has_prefix("atags", sub_param)) {
-            auip->init.util.atags = get_bool_value(sub_param + 5, argv, ip);
+            char *param_end = &sub_param[5];
+            char *value;
+            
+            value = get_value(param_end, argv, ip);
+
+            if (sys_strcmp(value, "true") == 0) {
+                auip->init.util.atags = 1;
+            } else if (sys_strcmp(value, "false") == 0) {
+                auip->init.util.atags = 0;
+            } else if (sys_strcmp(value, "code") == 0) {
+                /* Undocumented option for point-of-origin tracking: overrides
+                 * per-pid/port tracking in favor of tracking which Erlang code
+                 * led to the allocation (best effort, but pretty accurate
+                 * under the JIT). */
+                auip->init.util.atags = 2;
+
+#if !defined(BEAMASM)
+                if (!erts_alcu_enable_code_atags) {
+                    erts_fprintf(stderr,
+                                 "WARNING: The experimental +M<S>atags code "
+                                 "flag is inaccurate under the interpreter. "
+                                 "Consider running with the JIT instead\n");
+                }
+#endif
+
+                erts_alcu_enable_code_atags = 1;
+            } else {
+                bad_value(sub_param, param_end, value);
+            }
         }
 	else
 	    goto bad_switch;
@@ -1424,7 +1472,7 @@ handle_au_arg(struct au_init *auip,
     }
     case 'l':
 	if (has_prefix("lmbcs", sub_param)) {
-	    auip->default_.lmbcs = 0;
+            auip->default_.lmbcs = false;
 	    auip->init.util.lmbcs = get_kb_value(sub_param + 5, argv, ip);
 	}
 	else
@@ -1441,11 +1489,11 @@ handle_au_arg(struct au_init *auip,
 		auip->init.gf.mbsd = 1;
 	}
 	else if (has_prefix("mmbcs", sub_param)) {
-	    auip->default_.mmbcs = 0;
+            auip->default_.mmbcs = false;
 	    auip->init.util.mmbcs = get_kb_value(sub_param + 5, argv, ip);
 	}
 	else if (has_prefix("mmmbc", sub_param)) {
-	    auip->default_.mmmbc = 0;
+            auip->default_.mmmbc = false;
 	    auip->init.util.mmmbc = get_amount_value(sub_param + 5, argv, ip);
 	}
 	else if (has_prefix("mmsbc", sub_param)) {
@@ -1481,7 +1529,7 @@ handle_au_arg(struct au_init *auip,
 	    auip->init.util.sbct = get_kb_value(sub_param + 4, argv, ip);
 	}
 	else if (has_prefix("smbcs", sub_param)) {
-	    auip->default_.smbcs = 0;
+            auip->default_.smbcs = false;
 	    auip->init.util.smbcs = get_kb_value(sub_param + 5, argv, ip);
 	}
 	else
@@ -1503,6 +1551,7 @@ handle_au_arg(struct au_init *auip,
 	else if (res == 0) {
 	    auip->thr_spec = 0;
 	    auip->init.util.acul = 0;
+	    auip->init.util.acful = 0;
 	    break;
 	}
 	goto bad_switch;
@@ -1613,6 +1662,23 @@ handle_args(int *argc, char **argv, erts_alc_hndl_args_init_t *init)
 #endif
 			    get_amount_value(argv[i]+9, argv, &i);
 		    }
+		    else if (has_prefix("lp", argv[i]+3)) {
+                        char *param_end = argv[i]+5;
+			char *value = get_value(param_end, argv, &i);
+			if (sys_strcmp(value, "on") == 0) {
+#if HAVE_ERTS_MSEG
+			    init->mseg.dflt_mmap.lp = 1;
+			    init->mseg.literal_mmap.lp = 1;
+#endif
+			} else if (sys_strcmp(value, "off") == 0) {
+#if HAVE_ERTS_MSEG
+			    init->mseg.dflt_mmap.lp = 0;
+			    init->mseg.literal_mmap.lp = 0;
+#endif
+			} else {
+			    bad_value(param, param_end, value);
+			}
+		    }
 		    else {
 			bad_param(param, param+2);
 		    }
@@ -1687,9 +1753,6 @@ handle_args(int *argc, char **argv, erts_alc_hndl_args_init_t *init)
 			    for (a = 0; a < aui_sz; a++)
 				aui[a]->enable = 1;
 			}
-			else if (sys_strcmp("config", arg) == 0) {
-			    init->erts_alloc_config = 1;
-			}
 			else if (sys_strcmp("r9c", arg) == 0
 				 || sys_strcmp("r10b", arg) == 0
 				 || sys_strcmp("r11b", arg) == 0) {
@@ -1714,7 +1777,8 @@ handle_args(int *argc, char **argv, erts_alc_hndl_args_init_t *init)
 			    for (a = 0; a < aui_sz; a++) {
 				aui[a]->thr_spec = 0;
 				aui[a]->init.util.acul = 0;
-				aui[a]->init.util.ramv = 0;
+				aui[a]->init.util.acful = 0;
+                                aui[a]->init.util.ramv = false;
 				aui[a]->init.util.lmbcs = 5*1024*1024;
 			    }
 			}
@@ -1725,15 +1789,6 @@ handle_args(int *argc, char **argv, erts_alc_hndl_args_init_t *init)
 		    }
 		    default:
 			bad_param(param, param+1);
-		    }
-		    break;
-		case 'i':
-		    switch (argv[i][3]) {
-		    case 't':
-			init->instr.mtrace = get_value(argv[i]+4, argv, &i);
-			break;
-		    default:
-			bad_param(param, param+2);
 		    }
 		    break;
 		case 'l':
@@ -1749,6 +1804,24 @@ handle_args(int *argc, char **argv, erts_alc_hndl_args_init_t *init)
 		    }
 		    bad_param(param, param+2);
 		    break;
+		case 'd':
+                    if (has_prefix("ai", param+2)) {
+                        arg = get_value(argv[i]+5, argv, &i);
+                        if (sys_strcmp("max", arg) == 0)
+                            init->dirty_alloc_insts = (int) erts_no_dirty_cpu_schedulers;
+                        else {
+                            Sint tmp;
+                            char *rest;
+                            errno = 0;
+                            tmp = (Sint) ErtsStrToSint(arg, &rest, 10);
+                            if (errno != 0 || rest == arg || tmp < 0)
+                                bad_value(param, param+4, arg);
+                            init->dirty_alloc_insts = (int) tmp;
+                        }
+                        break;
+                    }
+                    bad_param(param, param+2);
+		    break;
 		case 'u':
 		    if (has_prefix("ycs", argv[i]+3)) {
 			init->alloc_util.ycs
@@ -1762,6 +1835,10 @@ handle_args(int *argc, char **argv, erts_alc_hndl_args_init_t *init)
 			init->alloc_util.sac
 			    = get_bool_value(argv[i]+6, argv, &i);
 		    }
+                    else if (has_prefix("madtn", argv[i]+3)) {
+                        init->alloc_util.madtn
+                            = get_bool_value(argv[i]+8, argv, &i);
+                    }
 		    else {
 			int a;
 			int start = i;
@@ -1787,18 +1864,6 @@ handle_args(int *argc, char **argv, erts_alc_hndl_args_init_t *init)
 	    case '-':
 		if (argv[i][2] == '\0') {
 		    /* End of system flags reached */
-		    if (init->instr.mtrace) {
-			while (i < *argc) {
-			    if(sys_strcmp(argv[i], "-sname") == 0
-			       || sys_strcmp(argv[i], "-name") == 0) {
-				if (i + 1 <*argc) {
-				    init->instr.nodename = argv[i+1];
-				    break;
-				}
-			    }
-			    i++;
-			}
-		    }
 		    goto args_parsed;
 		}
 		break;
@@ -1817,6 +1882,10 @@ handle_args(int *argc, char **argv, erts_alc_hndl_args_init_t *init)
 	    argv[j++] = argv[i];
     }
     *argc = j;
+
+    if (init->dirty_alloc_insts > erts_no_dirty_cpu_schedulers)
+        init->dirty_alloc_insts = (int) erts_no_dirty_cpu_schedulers;
+
 }
 
 static char *type_no_str(ErtsAlcType_t n)
@@ -1837,46 +1906,92 @@ void
 erts_alloc_register_scheduler(void *vesdp)
 {
     ErtsSchedulerData *esdp = (ErtsSchedulerData *) vesdp;
-    int ix = (int) esdp->no;
+    int ix;
     int aix;
+    int normal_sched;
 
-    ASSERT(!ERTS_SCHEDULER_IS_DIRTY(esdp));
+    ASSERT(esdp == erts_get_scheduler_data());
+
+    if (!ERTS_SCHEDULER_IS_DIRTY(esdp)) {
+        ix = (int) esdp->no;
+        ASSERT(0 < ix && ix <= erts_no_schedulers);
+        normal_sched = !0;
+    }
+    else if (!erts_no_dirty_alloc_instances) {
+        ix = 0;
+        normal_sched = 0;
+    }
+    else {
+        ix = (int) esdp->dirty_no;
+        ASSERT(ix > 0);
+        ix = ((ix - 1) % erts_no_dirty_alloc_instances) + 1;
+        ix += erts_no_schedulers;
+        ASSERT(erts_no_schedulers < ix
+               && ix <= (erts_no_schedulers
+                         + erts_no_dirty_alloc_instances));
+        normal_sched = 0;
+    }
+
+    esdp->aux_work_data.alloc_data.delayed_dealloc_handler = normal_sched;
+    esdp->aux_work_data.alloc_data.alc_ix = ix;
     for (aix = ERTS_ALC_A_MIN; aix <= ERTS_ALC_A_MAX; aix++) {
 	ErtsAllocatorThrSpec_t *tspec = &erts_allctr_thr_spec[aix];
-	esdp->alloc_data.deallctr[aix] = NULL;
-	esdp->alloc_data.pref_ix[aix] = -1;
-	if (tspec->enabled) {
-	    if (!tspec->dd)
-		esdp->alloc_data.pref_ix[aix] = ix;
-	    else {
-		Allctr_t *allctr = tspec->allctr[ix];
-		ASSERT(allctr);
-		esdp->alloc_data.deallctr[aix] = allctr;
-		esdp->alloc_data.pref_ix[aix] = ix;
-	    }
-	}
+	esdp->aux_work_data.alloc_data.deallctr[aix] = NULL;
+        if (!normal_sched)
+            continue;
+	/*
+	 * Delayed dealloc is handled by normal schedulers,
+	 * but not by dirty schedulers...
+	 */
+	if (tspec->enabled && tspec->dd) {
+	    Allctr_t *allctr = tspec->allctr[ix];
+	    ASSERT(allctr);
+            esdp->aux_work_data.alloc_data.deallctr[aix] = allctr;
+        }
     }
+    erts_tsd_set(erts_thr_alloc_data_key, (void *) &esdp->aux_work_data.alloc_data);
 }
 
 void
-erts_alloc_scheduler_handle_delayed_dealloc(void *vesdp,
-					    int *need_thr_progress,
-					    ErtsThrPrgrVal *thr_prgr_p,
-					    int *more_work)
+erts_alloc_register_delayed_dealloc_handler_thread(ErtsThrAllocData *tadp, int ix)
 {
-    ErtsSchedulerData *esdp = (ErtsSchedulerData *) vesdp;
     int aix;
+
+    /*
+     * Should not be a scheduler of any kind and should not
+     * handle an 'ix' reserved for normal schedulers...
+     */
+    ASSERT(!erts_get_scheduler_data());
+    ASSERT(0 == ix /* Aux thread... */
+           || /* Handler thread for dirty scheds instances... */
+           (erts_no_schedulers < ix
+            && ix <= (erts_no_schedulers
+                      + erts_no_dirty_alloc_instances)));
+
+    tadp->delayed_dealloc_handler = !0;
+    tadp->alc_ix = ix;
     for (aix = ERTS_ALC_A_MIN; aix <= ERTS_ALC_A_MAX; aix++) {
-	Allctr_t *allctr;
-	if (esdp)
-	    allctr = esdp->alloc_data.deallctr[aix];
-	else {
-	    ErtsAllocatorThrSpec_t *tspec = &erts_allctr_thr_spec[aix];
-	    if (tspec->enabled && tspec->dd)
-		allctr = tspec->allctr[0];
-	    else
-		allctr = NULL;
-	}
+        ErtsAllocatorThrSpec_t *tspec = &erts_allctr_thr_spec[aix];
+        tadp->deallctr[aix] = NULL;
+        if (tspec->enabled && tspec->dd) {
+            Allctr_t *allctr = tspec->allctr[ix];
+            ASSERT(allctr);
+            tadp->deallctr[aix] = allctr;
+        }
+    }
+    erts_tsd_set(erts_thr_alloc_data_key, (void *) tadp);
+}
+
+void
+erts_alloc_handle_delayed_dealloc(ErtsThrAllocData *thr_alloc_data,
+				  int *need_thr_progress,
+				  ErtsThrPrgrVal *thr_prgr_p,
+				  int *more_work)
+{
+    int aix;
+    ASSERT(thr_alloc_data);
+    for (aix = ERTS_ALC_A_MIN; aix <= ERTS_ALC_A_MAX; aix++) {
+	Allctr_t *allctr = thr_alloc_data->deallctr[aix];
 	if (allctr) {
 	    erts_alcu_check_delayed_dealloc(allctr,
 					    1,
@@ -1912,7 +2027,7 @@ erts_alloc_get_verify_unused_temp_alloc(Allctr_t **allctr)
     if (erts_allctrs_info[ERTS_ALC_A_TEMPORARY].alloc_util
 	&& erts_allctrs_info[ERTS_ALC_A_TEMPORARY].thr_spec) {
 	ErtsAllocatorThrSpec_t *tspec;
-	int ix = ERTS_ALC_GET_THR_IX();
+        int ix = erts_get_thr_alloc_ix();
 	tspec = &erts_allctr_thr_spec[ERTS_ALC_A_TEMPORARY];
 
 	if (ix < tspec->size) {
@@ -1967,13 +2082,13 @@ erts_alc_fatal_error(int error, int func, ErtsAlcType_t n, ...)
 	break;
     }
     case ERTS_ALC_E_NOMEM: {
-	Uint size;
+        size_t size;
 	va_list argp;
 	char *op = func == ERTS_ALC_O_REALLOC ? "reallocate" : "allocate";
 	
 
 	va_start(argp, n);
-	size = va_arg(argp, Uint);
+        size = va_arg(argp, size_t);
 	va_end(argp);
 	erts_exit(ERTS_DUMP_EXIT,
 		 "%s: Cannot %s %lu bytes of memory (of type \"%s\").\n",
@@ -1992,25 +2107,25 @@ erts_alc_fatal_error(int error, int func, ErtsAlcType_t n, ...)
 }
 
 __decl_noreturn void
-erts_alloc_enomem(ErtsAlcType_t type, Uint size)
+erts_alloc_enomem(ErtsAlcType_t type, size_t size)
 {
     erts_alloc_n_enomem(ERTS_ALC_T2N(type), size);
 }
 
 __decl_noreturn void
-erts_alloc_n_enomem(ErtsAlcType_t n, Uint size)
+erts_alloc_n_enomem(ErtsAlcType_t n, size_t size)
 {
     erts_alc_fatal_error(ERTS_ALC_E_NOMEM, ERTS_ALC_O_ALLOC, n, size);
 }
 
 __decl_noreturn void
-erts_realloc_enomem(ErtsAlcType_t type, void *ptr, Uint size)
+erts_realloc_enomem(ErtsAlcType_t type, void *ptr, size_t size)
 {
     erts_realloc_n_enomem(ERTS_ALC_T2N(type), ptr, size);
 }
 
 __decl_noreturn void
-erts_realloc_n_enomem(ErtsAlcType_t n, void *ptr, Uint size)
+erts_realloc_n_enomem(ErtsAlcType_t n, void *ptr, size_t size)
 {
     erts_alc_fatal_error(ERTS_ALC_E_NOMEM, ERTS_ALC_O_REALLOC, n, size);
 }
@@ -2060,7 +2175,8 @@ alcu_size(ErtsAlcType_t alloc_no, ErtsAlcUFixInfo_t *fi, int fisz)
                     erts_alcu_foreign_size(allctr, alloc_no, &size);
                 }
 
-                ASSERT(((SWord)size.blocks) >= 0);
+                /* Sanity check of block size on 64-bit */
+                ASSERT(sizeof(UWord) == 4 || ((SWord)size.blocks) >= 0);
 
                 res += size.blocks;
             }
@@ -2122,7 +2238,7 @@ erts_memory(fmtfn_t *print_to_p, void *print_to_arg, void *proc, Eterm earg)
 
     ERTS_LC_ASSERT(erts_thr_progress_is_blocking());
 
-    /* Figure out whats wanted... */
+    /* Figure out what's wanted... */
 
     length = 0;
     if (is_non_value(earg)) { /* i.e. wants all */
@@ -2393,6 +2509,7 @@ erts_memory(fmtfn_t *print_to_p, void *print_to_arg, void *proc, Eterm earg)
 	size.code += export_table_sz();
 	size.code += export_entries_sz();
 	size.code += erts_fun_table_sz();
+	size.code += erts_fun_entries_sz();
 	size.code += erts_ranges_sz();
 	size.code += erts_total_code_size;
     }
@@ -2539,6 +2656,11 @@ erts_allocated_areas(fmtfn_t *print_to_p, void *print_to_arg, void *proc)
     i++;
 
     values[i].arity = 2;
+    values[i].name = "fun_list";
+    values[i].ui[0] = erts_fun_entries_sz();
+    i++;
+
+    values[i].arity = 2;
     values[i].name = "module_refs";
     values[i].ui[0] = erts_ranges_sz();
     i++;
@@ -2556,11 +2678,6 @@ erts_allocated_areas(fmtfn_t *print_to_p, void *print_to_arg, void *proc)
     values[i].arity = 2;
     values[i].name = "node_table";
     values[i].ui[0] = erts_node_table_size();
-    i++;
-
-    values[i].arity = 2;
-    values[i].name = "bits_bufs_size";
-    values[i].ui[0] = erts_bits_bufs_size();
     i++;
 
     values[i].arity = 2;
@@ -2790,9 +2907,6 @@ erts_allocator_info(fmtfn_t to, void *arg)
 
     erts_print(to, arg, "=allocator:instr\n");
 
-    erts_print(to, arg, "option t: %s\n",
-	       erts_mtrace_enabled ? "true" : "false");
-
 }
 
 Eterm
@@ -2815,6 +2929,7 @@ erts_allocator_options(void *proc)
     hpp = NULL;
     szp = &sz;
     sz = 0;
+    ERTS_UNDEF(hp, NULL);
 
  bld_term:
 
@@ -2894,14 +3009,6 @@ erts_allocator_options(void *proc)
     terms[length++] = erts_mmap_info_options(&erts_dflt_mmapper, NULL, NULL,
                                              NULL, hpp, szp);
 #endif
-    {
-	Eterm o[1], v[1];
-	o[0] = ERTS_MAKE_AM("t");
-	v[0] = erts_mtrace_enabled ? am_true : am_false;
-
-	atoms[length] = ERTS_MAKE_AM("instr");
-	terms[length++] = erts_bld_2tup_list(hpp, szp, 1, o, v);
-    }
 
     atoms[length] = ERTS_MAKE_AM("lock_physical_memory");
     terms[length++] = (lock_all_physical_memory ? am_all : am_no);
@@ -2973,27 +3080,31 @@ erts_allocator_options(void *proc)
     return res;
 }
 
-void *erts_alloc_permanent_cache_aligned(ErtsAlcType_t type, Uint size)
+void *erts_alloc_permanent_aligned(ErtsAlcType_t type,
+                                   size_t size,
+                                   size_t alignment)
 {
-    UWord v = (UWord) erts_alloc(type, size + (ERTS_CACHE_LINE_SIZE-1)
+    const UWord m = (alignment - 1);
+    UWord v = (UWord) erts_alloc(type,
 #ifdef VALGRIND
-				  + sizeof(UWord)
+                                 sizeof(UWord) +
 #endif
-				 );
+                                 size + (alignment - 1));
 
 #ifdef VALGRIND
     {   /* Link them to avoid Leak_PossiblyLost */
-	static UWord* first_in_list = NULL;
+        static UWord* first_in_list = NULL;
         *(UWord**)v = first_in_list;
-	first_in_list = (UWord*) v;
-	v += sizeof(UWord);
+        first_in_list = (UWord*) v;
+        v += sizeof(UWord);
     }
 #endif
 
-    if (v & ERTS_CACHE_LINE_MASK) {
-	v = (v & ~ERTS_CACHE_LINE_MASK) + ERTS_CACHE_LINE_SIZE;
+    if (v & m) {
+        v = (v & ~m) + alignment;
     }
-    ASSERT((v & ERTS_CACHE_LINE_MASK) == 0);
+
+    ASSERT((v & m) == 0);
     return (void*)v;
 }
 
@@ -3001,8 +3112,8 @@ static void
 reply_alloc_info(void *vair)
 {
     ErtsAllocInfoReq *air = (ErtsAllocInfoReq *) vair;
-    Uint sched_id = erts_get_scheduler_id();
-    int global_instances = air->req_sched == sched_id;
+    int tix = erts_get_thr_alloc_ix();
+    int global_instances = air->req_sched == tix;
     ErtsProcLocks rp_locks;
     Process *rp = air->proc;
     Eterm ref_copy = NIL, ai_list, msg = NIL;
@@ -3028,7 +3139,7 @@ reply_alloc_info(void *vair)
 				  ? erts_alcu_sz_info
 				  : erts_alcu_info);
 
-    rp_locks = air->req_sched == sched_id ? ERTS_PROC_LOCK_MAIN : 0;
+    rp_locks = air->req_sched == tix ? ERTS_PROC_LOCK_MAIN : 0;
 
     sz = 0;
     hpp = NULL;
@@ -3059,7 +3170,7 @@ reply_alloc_info(void *vair)
 			if (hpp)
 			    sys_alloc_stat(&sas);
 			if (szp) {
-			    /* ensure ehough heap */
+			    /* ensure enough heap */
 			    sas.top_pad = INT_MAX;
 			    sas.trim_threshold = INT_MAX;
 			}
@@ -3196,11 +3307,11 @@ reply_alloc_info(void *vair)
 	    case ERTS_ALC_INFO_A_MSEG_ALLOC:
 #if HAVE_ERTS_MSEG
 		alloc_atom = erts_bld_atom(hpp, szp, "mseg_alloc");
-		ainfo = erts_mseg_info(sched_id, NULL, NULL,
+		ainfo = erts_mseg_info(tix, NULL, NULL,
                                        hpp != NULL, air->only_sz, hpp, szp);
 		ainfo = erts_bld_tuple(hpp, szp, 3,
 				       alloc_atom,
-				       make_small(sched_id),
+				       make_small(tix),
 				       ainfo);
 		ai_list = erts_bld_cons(hpp, szp, ainfo, ai_list);
 #endif
@@ -3209,7 +3320,7 @@ reply_alloc_info(void *vair)
 		if (erts_allctrs_info[ai].thr_spec) {
 		    alloc_atom = erts_bld_atom(hpp, szp,
 					       (char *) ERTS_ALC_A2AD(ai));
-		    allctr = erts_allctr_thr_spec[ai].allctr[sched_id];
+		    allctr = erts_allctr_thr_spec[ai].allctr[tix];
 		    ainfo = info_func(allctr, air->internal, hpp != NULL, NULL,
 				      NULL, hpp, szp);
 		    ai_list = erts_bld_cons(hpp, szp,
@@ -3217,7 +3328,7 @@ reply_alloc_info(void *vair)
 						hpp, szp,
 						3,
 						alloc_atom,
-						make_small(sched_id),
+						make_small(tix),
 						ainfo),
 					    ai_list);
 		}
@@ -3226,7 +3337,7 @@ reply_alloc_info(void *vair)
 	    msg = erts_bld_tuple(hpp, szp,
 				 3,
 				 ref_copy,
-				 make_small(sched_id),
+				 make_small(tix),
 				 ai_list);
 
 	}
@@ -3245,7 +3356,7 @@ reply_alloc_info(void *vair)
 
     erts_queue_message(rp, rp_locks, mp, msg, am_system);
 
-    if (air->req_sched == sched_id)
+    if (air->req_sched == tix)
 	rp_locks &= ~ERTS_PROC_LOCK_MAIN;
  
     erts_proc_unlock(rp, rp_locks);
@@ -3325,13 +3436,14 @@ erts_request_alloc_info(struct process *c_p,
     air->allocs[airix] = ERTS_ALC_A_INVALID;
 
     erts_atomic32_init_nob(&air->refc,
-			       (erts_aint32_t) erts_no_schedulers);
+                           (erts_aint32_t) erts_no_aux_work_threads-1);
 
-    erts_proc_add_refc(c_p, (Sint) erts_no_schedulers);
+    erts_proc_add_refc(c_p, (Sint) erts_no_aux_work_threads-1);
 
-    if (erts_no_schedulers > 1)
+    if (erts_no_aux_work_threads > 2)
 	erts_schedule_multi_misc_aux_work(1,
-					  erts_no_schedulers,
+                                          1,
+					  erts_no_aux_work_threads-1,
 					  reply_alloc_info,
 					  (void *) air);
 
@@ -3399,54 +3511,6 @@ badarg:
     return res;
 }
 
-/* 
- * The allocator wrapper prelocking stuff below is about the locking order.
- * It only affects wrappers (erl_mtrace.c) that keep locks during
- * alloc/realloc/free.
- *
- * Some query functions in erl_alloc_util.c lock the allocator mutex and then
- * use erts_printf that in turn may call the sys allocator through the wrappers.
- * To avoid breaking locking order these query functions first "pre-locks" all
- * allocator wrappers.
- */
-ErtsAllocatorWrapper_t *erts_allctr_wrappers;
-int erts_allctr_wrapper_prelocked = 0;
-erts_tsd_key_t erts_allctr_prelock_tsd_key;
-
-void erts_allctr_wrapper_prelock_init(ErtsAllocatorWrapper_t* wrapper)
-{
-    ASSERT(wrapper->lock && wrapper->unlock);
-    wrapper->next = erts_allctr_wrappers;
-    erts_allctr_wrappers = wrapper;
-}
-
-void erts_allctr_wrapper_pre_lock(void)
-{
-    if (erts_allctr_wrappers) {
-	ErtsAllocatorWrapper_t* wrapper = erts_allctr_wrappers;
-	for ( ; wrapper; wrapper = wrapper->next) {
-	    wrapper->lock();
-	}
-	ASSERT(!erts_allctr_wrapper_prelocked);
-	erts_allctr_wrapper_prelocked = 1;
-	erts_tsd_set(erts_allctr_prelock_tsd_key, (void*)1);
-    }
-}
-
-void erts_allctr_wrapper_pre_unlock(void)
-{
-    if (erts_allctr_wrappers) {
-	ErtsAllocatorWrapper_t* wrapper = erts_allctr_wrappers;
-	
-	erts_allctr_wrapper_prelocked = 0;
-	erts_tsd_set(erts_allctr_prelock_tsd_key, (void*)0);
-	for ( ; wrapper; wrapper = wrapper->next) {
-	    wrapper->unlock();
-	}
-    }
-}
-
-
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *\
  * NOTE: erts_alc_test() is only supposed to be used for testing.            *
  *                                                                           *
@@ -3470,22 +3534,22 @@ UWord erts_alc_test(UWord op, UWord a1, UWord a2, UWord a3)
 	    if (((Allctr_t *) a1)->thread_safe)
 		return (UWord) erts_alcu_alloc_ts(ERTS_ALC_T_TEST,
 							  (void *) a1,
-							  (Uint) a2);
+                                                          (size_t) a2);
 	    else
 		return (UWord) erts_alcu_alloc(ERTS_ALC_T_TEST,
 						       (void *) a1,
-						       (Uint) a2);
+                                                       (size_t) a2);
 	case 0xf01:
 	    if (((Allctr_t *) a1)->thread_safe)
 		return (UWord) erts_alcu_realloc_ts(ERTS_ALC_T_TEST,
 							    (void *) a1,
 							    (void *) a2,
-							    (Uint) a3);
+                                                            (size_t) a3);
 	    else
 		return (UWord) erts_alcu_realloc(ERTS_ALC_T_TEST,
 							 (void *) a1,
 							 (void *) a2,
-							 (Uint) a3);
+                                                         (size_t) a3);
 	case 0xf02:
 	    if (((Allctr_t *) a1)->thread_safe)
 		erts_alcu_free_ts(ERTS_ALC_T_TEST, (void *) a1, (void *) a2);
@@ -3627,11 +3691,11 @@ UWord erts_alc_test(UWord op, UWord a1, UWord a2, UWord a3)
 	    ERTS_ALC_TEST_ABORT;
 	    break;
 	case 0xf13: return (UWord) 1;
-	case 0xf14: return (UWord) erts_alloc(ERTS_ALC_T_TEST, (Uint)a1);
+        case 0xf14: return (UWord) erts_alloc(ERTS_ALC_T_TEST, (size_t)a1);
 
 	case 0xf15: erts_free(ERTS_ALC_T_TEST, (void*)a1); return 0;
 
-        case 0xf16: return (UWord) erts_realloc(ERTS_ALC_T_TEST, (void*)a1, (Uint)a2);
+        case 0xf16: return (UWord) erts_realloc(ERTS_ALC_T_TEST, (void*)a1, (size_t)a2);
 
 	case 0xf17: {
             Uint extra_hdr_sz = UNIT_CEILING((Uint)a1);
@@ -3747,7 +3811,7 @@ hdbg_init(void)
 }
 
 static void *check_memory_fence(void *ptr,
-				Uint *size,
+                                size_t *size,
 				ErtsAlcType_t n,
 				int func);
 void erts_hdbg_chk_blks(void);
@@ -3759,7 +3823,7 @@ erts_hdbg_chk_blks(void)
 
     erts_mtx_lock(&hdbg_mblk_mtx);
     for (mblk = used_hdbg_mblks; mblk; mblk = mblk->next) {
-	Uint sz;
+        size_t sz;
 	check_memory_fence(mblk->p, &sz, mblk->n, ERTS_ALC_O_CHECK);
 	ASSERT(sz == mblk->s);
     }
@@ -3767,7 +3831,7 @@ erts_hdbg_chk_blks(void)
 }
 
 static hdbg_mblk *
-hdbg_alloc(void *p, Uint s, ErtsAlcType_t n)
+hdbg_alloc(void *p, size_t s, ErtsAlcType_t n)
 {
     hdbg_mblk *mblk;
 
@@ -3814,11 +3878,11 @@ hdbg_free(hdbg_mblk *mblk)
 #endif
 
 #ifdef  ERTS_ALLOC_UTIL_HARD_DEBUG
-static void *check_memory_fence(void *ptr, Uint *size, ErtsAlcType_t n, int func);
+static void *check_memory_fence(void *ptr, size_t *size, ErtsAlcType_t n, int func);
 
 void check_allocated_block( Uint type, void *blk)
 {
-    Uint dummy;
+    size_t dummy;
     check_memory_fence(blk, &dummy, ERTS_ALC_T2N(type), ERTS_ALC_O_FREE);
 }
 
@@ -3849,7 +3913,7 @@ void check_allocators(void)
 #endif
 
 static void *
-set_memory_fence(void *ptr, Uint sz, ErtsAlcType_t n)
+set_memory_fence(void *ptr, size_t sz, ErtsAlcType_t n)
 {
     UWord *ui_ptr;
     UWord pattern;
@@ -3879,9 +3943,9 @@ set_memory_fence(void *ptr, Uint sz, ErtsAlcType_t n)
 }
 
 static void *
-check_memory_fence(void *ptr, Uint *size, ErtsAlcType_t n, int func)
+check_memory_fence(void *ptr, size_t *size, ErtsAlcType_t n, int func)
 {
-    Uint sz;
+    size_t sz;
     Uint found_type;
     UWord pre_pattern, expected_pattern;
     UWord post_pattern;
@@ -3978,11 +4042,11 @@ check_memory_fence(void *ptr, Uint *size, ErtsAlcType_t n, int func)
 static ErtsAllocatorFunctions_t real_allctrs[ERTS_ALC_A_MAX+1];
 
 static void *
-debug_alloc(ErtsAlcType_t type, void *extra, Uint size)
+debug_alloc(ErtsAlcType_t type, void *extra, size_t size)
 {
     ErtsAllocatorFunctions_t *real_af = (ErtsAllocatorFunctions_t *) extra;
     ErtsAlcType_t n;
-    Uint dsize;
+    size_t dsize;
     void *res;
 
 #ifdef HARD_DEBUG
@@ -3998,8 +4062,8 @@ debug_alloc(ErtsAlcType_t type, void *extra, Uint size)
     res = set_memory_fence(res, size, n);
 
 #ifdef PRINT_OPS
-    fprintf(stderr, "0x%lx = alloc(%s, %lu)\r\n",
-	    (Uint) res, ERTS_ALC_N2TD(n), size);
+    fprintf(stderr, "0x%p = alloc(%s, %lu)\r\n",
+            res, ERTS_ALC_N2TD(n), size);
 #endif
 
     return res;
@@ -4007,12 +4071,12 @@ debug_alloc(ErtsAlcType_t type, void *extra, Uint size)
 
 
 static void *
-debug_realloc(ErtsAlcType_t type, void *extra, void *ptr, Uint size)
+debug_realloc(ErtsAlcType_t type, void *extra, void *ptr, size_t size)
 {
     ErtsAllocatorFunctions_t *real_af = (ErtsAllocatorFunctions_t *) extra;
     ErtsAlcType_t n;
-    Uint dsize;
-    Uint old_size;
+    size_t dsize;
+    size_t old_size;
     void *dptr;
     void *res;
 
@@ -4030,15 +4094,15 @@ debug_realloc(ErtsAlcType_t type, void *extra, void *ptr, Uint size)
     if (ptr && old_size > size)
 	sys_memset((void *) (((char *) ptr) + size),
 		   0xf,
-		   sizeof(Uint) + old_size - size);
+                   sizeof(size_t) + old_size - size);
 
     res = (*real_af->realloc)(type, real_af->extra, dptr, dsize);
 
     res = set_memory_fence(res, size, n);
 
 #ifdef PRINT_OPS
-    fprintf(stderr, "0x%lx = realloc(%s, 0x%lx, %lu)\r\n",
-	    (Uint) res, ERTS_ALC_N2TD(n), (Uint) ptr, size);
+    fprintf(stderr, "0x%p = realloc(%s, 0x%p, %zu)\r\n",
+            res, ERTS_ALC_N2TD(n), ptr, size);
 #endif
 
     return res;
@@ -4050,7 +4114,7 @@ debug_free(ErtsAlcType_t type, void *extra, void *ptr)
     ErtsAllocatorFunctions_t *real_af = (ErtsAllocatorFunctions_t *) extra;
     ErtsAlcType_t n;
     void *dptr;
-    Uint size;
+    size_t size;
     int free_pattern;
 
     n = ERTS_ALC_T2N(type);
@@ -4068,7 +4132,7 @@ debug_free(ErtsAlcType_t type, void *extra, void *ptr)
     (*real_af->free)(type, real_af->extra, dptr);
 
 #ifdef PRINT_OPS
-    fprintf(stderr, "free(%s, 0x%lx)\r\n", ERTS_ALC_N2TD(n), (Uint) ptr);
+    fprintf(stderr, "free(%s, 0x%p)\r\n", ERTS_ALC_N2TD(n), ptr);
 #endif
 
 #ifdef HARD_DEBUG

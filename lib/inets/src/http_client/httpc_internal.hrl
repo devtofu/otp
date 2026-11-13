@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2005-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2005-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -52,6 +54,9 @@
 	  %% true if auto redirect on 30x response
 	  autoredirect = true :: boolean(),
 
+          %% limits the maximum wait time before a retry
+          autoretry = infinity :: timeout(),
+
 	  %% ssl socket options
 	  ssl = [],
 
@@ -87,7 +92,8 @@
 	 ip                    = default, % specify local interface
 	 port                  = default, % specify local port
 	 socket_opts           = [],      % other socket options
-	 unix_socket           = undefined % Local unix socket
+         unix_socket           = undefined, % Local unix socket
+         max_connections_open  = infinity   % Maximum number of open handlers
 	}
        ).
 -type options() :: #options{}.
@@ -107,7 +113,7 @@
 	  content,       % {ContentType, Body} - Current HTTP request
 	  settings      :: http_options(), % User defined settings
 	  abs_uri,       % string() ex: "http://www.erlang.org"
-	  userinfo,      % string() - optinal "<userinfo>@<host>:<port>"
+	  userinfo,      % string() - optional "<userinfo>@<host>:<port>"
 	  stream,	 % boolean() - stream async reply?
 	  headers_as_is, % boolean() - workaround for servers that does
 			 % not honor the http standard, can also be used 
@@ -117,7 +123,9 @@
 	  timer         :: undefined | reference(),
 	  socket_opts,   % undefined | [socket_option()]
 	  unix_socket,   % undefined | string()
-	  ipv6_host_with_brackets % boolean()
+	  ipv6_host_with_brackets, % boolean()
+	  request_options :: undefined | proplists:proplist(),
+          retried = false :: boolean() % indicates whether the request was already retried
 	}
        ).
 -type request() :: #request{}.
@@ -127,7 +135,7 @@
 	  %% {{Host, Port}, HandlerPid}
 	  id, 
 
-	  client_close :: 'undefined' | boolean(),
+	  client_close = false :: boolean(),
 
 	  %% http (HTTP/TCP) | https (HTTP/SSL/TCP)
 	  scheme, 

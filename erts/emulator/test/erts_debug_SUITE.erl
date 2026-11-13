@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2005-2020. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2005-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -23,28 +25,67 @@
 -include_lib("common_test/include/ct_event.hrl").
 
 -export([all/0, suite/0, groups/0,
-         test_size/1,flat_size_big/1,df/1,term_type/1,
+         init_per_testcase/2, end_per_testcase/2,
+         test_size/1,flat_size_big/1,flat_size_maps/1,df/1,term_type/1,
          instructions/1, stack_check/1, alloc_blocks_size/1,
+         t_copy_shared/1,
          interpreter_size_bench/1]).
 
 -export([do_alloc_blocks_size/0]).
+
 
 suite() ->
     [{ct_hooks,[ts_install_cth]},
      {timetrap, {minutes, 2}}].
 
 all() -> 
-    [test_size, flat_size_big, df, instructions, term_type,
+    [test_size, flat_size_big, flat_size_maps, df, instructions, term_type,
+     t_copy_shared,
      stack_check, alloc_blocks_size].
 
 groups() -> 
     [{interpreter_size_bench, [], [interpreter_size_bench]}].
+
+init_per_testcase(_TestCase, Config) ->
+    Config.
+end_per_testcase(_TestCase, Config) ->
+    erts_test_utils:ept_check_leaked_nodes(Config).
 
 interpreter_size_bench(_Config) ->
     Size = erts_debug:interpreter_size(),
     ct_event:notify(#event{name=benchmark_data,
                            data=[{value,Size}]}),
     {comment,integer_to_list(Size)++" bytes"}.
+
+flat_size_maps(Config) when is_list(Config) ->
+    Shared = lists:seq(1, 2),
+    3 = erts_debug:flat_size(#{}),
+    10 = erts_debug:flat_size(#{1 => Shared}),
+    16 = erts_debug:flat_size(#{1 => Shared, 2 => Shared}),
+    Nested = lists:foldl(fun(_, Acc) -> #{1 => Acc} end,
+                        Shared, lists:seq(1, 100)),
+    604 = erts_debug:flat_size(Nested),
+    Binary = binary:copy(<<42>>, 256),
+    Values = [atom, [], {}, [a | b], {a, Shared}, Binary,
+              <<3:5>>, 1 bsl 100, fun() -> Shared end, #{a => Shared}],
+    Maps = [maps:from_list([{I, Value} || I <- lists:seq(1, N)]) ||
+               N <- [0, 1, 2, 3, 16, 31, 32, 33, 64], Value <- Values],
+    Tab = ets:new(flat_size_maps, [set, private]),
+    try
+        lists:foreach(
+          fun(Term) ->
+                  Size = erts_debug:flat_size(Term),
+                  true = ets:insert(Tab, {key, Term}),
+                  [{key, Copied}] = ets:lookup(Tab, key),
+                  true = Term =:= Copied,
+                  Size = erts_debug:flat_size(Copied),
+                  true = erlang:garbage_collect(),
+                  Size = erts_debug:flat_size(Term)
+          end, [Nested | Maps])
+    after
+        ets:delete(Tab)
+    end,
+    ok.
 
 %% White box testing of term heap sizes
 test_size(Config) when is_list(Config) ->
@@ -55,12 +96,12 @@ test_size(Config) when is_list(Config) ->
     0 = do_test_size([]),
     0 = do_test_size(42),
     ConsCellSz = do_test_size(ConsCell1),
-    1 = do_test_size({}),
+    0 = do_test_size({}),
     2 = do_test_size({[]}),
     3 = do_test_size({a,b}),
     7 = do_test_size({a,[b,c]}),
     8 = do_test_size(#{b => 2,c => 3}),
-    4 = do_test_size(#{}),
+    3 = do_test_size(#{}),
     32 = do_test_size(#{b => 2,c => 3,txt => "hello world"}),
 
     true = do_test_size(maps:from_list([{I,I}||I<-lists:seq(1,256)])) >= map_size_lower_bound(256),
@@ -73,7 +114,10 @@ test_size(Config) when is_list(Config) ->
 
     %% Fun environment size = 0 (the smallest fun possible)
     SimplestFun = fun() -> ok end,
-    FunSz0 = 6,
+
+    %% Funs without environment occupy 2 words, and are stored off-heap as long
+    %% as their defining module is loaded.
+    FunSz0 = 2,
     FunSz0 = do_test_size(SimplestFun),
 
     %% Fun environment size = 1
@@ -86,6 +130,8 @@ test_size(Config) when is_list(Config) ->
 
     FunSz1 = do_test_size(fun() -> ConsCell1 end) - do_test_size(ConsCell1),
 
+    %% External funs, which always lack environment, occupy 2 words and are
+    %% always stored off-heap.
     2 = do_test_size(fun lists:sort/1),
 
     Arch = 8 * erlang:system_info({wordsize, external}),
@@ -112,9 +158,9 @@ test_size(Config) when is_list(Config) ->
 	{32, 18} -> ok;
 	{64, 10} -> ok
     end,
-    6 = do_test_size(<<0:(8*65)>>),    % ProcBin
-    8 = do_test_size(<<5:7>>),         % ErlSubBin + ErlHeapBin
-    11 = do_test_size(<<0:(8*80+1)>>), % ErlSubBin + ProcBin
+    8 = do_test_size(<<0:(8*65)>>),    % ErlSubBits + BinRef
+    3 = do_test_size(<<5:7>>),         % ErlHeapBits
+    8 = do_test_size(<<0:(8*80+1)>>),  % ErlSubBits + BinRef
 
     %% Test shared data structures.
     do_test_size([ConsCell1|ConsCell1],
@@ -176,8 +222,8 @@ term_type(Config) when is_list(Config) ->
           {hfloat, -1.0e18},
 
           {heap_binary, <<1,2,3>>},
-          {refc_binary, <<0:(8*80)>>},
-          {sub_binary,  <<5:7>>},
+          {sub_binary, <<0:(8*80)>>},
+          {heap_binary, <<5:7>>},
 
           {flatmap, #{ a => 1}},
           {hashmap, maps:from_list([{I,I}||I <- lists:seq(1,76)])},
@@ -256,29 +302,21 @@ instructions(Config) when is_list(Config) ->
 
 alloc_blocks_size(Config) when is_list(Config) ->
     F = fun(Args) ->
-                Node = start_slave(Args),
+                {ok, Peer, Node} = ?CT_PEER(Args),
                 ok = rpc:call(Node, ?MODULE, do_alloc_blocks_size, []),
-                true = test_server:stop_node(Node)
+                peer:stop(Peer)
         end,
     case test_server:is_asan() of
-	false -> F("+Meamax");
+	false -> F(["+Meamax"]);
 	true -> skip
     end,
-    F("+Meamin"),
-    F(""),
+    F(["+Meamin"]),
+    F([]),
     ok.
 
 do_alloc_blocks_size() ->
     _ = erts_debug:alloc_blocks_size(binary_alloc),
     ok.
-
-start_slave(Args) ->
-    Name = ?MODULE_STRING ++ "_slave",
-    Pa = filename:dirname(code:which(?MODULE)),
-    {ok, Node} = test_server:start_node(list_to_atom(Name),
-                                        slave,
-                                        [{args, "-pa " ++ Pa ++ " " ++ Args}]),
-    Node.
 
 id(I) ->
     I.
@@ -291,3 +329,131 @@ mk_ext_port({NodeName, Creation}, Number) ->
 
 mk_ext_ref({NodeName, Creation}, Numbers) ->
     erts_test_utils:mk_ext_ref({NodeName, Creation}, Numbers).
+
+
+t_copy_shared(_Config) ->
+    rand:seed(default),
+    io:format("*** SEED: ~p ***\n", [rand:export_seed()]),
+
+    [copy_shared_term_1(N div 10, CL) || N <- lists:seq(1,100),
+                                         CL <- [false, true]],
+    ok.
+
+copy_shared_term_1(Size, CopyLit) ->
+    Term = rand_term(Size),
+
+    %% Note: Printing Term may suppress test failure
+    %%       as it sends a copy to io-server.
+    %%io:format("rand_term(~p): ~p\n", [Size, printable(Term)]),
+
+    Binary = term_to_binary(Term),
+    Copy = erts_debug:copy_shared(Term, CopyLit),
+    test_eq(Term, Copy),
+    copy_shared_term_2(Copy, Binary).
+
+copy_shared_term_2(Copy, Binary) ->
+    erlang:garbage_collect(),
+    BinCopy = binary_to_term(Binary),
+    test_eq(Copy, BinCopy),
+    ok.
+
+test_eq(A, B) ->
+    case A of
+        B -> ok;
+        _ -> test_eq_fail("FAILED MATCH", A, B)
+    end,
+    case A == B of
+        true -> ok;
+        false -> test_eq_fail("FAILED EQUALITY", A, B)
+    end.
+
+test_eq_fail(Error, A, B) ->
+    io:format("~s:\n\nA = ~p\n\nB = ~p\n",
+              [Error, printable(A), printable(B)]),
+    ct:fail(Error).
+
+rand_term(Size) ->
+    F = rand:uniform(100), % to produce non-literals
+    Big = 666_701_523_687_345_689_643 * F,
+    MagicRef = atomics:new(10,[]),
+    Leafs = {atom, 42, 42.17*F,
+             Big, -Big,
+             [], {}, #{},
+             "literal cons",
+             {"literal boxed"},
+             fun lists:sort/1,
+             fun() -> F end,
+             self(),
+             lists:last(erlang:ports()),
+             make_ref(),
+             MagicRef,
+             <<F:(8*10)>>,    % HeapBin
+             <<F:(8*65)>>,    % ProcBin
+             <<F:7>>,         % SubBin + HeapBin
+             <<F:(8*80+1)>>,  % SubBin + ProcBin
+             mk_ext_pid({a@b, 17}, 17, 42),
+             mk_ext_port({a@b, 21}, 13),
+             mk_ext_ref({a@b, 42}, [42, 19, 11])},
+    rand_term(Leafs, Size).
+
+rand_term(Leafs, Arity) when Arity > 0 ->
+    Length = rand:uniform(Arity),
+    List = [rand_term(Leafs, Arity-Length) || _ <- lists:seq(1,Length)],
+    case rand:uniform(6) of
+        1 -> List;
+        2 -> list_to_improper_list(List);
+        3 -> list_to_tuple(List);
+        4 -> list_to_flatmap(List);
+        5 -> list_to_hashmap(List);
+        6 -> list_to_fun(List)
+    end;
+rand_term(Leafs, 0) ->
+    element(rand:uniform(size(Leafs)), Leafs).
+
+list_to_improper_list([A,B|T]) ->
+    T ++ [A|B];
+list_to_improper_list([H]) ->
+    [[]|H].
+
+list_to_flatmap(List) ->
+    list_to_map(List, #{}).
+
+list_to_hashmap(List) ->
+    HashMap = #{1=>1, 2=>2, 3=>3, 4=>4, 5=>5, 6=>6, 7=>7, 8=>8, 9=>9,10=>0,
+                11=>1,12=>2,13=>3,14=>4,15=>5,16=>6,17=>7,18=>8,19=>9,20=>0,
+                21=>1,22=>2,23=>3,24=>4,25=>5,26=>6,27=>7,28=>8,29=>9,30=>0,
+                31=>1,32=>2,33=>3},
+    list_to_map(List, HashMap).
+
+list_to_map([], Map) ->
+    Map;
+list_to_map([K], Map) ->
+    Map#{K => K};
+list_to_map([K,V|T], Map) ->
+    list_to_map(T, Map#{K => V}).
+
+list_to_fun([X]) ->
+    fun(A) -> A + X end;
+list_to_fun([X, Y]) ->
+    fun(A) -> A + X + Y end;
+list_to_fun([X, Y | T]) ->
+    fun(A) -> [A+X+Y | T] end.
+
+
+%% Convert local funs to maps to show fun environment
+printable(Fun) when is_function(Fun) ->
+    case erlang:fun_info(Fun, type) of
+        {type,local} ->
+            {env, Env} = erlang:fun_info(Fun, env),
+            #{'fun' => [printable(T) || T <- Env]};
+        {type,external} ->
+            Fun
+    end;
+printable([H|T]) ->
+    [printable(H)|printable(T)];
+printable(Tuple) when is_tuple(Tuple) ->
+    list_to_tuple(printable(tuple_to_list(Tuple)));
+printable(Map) when is_map(Map) ->
+    maps:from_list(printable(maps:to_list(Map)));
+printable(Leaf) ->
+    Leaf.

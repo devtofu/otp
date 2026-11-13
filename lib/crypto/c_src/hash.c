@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2010-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2010-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +22,7 @@
 
 #include "hash.h"
 #include "digest.h"
+#include "info.h"
 
 #ifdef HAVE_MD5
 #  define MD5_CTX_LEN       (sizeof(MD5_CTX))
@@ -48,9 +51,10 @@ static void evp_md_ctx_dtor(ErlNifEnv* env, struct evp_md_ctx *ctx) {
 }
 #endif
 
-int init_hash_ctx(ErlNifEnv* env) {
+int init_hash_ctx(ErlNifEnv* env, ErlNifBinary* rt_buf) {
 #if OPENSSL_VERSION_NUMBER >= PACKED_OPENSSL_VERSION_PLAIN(1,0,0)
-    evp_md_ctx_rtype = enif_open_resource_type(env, NULL, "EVP_MD_CTX",
+    evp_md_ctx_rtype = enif_open_resource_type(env, NULL,
+                                               resource_name("EVP_MD_CTX", rt_buf),
                                                (ErlNifResourceDtor*) evp_md_ctx_dtor,
                                                ERL_NIF_RT_CREATE|ERL_NIF_RT_TAKEOVER,
                                                NULL);
@@ -71,25 +75,26 @@ ERL_NIF_TERM hash_info_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {/* (Type) */
     struct digest_type_t *digp = NULL;
     const EVP_MD         *md;
-    ERL_NIF_TERM         ret;
+    ERL_NIF_TERM keys[3] = { atom_type, atom_size, atom_block_size };
+    ERL_NIF_TERM values[3];
+    ERL_NIF_TERM ret;
+    int ok;
 
     ASSERT(argc == 1);
 
     if ((digp = get_digest_type(argv[0])) == NULL)
         return enif_make_badarg(env);
+    if (DIGEST_FORBIDDEN_IN_FIPS(digp))
+        return RAISE_NOTSUP(env);
 
     if ((md = digp->md.p) == NULL)
-        return atom_notsup;
+        return RAISE_NOTSUP(env);
 
-    ret = enif_make_new_map(env);
-
-    enif_make_map_put(env, ret, atom_type,
-        enif_make_int(env, EVP_MD_type(md)), &ret);
-    enif_make_map_put(env, ret, atom_size,
-        enif_make_int(env, EVP_MD_size(md)), &ret);
-    enif_make_map_put(env, ret, atom_block_size,
-        enif_make_int(env, EVP_MD_block_size(md)), &ret);
-
+    values[0] = enif_make_int(env, EVP_MD_type(md));
+    values[1] = enif_make_int(env, EVP_MD_size(md));
+    values[2] = enif_make_int(env, EVP_MD_block_size(md));
+    ok = enif_make_map_from_arrays(env, keys, values, 3, &ret);
+    ASSERT(ok); (void)ok;
     return ret;
 }
 
@@ -102,34 +107,60 @@ ERL_NIF_TERM hash_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
     unsigned             ret_size;
     unsigned char        *outp;
 
-    ASSERT(argc == 2);
-
     if ((digp = get_digest_type(argv[0])) == NULL)
-        goto bad_arg;
-    if (!enif_inspect_iolist_as_binary(env, argv[1], &data))
-        goto bad_arg;
-
+        return EXCP_BADARG_N(env, 0, "Bad digest type");
+    if (DIGEST_FORBIDDEN_IN_FIPS(digp))
+        return EXCP_NOTSUP_N(env, 0, "Bad digest type in FIPS");
     if ((md = digp->md.p) == NULL)
-        goto err;
+        return EXCP_NOTSUP_N(env, 0, "Digest type not supported in this cryptolib");
+
+    if (!enif_inspect_iolist_as_binary(env, argv[1], &data))
+        return EXCP_BADARG_N(env, 1, "Not iolist");
+
+#if OPENSSL_VERSION_NUMBER >= PACKED_OPENSSL_VERSION_PLAIN(3,4,0)
+    /* Set xoflen for SHAKE digests if needed */
+    if (digp->xof_default_length) {
+        EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+        OSSL_PARAM params[2];
+
+        if (!ctx) {
+            return EXCP_ERROR(env, "EVP_MD_CTX_new failed");
+        }
+        params[0] = OSSL_PARAM_construct_uint("xoflen", &digp->xof_default_length);
+        params[1] = OSSL_PARAM_construct_end();
+        if (EVP_DigestInit_ex2(ctx, md, params) != 1) {
+            assign_goto(ret, done, EXCP_ERROR(env, "EVP_DigestInit failed"));
+        }
+        ret_size = digp->xof_default_length;
+        if ((outp = enif_make_new_binary(env, ret_size, &ret)) == NULL) {
+            assign_goto(ret, done, EXCP_ERROR(env, "Can't allocate binary"));
+        }
+        if (EVP_DigestUpdate(ctx, data.data, data.size) != 1) {
+            assign_goto(ret, done, EXCP_ERROR(env, "EVP_DigestUpdate failed"));
+        }
+        if (EVP_DigestFinalXOF(ctx, outp, ret_size) != 1) {
+            assign_goto(ret, done, EXCP_ERROR(env, "EVP_DigestFinalXOF failed"));
+        }
+        CONSUME_REDS(env, data);
+    done:
+        EVP_MD_CTX_free(ctx);
+        return ret;
+    }
+#endif
 
     ret_size = (unsigned)EVP_MD_size(md);
     ASSERT(0 < ret_size && ret_size <= EVP_MAX_MD_SIZE);
 
     if ((outp = enif_make_new_binary(env, ret_size, &ret)) == NULL)
-        goto err;
+        return EXCP_ERROR(env, "Can't allocate binary");
+
     if (EVP_Digest(data.data, data.size, outp, &ret_size, md, NULL) != 1)
-        goto err;
+        return EXCP_ERROR(env, "Low-level call failed");
 
     ASSERT(ret_size == (unsigned)EVP_MD_size(md));
 
     CONSUME_REDS(env, data);
     return ret;
-
- bad_arg:
-    return enif_make_badarg(env);
-
- err:
-    return atom_notsup;
 }
 
 #if OPENSSL_VERSION_NUMBER >= PACKED_OPENSSL_VERSION_PLAIN(1,0,0)
@@ -140,28 +171,37 @@ ERL_NIF_TERM hash_init_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
     struct evp_md_ctx    *ctx = NULL;
     ERL_NIF_TERM         ret;
 
-    ASSERT(argc == 1);
-
     if ((digp = get_digest_type(argv[0])) == NULL)
-        goto bad_arg;
+        return EXCP_BADARG_N(env, 0, "Bad digest type");
+
+    if (DIGEST_FORBIDDEN_IN_FIPS(digp))
+        return EXCP_NOTSUP_N(env, 0, "Digest type not supported in FIPS");
     if (digp->md.p == NULL)
-        goto err;
+        return EXCP_NOTSUP_N(env, 0, "Unsupported digest type");
 
     if ((ctx = enif_alloc_resource(evp_md_ctx_rtype, sizeof(struct evp_md_ctx))) == NULL)
-        goto err;
+        return EXCP_ERROR(env, "Can't allocate nif resource");
     if ((ctx->ctx = EVP_MD_CTX_new()) == NULL)
-        goto err;
+        assign_goto(ret, done, EXCP_ERROR(env, "Low-level call EVP_MD_CTX_new failed"));
     if (EVP_DigestInit(ctx->ctx, digp->md.p) != 1)
-        goto err;
+        assign_goto(ret, done, EXCP_ERROR(env, "Low-level call EVP_DigestInit failed"));
+
+#if OPENSSL_VERSION_NUMBER >= PACKED_OPENSSL_VERSION_PLAIN(3,4,0)
+    /*
+     * The default digest length for shake128 and shake256 was removed
+     * in OpenSSL 3.4, so we set them to be backward compatible with ourself.
+     */
+    if (digp->xof_default_length) {
+        OSSL_PARAM params[2];
+        params[0] = OSSL_PARAM_construct_uint("xoflen", &digp->xof_default_length);
+        params[1] = OSSL_PARAM_construct_end();
+        if (!EVP_MD_CTX_set_params(ctx->ctx, params)) {
+            assign_goto(ret, done, EXCP_ERROR(env, "Can't set param xoflen"));
+        }
+    }
+#endif
 
     ret = enif_make_resource(env, ctx);
-    goto done;
-
- bad_arg:
-    return enif_make_badarg(env);
-
- err:
-    ret = atom_notsup;
 
  done:
     if (ctx)
@@ -175,31 +215,23 @@ ERL_NIF_TERM hash_update_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]
     ErlNifBinary data;
     ERL_NIF_TERM ret;
 
-    ASSERT(argc == 2);
-
     if (!enif_get_resource(env, argv[0], evp_md_ctx_rtype, (void**)&ctx))
-        goto bad_arg;
+        return EXCP_BADARG_N(env, 0, "Bad state");
+
     if (!enif_inspect_iolist_as_binary(env, argv[1], &data))
-        goto bad_arg;
+        return EXCP_BADARG_N(env, 1, "Not iolist");
 
     if ((new_ctx = enif_alloc_resource(evp_md_ctx_rtype, sizeof(struct evp_md_ctx))) == NULL)
-        goto err;
+        return EXCP_ERROR(env, "Can't allocate nif resource");
     if ((new_ctx->ctx = EVP_MD_CTX_new()) == NULL)
-        goto err;
+        assign_goto(ret, done, EXCP_ERROR(env, "Low-level call EVP_MD_CTX_new failed"));
     if (EVP_MD_CTX_copy(new_ctx->ctx, ctx->ctx) != 1)
-        goto err;
+        assign_goto(ret, done, EXCP_ERROR(env, "Low-level call EVP_MD_CTX_copy failed"));
     if (EVP_DigestUpdate(new_ctx->ctx, data.data, data.size) != 1)
-        goto err;
+        assign_goto(ret, done, EXCP_ERROR(env, "Low-level call EVP_DigestUpdate failed"));
 
     ret = enif_make_resource(env, new_ctx);
     CONSUME_REDS(env, data);
-    goto done;
-
- bad_arg:
-    return enif_make_badarg(env);
-
- err:
-    ret = atom_notsup;
 
  done:
     if (new_ctx)
@@ -218,28 +250,21 @@ ERL_NIF_TERM hash_final_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
     ASSERT(argc == 1);
 
     if (!enif_get_resource(env, argv[0], evp_md_ctx_rtype, (void**)&ctx))
-        goto bad_arg;
+        return EXCP_BADARG_N(env, 0, "Bad state");
 
     ret_size = (unsigned)EVP_MD_CTX_size(ctx->ctx);
     ASSERT(0 < ret_size && ret_size <= EVP_MAX_MD_SIZE);
 
     if ((new_ctx = EVP_MD_CTX_new()) == NULL)
-        goto err;
+        assign_goto(ret, done, EXCP_ERROR(env, "Low-level call EVP_MD_CTX_new failed"));
     if (EVP_MD_CTX_copy(new_ctx, ctx->ctx) != 1)
-        goto err;
+        assign_goto(ret, done, EXCP_ERROR(env, "Low-level call EVP_MD_CTX_copy failed"));
     if ((outp = enif_make_new_binary(env, ret_size, &ret)) == NULL)
-        goto err;
+        assign_goto(ret, done, EXCP_ERROR(env, "Can't make a new binary"));
     if (EVP_DigestFinal(new_ctx, outp, &ret_size) != 1)
-        goto err;
+        assign_goto(ret, done, EXCP_ERROR(env, "Low-level call EVP_DigestFinal failed"));
 
     ASSERT(ret_size == (unsigned)EVP_MD_CTX_size(ctx->ctx));
-    goto done;
-
- bad_arg:
-    return enif_make_badarg(env);
-
- err:
-    ret = atom_notsup;
 
  done:
     if (new_ctx)
@@ -261,9 +286,12 @@ ERL_NIF_TERM hash_init_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
     ASSERT(argc == 1);
 
     if ((digp = get_digest_type(argv[0])) == NULL)
-        goto bad_arg;
+        return EXCP_BADARG_N(env, 0, "Bad digest type");
+    
+    if (DIGEST_FORBIDDEN_IN_FIPS(digp))
+        return EXCP_NOTSUP_N(env, 0, "Digest type not supported in FIPS");
     if (digp->md.p == NULL)
-        goto err;
+        return EXCP_NOTSUP_N(env, 0, "Unsupported digest type");
 
     switch (EVP_MD_type(digp->md.p))
     {
@@ -314,24 +342,18 @@ ERL_NIF_TERM hash_init_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
         break;
 #endif
     default:
-        goto err;
+        return EXCP_NOTSUP_N(env, 0, "Unsupported digest type");
     }
     ASSERT(ctx_size);
     ASSERT(ctx_init);
 
     if ((outp = enif_make_new_binary(env, ctx_size, &ctx)) == NULL)
-        goto err;
+        return EXCP_ERROR(env, "Can't allocate binary");
 
     if (ctx_init(outp) != 1)
-        goto err;
+        return EXCP_ERROR(env, "Can't init ctx");
 
     return enif_make_tuple2(env, argv[0], ctx);
-
- bad_arg:
-    return enif_make_badarg(env);
-
- err:
-    return atom_notsup;
 }
 
 ERL_NIF_TERM hash_update_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
@@ -346,21 +368,21 @@ ERL_NIF_TERM hash_update_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]
     size_t               ctx_size   = 0;
     update_fun           ctx_update = 0;
 
-    ASSERT(argc == 2);
-
     if (!enif_get_tuple(env, argv[0], &arity, &tuple))
-        goto bad_arg;
+        return EXCP_BADARG_N(env, 0, "Bad state");
     if (arity != 2)
-        goto bad_arg;
+        return EXCP_BADARG_N(env, 0, "Bad state");
     if ((digp = get_digest_type(tuple[0])) == NULL)
-        goto bad_arg;
-    if (!enif_inspect_binary(env, tuple[1], &ctx))
-        goto bad_arg;
-    if (!enif_inspect_iolist_as_binary(env, argv[1], &data))
-        goto bad_arg;
-
+        return EXCP_BADARG_N(env, 0, "Bad state");
+    if (DIGEST_FORBIDDEN_IN_FIPS(digp))
+        return EXCP_BADARG_N(env, 0, "Bad state");
     if (digp->md.p == NULL)
-        goto err;
+        return EXCP_BADARG_N(env, 0, "Bad state");
+    if (!enif_inspect_binary(env, tuple[1], &ctx))
+        return EXCP_BADARG_N(env, 0, "Bad state");
+    
+    if (!enif_inspect_iolist_as_binary(env, argv[1], &data))
+        return EXCP_BADARG_N(env, 0, "Bad data");
 
     switch (EVP_MD_type(digp->md.p))
     {
@@ -411,29 +433,24 @@ ERL_NIF_TERM hash_update_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]
         break;
 #endif
     default:
-        goto err;
+        return EXCP_BADARG_N(env, 0, "Bad state");
     }
     ASSERT(ctx_size);
     ASSERT(ctx_update);
 
     if (ctx.size != ctx_size)
-        goto bad_arg;
+        return EXCP_BADARG_N(env, 0, "Bad state");
 
     if ((ctx_buff = enif_make_new_binary(env, ctx_size, &new_ctx)) == NULL)
-        goto err;
+        return EXCP_ERROR(env, "Can't allocate binary");
+
     memcpy(ctx_buff, ctx.data, ctx_size);
 
     if (ctx_update(ctx_buff, data.data, data.size) != 1)
-        goto err;
+        return EXCP_ERROR(env, "Can't update");
 
     CONSUME_REDS(env, data);
     return enif_make_tuple2(env, tuple[0], new_ctx);
-
- bad_arg:
-    return enif_make_badarg(env);
-
- err:
-    return atom_notsup;
 }
 
 ERL_NIF_TERM hash_final_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
@@ -450,19 +467,19 @@ ERL_NIF_TERM hash_final_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
     final_fun            ctx_final = 0;
     unsigned char        *outp;
 
-    ASSERT(argc == 1);
-
     if (!enif_get_tuple(env, argv[0], &arity, &tuple))
-        goto bad_arg;
+        return EXCP_BADARG_N(env, 0, "Bad state");
     if (arity != 2)
-        goto bad_arg;
+        return EXCP_BADARG_N(env, 0, "Bad state");
     if ((digp = get_digest_type(tuple[0])) == NULL)
-        goto bad_arg;
-    if (!enif_inspect_binary(env, tuple[1], &ctx))
-        goto bad_arg;
-
+        return EXCP_BADARG_N(env, 0, "Bad state");
+    if (DIGEST_FORBIDDEN_IN_FIPS(digp))
+        return EXCP_BADARG_N(env, 0, "Bad state");
     if ((md = digp->md.p) == NULL)
-        goto err;
+        return EXCP_BADARG_N(env, 0, "Bad state");
+
+    if (!enif_inspect_binary(env, tuple[1], &ctx))
+        return EXCP_BADARG_N(env, 0, "Bad data");
 
     switch (EVP_MD_type(md))
     {
@@ -513,32 +530,24 @@ ERL_NIF_TERM hash_final_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
         break;
 #endif
     default:
-        goto err;
+        return EXCP_BADARG_N(env, 0, "Bad state");
     }
     ASSERT(ctx_size);
     ASSERT(ctx_final);
 
     if (ctx.size != ctx_size)
-        goto bad_arg;
+        return EXCP_BADARG_N(env, 0, "Bad state");
 
     if ((new_ctx = enif_alloc(ctx_size)) == NULL)
-        goto err;
+        return EXCP_ERROR(env, "Can't allocate");
 
     memcpy(new_ctx, ctx.data, ctx_size);
 
     if ((outp = enif_make_new_binary(env, (size_t)EVP_MD_size(md), &ret)) == NULL)
-        goto err;
+        assign_goto(ret, done, EXCP_ERROR(env, "Can't allocate binary"));
 
     if (ctx_final(outp, new_ctx) != 1)
-        goto err;
-
-    goto done;
-
- bad_arg:
-    return enif_make_badarg(env);
-
- err:
-    ret = atom_notsup;
+        assign_goto(ret, done, EXCP_ERROR(env, "Can't do final"));
 
  done:
     if (new_ctx)
@@ -547,3 +556,40 @@ ERL_NIF_TERM hash_final_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 }
 
 #endif  /* OPENSSL_VERSION_NUMBER < 1.0 */
+
+#if defined(HAVE_SHAKE128) || defined(HAVE_SHAKE256)
+ERL_NIF_TERM hash_final_xof_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+{/* (Context) */
+    struct evp_md_ctx   *ctx;
+    EVP_MD_CTX          *new_ctx;
+    ERL_NIF_TERM        ret;
+    unsigned char       *outp;
+    unsigned int        len;
+
+    ASSERT(argc == 2);
+    if (!enif_get_resource(env, argv[0], evp_md_ctx_rtype, (void**)&ctx))
+        return EXCP_BADARG_N(env, 0, "Bad state");
+    if (!enif_get_uint(env, argv[1], &len))
+        return EXCP_BADARG_N(env, 1, "Bad len");
+    ASSERT(0 < len);
+
+    if ((new_ctx = EVP_MD_CTX_new()) == NULL)
+        assign_goto(ret, done, EXCP_ERROR(env, "Low-level call EVP_MD_CTX_new failed"));
+    if (EVP_MD_CTX_copy(new_ctx, ctx->ctx) != 1)
+        assign_goto(ret, done, EXCP_ERROR(env, "Low-level call EVP_MD_CTX_copy failed"));
+    if ((outp = enif_make_new_binary(env, len>>3, &ret)) == NULL)
+        assign_goto(ret, done, EXCP_ERROR(env, "Can't make a new binary"));
+    if (EVP_DigestFinalXOF(new_ctx, outp, len>>3) != 1)
+        assign_goto(ret, done, EXCP_ERROR(env, "Low-level call EVP_DigestFinalXOF failed"));
+
+ done:
+    if (new_ctx)
+        EVP_MD_CTX_free(new_ctx);
+    return ret;
+}
+#else
+ERL_NIF_TERM hash_final_xof_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+{
+    return EXCP_NOTSUP(env, "Low-level EVP_DigestFinalXOF function is not supported in this cryptolib");
+}
+#endif /* defined(HAVE_SHAKE128) || defined(HAVE_SHAKE256) */

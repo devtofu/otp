@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2018-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2018-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -90,7 +92,6 @@ end_per_testcase(_TC, Config) ->
     
 
 -define(EXPECT(What, Bind),
-        Bind =
             (fun() ->
                      receive What ->
                              ct:log("~p:~p ~p got ~p",[?MODULE,?LINE,self(),What]),
@@ -105,7 +106,7 @@ end_per_testcase(_TC, Config) ->
 %%--------------------------------------------------------------------
 %% Test Cases --------------------------------------------------------
 %%--------------------------------------------------------------------
-%% Try start a subsystem whos name is not known by the server
+%% Try start a subsystem whose name is not known by the server
 noexist_subsystem(Config) ->
     C = proplists:get_value(connref, Config),
     {ok, Ch} = ssh_connection:session_channel(C, infinity),
@@ -129,20 +130,20 @@ defined_subsystem(Config) ->
     {ok, Ch1} = ssh_connection:session_channel(C, infinity),
 
     success = ssh_connection:subsystem(C, Ch1, "ch1", infinity),
-    IDsrv = ?EXPECT({{_Csrv,_Ch1srv}, {ssh_channel_up,_Ch1srv,_Csrv}}, {_Csrv,_Ch1srv}),
+    IDsrv = ?EXPECT({{Csrv,Ch1srv}, {ssh_channel_up,Ch1srv,Csrv}}, {Csrv,Ch1srv}),
 
     ok = ssh_connection:close(C, Ch1),
     ?EXPECT({IDsrv, {terminate,normal}}, []),
     ?EXPECT({ssh_cm, C, {closed,Ch1}}, []), % self() is instead of a proper channel handler
     ok.
 
-%% Try to start and stop a subsystem from a ssh_client_channel behviour
+%% Try to start and stop a subsystem from a ssh_client_channel behaviour
 subsystem_client(Config) ->
     C = proplists:get_value(connref, Config),
 
     {ok,ChRef} = ssh_chan_behaviours_client:start_link(C),
-    IDclt = ?EXPECT({{C,_Ch1clt},     {ssh_channel_up,_Ch1clt,C}},     {C,_Ch1clt}),
-    IDsrv = ?EXPECT({{_Csrv,_Ch1srv}, {ssh_channel_up,_Ch1srv,_Csrv}}, {_Csrv,_Ch1srv}),
+    IDclt = ?EXPECT({{C,Ch1clt},     {ssh_channel_up,_C1clt,C}},     {C,Ch1clt}),
+    IDsrv = ?EXPECT({{Csrv,_h1srv}, {ssh_channel_up,Ch1srv,Csrv}}, {Csrv,Ch1srv}),
 
     ok = ssh_chan_behaviours_client:stop(ChRef),
     ?EXPECT({IDclt, {terminate,normal}}, []), % From the proper channel handler

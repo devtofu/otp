@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2012-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2012-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,6 +26,7 @@
 #include "sys.h"
 #include "atom.h"
 #include "erl_printf.h"
+#include "erl_term_hashing.h"
 
 struct process;
 
@@ -63,22 +66,17 @@ erts_current_interval_acqb(erts_interval_t *icp)
  */
 void erts_silence_warn_unused_result(long unused);
 
-
 int erts_fit_in_bits_int64(Sint64);
 int erts_fit_in_bits_int32(Sint32);
 int erts_fit_in_bits_uint(Uint);
 Sint erts_list_length(Eterm);
 int erts_is_builtin(Eterm, Eterm, int);
-Uint32 make_hash2(Eterm);
-Uint32 trapping_make_hash2(Eterm, Eterm*, struct process*);
-Uint32 make_hash(Eterm);
-Uint32 make_internal_hash(Eterm, Uint32 salt);
 
 void erts_save_emu_args(int argc, char **argv);
 Eterm erts_get_emu_args(struct process *c_p);
 Eterm erts_get_ethread_info(struct process * c_p);
 
-Eterm erts_bld_atom(Uint **hpp, Uint *szp, char *str);
+Eterm erts_bld_atom(Uint **hpp, Uint *szp, const char *str);
 Eterm erts_bld_uint(Uint **hpp, Uint *szp, Uint ui);
 Eterm erts_bld_uword(Uint **hpp, Uint *szp, UWord uw);
 Eterm erts_bld_uint64(Uint **hpp, Uint *szp, Uint64 ui64);
@@ -90,25 +88,27 @@ Eterm erts_bld_tuple(Uint **hpp, Uint *szp, Uint arity, ...);
 #define erts_bld_tuple3(H,S,E1,E2,E3) erts_bld_tuple(H,S,3,E1,E2,E3)
 #define erts_bld_tuple4(H,S,E1,E2,E3,E4) erts_bld_tuple(H,S,4,E1,E2,E3,E4)
 #define erts_bld_tuple5(H,S,E1,E2,E3,E4,E5) erts_bld_tuple(H,S,5,E1,E2,E3,E4,E5)
-Eterm erts_bld_tuplev(Uint **hpp, Uint *szp, Uint arity, Eterm terms[]);
+Eterm erts_bld_tuplev(Uint **hpp, Uint *szp, Uint arity, const Eterm terms[]);
 Eterm erts_bld_string_n(Uint **hpp, Uint *szp, const char *str, Sint len);
 #define erts_bld_string(hpp,szp,str) erts_bld_string_n(hpp,szp,str,sys_strlen(str))
-Eterm erts_bld_list(Uint **hpp, Uint *szp, Sint length, Eterm terms[]);
+Eterm erts_bld_list(Uint **hpp, Uint *szp, Sint length, const Eterm terms[]);
 Eterm erts_bld_2tup_list(Uint **hpp, Uint *szp,
-			 Sint length, Eterm terms1[], Uint terms2[]);
+                         Sint length, const Eterm terms1[], const Eterm terms2[]);
 Eterm
 erts_bld_atom_uword_2tup_list(Uint **hpp, Uint *szp,
-			     Sint length, Eterm atoms[], UWord uints[]);
+                             Sint length, const Eterm atoms[], const UWord uints[]);
 Eterm
 erts_bld_atom_2uint_3tup_list(Uint **hpp, Uint *szp, Sint length,
-			      Eterm atoms[], Uint uints1[], Uint uints2[]);
+                              const Eterm atoms[],
+                              const Uint uints1[],
+                              const Uint uints2[]);
 
 void erts_init_utils(void);
 void erts_init_utils_mem(void);
 void erts_utils_sched_spec_data_init(void);
 
-erts_dsprintf_buf_t *erts_create_tmp_dsbuf(Uint);
 void erts_destroy_tmp_dsbuf(erts_dsprintf_buf_t *);
+erts_dsprintf_buf_t *erts_create_tmp_dsbuf(Uint) ERTS_ATTR_MALLOC_D(erts_destroy_tmp_dsbuf,1);
 
 int eq(Eterm, Eterm);
 
@@ -116,6 +116,7 @@ int eq(Eterm, Eterm);
 
 ERTS_GLB_INLINE Sint erts_cmp(Eterm, Eterm, int, int);
 ERTS_GLB_INLINE int erts_cmp_atoms(Eterm a, Eterm b);
+ERTS_GLB_INLINE Sint erts_cmp_flatmap_keys(Eterm, Eterm);
 
 Sint erts_cmp_compound(Eterm, Eterm, int, int);
 
@@ -187,13 +188,15 @@ Sint erts_cmp_compound(Eterm, Eterm, int, int);
 
 #define erts_float_comp(x,y) (((x)<(y)) ? -1 : (((x)==(y)) ? 0 : 1))
 
+ERTS_GLB_INLINE Uint64 erts_float_exact_sortable(const FloatDef *value);
+
 #if ERTS_GLB_INLINE_INCL_FUNC_DEF
 
 ERTS_GLB_INLINE int erts_cmp_atoms(Eterm a, Eterm b) {
     Atom *aa = atom_tab(atom_val(a));
     Atom *bb = atom_tab(atom_val(b));
 
-    byte *name_a, *name_b;
+    const byte *name_a, *name_b;
     int len_a, len_b, diff;
 
     diff = aa->ord0 - bb->ord0;
@@ -202,8 +205,8 @@ ERTS_GLB_INLINE int erts_cmp_atoms(Eterm a, Eterm b) {
         return diff;
     }
 
-    name_a = &aa->name[3];
-    name_b = &bb->name[3];
+    name_a = &erts_atom_get_name(aa)[3];
+    name_b = &erts_atom_get_name(bb)[3];
     len_a = aa->len-3;
     len_b = bb->len-3;
 
@@ -218,6 +221,22 @@ ERTS_GLB_INLINE int erts_cmp_atoms(Eterm a, Eterm b) {
     return len_a - len_b;
 }
 
+/* Provides a sortable integer from the raw bits of a floating-point number.
+ *
+ * When these are compared, they return the exact same result as a floating-
+ * point comparison of the inputs aside from the fact that -0.0 < +0.0, making
+ * it suitable for use in term equivalence operators and map key order. */
+ERTS_GLB_INLINE Uint64 erts_float_exact_sortable(const FloatDef *value) {
+    static const Uint64 sign_bit = ((Uint64)1) << 63;
+    Uint64 float_bits = value->fdw;
+
+    if (float_bits & sign_bit) {
+        return ~float_bits;
+    }
+
+    return float_bits ^ sign_bit;
+}
+
 ERTS_GLB_INLINE Sint erts_cmp(Eterm a, Eterm b, int exact, int eq_only) {
     if (is_atom(a) && is_atom(b)) {
         return erts_cmp_atoms(a, b);
@@ -229,11 +248,31 @@ ERTS_GLB_INLINE Sint erts_cmp(Eterm a, Eterm b, int exact, int eq_only) {
         GET_DOUBLE(a, af);
         GET_DOUBLE(b, bf);
 
-        return erts_float_comp(af.fd, bf.fd);
+        if (exact) {
+            Uint64 sortable_a, sortable_b;
+
+            sortable_a = erts_float_exact_sortable(&af);
+            sortable_b = erts_float_exact_sortable(&bf);
+
+            return erts_float_comp(sortable_a, sortable_b);
+        } else {
+            return erts_float_comp(af.fd, bf.fd);
+        }
     }
 
     return erts_cmp_compound(a,b,exact,eq_only);
 }
+
+/*
+ * Only to be used for the *internal* sort order of flatmap keys.
+ */
+ERTS_GLB_INLINE Sint erts_cmp_flatmap_keys(Eterm key_a, Eterm key_b) {
+    if (is_atom(key_a) && is_atom(key_b)) {
+        return key_a - key_b;
+    }
+    return erts_cmp(key_a, key_b, 1, 0);
+}
+
 
 #endif /* ERTS_GLB_INLINE_INCL_FUNC_DEF */
 

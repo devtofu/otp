@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2011-2018. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2011-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -127,6 +129,7 @@ void erts_thr_progress_init(int no_schedulers, int managed, int unmanaged);
 ErtsThrPrgrData *erts_thr_progress_register_managed_thread(
     ErtsSchedulerData *esdp, ErtsThrPrgrCallbacks *, int, int);
 void erts_thr_progress_register_unmanaged_thread(ErtsThrPrgrCallbacks *);
+void erts_thr_progress_unregister_unmanaged_thread(void);
 void erts_thr_progress_active(ErtsThrPrgrData *, int on);
 void erts_thr_progress_wakeup(ErtsThrPrgrData *,
 			      ErtsThrPrgrVal value);

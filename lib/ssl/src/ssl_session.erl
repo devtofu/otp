@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2007-2020. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2007-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -24,72 +26,102 @@
 %%----------------------------------------------------------------------
 
 -module(ssl_session).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, binary_to_term, 2}}]).
 
 -include("ssl_handshake.hrl").
 -include("ssl_internal.hrl").
 -include("ssl_api.hrl").
+-include("ssl_record.hrl").
 
 %% Internal application API
--export([is_new/2, client_select_session/4, server_select_session/5, valid_session/2, legacy_session_id/0]).
+-export([is_new/2,
+         client_select_session/5,
+         server_select_session/6,
+         valid_session/2,
+         legacy_session_id/1]).
 
--type seconds()   :: integer(). 
+-type seconds()   :: integer().
 
 %%--------------------------------------------------------------------
--spec legacy_session_id() -> ssl:session_id().
+-spec legacy_session_id(map()) -> ssl:session_id().
 %%
 %% Description: TLS-1.3 deprecates the session id but has a dummy
 %% value for it for protocol backwards-compatibility reasons.
 %% If now lower versions are configured this function can be called
 %% for a dummy value.
 %%--------------------------------------------------------------------
-legacy_session_id() ->
-    crypto:strong_rand_bytes(32).
+legacy_session_id(Opts) ->
+    case maps:get(middlebox_comp_mode, Opts, true) of
+        true  -> legacy_session_id();
+        false -> ?EMPTY_ID
+    end.
 
 %%--------------------------------------------------------------------
--spec is_new(ssl:session_id(), ssl:session_id()) -> boolean().
-%%
-%% Description: Checks if the session id decided by the server is a
-%%              new or resumed sesion id.
+-spec is_new(ssl:session_id() | #session{}, ssl:session_id()) -> boolean().
+ %%
+ %% Description: Checks if the session id decided by the server is a
+%%              new or resumed sesion id. TLS-1.3 middlebox negotiation
+%%              requies that client also needs to check "is_resumable" in
+%%              its current session data when pre TLS-1.3 version is
+%%              negotiated.
 %%--------------------------------------------------------------------
-is_new(<<>>, _) ->
+is_new(?EMPTY_ID, _) ->
     true;
 is_new(SessionId, SessionId) ->
+    false;
+is_new(#session{session_id = ?EMPTY_ID}, _) ->
+    true;
+is_new(#session{session_id = SessionId,
+                is_resumable = true}, SessionId) ->
     false;
 is_new(_ClientSuggestion, _ServerDecision) ->
     true.
 
 %%--------------------------------------------------------------------
--spec client_select_session({ssl:host(), inet:port_number(), map()}, db_handle(), atom(),
-	 #session{}) -> #session{}.
+-spec client_select_session({ssl:host(), inet:port_number(), map()},
+                            ssl_manager:db_handle(), atom(), #session{}, list()) -> #session{}.
 %%
 %% Description: Should be called by the client side to get an id
 %%              for the client hello message.
 %%--------------------------------------------------------------------
 client_select_session({_, _, #{versions := Versions,
-                               protocol := Protocol}} = ClientInfo, 
-                      Cache, CacheCb, NewSession) ->
-    
+                               protocol := Protocol} = Opts} = ClientInfo,
+                      Cache, CacheCb, NewSession, CertKeyPairs) ->
+
     RecordCb = record_cb(Protocol),
-    Version = RecordCb:lowest_protocol_version(Versions),
-    
-    case Version of
-        {3, N} when N >= 4 ->
-          NewSession#session{session_id = legacy_session_id()};
+    LVersion = RecordCb:lowest_protocol_version(Versions),
+    HVersion = RecordCb:highest_protocol_version(Versions),
+
+    case LVersion of
+        ?TLS_1_3 ->
+            %% Session reuse is not supported, do pure legacy
+            %% middlebox comp mode negotiation, by providing either
+            %% empty session id (no middle box) or random id (middle
+            %% box mode).
+            NewSession#session{session_id = legacy_session_id(Opts)};
         _ ->
-            do_client_select_session(ClientInfo, Cache, CacheCb, NewSession)  
-    end.  
+            Session =  do_client_select_session(ClientInfo, Cache, CacheCb,
+                                                NewSession, CertKeyPairs),
+            %% If TLS-1.3 is highest version and there was no previous
+            %% session id that could be reused, if TLS-1.3 is not
+            %% negotiated, possibly use random id for middle box mode
+            %% negotiation.
+            maybe_handle_middlebox(HVersion, Session, Opts)
+    end.
 
 %%--------------------------------------------------------------------
--spec server_select_session(ssl_record:ssl_version(), pid(), binary(), map(),
-                            binary())  -> {binary(), #session{} | undefined}.
+-spec server_select_session(ssl_record:ssl_version(), pid(), ssl:session_id(), map(), map(),
+                            list())  -> {binary(), #session{} | undefined}.
 %%
 %% Description: Should be called by the server side to get an id
 %%              for the client hello message.
 %%--------------------------------------------------------------------
-server_select_session(_, SessIdTracker, <<>>, _SslOpts, _Cert) ->
+server_select_session(_, SessIdTracker, ?EMPTY_ID, _HelloExt, _SslOpts, _CertKeyPairs) ->
     {ssl_server_session_cache:new_session_id(SessIdTracker), undefined};
-server_select_session(_, SessIdTracker, SuggestedId, Options, Cert) ->
-    case is_resumable(SuggestedId, SessIdTracker, Options, Cert)
+server_select_session(_, SessIdTracker, SuggestedId, HelloExt, Options, CertKeyPairs) ->
+    case is_resumable(SuggestedId, SessIdTracker, Options, HelloExt, CertKeyPairs)
     of
 	{true, Resumed} ->
 	    {SuggestedId, Resumed};
@@ -111,66 +143,75 @@ valid_session(#session{time_stamp = TimeStamp}, LifeTime) ->
 %%--------------------------------------------------------------------
 %%% Internal functions
 %%--------------------------------------------------------------------
-do_client_select_session({_, _, #{reuse_session := {SessionId, SessionData}}}, _, _, NewSession) when is_binary(SessionId) andalso
-                                                                                                      is_binary(SessionData) ->
-    try binary_to_term(SessionData, [safe]) of
-        Session ->
-            Session
+do_client_select_session({_, _, #{reuse_session := {SessionId, SessionData}}},
+                         _, _, NewSession, _) when is_binary(SessionId) andalso
+                                                   is_binary(SessionData) ->
+    try
+        Session = binary_to_term(SessionData, [safe]),
+        Session#session{is_resumable = true}
     catch
         _:_ ->
-            NewSession#session{session_id = <<>>}
+            NewSession#session{session_id = ?EMPTY_ID}
     end;
-do_client_select_session({Host, Port, #{reuse_session := SessionId}}, Cache, CacheCb, NewSession) when is_binary(SessionId)->
+do_client_select_session({Host, Port, #{reuse_session := SessionId}},
+                         Cache, CacheCb, NewSession, _) when is_binary(SessionId)->
     case CacheCb:lookup(Cache, {{Host, Port}, SessionId}) of
         undefined ->
-	    NewSession#session{session_id = <<>>};
+	    NewSession#session{session_id = ?EMPTY_ID};
 	#session{} = Session->
 	    Session
     end;
-do_client_select_session(ClientInfo, 
-                      Cache, CacheCb, #session{own_certificates = OwnCerts} = NewSession) ->
-    case select_session(ClientInfo, Cache, CacheCb, OwnCerts) of
+do_client_select_session(ClientInfo, Cache, CacheCb, NewSession, CertKeyPairs) ->
+    case select_session(ClientInfo, Cache, CacheCb, CertKeyPairs) of
         no_session ->
-            NewSession#session{session_id = <<>>};
+            NewSession#session{session_id = ?EMPTY_ID};
         Session ->
             Session
     end.
 
-select_session({_, _, #{reuse_sessions := Reuse}}, _Cache, _CacheCb, _OwnCert) when Reuse =/= true ->
+select_session({_, _, #{reuse_sessions := Reuse}}, _Cache, _CacheCb, _) when Reuse =/= true ->
     %% If reuse_sessions == false | save a new session should be created
     no_session;
-select_session({HostIP, Port, SslOpts}, Cache, CacheCb, OwnCerts) ->
+select_session({HostIP, Port, SslOpts}, Cache, CacheCb, CertKeyPairs) ->
     Sessions = CacheCb:select_session(Cache, {HostIP, Port}),
-    select_session(Sessions, SslOpts, OwnCerts).
+    select_session(Sessions, SslOpts, CertKeyPairs).
 
 select_session([], _, _) ->
     no_session;
-select_session(Sessions, #{ciphers := Ciphers}, OwnCerts) ->
+select_session(Sessions, #{ciphers := Ciphers}, CertKeyPairs) ->
     IsNotResumable =
 	fun(Session) ->
+                SessionOwnCert =
+                    case Session#session.own_certificates of
+                        [OwnCert |_] ->
+                            OwnCert;
+                        Other ->
+                            Other
+                    end,
 		not (resumable(Session#session.is_resumable) andalso
 		     lists:member(Session#session.cipher_suite, Ciphers)
-		     andalso (OwnCerts == Session#session.own_certificates))
+		     andalso (is_owncert(SessionOwnCert, CertKeyPairs)
+                              orelse (SessionOwnCert == undefined)))
  	end,
     case lists:dropwhile(IsNotResumable, Sessions) of
 	[] ->   no_session;
 	[Session | _] -> Session
     end.
 
-is_resumable(_, _, #{reuse_sessions := false}, _) ->
+is_resumable(_, _, #{reuse_sessions := false}, _, _) ->
     {false, undefined};
-is_resumable(SuggestedSessionId, SessIdTracker, #{reuse_session := ReuseFun} = Options, OwnCert) ->
+is_resumable(SuggestedSessionId, SessIdTracker,
+             #{reuse_session := ReuseFun} = Options, HelloExt, OwnCertKeyPairs) ->
     case ssl_server_session_cache:reuse_session(SessIdTracker, SuggestedSessionId) of
 	#session{cipher_suite = CipherSuite,
                  own_certificates =  [SessionOwnCert | _],
-		 compression_method = Compression,
 		 is_resumable = IsResumable,
 		 peer_certificate = PeerCert} = Session ->
 	    case resumable(IsResumable)
-		andalso (OwnCert == SessionOwnCert)
-		andalso reusable_options(Options, Session)
+		andalso is_owncert(SessionOwnCert, OwnCertKeyPairs)
+                andalso reusable_options(Options, HelloExt, Session)
 		andalso ReuseFun(SuggestedSessionId, PeerCert,
-				 Compression, CipherSuite)
+				 ?NO_COMPRESSION, CipherSuite)
 	    of
 		true  -> {true, Session};
 		false -> {false, undefined}
@@ -179,18 +220,51 @@ is_resumable(SuggestedSessionId, SessIdTracker, #{reuse_session := ReuseFun} = O
  	    {false, undefined}
     end.
 
+is_owncert(_, []) ->
+    false;
+is_owncert(SessionOwnCert, [#{certs := [SessionOwnCert | _]} | _]) ->
+    true;
+is_owncert(SessionOwnCert, [_| Rest]) ->
+    is_owncert(SessionOwnCert, Rest).
+
 resumable(new) ->
     false;
 resumable(IsResumable) ->
     IsResumable.
 
 reusable_options(#{fail_if_no_peer_cert := true,
-                   verify := verify_peer}, Session) ->
-    (Session#session.peer_certificate =/= undefined);
-reusable_options(_,_) ->
-    true.
+                   verify := verify_peer}, _, #session{peer_certificate = undefined}) ->
+    %% Can not resume session without a peer cert if current negotiation requires one.
+    false;
+reusable_options(_Opts, HelloExt, #session{sni = SessionSNI}) ->
+    %% RFC 6066 3: a server that implements SNI MUST NOT resume a session
+    %% if the server_name of the resumption request differs from the one
+    %% that established the session; it must do a full handshake instead.
+    %% Comparing the established server_name (rather than the server
+    %% certificate) also covers the case where several SNI names share
+    %% one certificate but have different client-authentication trust.
+    %% A request without SNI only matches a session established without
+    %% SNI, so ordinary (non-SNI) resumption is unaffected.
+    RequestSNI = case maps:get(sni, HelloExt, undefined) of
+                     #sni{hostname = Host} -> Host;
+                     undefined -> undefined
+                 end,
+    RequestSNI =:= SessionSNI.
 
 record_cb(tls) ->
     tls_record;
 record_cb(dtls) ->
     dtls_record.
+
+legacy_session_id() ->
+    crypto:strong_rand_bytes(32).
+
+maybe_handle_middlebox(?TLS_1_3, #session{session_id = ?EMPTY_ID} = Session, Options)->
+    case maps:get(middlebox_comp_mode, Options,true) of
+        true ->
+            Session#session{session_id = legacy_session_id()};
+        false ->
+            Session
+    end;
+maybe_handle_middlebox(_, Session, _) ->
+    Session.

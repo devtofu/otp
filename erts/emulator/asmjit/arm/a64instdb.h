@@ -1,42 +1,20 @@
-// AsmJit - Machine code generation for C++
+// This file is part of AsmJit project <https://asmjit.com>
 //
-//  * Official AsmJit Home Page: https://asmjit.com
-//  * Official Github Repository: https://github.com/asmjit/asmjit
-//
-// Copyright (c) 2008-2020 The AsmJit Authors
-//
-// This software is provided 'as-is', without any express or implied
-// warranty. In no event will the authors be held liable for any damages
-// arising from the use of this software.
-//
-// Permission is granted to anyone to use this software for any purpose,
-// including commercial applications, and to alter it and redistribute it
-// freely, subject to the following restrictions:
-//
-// 1. The origin of this software must not be misrepresented; you must not
-//    claim that you wrote the original software. If you use this software
-//    in a product, an acknowledgment in the product documentation would be
-//    appreciated but is not required.
-// 2. Altered source versions must be plainly marked as such, and must not be
-//    misrepresented as being the original software.
-// 3. This notice may not be removed or altered from any source distribution.
+// See <asmjit/core.h> or LICENSE.md for license and copyright information
+// SPDX-License-Identifier: Zlib
 
 #ifndef ASMJIT_ARM_A64INSTDB_H_INCLUDED
 #define ASMJIT_ARM_A64INSTDB_H_INCLUDED
 
-#include "../arm/a64globals.h"
+#include <asmjit/arm/a64globals.h>
 
 ASMJIT_BEGIN_SUB_NAMESPACE(a64)
 
 //! \addtogroup asmjit_a64
 //! \{
 
-//! Instruction database (ARM/THUMB/AArch64).
+//! Instruction database (AArch64).
 namespace InstDB {
-
-// ============================================================================
-// [asmjit::a64::InstDB::InstFlags]
-// ============================================================================
 
 //! Instruction flags.
 enum InstFlags : uint32_t {
@@ -49,42 +27,45 @@ enum InstFlags : uint32_t {
   //! SIMD instruction that does narrowing (Narrow).
   kInstFlagNarrow = 0x00000008u,
   //! SIMD element access of half-words can only be used with v0..15.
-  kInstFlagVH0_15 = 0x00000010u
+  kInstFlagVH0_15 = 0x00000010u,
+
+  //! Instruction uses consecutive registers if the number of operands is greater than 2.
+  kInstFlagConsecutive = 0x00000080u
 };
 
-// ============================================================================
-// [asmjit::a64::InstDB::InstInfo]
-// ============================================================================
-
-//! Instruction information (ARM/THUMB/AArch64).
+//! Instruction information (AArch64).
 struct InstInfo {
   //! Instruction encoding type.
   uint32_t _encoding : 8;
   //! Index to data specific to each encoding type.
-  uint32_t _encodingDataIndex : 8;
-  uint32_t _reserved : 2;
-  //! Index to \ref _nameData.
-  uint32_t _nameDataIndex : 14;
+  uint32_t _encoding_data_index : 8;
+  uint32_t _reserved : 16;
 
-  uint16_t _rwInfoIndex;
+  uint16_t _rw_info_index;
   uint16_t _flags;
 
   //! \name Accessors
   //! \{
 
-  inline uint32_t rwInfoIndex() const noexcept { return _rwInfoIndex; }
-  inline uint32_t flags() const noexcept { return _flags; }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG uint32_t rw_info_index() const noexcept { return _rw_info_index; }
 
-  inline bool hasFlag(uint32_t flag) const { return (_flags & flag) != 0; }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG uint32_t flags() const noexcept { return _flags; }
+
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool has_flag(uint32_t flag) const { return (_flags & flag) != 0; }
 
   //! \}
 };
 
-ASMJIT_VARAPI const InstInfo _instInfoTable[];
+ASMJIT_VARAPI const InstInfo _inst_info_table[];
 
-static inline const InstInfo& infoById(uint32_t instId) noexcept {
-  ASMJIT_ASSERT(Inst::isDefinedId(instId));
-  return _instInfoTable[instId];
+[[nodiscard]]
+static ASMJIT_INLINE const InstInfo& inst_info_by_id(InstId inst_id) noexcept {
+  inst_id &= uint32_t(InstIdParts::kRealId);
+  ASMJIT_ASSERT(Inst::is_defined_id(inst_id));
+  return _inst_info_table[inst_id];
 }
 
 } // {InstDB}

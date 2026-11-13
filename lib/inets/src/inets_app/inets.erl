@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2006-2018. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2006-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 %%
@@ -23,6 +25,30 @@
 %%----------------------------------------------------------------------
 
 -module(inets).
+-compile([{nowarn_deprecated_function, [{erlang,exit,2}]}]).
+
+-moduledoc """
+The Inets services API.
+
+This module provides the most basic API to the clients and servers that are part
+of the `Inets` application, such as start and stop.
+
+[](){: #common_data_types }
+
+### Data types
+
+Type definitions that are used more than once in this module:
+
+`service() = httpc | httpd`
+
+`property() = atom()`
+
+### See also
+
+`m:httpc`, `m:httpd`
+""".
+
+-compile([{nowarn_possibly_unsafe_function, {file, consult, 1}}]).
 
 %% API
 -export([start/0, start/1, start/2, start/3,  
@@ -34,6 +60,8 @@
 -export([versions/0,
          print_version_info/0, print_version_info/1]).
 
+-type inets_service() :: httpd | httpc.
+-type service_info() :: {inets_service(), pid(), [{profile, atom()}] | no_such_service | service_not_available}.
 
 %%====================================================================
 %% API
@@ -47,12 +75,21 @@
 %% Description: Starts the inets application. Default type
 %% is temporary. see application(3)
 %%--------------------------------------------------------------------
-start() -> 
-    application:start(inets).
+-doc(#{equiv => start/1}).
+-spec start() -> ok | {error, Reason} when Reason :: term().
+start() ->
+    application:start(inets, temporary).
 
-start(Type) -> 
+-doc """
+Starts the `Inets` application. Default type is `temporary`. See also
+`m:application`.
+""".
+-spec start(Type) -> ok | {error, Reason} when
+      Type :: application:restart_type(),
+      Reason :: term().
+start(Type) ->
+    application:ensure_all_started(ssl),
     application:start(inets, Type).
-
 
 %%--------------------------------------------------------------------
 %% Function: start(Service, ServiceConfig [, How]) -> {ok, Pid} | 
@@ -69,20 +106,60 @@ start(Type) ->
 %%
 %% Note: Dynamically started services will not be handled by
 %% application takeover and failover behavior when inets is run as a
-%% distributed application. Nor will they be automaticly restarted
+%% distributed application. Nor will they be automatically restarted
 %% when the inets application is restarted, but as long as the inets
 %% application is up and running they will be supervised and may be
 %% soft code upgraded. Services started with the option stand alone,
 %% e.i. the service is not started as part of the inets application,
 %% will lose all OTP application benefits such as soft upgrade. The
 %% stand alone service will be linked to the process that started it.
-%% In most cases some of the supervison functionallity will still be
+%% In most cases some of the supervison functionality will still be
 %% in place and in some sense the calling process has now become the
 %% top supervisor.
 %% --------------------------------------------------------------------
+-doc(#{equiv => start/3}).
+-spec start(Service, ServiceConfig) -> Result when
+      Service :: inets_service(),
+      ServiceConfig :: ConfPropList | ConfFile,
+      ConfPropList :: [{Property, Value}],
+      ConfFile :: string(),
+      Property :: term(),
+      Value :: term(),
+      Result :: {ok, pid()} | {error, term()}.
 start(Service, ServiceConfig) ->
     start_service(Service, ServiceConfig, inets).
 
+-doc """
+Dynamically starts an `Inets` service after the `Inets` application has been
+started.
+
+> #### Note {: .info }
+>
+> Dynamically started services are not handled by application takeover and
+> failover behavior when `Inets` is run as a distributed application. Nor are
+> they automatically restarted when the `Inets` application is restarted. As
+> long as the `Inets` application is operational, they are supervised and can be
+> soft code upgraded.
+>
+> A service started as `stand_alone`, that is, the service is not started as
+> part of the `Inets` application, lose all OTP application benefits, such as
+> soft upgrade. The `stand_alone`\-service is linked to the process that started
+> it. Usually some supervision functionality is still in place and in some sense
+> the calling process becomes the top supervisor.
+>
+> #### Warning {: .warning }
+> The stand_alone option is considered deprecated.
+>
+""".
+-spec start(Service, ServiceConfig, How) -> Result when
+      Service :: inets_service(),
+      ServiceConfig :: ConfPropList | ConfFile,
+      How :: inets | stand_alone,
+      ConfPropList :: [{Property, Value}],
+      ConfFile :: string(),
+      Property :: term(),
+      Value :: term(),
+      Result :: {ok, pid()} | {error, term()}.
 start(Service, ServiceConfig, How) ->
     start_service(Service, ServiceConfig, How).
 
@@ -92,7 +169,11 @@ start(Service, ServiceConfig, How) ->
 %%
 %% Description: Stops the inets application.
 %%--------------------------------------------------------------------
-stop() -> 
+-doc """
+Stops the `Inets` application. See also `m:application`.
+""".
+-spec stop() -> ok.
+stop() ->
     application:stop(inets).
 
 
@@ -104,6 +185,15 @@ stop() ->
 %% Description: Stops a started service of the inets application or takes
 %% down a stand alone "service" gracefully.
 %%--------------------------------------------------------------------
+-doc """
+Stops a started service of the `Inets` application or takes down a
+`stand_alone`\-service gracefully. When option `stand_alone` is used in start,
+only the pid is a valid argument to stop.
+""".
+-spec stop(Service, Reference) -> ok | {error, Reason} when
+      Service :: inets_service() | stand_alone,
+      Reference :: pid() | term(),
+      Reason :: term().
 stop(stand_alone, Pid) ->
     true = exit(Pid, shutdown),
     ok;
@@ -118,6 +208,14 @@ stop(Service, Pid) ->
 %% Description: Returns a list of currently running services. 
 %% Note: Services started with the stand alone option will not be listed
 %%--------------------------------------------------------------------
+-doc """
+Returns a list of currently running services.
+
+> #### Note {: .info }
+>
+> Services started as `stand_alone` are not listed.
+""".
+-spec services() -> [{inets_service(), pid()}] | {error, inets_not_started}.
 services() ->
     try lists:flatten(lists:map(fun(Module) ->
 					Module:services()
@@ -136,6 +234,15 @@ services() ->
 %% Description: Returns a list of currently running services where
 %% each service is described by a [{Property, Value}] list. 
 %%--------------------------------------------------------------------
+-doc """
+Returns a list of currently running services where each service is described by
+an `[{Option, Value}]` list. The information in the list is specific for each
+service and each service has probably its own info function that gives more
+details about the service. If specific service info returns `{error, Reason}`,
+Info will contain Reason term.
+""".
+-spec services_info() -> [service_info()]
+              | {error, inets_not_started}.
 services_info() ->
     case services() of
 	{error, inets_not_started} ->
@@ -163,10 +270,12 @@ services_info() ->
 %%              about versions (system, OS and modules). 
 %%--------------------------------------------------------------------
 
+-doc false.
 print_version_info() ->
     {ok, Versions} = inets:versions(),
     print_version_info(Versions).
 
+-doc false.
 print_version_info(Versions) when is_list(Versions) ->
     print_sys_info(Versions),
     print_os_info(Versions),
@@ -227,6 +336,7 @@ print_os_info(Versions) ->
             not_found
     end.
 
+-doc false.
 versions() ->
     App    = inets, 
     LibDir = code:lib_dir(App),
@@ -256,11 +366,9 @@ mod_version_info(Mod) ->
     {value, {app_vsn,    AppVsn}} = lists:keysearch(app_vsn,    1, Attr),
     {value, {compile,    Comp}}   = lists:keysearch(compile,    1, Info),
     {value, {version,    Ver}}    = lists:keysearch(version,    1, Comp),
-    {value, {time,       Time}}   = lists:keysearch(time,       1, Comp),
     {Mod, [{vsn,              Vsn},
            {app_vsn,          AppVsn},
-           {compiler_version, Ver},
-           {compile_time,     Time}]}.
+           {compiler_version, Ver}]}.
 
 sys_info() ->
     SysArch = string:strip(erlang:system_info(system_architecture),right,$\n),
@@ -328,22 +436,12 @@ print_mod_info({Module, Info}) ->
             _ ->
                 "Not found"
         end,
-    CompDate =
-        case key1search(compile_time, Info) of
-            {value, {Year, Month, Day, Hour, Min, Sec}} ->
-                lists:flatten(
-                  io_lib:format("~w-~2..0w-~2..0w ~2..0w:~2..0w:~2..0w",
-                                [Year, Month, Day, Hour, Min, Sec]));
-            _ ->
-                "Not found"
-        end,
     io:format("   ~w:~n"
               "      Vsn:          ~s~n"
               "      App vsn:      ~s~n"
               "      ASN.1 vsn:    ~s~n"
-              "      Compiler ver: ~s~n"
-              "      Compile time: ~s~n",
-              [Module, Vsn, AppVsn, Asn1Vsn, CompVer, CompDate]),
+              "      Compiler ver: ~s~n",
+              [Module, Vsn, AppVsn, Asn1Vsn, CompVer]),
     ok.
 
 
@@ -371,6 +469,10 @@ key1search(Key, Vals, Def) ->
 %%
 %% Description: Returns a list of supported services
 %%-------------------------------------------------------------------
+-doc """
+Returns a list of available service names.
+""".
+-spec service_names() -> [inets_service()].
 service_names() ->
     [httpc, httpd].
 
@@ -396,10 +498,12 @@ service_names() ->
 %% Note that it starts a tracer server.
 %% When Destination is the atom io (or the tuple {io, Verbosity}),
 %% all (printable) inets trace events (trace_ts events which has
-%% Severity withing Limit) will be written to stdout using io:format.
+%% Severity within Limit) will be written to stdout using io:format.
 %%
 %%-----------------------------------------------------------------
+-doc false.
 enable_trace(Level, Dest)          -> inets_trace:enable(Level, Dest).
+-doc false.
 enable_trace(Level, Dest, Service) -> inets_trace:enable(Level, Dest, Service).
 
 
@@ -409,6 +513,7 @@ enable_trace(Level, Dest, Service) -> inets_trace:enable(Level, Dest, Service).
 %% Description:
 %% This function is used to stop tracing.
 %%-----------------------------------------------------------------
+-doc false.
 disable_trace() -> inets_trace:disable().
 
 
@@ -422,6 +527,7 @@ disable_trace() -> inets_trace:disable().
 %% This function is used to change the trace level when tracing has
 %% already been started.
 %%-----------------------------------------------------------------
+-doc false.
 set_trace(Level) -> inets_trace:set_level(Level).
 
 
@@ -439,6 +545,7 @@ set_trace(Level) -> inets_trace:set_level(Level).
 %% put trace on this function.
 %%-----------------------------------------------------------------
 
+-doc false.
 report_event(Severity, Label, Service, Content) ->
     inets_trace:report_event(Severity, Label, Service, Content).
 

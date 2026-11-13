@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0
 %% 
-%% Copyright Ericsson AB 1999-2020. All Rights Reserved.
+%% Copyright Ericsson AB 1999-2025. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -26,11 +28,15 @@
 	 not_used/1, in_guard/1,
 	 mem_leak/1, coerce_to_float/1, bjorn/1, append_empty_is_same/1,
 	 huge_float_field/1, system_limit/1, badarg/1,
-	 copy_writable_binary/1, kostis/1, dynamic/1, bs_add/1,
+	 copy_writable_binary/1, kostis/1, dynamic/1,
 	 otp_7422/1, zero_width/1, bad_append/1, bs_append_overflow/1,
-         reductions/1, fp16/1]).
+         bs_append_offheap/1,
+         reductions/1, fp16/1, zero_init/1, error_info/1, little/1,
+         heap_binary_unit/1, floats/1,
+         many_segments/1]).
 
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
 suite() ->
     [{ct_hooks,[ts_install_cth]},
@@ -40,8 +46,11 @@ all() ->
     [test1, test2, test3, test4, test5, testf, not_used,
      in_guard, mem_leak, coerce_to_float, bjorn, append_empty_is_same,
      huge_float_field, system_limit, badarg,
-     copy_writable_binary, kostis, dynamic, bs_add, otp_7422, zero_width,
-     bad_append, bs_append_overflow, reductions, fp16].
+     copy_writable_binary, kostis, dynamic, otp_7422, zero_width,
+     bad_append, bs_append_overflow, bs_append_offheap,
+     reductions, fp16, zero_init,
+     error_info, little, heap_binary_unit, floats,
+     many_segments].
 
 init_per_suite(Config) ->
     Config.
@@ -49,20 +58,22 @@ init_per_suite(Config) ->
 end_per_suite(_Config) ->
     application:stop(os_mon).
 
-big(1) ->
-    57285702734876389752897683.
-
-i(X) -> X.
-
-r(L) ->
-    lists:reverse(L).
-
 -define(T(B, L), {B, ??B, L}).
 -define(N(B), {B, ??B, unknown}).
 
--define(FAIL(Expr), fail_check(catch Expr, ??Expr, [])).
+-define(FAIL(Expr),
+        fail_check((fun() ->
+                        try Expr
+                        catch error:R:S -> {'EXIT', {R, S}}
+                        end
+                    end)(), ??Expr, [])).
 
--define(FAIL_VARS(Expr, Vars), fail_check(catch Expr, ??Expr, Vars)).
+-define(FAIL_VARS(Expr, Vars),
+        fail_check((fun() ->
+                        try Expr
+                        catch error:R:S -> {'EXIT', {R, S}}
+                        end
+                    end)(), ??Expr, Vars)).
 
 l(I_13, I_big1) ->
     [
@@ -89,7 +100,7 @@ l(I_13, I_big1) ->
      ?T(<<57285702734876389752897684:32>>,
 	[138, 99, 0, 148]),
      ?T(<<I_big1:32/little>>,
-	r([138, 99, 0, 147])),
+	lists:reverse([138, 99, 0, 147])),
      ?T(<<-1:17/unit:8>>,
 	lists:duplicate(17, 255)),
 
@@ -110,6 +121,9 @@ l(I_13, I_big1) ->
 	[1]),
      ?T(<<4,3,<<1,2>>:1/binary>>,
 	[4,3,1]),
+
+     ?T(<< <<153,27:5>>:I_13/bits, 1:3 >>,
+        [153,217]),
 
      ?T(<<(256*45+47)>>,
 	[47]),
@@ -132,13 +146,104 @@ l(I_13, I_big1) ->
      ?T(<<32978297842987249827298387697777669766334937:128/native-integer>>,
 	native_bignum()),
 
+     ?T(<<$э/native-utf16,$т/native-utf16,$о/native-utf16," спутник"/native-utf16>>,
+        native_utf16()),
+
+     ?T(<<$в/native-utf32,"ода"/native-utf32>>,
+	native_utf32()),
+
      %% Unit tests.
      ?T(<<<<5:3>>/bitstring>>, <<5:3>>),
      ?T(<<42,<<7:4>>/binary-unit:4>>, <<42,7:4>>),
      ?T(<<<<344:17>>/binary-unit:17>>, <<344:17>>),
-     ?T(<<<<42,3,7656:16>>/binary-unit:16>>, <<42,3,7656:16>>)
+     ?T(<<<<42,3,7656:16>>/binary-unit:16>>, <<42,3,7656:16>>),
 
-     ].
+     %% Different sizes and types. First without types.
+     ?T(<<I_big1:8>>, [147]),
+     ?T(<<I_big1:16>>, [0, 147]),
+     ?T(<<I_big1:24>>, [99, 0, 147]),
+     ?T(<<I_big1:32>>, [138, 99, 0, 147]),
+     ?T(<<I_big1:40>>, [5, 138, 99, 0, 147]),
+     ?T(<<I_big1:48>>, [229, 5, 138, 99, 0, 147]),
+     ?T(<<I_big1:56>>, [249, 229, 5, 138, 99, 0, 147]),
+     ?T(<<I_big1:64>>, [42, 249, 229, 5, 138, 99, 0, 147]),
+
+     %% Known integer with range.
+     ?T(<<(I_big1 band ((1 bsl 56) - 1)):8>>, [147]),
+     ?T(<<(I_big1 band ((1 bsl 56) - 1)):16>>, [0, 147]),
+     ?T(<<(I_big1 band ((1 bsl 56) - 1)):24>>, [99, 0, 147]),
+     ?T(<<(I_big1 band ((1 bsl 56) - 1)):32>>, [138, 99, 0, 147]),
+     ?T(<<(I_big1 band ((1 bsl 56) - 1)):40>>, [5, 138, 99, 0, 147]),
+     ?T(<<(I_big1 band ((1 bsl 56) - 1)):48>>, [229, 5, 138, 99, 0, 147]),
+     ?T(<<(I_big1 band ((1 bsl 56) - 1)):56>>, [249, 229, 5, 138, 99, 0, 147]),
+     ?T(<<(I_big1 band ((1 bsl 64) - 1)):64>>, [42, 249, 229, 5, 138, 99, 0, 147]),
+
+     %% Known integer with exact range.
+     ?T(<<(I_big1 band ((1 bsl  8) - 1)):8>>, [147]),
+     ?T(<<(I_big1 band ((1 bsl 16) - 1)):16>>, [0, 147]),
+     ?T(<<(I_big1 band ((1 bsl 24) - 1)):24>>, [99, 0, 147]),
+     ?T(<<(I_big1 band ((1 bsl 32) - 1)):32>>, [138, 99, 0, 147]),
+     ?T(<<(I_big1 band ((1 bsl 40) - 1)):40>>, [5, 138, 99, 0, 147]),
+     ?T(<<(I_big1 band ((1 bsl 48) - 1)):48>>, [229, 5, 138, 99, 0, 147]),
+
+     %% Known integer without range.
+     ?T(<<(I_big1 + 0):8>>, [147]),
+     ?T(<<(I_big1 + 0):16>>, [0, 147]),
+     ?T(<<(I_big1 + 0):24>>, [99, 0, 147]),
+     ?T(<<(I_big1 + 0):32>>, [138, 99, 0, 147]),
+     ?T(<<(I_big1 + 0):40>>, [5, 138, 99, 0, 147]),
+     ?T(<<(I_big1 + 0):48>>, [229, 5, 138, 99, 0, 147]),
+     ?T(<<(I_big1 + 0):56>>, [249, 229, 5, 138, 99, 0, 147]),
+     ?T(<<(I_big1 + 0):64>>, [42, 249, 229, 5, 138, 99, 0, 147]),
+
+     %% Known integer. Verify that the value does not bleed into the
+     %% previous segment.
+     ?T(<<1, (I_big1 + 0):8>>,  [1, 147]),
+     ?T(<<2, (I_big1 + 0):16>>, [2, 0, 147]),
+     ?T(<<3, (I_big1 + 0):24>>, [3, 99, 0, 147]),
+     ?T(<<4, (I_big1 + 0):32>>, [4, 138, 99, 0, 147]),
+     ?T(<<5, (I_big1 + 0):40>>, [5, 5, 138, 99, 0, 147]),
+     ?T(<<6, (I_big1 + 0):48>>, [6, 229, 5, 138, 99, 0, 147]),
+     ?T(<<7, (I_big1 + 0):56>>, [7, 249, 229, 5, 138, 99, 0, 147]),
+     ?T(<<8, (I_big1 + 0):64>>, [8, 42, 249, 229, 5, 138, 99, 0, 147]),
+
+     %% Test non-byte sizes.
+     ?T(<<I_big1:33>>, <<197,49,128,73,1:1>>),
+     ?T(<<I_big1:39>>, <<11,20,198,1,19:7>>),
+
+     ?T(<<I_big1:57>>, <<124,242,130,197,49,128,73,1:1>>),
+     ?T(<<I_big1:58>>, <<190,121,65,98,152,192,36,3:2>>),
+     ?T(<<I_big1:59>>, <<95,60,160,177,76,96,18,3:3>>),
+     ?T(<<I_big1:60>>, <<175,158,80,88,166,48,9,3:4>>),
+     ?T(<<I_big1:61>>, <<87,207,40,44,83,24,4,19:5>>),
+     ?T(<<I_big1:62>>, <<171,231,148,22,41,140,2,19:6>>),
+     ?T(<<I_big1:63>>, <<85,243,202,11,20,198,1,19:7>>),
+
+     %% Test non-byte sizes and also that the value does not bleed
+     %% into the previous segment.
+     ?T(<<17, I_big1:33>>, <<17, 197,49,128,73,1:1>>),
+     ?T(<<19, I_big1:39>>, <<19, 11,20,198,1,19:7>>),
+
+     %% Test multiple little-endian segments.
+     ?T(<<I_big1:16/little, I_13:24/little>>,
+        [147,0,13,0,0]),
+     ?T(<<I_big1:13/little, I_13:3/little, I_big1:16/little>>,
+        [147,5,147,0]),
+     ?T(<<I_big1:16/little, I_13:24/little, I_big1:80/little>>,
+        [147,0,13,0,0,147,0,99,138,5,229,249,42,184,98]),
+     ?T(<<I_big1:48/little, (I_big1 bsr 17):16/little>>,
+        [147,0,99,138,5,229,49,197]),
+     ?T(<<I_big1:16/little, (I_big1 bsr 13):16/little,
+          (I_big1 bsr 15):16/little, (I_big1 bsr 23):16/little>>,
+        [147,0,24,83,198,20,20,11]),
+     ?T(<<I_big1:24/little, (I_big1 bsr 11):16/little,
+          (I_big1 bsr 18):16/little, (I_big1 bsr 26):32/little>>,
+        [147,0,99,96,76,152,98,98,65,121,190]),
+     ?T(<<0:5,I_big1:16/little, I_13:3/little>>,
+        [4,152,5]),
+     ?T(<<0:5,I_big1:16/little, (I_big1 bsr 15):19/little>>,
+        [4,152,6,48,163])
+    ].
 
 native_3798() ->
     case <<1:16/native>> of
@@ -150,6 +255,18 @@ native_bignum() ->
     case <<1:16/native>> of
 	<<0,1>> -> [129,205,18,177,1,213,170,101,39,231,109,128,176,11,73,217];
 	<<1,0>> -> [217,73,11,176,128,109,231,39,101,170,213,1,177,18,205,129]
+    end.
+
+native_utf16() ->
+    case <<1:16/native>> of
+	<<0,1>> -> [4,77,4,66,4,62,0,32,4,65,4,63,4,67,4,66,4,61,4,56,4,58];
+        <<1,0>> -> [77,4,66,4,62,4,32,0,65,4,63,4,67,4,66,4,61,4,56,4,58,4]
+    end.
+
+native_utf32() ->
+    case <<1:16/native>> of
+	<<0,1>> -> [0,0,4,50,0,0,4,62,0,0,4,52,0,0,4,48];
+        <<1,0>> -> [50,4,0,0,62,4,0,0,52,4,0,0,48,4,0,0]
     end.
 
 evaluate(Str, Vars) ->
@@ -164,22 +281,23 @@ evaluate(Str, Vars) ->
 eval_list([], _Vars) ->
     [];
 eval_list([{C_bin, Str, Bytes} | Rest], Vars) ->
-    case catch evaluate(Str, Vars) of
-	{'EXIT', Error} ->
-	    io:format("Evaluation error: ~p, ~p, ~p~n", [Str, Vars, Error]),
-	    exit(Error);
+    try evaluate(Str, Vars) of
 	E_bin ->
 	    [{C_bin, E_bin, Str, Bytes} | eval_list(Rest, Vars)]
+    catch
+        error:Error ->
+            io:format("Evaluation error: ~p, ~p, ~p~n", [Str, Vars, Error]),
+            exit(Error)
     end.
 
 one_test({C_bin, E_bin, Str, Bytes}) when is_list(Bytes) ->
-    io:format("  ~s, ~p~n", [Str, Bytes]),
+    io:format("  ~ts, ~p~n", [Str, Bytes]),
     Bin = list_to_binary(Bytes),
     if
 	C_bin == Bin ->
 	    ok;
 	true ->
-	    io:format("ERROR: Compiled: ~p. Expected ~p. Got ~p.~n",
+	    io:format("ERROR: Compiled: ~p.~nExpected ~p.~nGot ~p.~n",
 		      [Str, Bytes, binary_to_list(C_bin)]),
 	    ct:fail(comp)
     end,
@@ -187,12 +305,12 @@ one_test({C_bin, E_bin, Str, Bytes}) when is_list(Bytes) ->
 	E_bin == Bin ->
 	    ok;
 	true ->
-	    io:format("ERROR: Interpreted: ~p. Expected ~p. Got ~p.~n",
+	    io:format("ERROR: Interpreted: ~p.~nExpected ~p.~nGot ~p.~n",
 		      [Str, Bytes, binary_to_list(E_bin)]),
 	    ct:fail(comp)
     end;
 one_test({C_bin, E_bin, Str, Result}) ->
-    io:format("  ~s ~p~n", [Str, C_bin]),
+    io:format("  ~ts ~p~n", [Str, C_bin]),
     if
 	C_bin == E_bin ->
 	    ok;
@@ -256,10 +374,10 @@ fail_check(Res, _, _) ->
 
 %%% Simple working cases
 test1(Config) when is_list(Config) ->
-    I_13 = i(13),
-    I_big1 = big(1),
+    I_13 = id(13),
+    I_big1 = id(57285702734876389752897683),
     Vars = [{'I_13', I_13},
-		  {'I_big1', I_big1}],
+            {'I_big1', I_big1}],
     lists:foreach(fun one_test/1, eval_list(l(I_13, I_big1), Vars)).
 
 %%% Misc
@@ -386,10 +504,24 @@ testf(Config) when is_list(Config) ->
     ?FAIL(<<<<1:1>>/binary>>),
     Sz = id(1),
     ?FAIL_VARS(<<<<1:Sz>>/binary>>, [{'Sz',Sz}]),
-    {'EXIT',{badarg,_}} = (catch <<<<1:(id(1))>>/binary>>),
+    ?assertError(badarg, <<<<1:(id(1))>>/binary>>),
     ?FAIL(<<<<7,8,9>>/binary-unit:16>>),
     ?FAIL(<<<<7,8,9,3:7>>/binary-unit:16>>),
     ?FAIL(<<<<7,8,9,3:7>>/binary-unit:17>>),
+
+    %% Failures not deteced by v3_core. Those must be detected at
+    %% runtime.
+    Atom = id(ok),
+    Float = id(2.71),
+    List = id([-1,0,1]),
+    NonBinaries = [{'Atom',Atom}, {'Float',Float}, {'List',List}],
+    ?FAIL_VARS(<<Atom/bits>>, NonBinaries),
+    ?FAIL_VARS(<<Atom/bits,0>>, NonBinaries),
+    ?FAIL_VARS(<<0,Atom/bits>>, NonBinaries),
+    ?FAIL_VARS(<<Float/bits>>, NonBinaries),
+    ?FAIL_VARS(<<Float/bits,0>>, NonBinaries),
+    ?FAIL_VARS(<<List/bits>>, NonBinaries),
+    ?FAIL_VARS(<<List/bits,0>>, NonBinaries),
 
     ok.
 
@@ -402,10 +534,10 @@ testf_1(W, B) ->
 %% Test that constructed binaries that are not used will still give an exception.
 not_used(Config) when is_list(Config) ->
     ok = not_used1(3, <<"dum">>),
-    {'EXIT',{badarg,_}} = (catch not_used1(3, "dum")),
-    {'EXIT',{badarg,_}} = (catch not_used2(444, -2)),
-    {'EXIT',{badarg,_}} = (catch not_used2(444, anka)),
-    {'EXIT',{badarg,_}} = (catch not_used3(444)),
+    ?assertError(badarg, not_used1(3, "dum")),
+    ?assertError(badarg, not_used2(444, -2)),
+    ?assertError(badarg, not_used2(444, anka)),
+    ?assertError(badarg, not_used3(444)),
     ok.
 
 not_used1(I, BinString) ->
@@ -448,7 +580,7 @@ mem_leak(Config) when is_list(Config) ->
 mem_leak(0, _) -> ok;
 mem_leak(N, B) ->
     big_bin(B, <<23>>),
-    {'EXIT',{badarg,_}} = (catch big_bin(B, bad)),
+    ?assertError(badarg, big_bin(B, bad)),
     mem_leak(N-1, B).
 
 big_bin(B1, B2) ->
@@ -533,40 +665,53 @@ do_something() ->
 
 append_empty_is_same(Config) when is_list(Config) ->
     NonWritableBin = <<"123">>,
-    true = erts_debug:same(NonWritableBin, append(NonWritableBin, <<>>)),
+
+    %% Should use erts_debug:same/2, but this was disabled in PR-9372
+    %% (ERIERL-1177) because the optimization was unsafe.
+    true = NonWritableBin =:= append(NonWritableBin, <<>>),
     WritableBin = <<(id(<<>>))/binary,0,1,2,3,4,5,6,7>>,
-    true = erts_debug:same(WritableBin, append(WritableBin, <<>>)),
+    true = WritableBin =:= append(WritableBin, <<>>),
+
     ok.
 
 append(A, B) ->
     <<A/binary, B/binary>>.
 
 huge_float_field(Config) when is_list(Config) ->
-    {'EXIT',{badarg,_}} = (catch <<0.0:9/float-unit:8>>),
-    huge_float_check(catch <<0.0:67108865/float-unit:64>>),
-    huge_float_check(catch <<0.0:((1 bsl 26)+1)/float-unit:64>>),
-    huge_float_check(catch <<0.0:(id(67108865))/float-unit:64>>),
-%%  huge_float_check(catch <<0.0:((1 bsl 60)+1)/float-unit:64>>),
-    huge_float_check(catch <<3839739387439387383739387987347983:((1 bsl 26)+1)/float-unit:64>>),
-%%  huge_float_check(catch <<3839739387439387383739387987347983:((1 bsl 60)+1)/float-unit:64>>),
+    ?assertError(badarg, <<0.0:9/float-unit:8>>),
+    huge_float_check(fun() -> <<0.0:67108865/float-unit:64>> end),
+    huge_float_check(fun() -> <<0.0:((1 bsl 26)+1)/float-unit:64>> end),
+    huge_float_check(fun() -> <<0.0:(id(67108865))/float-unit:64>> end),
+%%  huge_float_check(fun() -> <<0.0:((1 bsl 60)+1)/float-unit:64>> end),
+    huge_float_check(fun() -> <<3839739387439387383739387987347983:((1 bsl 26)+1)/float-unit:64>> end),
+%%  huge_float_check(fun() -> <<3839739387439387383739387987347983:((1 bsl 60)+1)/float-unit:64>> end),
     ok.
 
-huge_float_check({'EXIT',{system_limit,_}}) -> ok;
-huge_float_check({'EXIT',{badarg,_}}) -> ok.
+huge_float_check(Fun) ->
+    try Fun() of
+        _ -> ct:fail(did_not_fail)
+    catch
+        error:system_limit -> ok;
+        error:badarg -> ok
+    end.
 
 system_limit(Config) when is_list(Config) ->
     WordSize = erlang:system_info(wordsize),
     BitsPerWord = WordSize * 8,
-    {'EXIT',{system_limit,_}} =
-	(catch <<0:(id(0)),42:(id(1 bsl BitsPerWord))>>),
-    {'EXIT',{system_limit,_}} =
-	(catch <<42:(id(1 bsl BitsPerWord)),0:(id(0))>>),
-    {'EXIT',{system_limit,_}} =
-	(catch <<(id(<<>>))/binary,0:(id(1 bsl 100))>>),
+    ?assertError(system_limit, <<0:(id(0)),42:(id(1 bsl BitsPerWord))>>),
+    ?assertError(system_limit, <<42:(id(1 bsl BitsPerWord)),0:(id(0))>>),
+    ?assertError(system_limit, <<(id(<<>>))/binary,0:(id(1 bsl 100))>>),
 
     %% Would fail to load.
-    {'EXIT',{system_limit,_}} = (catch <<0:(1 bsl 67)>>),
-    {'EXIT',{system_limit,_}} = (catch <<0:((1 bsl 64)+1)>>),
+    ?assertError(system_limit, <<0:(1 bsl 67)>>),
+    ?assertError(system_limit, <<0:((1 bsl 64)+1)>>),
+
+    %% A size that the compiler cannot calculate must be accepted when it
+    %% is within the limit, and rejected when it is not.
+    137 = fill(6, 143),
+    1 = fill(0, 1),
+    1000 = fill(0, 1000),
+    ?assertError(system_limit, fill(0, 1 bsl 60)),
 
     case WordSize of
 	4 ->
@@ -575,30 +720,37 @@ system_limit(Config) when is_list(Config) ->
 	    ok
     end.
 
+%% Build the binary in a loop, which keeps the size in a register.
+fill(Current, Desired) when Current < Desired ->
+    Bin = <<0:(Desired - Current)/unit:8>>,
+    byte_size(Bin) + fill(Current + byte_size(Bin), Desired);
+fill(_Current, _Desired) ->
+    0.
+
 system_limit_32() ->
-    {'EXIT',{badarg,_}} = (catch <<42:(-1)>>),
-    {'EXIT',{badarg,_}} = (catch <<42:(id(-1))>>),
-    {'EXIT',{badarg,_}} = (catch <<42:(id(-389739873536870912))/unit:8>>),
-    {'EXIT',{system_limit,_}} = (catch <<42:536870912/unit:8>>),
-    {'EXIT',{system_limit,_}} = (catch <<42:(id(536870912))/unit:8>>),
-    {'EXIT',{system_limit,_}} = (catch <<0:(id(8)),42:536870912/unit:8>>),
-    {'EXIT',{system_limit,_}} = (catch <<0:(id(8)),42:(id(536870912))/unit:8>>),
+    ?assertError(badarg, <<42:(-1)>>),
+    ?assertError(badarg, <<42:(id(-1))>>),
+    ?assertError(badarg, <<42:(id(-389739873536870912))/unit:8>>),
+    ?assertError(system_limit, <<42:536870912/unit:8>>),
+    ?assertError(system_limit, <<42:(id(536870912))/unit:8>>),
+    ?assertError(system_limit, <<0:(id(8)),42:536870912/unit:8>>),
+    ?assertError(system_limit, <<0:(id(8)),42:(id(536870912))/unit:8>>),
 
     %% The size would be silently truncated, resulting in a crash.
-    {'EXIT',{system_limit,_}} = (catch <<0:(1 bsl 35)>>),
-    {'EXIT',{system_limit,_}} = (catch <<0:((1 bsl 32)+1)>>),
+    ?assertError(system_limit, <<0:(1 bsl 35)>>),
+    ?assertError(system_limit, <<0:((1 bsl 32)+1)>>),
 
     %% Would fail to load.
-    {'EXIT',{system_limit,_}} = (catch <<0:(1 bsl 43)>>),
-    {'EXIT',{system_limit,_}} = (catch <<0:((1 bsl 40)+1)>>),
+    ?assertError(system_limit, <<0:(1 bsl 43)>>),
+    ?assertError(system_limit, <<0:((1 bsl 40)+1)>>),
     ok.
 
 badarg(Config) when is_list(Config) ->
     <<3:2>> = <<1:(id(1)),1:(id(1))>>,
-    {'EXIT',{badarg,_}} = (catch <<0:(id(1)),0:(id(-1))>>),
-    {'EXIT',{badarg,_}} = (catch <<0:(id(1)),0:(id(-(1 bsl 70)))>>),
-    {'EXIT',{badarg,_}} = (catch <<0:(id(-(1 bsl 70))),0:(id(1))>>),
-    {'EXIT',{badarg,_}} = (catch <<(id(<<>>))/binary,0:(id(-(1)))>>),
+    ?assertError(badarg, <<0:(id(1)),0:(id(-1))>>),
+    ?assertError(badarg, <<0:(id(1)),0:(id(-(1 bsl 70)))>>),
+    ?assertError(badarg, <<0:(id(-(1 bsl 70))),0:(id(1))>>),
+    ?assertError(badarg, <<(id(<<>>))/binary,0:(id(-(1)))>>),
     ok.
 
 copy_writable_binary(Config) when is_list(Config) ->
@@ -684,10 +836,16 @@ dynamic_3(Bef, N, {Int0,Lpad,Rpad,Dynamic}=Data, Count) ->
     Dynamic(Bef, N, Int1, Lpad, Rpad),
     Dynamic(Bef, N, -Int1, Lpad, Rpad),
 
-    %% OTP-7085: Test a small number in a wide field.
+    %% OTP-7085: Test a small number in a wide segment.
     Int2 = Int0 band 16#FFFFFF,
     Dynamic(Bef, N, Int2, Lpad, Rpad),
     Dynamic(Bef, N, -Int2, Lpad, Rpad),
+
+    %% Test a bignum in a short segment.
+    Int4 = ((Lpad bxor Rpad) bsl N) bor Int0,
+    Dynamic(Bef, N, Int4, Lpad, Rpad),
+    Dynamic(Bef, N, -Int4, Lpad, Rpad),
+
     dynamic_3(Bef, N-1, Data, Count+1).
 
 dynamic_big(Bef, N, Int, Lpad, Rpad) ->
@@ -698,6 +856,21 @@ dynamic_big(Bef, N, Int, Lpad, Rpad) ->
     %% Construct the binary in two different ways.
     Bin = id(<<Lpad:Bef,NumBin/bitstring,Rpad:(128-Bef-N)>>),
     Bin = <<Lpad:Bef,Int:N,Rpad:(128-Bef-N)>>,
+
+    %% Units are seldom used with integer segments even in our test
+    %% suites, and I have never seen non-power-of-two units in
+    %% production code.
+    if
+        Bef rem 8 =:= 0 ->
+            Bin = <<Lpad:(Bef div 8)/unit:8,Int:N,Rpad:(128-Bef-N)>>;
+        Bef rem 7 =:= 0 ->
+            Bin = <<Lpad:(Bef div 7)/unit:7,Int:N,Rpad:(128-Bef-N)>>;
+        (128-Bef-N) rem 5 =:= 0 ->
+            Aft = (128 - Bef - N) div 5,
+            Bin = <<Lpad:Bef,Int:N,Rpad:Aft/unit:5>>;
+        true ->
+            ok
+    end,
 
     %% Further verify the result by matching.
     LpadMasked = Lpad band ((1 bsl Bef) - 1),
@@ -715,77 +888,37 @@ dynamic_little(Bef, N, Int, Lpad, Rpad) ->
     Bin = id(<<Lpad:Bef/little,NumBin/bitstring,Rpad:(128-Bef-N)/little>>),
     Bin = <<Lpad:Bef/little,Int:N/little,Rpad:(128-Bef-N)/little>>,
 
+    if
+        %% Test unusual units.
+        Bef rem 8 =:= 0 ->
+            Bin = <<Lpad:(Bef div 8)/little-unit:8,
+                    Int:N/little,Rpad:(128-Bef-N)/little>>;
+        Bef rem 9 =:= 0 ->
+            Bin = <<Lpad:(Bef div 9)/little-unit:9,
+                    Int:N/little,Rpad:(128-Bef-N)/little>>;
+        (128-Bef-N) rem 17 =:= 0 ->
+            Aft = (128 - Bef - N) div 17,
+            Bin = <<Lpad:Bef/little,Int:N/little,Rpad:Aft/little-unit:17>>;
+
+        %% Test combinations of little-integer segments of fixed size.
+        Bef =:= 33, N =:= 45 ->
+            Bin = <<Lpad:Bef/little,Int:N/little,Rpad:50/little>>;
+        Bef =:= 16, N =:= 40 ->
+            Bin = <<Lpad:Bef/little,Int:N/little,Rpad:72/little>>;
+        Bef =:= 16, N =:= 48 ->
+            Bin = <<Lpad:Bef/little,Int:N/little,Rpad:64/little>>;
+        Bef =:= 65, N =:= 32 ->
+            Bin = <<Lpad:Bef/little,Int:N/little,Rpad:31/little>>;
+        true ->
+            ok
+    end,
+
     %% Further verify the result by matching.
     LpadMasked = Lpad band ((1 bsl Bef) - 1),
     RpadMasked = Rpad band ((1 bsl (128-Bef-N)) - 1),
     Rbits = (128-Bef-N),
     <<LpadMasked:Bef/little,MaskedInt:N/little,RpadMasked:Rbits/little>> = id(Bin),
     ok.
-
-%% Test that the bs_add/5 instruction handles big numbers correctly.
-bs_add(Config) when is_list(Config) ->
-    Mod = bs_construct_bs_add,
-    N = 2000,
-    Code = [{module, Mod},
-	    {exports, [{bs_add,2}]},
-	    {labels, 2},
-
-	    %% bs_add(Number, -SmallestBig) -> Number + N
-	    {function, bs_add, 2, 2},
-	    {label,1},
-	    {func_info,{atom,Mod},{atom,bs_add},2},
-
-	    {label,2},
-	    {move,{x,0},{x,2}}] ++
-	lists:duplicate(N-1, {bs_add,{f,0},[{x,2},{integer,1},1],{x,2}}) ++
-	[{gc_bif,abs,{f,0},3,[{x,1}],{x,4}},	%Force GC, ignore result.
-	 {gc_bif,'+',{f,0},3,[{x,2},{integer,1}],{x,0}}, %Safe result in {x,0}
-	 return],
-
-    %% Write assembly file and assemble it.
-    PrivDir = proplists:get_value(priv_dir, Config),
-    RootName = filename:join(PrivDir, atom_to_list(Mod)),
-    AsmFile = RootName ++ ".S",
-    {ok,Fd} = file:open(AsmFile, [write]),
-    [io:format(Fd, "~p. \n", [T]) || T <- Code],
-    ok = file:close(Fd),
-    {ok,Mod} = compile:file(AsmFile, [from_asm,report,{outdir,PrivDir}]),
-    LoadRc = code:load_abs(RootName),
-    {module,_Module} = LoadRc,
-
-    %% Find smallest positive bignum.
-    SmallestBig = smallest_big(),
-    io:format("~p\n", [SmallestBig]),
-    DoTest = fun() ->
-		     exit(Mod:bs_add(SmallestBig, -SmallestBig))
-	     end,
-    {Pid,Mref} = spawn_monitor(DoTest),
-    receive
-	{'DOWN',Mref,process,Pid,Res} -> ok
-    end,
-
-    case erlang:system_info(wordsize) of
-        8 ->
-            %% bignum-sized binaries must system_limit on 64-bit platforms
-            {system_limit, _} = Res;
-        4 ->
-            Res = SmallestBig + N
-    end,
-
-    %% Clean up.
-    ok = file:delete(AsmFile),
-    ok = file:delete(code:which(Mod)),
-    ok.
-
-     
-smallest_big() ->
-    smallest_big_1(1 bsl 24).
-
-smallest_big_1(N) ->
-    case erts_debug:flat_size(N) of
-	0 -> smallest_big_1(N+N);
-	_  -> N
-    end.
 
 otp_7422(Config) when is_list(Config) ->
     otp_7422_int(0),
@@ -818,14 +951,55 @@ zero_width(Config) when is_list(Config) ->
     Z = id(0),
     Small = id(42),
     Big = id(1 bsl 128),
+
     <<>> = <<Small:Z>>,
     <<>> = <<Small:0>>,
     <<>> = <<Big:Z>>,
     <<>> = <<Big:0>>,
+
+    append_zero_width(<<>>),
+    append_zero_width(<<1:1>>),
+    append_zero_width(<<-1:9>>),
+    append_zero_width(<<"abc">>),
+
+    Bin = id(<<"abc">>),
+    append_zero_width(id(<<Bin/binary, "def">>)),
+    append_zero_width(id(<<Bin/binary, 1:1>>)),
+    append_zero_width(id(<<Bin/binary, -1:9>>)),
     
-    {'EXIT',{badarg,_}} = (catch <<not_a_number:0>>),
-    {'EXIT',{badarg,_}} = (catch <<(id(not_a_number)):Z>>),
-    {'EXIT',{badarg,_}} = (catch <<(id(not_a_number)):0>>),
+    ?assertError(badarg, <<not_a_number:0>>),
+    ?assertError(badarg, <<(id(not_a_number)):Z>>),
+    ?assertError(badarg, <<(id(not_a_number)):0>>),
+
+    ok.
+
+append_zero_width(Base) ->
+    Z = id(0),
+    Small = id(42),
+    Big = id(1 bsl 128),
+    Float = id(42.0),
+    EmptyBin = id(<<>>),
+    Bin = id(~"xyz"),
+
+    Base = id(<<Base/bitstring, Small:Z/big-integer>>),
+    Base = id(<<Base/bitstring, Small:0/big-integer>>),
+    Base = id(<<Base/bitstring, Small:Z/little-integer>>),
+    Base = id(<<Base/bitstring, Small:0/little-integer>>),
+
+    Base = id(<<Base/bitstring, Big:Z/big-integer>>),
+    Base = id(<<Base/bitstring, Big:0/big-integer>>),
+    Base = id(<<Base/bitstring, Big:Z/little-integer>>),
+    Base = id(<<Base/bitstring, Big:0/little-integer>>),
+
+    ?assertError(badarg, <<Base/bitstring, Float:Z/big-float>>),
+    ?assertError(badarg, <<Base/bitstring, Float:Z/little-float>>),
+    ?assertError(badarg, <<Base/bitstring, Float:0/big-float>>),
+    ?assertError(badarg, <<Base/bitstring, Float:0/little-float>>),
+
+    Base = id(<<Base/bitstring, EmptyBin:Z/binary>>),
+    Base = id(<<Base/bitstring, EmptyBin:0/binary>>),
+    Base = id(<<Base/bitstring, Bin:Z/binary>>),
+    Base = id(<<Base/bitstring, Bin:0/binary>>),
 
     ok.
 
@@ -848,16 +1022,16 @@ bad_append(_) ->
     ok.
 
 do_bad_append(Bin0, Appender) ->
-    {'EXIT',{badarg,_}} = (catch Appender(Bin0)),
+    ?assertError(badarg, Appender(Bin0)),
 
     Bin1 = id(<<0:3,Bin0/bitstring>>),
     <<_:3,Bin2/bitstring>> = Bin1,
-    {'EXIT',{badarg,_}} = (catch Appender(Bin2)),
+    ?assertError(badarg, Appender(Bin2)),
 
     %% Create a writable binary.
     Empty = id(<<>>),
     Bin3 = <<Empty/bitstring,Bin0/bitstring>>,
-    {'EXIT',{badarg,_}} = (catch Appender(Bin3)),
+    ?assertError(badarg, Appender(Bin3)),
     ok.
 
 append_unit_3(Bin) ->
@@ -886,9 +1060,9 @@ bs_append_overflow(_Config) ->
         _ when Memsize < (2 bsl 30) ->
 	    {skip, "Less than 2 GB of memory"};
 	4 ->
-            {'EXIT', {system_limit, _}} = (catch bs_append_overflow_signed()),
+            ?assertError(system_limit, bs_append_overflow_signed()),
             erlang:garbage_collect(),
-            {'EXIT', {system_limit, _}} = (catch bs_append_overflow_unsigned()),
+            ?assertError(system_limit, bs_append_overflow_unsigned()),
             erlang:garbage_collect(),
 	    ok
     end.
@@ -908,6 +1082,29 @@ bs_append_overflow_unsigned() ->
     B = <<2, 3>>,
     C = <<A/binary,1,B/binary>>,
     true = byte_size(B) < byte_size(C).
+
+bs_append_offheap(Config) when is_list(Config) ->
+    %% test that erts_bs_private_append is reflected correctly in
+    %%  process_info(Pid, binary()) report for off-heap binaries.
+    {Pid, MRef} = erlang:spawn_monitor(fun bs_append_offheap_proc/0),
+    receive
+        {'DOWN', MRef, process, Pid, normal} ->
+            ok;
+        {'DOWN', MRef, process, Pid, {{badmatch,[{binary,[]}]}, _}} ->
+            {fail, "missing binary in erts_bs_private_append"}
+    end.
+
+bs_append_offheap_proc() ->
+    Self = self(),
+    Len = 128,
+    OffHeapBin = list_to_binary(lists:duplicate(Len, $b)),
+    erlang:garbage_collect(Self),
+    [{binary, [{_, Len, 1}]}] = erlang:process_info(Self, [binary]),
+    Bin = <<OffHeapBin/binary, "a">>,
+    erlang:garbage_collect(Self),
+    %% expect a single binary (2 bytes longer than the original)
+    [{binary, [{_, _, 1}]}] = erlang:process_info(Self, [binary]),
+    Bin.
 
 reductions(_Config) ->
     TwoMeg = <<0:(2_000*1024)/unit:8>>,
@@ -935,13 +1132,15 @@ reds_at_least(N, Fun) ->
         Diff ->
             ct:fail({expected,N,got,Diff})
     end.
-
-id(I) -> I.
-
 memsize() ->
     application:ensure_all_started(os_mon),
-    {Tot,_Used,_}  = memsup:get_memory_data(),
-    Tot.
+    case proplists:get_value(available_memory, memsup:get_system_memory_data()) of
+        undefined ->
+            {Tot,_Used,_}  = memsup:get_memory_data(),
+            Tot;
+        Available ->
+            Available
+    end.
 
 -define(FP16(EncodedInt, Float),
         (fun(NlInt, NlFloat) ->
@@ -980,7 +1179,1108 @@ fp16(_Config) ->
     ?FP16(16#3c01, 1.00097656),
     %% rounding of 1/3 to nearest
     ?FP16(16#3555, 0.33325195),
+    %% infinity
+    ?FP16(16#7c00, 1000000000),
     %% others
     ?FP16(16#4000, 2),
     ?FP16(16#4000, 2.0),
+
+    %% Subnormals used to be corrupted by the software conversion
+    %% fallback. All of these are exactly representable in binary16,
+    %% so no rounding is involved.
+    ?FP16(16#0033, 3.039836883544921875e-6),               %% 51 * 2^-24
+    ?FP16(16#0005, 2.98023223876953125e-7),                %% 5 * 2^-24
+    ?FP16(16#0200, 3.0517578125e-5),                       %% 2^-15
+    ?FP16(16#0163, 2.1159648895263671875e-5),              %% 355 * 2^-24
+    %% Sticky bits below bit 10 used to be ignored when rounding
+    %% normal values; this is strictly above the rounding midpoint
+    %% and must round up.
+    ?FP16(16#3c01, 1.00048840045928955078125),             %% 1 + 4097 * 2^-23
+    %% An exact tie must round to even.
+    ?FP16(16#3c00, 1.00048828125),                         %% 1 + 2^-11
+    %% double -> binary16 must round once; rounding through float
+    %% first lands on the float tie point and rounds to even
+    %% instead of up.
+    ?FP16(16#3c01, 1.000488282181322574615478515625),      %% 1 + 2^-11 + 2^-30
+    %% Constructing a matched binary16 must reproduce it exactly.
+    _ = [begin
+             <<F:16/float>> = <<H:16>>,
+             <<H:16>> = <<F:16/float>>
+         end || H <- lists:seq(0, 16#ffff),
+                (H bsr 10) band 16#1f =/= 16#1f],
     ok.
+
+zero_init(_Config) ->
+    <<LPad:64/bits,RPad:64/bits>> = id(erlang:md5([42])),
+    Sizes = [511,512,513, 767,768,769, 1023,1024,1025,
+             16#7fff,16#ffff,16#10000] ++ lists:seq(0, 257),
+    _ = [do_zero_init(Size, LPad, RPad) || Size <- Sizes],
+    ok.
+
+do_zero_init(Size, LPad, RPad) ->
+    try
+        do_zero_init_1(Size, LPad, RPad)
+    catch
+        C:R:Stk ->
+            io:format("Size = ~p, LPad = ~p, RPad = ~p\n", [Size, LPad, RPad]),
+            erlang:raise(C, R, Stk)
+    end.
+
+do_zero_init_1(Size, LPad, RPad) ->
+    Zeroes = id(<<0:Size>>),
+    <<0:Size>> = Zeroes,
+    Bin = id(<<LPad:64/bits, Zeroes/bits, RPad:64/bits>>),
+    Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>),
+    Bin = id(<<LPad:(id(64))/bits, 0:Size, RPad:64/bits>>),
+
+    if
+        Size rem 11 =:= 0 ->
+            Bin = id(<<LPad:64/bits, 0:(Size div 11)/unit:11, RPad:64/bits>>);
+        true ->
+            ok
+    end,
+
+    case Size of
+        0 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        1 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        2 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        3 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        4 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        5 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        6 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        7 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        8 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        9 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        10 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        11 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        12 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        13 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        14 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        15 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        16 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+
+        31 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        32 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        33 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+
+        47 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        48 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        49 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+
+        63 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        64 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        65 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+
+        79 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        80 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        81 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+
+        90 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        91 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        92 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        93 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        94 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        95 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        96 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        97 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        98 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        99 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        100 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        101 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        102 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        103 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        104 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        105 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        106 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        107 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        108 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        109 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+
+        127 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        128 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        129 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        130 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        131 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        132 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        133 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        134 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        135 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        136 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        137 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        138 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        139 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        140 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        141 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        142 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        143 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        144 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        145 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+
+        159 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        160 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        161 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+
+        191 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        192 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        193 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+
+        255 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        256 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        257 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+
+        511 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        512 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        513 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+
+        767 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        768 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        769 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+
+        1023 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        1024 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        1025 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+
+        16#7fff ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        16#ffff ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        16#10000 ->
+            Bin = id(<<LPad:64/bits, 0:Size, RPad:64/bits>>);
+        _ ->
+            ok
+    end.
+
+
+-define(ERROR_INFO(Expr),
+        fun() ->
+                try Expr of
+                    _ ->
+                        error(should_fail)
+                catch
+                    error:Reason:Stk ->
+                        error_info_verify(Reason, Stk, ??Expr, #{})
+                end
+        end()).
+
+-define(ERROR_INFO(Expr, Overrides),
+        fun() ->
+                try Expr of
+                    _ ->
+                        error(should_fail)
+                catch
+                    error:Reason:Stk ->
+                        error_info_verify(Reason, Stk, ??Expr, Overrides)
+                end
+        end()).
+
+error_info(_Config) ->
+    Atom = id(some_atom),
+    NegSize = id(-1),
+    HugeNegSize = id(-1 bsl 64),
+    Binary = id(<<"abc">>),
+    HugeBig = id(1 bsl 1500),
+    LongList = lists:seq(1, 100),
+    BadBinary = id(ok),
+    BadSize = case Atom of
+                  a -> 0;
+                  _ -> bad_size
+              end,
+
+    {badarg, {1,binary,type,Atom}, _} = ?ERROR_INFO(<<Atom/binary, Binary/binary>>),
+    {badarg, {2,binary,type,Atom}, _} = ?ERROR_INFO(<<Binary/binary, Atom/binary>>),
+    {badarg, {3,binary,type,Atom}, _} = ?ERROR_INFO(<<1:32, Binary/binary, Atom/binary>>),
+    {badarg, {4,binary,type,Atom}, _} = ?ERROR_INFO(<<1:32, "xyz", Binary/binary, Atom/binary>>),
+
+    {badarg, {1,integer,type,Atom}, _} = ?ERROR_INFO(<<Atom:32>>),
+    {badarg, {1,integer,type,Atom}, _} = ?ERROR_INFO(<<Atom:(id(32))>>),
+    {badarg, {1,integer,type,LongList}, _} = ?ERROR_INFO(<<LongList:32>>),
+    {badarg, {1,integer,size,Atom}, _} = ?ERROR_INFO(<<42:Atom>>),
+    {badarg, {1,integer,type,Atom}, _} = ?ERROR_INFO(<<Atom:32>>),
+    {badarg, {1,integer,size,NegSize}, _} = ?ERROR_INFO(<<42:NegSize>>),
+    {badarg, {1,integer,size,HugeNegSize}, _} = ?ERROR_INFO(<<42:HugeNegSize>>),
+    {system_limit, {1,integer,size,1 bsl 58}, _} = ?ERROR_INFO(<<42:(1 bsl 58)/unit:255>>),
+    {system_limit, {1,integer,size,1 bsl 60}, _} = ?ERROR_INFO(<<42:(1 bsl 60)/unit:8>>),
+    {system_limit, {1,integer,size,1 bsl 64}, _} = ?ERROR_INFO(<<42:(1 bsl 64)>>),
+
+    {badarg, {1,binary,type,Atom}, _} = ?ERROR_INFO(<<Atom:10/binary>>),
+    {badarg, {1,binary,type,Atom}, _} = ?ERROR_INFO(<<Atom:(id(10))/binary>>),
+    {badarg, {1,binary,size,Atom}, _} = ?ERROR_INFO(<<Binary:Atom/binary>>),
+    {badarg, {1,binary,size,NegSize}, _} = ?ERROR_INFO(<<Binary:NegSize/binary>>),
+    {badarg, {1,binary,size,HugeNegSize}, _} = ?ERROR_INFO(<<Binary:HugeNegSize/binary>>),
+    {badarg, {1,binary,size,BadSize}, _} = ?ERROR_INFO(<<Binary:BadSize/binary>>),
+    {badarg, {1,binary,size,BadSize}, _} = ?ERROR_INFO(<<BadBinary:BadSize/binary>>),
+    {badarg, {1,binary,short,Binary}, _} = ?ERROR_INFO(<<Binary:10/binary>>),
+    {badarg, {1,binary,short,Binary}, _} = ?ERROR_INFO(<<Binary:(id(10))/binary>>),
+    {badarg, {1,binary,type,Atom}, _} = ?ERROR_INFO(<<Atom/binary>>),
+    {badarg, {1,binary,unit,<<1:1>>}, _} = ?ERROR_INFO(<<(id(<<1:1>>))/binary>>),
+    {badarg, {1,binary,unit,<<0:1111>>}, _} = ?ERROR_INFO(<<(id(<<0:1111>>))/binary>>),
+    {badarg, {2,binary,unit,<<1:1>>}, _} = ?ERROR_INFO(<<0, (id(<<1:1>>))/binary>>),
+    {badarg, {2,binary,unit,<<0:1111>>}, _} = ?ERROR_INFO(<<0, (id(<<0:1111>>))/binary>>),
+    {system_limit, {1,binary,size,1 bsl 64}, _} = ?ERROR_INFO(<<Binary:(1 bsl 64)/binary>>),
+    {system_limit, {1,binary,size,1 bsl 64}, _} = ?ERROR_INFO(<<Binary:(id(1 bsl 64))/binary>>),
+
+    {badarg, {1,float,type,Atom}, _} = ?ERROR_INFO(<<Atom:64/float>>),
+    {badarg, {1,float,size,Atom}, _} = ?ERROR_INFO(<<Atom:Atom/float>>),
+    {badarg, {1,float,size,NegSize}, _} = ?ERROR_INFO(<<42.0:NegSize/float>>),
+    {badarg, {1,float,size,HugeNegSize}, _} = ?ERROR_INFO(<<42.0:HugeNegSize/float>>),
+    {badarg, {1,float,invalid,1}, _} = ?ERROR_INFO(<<42.0:(id(1))/float>>),
+    {badarg, {1,float,no_float,HugeBig}, _} = ?ERROR_INFO(<<HugeBig:(id(64))/float>>),
+    {badarg, {1,float,no_float,HugeBig}, _} = ?ERROR_INFO(<<HugeBig:64/float>>),
+    {system_limit, {1,float,size,1 bsl 64}, _} = ?ERROR_INFO(<<42.0:(id(1 bsl 64))/float>>),
+
+    {badarg, {1,utf8,type,Atom}, _} = ?ERROR_INFO(<<Atom/utf8>>),
+    {badarg, {1,utf16,type,Atom}, _} = ?ERROR_INFO(<<Atom/utf16>>),
+    {badarg, {1,utf32,type,Atom}, _} = ?ERROR_INFO(<<Atom/utf32>>),
+
+    Bin = id(<<>>),
+    Float = id(42.0),
+    MaxSmall = (1 bsl 59) - 1,                  %Max small for 64-bit architectures.
+
+    %% Attempt constructing a binary with total size 1^64 + 32.
+
+    {system_limit, {1,integer,size,MaxSmall}, _} = ?ERROR_INFO(<<0:(MaxSmall)/unit:32,0:64>>),
+    {system_limit, {1,integer,size,MaxSmall}, _} = ?ERROR_INFO(<<0:(MaxSmall)/unit:32,(id(0)):64>>),
+    {system_limit, {1,integer,size,MaxSmall}, _} = ?ERROR_INFO(<<0:(id(MaxSmall))/unit:32,0:64>>),
+    {system_limit, {1,integer,size,MaxSmall}, _} = ?ERROR_INFO(<<0:(id(MaxSmall))/unit:32,(id(0)):64>>),
+
+    {system_limit, {1,binary,size,MaxSmall}, _} = ?ERROR_INFO(<<Bin:(MaxSmall)/binary-unit:32,0:64>>),
+    {system_limit, {1,binary,size,MaxSmall}, _} = ?ERROR_INFO(<<Bin:(MaxSmall)/binary-unit:32,(id(0)):64>>),
+    {system_limit, {1,binary,size,MaxSmall}, _} = ?ERROR_INFO(<<Bin:(id(MaxSmall))/binary-unit:32,0:64>>),
+    {system_limit, {1,binary,size,MaxSmall}, _} = ?ERROR_INFO(<<Bin:(id(MaxSmall))/binary-unit:32,(id(0)):64>>),
+
+    {system_limit, {1,float,size,MaxSmall}, _} = ?ERROR_INFO(<<Float:(MaxSmall)/float-unit:32,0:64>>),
+    {system_limit, {1,float,size,MaxSmall}, _} = ?ERROR_INFO(<<Float:(MaxSmall)/float-unit:32,(id(0)):64>>),
+    {system_limit, {1,float,size,MaxSmall}, _} = ?ERROR_INFO(<<Float:(id(MaxSmall))/float-unit:32,0:64>>),
+    {system_limit, {1,float,size,MaxSmall}, _} = ?ERROR_INFO(<<Float:(id(MaxSmall))/float-unit:32,(id(0)):64>>),
+
+    %% Test a size exceeding 1^64, where the sign bit (bit 63) is not set.
+    0 = (((MaxSmall) * 33) bsr 63) band 1, %Assertion: The sign bit is not set.
+
+    {system_limit, {1,integer,size,MaxSmall}, _} = ?ERROR_INFO(<<0:(MaxSmall)/unit:33>>),
+    {system_limit, {1,integer,size,MaxSmall}, _} = ?ERROR_INFO(<<0:(MaxSmall)/unit:33>>),
+    {system_limit, {1,integer,size,MaxSmall}, _} = ?ERROR_INFO(<<0:(id(MaxSmall))/unit:33>>),
+    {system_limit, {1,integer,size,MaxSmall}, _} = ?ERROR_INFO(<<0:(id(MaxSmall))/unit:33>>),
+
+    {system_limit, {1,binary,size,MaxSmall}, _} = ?ERROR_INFO(<<Bin:(MaxSmall)/binary-unit:33>>),
+    {system_limit, {1,binary,size,MaxSmall}, _} = ?ERROR_INFO(<<Bin:(MaxSmall)/binary-unit:33>>),
+    {system_limit, {1,binary,size,MaxSmall}, _} = ?ERROR_INFO(<<Bin:(id(MaxSmall))/binary-unit:33>>),
+    {system_limit, {1,binary,size,MaxSmall}, _} = ?ERROR_INFO(<<Bin:(id(MaxSmall))/binary-unit:33>>),
+
+    {system_limit, {1,float,size,MaxSmall}, _} = ?ERROR_INFO(<<Float:(MaxSmall)/float-unit:33>>),
+    {system_limit, {1,float,size,MaxSmall}, _} = ?ERROR_INFO(<<Float:(MaxSmall)/float-unit:33>>),
+    {system_limit, {1,float,size,MaxSmall}, _} = ?ERROR_INFO(<<Float:(id(MaxSmall))/float-unit:33>>),
+    {system_limit, {1,float,size,MaxSmall}, _} = ?ERROR_INFO(<<Float:(id(MaxSmall))/float-unit:33>>),
+
+    %% error messages with options
+    PP = fun(Term) -> <<"'", (erlang:atom_to_binary(Term))/binary, "'">> end,
+
+    {_, _, <<"segment 1 of type 'float': expected a float or an integer but got: some_atom">>} =
+        ?ERROR_INFO(<<Atom:64/float>>, #{}),
+
+    {_, _, <<"segment 2 of type 'float': expected a float or an integer but got: some_atom">>} =
+        ?ERROR_INFO(<<Atom:64/float>>, #{override_segment_position => 2}),
+
+    {_, _, <<"segment 1 of type 'float': expected a float or an integer but got: 'some_atom'">>} =
+        ?ERROR_INFO(<<Atom:64/float>>, #{pretty_printer => PP}),
+
+    ok.
+
+error_info_verify(Reason, Stk0, Expr, Overrides) ->
+    [{?MODULE, Fun, Arity, Info0}|Rest] = Stk0,
+    {value, {error_info, ErrorInfo}, Info1} = lists:keytake(error_info, 1, Info0),
+    #{cause := Cause, module := Module, function := Function} = ErrorInfo,
+    Info2 = maps:merge(ErrorInfo, Overrides),
+    Stk1 = [{?MODULE, Fun, Arity, Info1 ++ [{error_info, Info2}]} | Rest],
+    Result = Module:Function(Reason, Stk1),
+    #{general := String} = Result,
+    true = is_binary(String),
+    io:format("~ts: ~ts\n", [Expr,String]),
+    {Reason, Cause, String}.
+
+little(_Config) ->
+    _ = rand:uniform(),				%Seed generator
+    io:format("Seed: ~p", [rand:export_seed()]),
+
+    RandBytes = rand:bytes(10),
+    _ = [do_little(RandBytes, N) || N <- lists:seq(0, 10*8)],
+
+    ok.
+
+do_little(Bin0, N) ->
+    <<Bin1:N/bits,Bin2/bits>> = Bin0,
+    Bin2Size = bit_size(Bin2),
+
+    <<I1:N/little-integer>> = Bin1,
+    <<I2:Bin2Size/little-integer>> = Bin2,
+
+    Bin1 = <<I1:N/little-integer>>,
+    Bin1 = do_little_1(N, id(I1)),
+
+    Bin2 = <<I2:Bin2Size/little-integer>>,
+    Bin2 = do_little_1(Bin2Size, id(I2)),
+
+    ok.
+
+do_little_1(0, I) -> <<I:0/little-integer>>;
+do_little_1(1, I) -> <<I:1/little-integer>>;
+do_little_1(2, I) -> <<I:2/little-integer>>;
+do_little_1(3, I) -> <<I:3/little-integer>>;
+do_little_1(4, I) -> <<I:4/little-integer>>;
+do_little_1(5, I) -> <<I:5/little-integer>>;
+do_little_1(6, I) -> <<I:6/little-integer>>;
+do_little_1(7, I) -> <<I:7/little-integer>>;
+do_little_1(8, I) -> <<I:8/little-integer>>;
+do_little_1(9, I) -> <<I:9/little-integer>>;
+do_little_1(10, I) -> <<I:10/little-integer>>;
+do_little_1(11, I) -> <<I:11/little-integer>>;
+do_little_1(12, I) -> <<I:12/little-integer>>;
+do_little_1(13, I) -> <<I:13/little-integer>>;
+do_little_1(14, I) -> <<I:14/little-integer>>;
+do_little_1(15, I) -> <<I:15/little-integer>>;
+do_little_1(16, I) -> <<I:16/little-integer>>;
+do_little_1(17, I) -> <<I:17/little-integer>>;
+do_little_1(18, I) -> <<I:18/little-integer>>;
+do_little_1(19, I) -> <<I:19/little-integer>>;
+do_little_1(20, I) -> <<I:20/little-integer>>;
+do_little_1(21, I) -> <<I:21/little-integer>>;
+do_little_1(22, I) -> <<I:22/little-integer>>;
+do_little_1(23, I) -> <<I:23/little-integer>>;
+do_little_1(24, I) -> <<I:24/little-integer>>;
+do_little_1(25, I) -> <<I:25/little-integer>>;
+do_little_1(26, I) -> <<I:26/little-integer>>;
+do_little_1(27, I) -> <<I:27/little-integer>>;
+do_little_1(28, I) -> <<I:28/little-integer>>;
+do_little_1(29, I) -> <<I:29/little-integer>>;
+do_little_1(30, I) -> <<I:30/little-integer>>;
+do_little_1(31, I) -> <<I:31/little-integer>>;
+do_little_1(32, I) -> <<I:32/little-integer>>;
+do_little_1(33, I) -> <<I:33/little-integer>>;
+do_little_1(34, I) -> <<I:34/little-integer>>;
+do_little_1(35, I) -> <<I:35/little-integer>>;
+do_little_1(36, I) -> <<I:36/little-integer>>;
+do_little_1(37, I) -> <<I:37/little-integer>>;
+do_little_1(38, I) -> <<I:38/little-integer>>;
+do_little_1(39, I) -> <<I:39/little-integer>>;
+do_little_1(40, I) -> <<I:40/little-integer>>;
+do_little_1(41, I) -> <<I:41/little-integer>>;
+do_little_1(42, I) -> <<I:42/little-integer>>;
+do_little_1(43, I) -> <<I:43/little-integer>>;
+do_little_1(44, I) -> <<I:44/little-integer>>;
+do_little_1(45, I) -> <<I:45/little-integer>>;
+do_little_1(46, I) -> <<I:46/little-integer>>;
+do_little_1(47, I) -> <<I:47/little-integer>>;
+do_little_1(48, I) -> <<I:48/little-integer>>;
+do_little_1(49, I) -> <<I:49/little-integer>>;
+do_little_1(50, I) -> <<I:50/little-integer>>;
+do_little_1(51, I) -> <<I:51/little-integer>>;
+do_little_1(52, I) -> <<I:52/little-integer>>;
+do_little_1(53, I) -> <<I:53/little-integer>>;
+do_little_1(54, I) -> <<I:54/little-integer>>;
+do_little_1(55, I) -> <<I:55/little-integer>>;
+do_little_1(56, I) -> <<I:56/little-integer>>;
+do_little_1(57, I) -> <<I:57/little-integer>>;
+do_little_1(58, I) -> <<I:58/little-integer>>;
+do_little_1(59, I) -> <<I:59/little-integer>>;
+do_little_1(60, I) -> <<I:60/little-integer>>;
+do_little_1(61, I) -> <<I:61/little-integer>>;
+do_little_1(62, I) -> <<I:62/little-integer>>;
+do_little_1(63, I) -> <<I:63/little-integer>>;
+do_little_1(64, I) -> <<I:64/little-integer>>;
+do_little_1(65, I) -> <<I:65/little-integer>>;
+do_little_1(66, I) -> <<I:66/little-integer>>;
+do_little_1(67, I) -> <<I:67/little-integer>>;
+do_little_1(68, I) -> <<I:68/little-integer>>;
+do_little_1(69, I) -> <<I:69/little-integer>>;
+do_little_1(70, I) -> <<I:70/little-integer>>;
+do_little_1(71, I) -> <<I:71/little-integer>>;
+do_little_1(72, I) -> <<I:72/little-integer>>;
+do_little_1(73, I) -> <<I:73/little-integer>>;
+do_little_1(74, I) -> <<I:74/little-integer>>;
+do_little_1(75, I) -> <<I:75/little-integer>>;
+do_little_1(76, I) -> <<I:76/little-integer>>;
+do_little_1(77, I) -> <<I:77/little-integer>>;
+do_little_1(78, I) -> <<I:78/little-integer>>;
+do_little_1(79, I) -> <<I:79/little-integer>>;
+do_little_1(80, I) -> <<I:80/little-integer>>;
+do_little_1(81, I) -> <<I:81/little-integer>>;
+do_little_1(82, I) -> <<I:82/little-integer>>;
+do_little_1(83, I) -> <<I:83/little-integer>>;
+do_little_1(84, I) -> <<I:84/little-integer>>;
+do_little_1(85, I) -> <<I:85/little-integer>>;
+do_little_1(86, I) -> <<I:86/little-integer>>;
+do_little_1(87, I) -> <<I:87/little-integer>>;
+do_little_1(88, I) -> <<I:88/little-integer>>;
+do_little_1(89, I) -> <<I:89/little-integer>>;
+do_little_1(90, I) -> <<I:90/little-integer>>;
+do_little_1(91, I) -> <<I:91/little-integer>>;
+do_little_1(92, I) -> <<I:92/little-integer>>;
+do_little_1(93, I) -> <<I:93/little-integer>>;
+do_little_1(94, I) -> <<I:94/little-integer>>;
+do_little_1(95, I) -> <<I:95/little-integer>>;
+do_little_1(96, I) -> <<I:96/little-integer>>;
+do_little_1(97, I) -> <<I:97/little-integer>>;
+do_little_1(98, I) -> <<I:98/little-integer>>;
+do_little_1(99, I) -> <<I:99/little-integer>>;
+do_little_1(100, I) -> <<I:100/little-integer>>;
+do_little_1(101, I) -> <<I:101/little-integer>>;
+do_little_1(102, I) -> <<I:102/little-integer>>;
+do_little_1(103, I) -> <<I:103/little-integer>>;
+do_little_1(104, I) -> <<I:104/little-integer>>;
+do_little_1(105, I) -> <<I:105/little-integer>>;
+do_little_1(106, I) -> <<I:106/little-integer>>;
+do_little_1(107, I) -> <<I:107/little-integer>>;
+do_little_1(108, I) -> <<I:108/little-integer>>;
+do_little_1(109, I) -> <<I:109/little-integer>>;
+do_little_1(110, I) -> <<I:110/little-integer>>;
+do_little_1(111, I) -> <<I:111/little-integer>>;
+do_little_1(112, I) -> <<I:112/little-integer>>;
+do_little_1(113, I) -> <<I:113/little-integer>>;
+do_little_1(114, I) -> <<I:114/little-integer>>;
+do_little_1(115, I) -> <<I:115/little-integer>>;
+do_little_1(116, I) -> <<I:116/little-integer>>;
+do_little_1(117, I) -> <<I:117/little-integer>>;
+do_little_1(118, I) -> <<I:118/little-integer>>;
+do_little_1(119, I) -> <<I:119/little-integer>>;
+do_little_1(120, I) -> <<I:120/little-integer>>;
+do_little_1(121, I) -> <<I:121/little-integer>>;
+do_little_1(122, I) -> <<I:122/little-integer>>;
+do_little_1(123, I) -> <<I:123/little-integer>>;
+do_little_1(124, I) -> <<I:124/little-integer>>;
+do_little_1(125, I) -> <<I:125/little-integer>>;
+do_little_1(126, I) -> <<I:126/little-integer>>;
+do_little_1(127, I) -> <<I:127/little-integer>>;
+do_little_1(128, I) -> <<I:128/little-integer>>.
+
+%% GH-7469: The unit of variable-sized segments wasn't checked properly,
+%% resulting in the creation of heap binaries for non-binary bitstrings.
+heap_binary_unit(_Config) ->
+    {ok, 14524} = heap_binary_unit_1(id(<<184,188,2,66,172,19,0,3>>)),
+    ok.
+
+heap_binary_unit_1(<<2:2/integer,Rest:62/bitstring>>) ->
+    heap_binary_unit_2(<<2:2/integer>>, Rest).
+
+heap_binary_unit_2(Variant, Rest) ->
+    VariantSize = bit_size(Variant),
+    ClockHiSize = 8 - VariantSize,
+    ClockSize = 8 + ClockHiSize,
+    case Rest of
+        <<ClockHi:ClockHiSize/bitstring,
+          ClockLo:8/bitstring,
+          _:48/bitstring>> ->
+            case
+                <<ClockHi:ClockHiSize/bitstring,
+                  ClockLo:8/bitstring>>
+            of
+                <<Clock:ClockSize/integer-unsigned>> ->
+                    {ok, Clock};
+                Bin1 ->
+                    {error1, Bin1}
+            end;
+        Bin2 ->
+            {error2, Bin2}
+    end.
+
+floats(_Config) ->
+    _ = rand:uniform(),				%Seed generator
+    io:format("Seed: ~p", [rand:export_seed()]),
+
+    %% Random floats.
+    _ = [do_float(rand:uniform() * math:pow(10.0, rand:uniform(20))) ||
+            _ <- lists:seq(1, 20)],
+
+    %% Random floats with powers of 10 near the upper limit representable
+    %% as a 64-bit float.
+    _ = [do_float(rand:uniform() * math:pow(10.0, 300 + rand:uniform(7))) ||
+            _ <- lists:seq(1, 10)],
+
+    %% Random small integers.
+    _ = [do_float(rand:uniform(1_000_000)) || _ <- lists:seq(1, 10)],
+
+    %% Random big integers.
+    _ = [do_float(rand:uniform(1_000_000) bsl 64) || _ <- lists:seq(1, 10)],
+
+    do_float(-0.0),
+    do_float(+0.0),
+
+    ok.
+
+do_float(F) ->
+    do_float(F, 0).
+
+do_float(_F, 32) ->
+    ok;
+do_float(F, N) ->
+    Pad = rand:uniform(1 bsl N) - 1,
+    true = is_integer(Pad),
+
+    do_float_be_16(F, N, Pad),
+    do_float_be_32(F, N, Pad),
+    do_float_be_64(F, N, Pad),
+
+    do_float_le_16(F, N, Pad),
+    do_float_le_32(F, N, Pad),
+    do_float_le_64(F, N, Pad),
+
+    do_float(F, N + 1).
+
+do_float_be_16(F, N, Pad) ->
+    FloatBin = id(<<F:16/big-float>>),
+    Bin = id(<<Pad:N, F:16/big-float>>),
+    Bin = id(<<Pad:N, (id(F)):16/big-float>>),
+    Bin = <<Pad:N, F:(id(16))/big-float>>,
+    Bin = <<Pad:N, (id(F)):(id(16))/big-float>>,
+    <<Pad:N, FloatBin/binary>> = Bin,
+
+    if
+        is_float(F) ->
+            %% Construct float segment of a known float.
+            FloatBin = id(<<F:16/big-float>>),
+            Bin = <<Pad:N, F:(id(16))/big-float>>,
+            Bin = case N of
+                      15 -> <<Pad:N, F:16/big-float>>;
+                      21 -> <<Pad:N, F:16/big-float>>;
+                      _ -> <<Pad:N, F:16/big-float>>
+                  end;
+        is_integer(F) ->
+            %% Construct float segment of a known integer.
+            FloatBin = id(<<F:16/big-float>>),
+            Bin = <<Pad:N, F:(id(16))/big-float>>,
+            Bin = case N of
+                      1 -> <<Pad:N, F:16/big-float>>;
+                      19 -> <<Pad:N, F:16/big-float>>;
+                      _ -> <<Pad:N, F:16/big-float>>
+                  end;
+        true ->
+            ok
+    end,
+
+    ok.
+
+do_float_be_32(F, N, Pad) ->
+    FloatBin = id(<<F:32/big-float>>),
+    Bin = id(<<Pad:N, F:32/big-float>>),
+    Bin = id(<<Pad:N, (id(F)):32/big-float>>),
+    Bin = <<Pad:N, F:(id(32))/big-float>>,
+    Bin = <<Pad:N, (id(F)):(id(32))/big-float>>,
+    <<Pad:N, FloatBin/binary>> = Bin,
+
+    if
+        is_float(F) ->
+            %% Construct float segment of a known float.
+            FloatBin = id(<<F:32/big-float>>),
+            Bin = <<Pad:N, F:(id(32))/big-float>>,
+            Bin = case N of
+                      1 -> <<Pad:N, F:32/big-float>>;
+                      6 -> <<Pad:N, F:32/big-float>>;
+                      _ -> <<Pad:N, F:32/big-float>>
+                  end;
+        is_integer(F) ->
+            %% Construct float segment of a known integer.
+            FloatBin = id(<<F:32/big-float>>),
+            Bin = <<Pad:N, F:(id(32))/big-float>>,
+            Bin = case N of
+                      8 -> <<Pad:N, F:32/big-float>>;
+                      12 -> <<Pad:N, F:32/big-float>>;
+                      _ -> <<Pad:N, F:32/big-float>>
+                  end;
+        true ->
+            ok
+    end,
+
+    ok.
+
+do_float_be_64(F, N, Pad) ->
+    FloatBin = id(<<F:64/big-float>>),
+    Bin = id(<<Pad:N, F:64/big-float>>),
+    Bin = id(<<Pad:N, (id(F)):64/big-float>>),
+    Bin = <<Pad:N, F:(id(64))/big-float>>,
+    Bin = <<Pad:N, (id(F)):(id(64))/big-float>>,
+    <<Pad:N, FloatBin/binary>> = Bin,
+
+    if
+        is_float(F) ->
+            %% Construct float segment of a known float.
+            FloatBin = id(<<F:64/big-float>>),
+            Bin = <<Pad:N, F:(id(64))/big-float>>,
+            Bin = case N of
+                      7 -> <<Pad:N, F:64/big-float>>;
+                      13 -> <<Pad:N, F:64/big-float>>;
+                      _ -> <<Pad:N, F:64/big-float>>
+                  end,
+
+            %% Match out the original float.
+            <<Pad:N, F:64/big-float>> = Bin;
+        is_integer(F) ->
+            %% Construct float segment of a known integer.
+            FloatBin = id(<<F:64/big-float>>),
+            Bin = <<Pad:N, F:(id(64))/big-float>>,
+            Bin = case N of
+                      7 -> <<Pad:N, F:64/big-float>>;
+                      13 -> <<Pad:N, F:64/big-float>>;
+                      _ -> <<Pad:N, F:64/big-float>>
+                  end;
+        true ->
+            ok
+    end,
+
+    ok.
+
+do_float_le_16(F, N, Pad) ->
+    FloatBin = id(<<F:16/little-float>>),
+    Bin = id(<<Pad:N, F:16/little-float>>),
+    Bin = id(<<Pad:N, (id(F)):16/little-float>>),
+    Bin = <<Pad:N, F:(id(16))/little-float>>,
+    Bin = <<Pad:N, (id(F)):(id(16))/little-float>>,
+    <<Pad:N, FloatBin/binary>> = Bin,
+
+    if
+        is_float(F) ->
+            %% Construct float segment of a known float.
+            FloatBin = id(<<F:16/little-float>>),
+            Bin = <<Pad:N, F:(id(16))/little-float>>,
+            Bin = case N of
+                      11 -> <<Pad:N, F:16/little-float>>;
+                      27 -> <<Pad:N, F:16/little-float>>;
+                      _ -> <<Pad:N, F:16/little-float>>
+                  end;
+        is_integer(F) ->
+            %% Construct float segment of a known integer.
+            FloatBin = id(<<F:16/little-float>>),
+            Bin = <<Pad:N, F:(id(16))/little-float>>,
+            Bin = case N of
+                      7 -> <<Pad:N, F:16/little-float>>;
+                      13 -> <<Pad:N, F:16/little-float>>;
+                      _ -> <<Pad:N, F:16/little-float>>
+                  end;
+        true ->
+            ok
+    end,
+
+    ok.
+
+do_float_le_32(F, N, Pad) ->
+    FloatBin = id(<<F:32/little-float>>),
+    Bin = id(<<Pad:N, F:32/little-float>>),
+    Bin = id(<<Pad:N, (id(F)):32/little-float>>),
+    Bin = <<Pad:N, F:(id(32))/little-float>>,
+    Bin = <<Pad:N, (id(F)):(id(32))/little-float>>,
+    <<Pad:N, FloatBin/binary>> = Bin,
+
+    if
+        is_float(F) ->
+            %% Construct float segment of a known float.
+            FloatBin = id(<<F:32/little-float>>),
+            Bin = <<Pad:N, F:(id(32))/little-float>>,
+            Bin = case N of
+                      9 -> <<Pad:N, F:32/little-float>>;
+                      29 -> <<Pad:N, F:32/little-float>>;
+                      _ -> <<Pad:N, F:32/little-float>>
+                  end;
+       is_integer(F) ->
+            %% Construct float segment of a known integer.
+            FloatBin = id(<<F:32/little-float>>),
+            Bin = <<Pad:N, F:(id(32))/little-float>>,
+            Bin = case N of
+                      7 -> <<Pad:N, F:32/little-float>>;
+                      13 -> <<Pad:N, F:32/little-float>>;
+                      _ -> <<Pad:N, F:32/little-float>>
+                  end;
+        true ->
+            ok
+    end,
+
+    ok.
+
+do_float_le_64(F, N, Pad) ->
+    FloatBin = id(<<F:64/little-float>>),
+    Bin = id(<<Pad:N, F:64/little-float>>),
+    Bin = id(<<Pad:N, (id(F)):64/little-float>>),
+    Bin = <<Pad:N, F:(id(64))/little-float>>,
+    Bin = <<Pad:N, (id(F)):(id(64))/little-float>>,
+    <<Pad:N, FloatBin/binary>> = Bin,
+
+    if
+        is_float(F) ->
+            %% Construct float segment of a known float.
+            FloatBin = id(<<F:64/little-float>>),
+            Bin = <<Pad:N, F:(id(64))/little-float>>,
+            Bin = case N of
+                      9 -> <<Pad:N, F:64/little-float>>;
+                      29 -> <<Pad:N, F:64/little-float>>;
+                      _ -> <<Pad:N, F:64/little-float>>
+                  end,
+
+            %% Match out the original float.
+            <<Pad:N, F:64/little-float>> = Bin;
+        is_integer(F) ->
+            %% Construct float segment of a known integer.
+            FloatBin = id(<<F:64/little-float>>),
+            Bin = <<Pad:N, F:(id(64))/little-float>>,
+            Bin = case N of
+                      7 -> <<Pad:N, F:64/little-float>>;
+                      13 -> <<Pad:N, F:64/little-float>>;
+                      _ -> <<Pad:N, F:64/little-float>>
+                  end;
+        true ->
+            ok
+    end,
+
+    ok.
+
+
+%% GH-8815: Binary construction with "too many" segments failed to JIT on ARM.
+many_segments(_Config) ->
+    Val = id(<<"fhqwhgads">>),
+    id(<<"COL_A,COL_B\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n", Val/binary, ",B0\n",
+         Val/binary, ",B0\n">>),
+    ok.
+
+%%%
+%%% Common utilities.
+%%%
+
+id(I) -> I.

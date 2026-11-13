@@ -1,8 +1,10 @@
 %% 
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2010-2018. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2010-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -50,14 +52,15 @@ otp_8099_test(0) ->
     ok;
 otp_8099_test(N) ->
     P = spawn(fun () -> otp_8099_proc() end),
-    case catch register(?OTP_8099_NAME, P) of
+    try register(?OTP_8099_NAME, P) of
 	      true ->
-		  ok;
-	      _ ->
+                  ok
+          catch
+              _:_ ->
 		  OP = whereis(?OTP_8099_NAME),
-		  (catch unregister(?OTP_8099_NAME)),
-		  (catch exit(OP, kill)),
-		  true = (catch register(?OTP_8099_NAME, P))
+                  try unregister(?OTP_8099_NAME) catch _:_ -> ok end,
+                  try exit(OP, kill) catch _:_ -> ok end,
+                  true = register(?OTP_8099_NAME, P)
 	  end,
     P = whereis(?OTP_8099_NAME),
     exit(P, kill),

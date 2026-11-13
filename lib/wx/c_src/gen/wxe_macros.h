@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2008-2021. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2008-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -61,6 +63,7 @@
 #include <wx/listbook.h>
 #include <wx/treebook.h>
 #include <wx/taskbar.h>
+#include <wx/textctrl.h>
 #include <wx/popupwin.h>
 #include <wx/html/htmlwin.h>
 #include <wx/html/htmlcell.h>
@@ -68,12 +71,23 @@
 #include <wx/sysopt.h>
 #include <wx/overlay.h>
 #include <wx/notifmsg.h>
+#if WXE_WEBVIEW
 #include <wx/webview.h>
 #if wxUSE_WEBVIEW && wxUSE_WEBVIEW_IE
 #include <wx/msw/webview_ie.h>
+#endif
+#endif
+#if wxUSE_GLCANVAS_EGL && !wxCHECK_VERSION(3,2,3)
+#include <EGL/egl.h>
 #endif
 
 
 #ifndef wxICON_DEFAULT_BITMAP_TYPE
   #define wxICON_DEFAULT_BITMAP_TYPE wxBITMAP_TYPE_ICO_RESOURCE
+#endif
+
+
+#if defined(wxSTC_DISABLE_MACRO_DEPRECATIONS) && defined(wxSTC_DEPRECATED_MACRO_VALUE)
+#undef wxSTC_DEPRECATED_MACRO_VALUE
+#define wxSTC_DEPRECATED_MACRO_VALUE(value, msg) value
 #endif

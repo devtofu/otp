@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2001-2016. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2001-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -216,7 +218,7 @@ request(#state{mfa = {Module, Function, Args},
 	{Socket, closed} ->
 	    exit({test_failed, connection_closed})
     after TimeOut ->
-	    ct:pal("~p ~w[~w]request -> timeout"
+	    ct:log("~p ~w[~w]request -> timeout"
 		   "~p~n", [self(), ?MODULE, ?LINE, Args]),
 	    ct:fail(connection_timed_out)    
     end.
@@ -274,7 +276,7 @@ handle_http_body(Body, State = #state{headers = Headers,
 	 _ ->
 	     Length =
 		 list_to_integer(Headers#http_response_h.'content-length'),
-	     case ((Length =< MaxBodySize) or (MaxBodySize == nolimit)) of
+	     case Length =< MaxBodySize orelse MaxBodySize == nolimit of
 		 true ->
 		     case httpc_response:whole_body(Body, Length) of
 			 {ok, NewBody} ->
@@ -407,7 +409,7 @@ check_body("GET /cgi-bin/erl/httpd_example:get_bin HTTP/1.1\r\n\r\n", 200, "text
     ct:fail({content_length_error, Length});
 check_body("GET /cgi-bin/cgi_echo HTTP/1.0\r\n\r\n", 200, "text/plain", 
 	   _, Body) ->
-    case size(Body) of
+    case byte_size(Body) of
 	100 ->
 	    ok;
 	_ ->

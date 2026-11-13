@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2020-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2020-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,11 +20,14 @@
  * %CopyrightEnd%
  */
 
-#ifdef BEAMASM
+#if defined(BEAMASM) && !defined(__BEAM_ASM_H__)
+#    define __BEAM_ASM_H__
 
 #    include "sys.h"
 #    include "bif.h"
+#    include "erl_fun.h"
 #    include "erl_process.h"
+#    include "beam_bp.h"
 #    include "beam_code.h"
 #    include "beam_file.h"
 #    include "beam_common.h"
@@ -33,24 +38,43 @@
 
 /* Global configuration variables */
 #    ifdef HAVE_LINUX_PERF_SUPPORT
-#        define BEAMASM_PERF_DUMP (1 << 0)
-#        define BEAMASM_PERF_MAP (1 << 1)
-extern int erts_jit_perf_support;
+enum beamasm_perf_flags {
+    BEAMASM_PERF_DUMP = (1 << 0),
+    BEAMASM_PERF_MAP = (1 << 1),
+    BEAMASM_PERF_FP = (1 << 2),
+
+    BEAMASM_PERF_ENABLED =
+            BEAMASM_PERF_DUMP | BEAMASM_PERF_MAP | BEAMASM_PERF_FP,
+    BEAMASM_PERF_DISABLED = 0,
+};
+extern enum beamasm_perf_flags erts_jit_perf_support;
+extern char etrs_jit_perf_directory[MAXPATHLEN];
 #    endif
+extern int erts_jit_single_map;
 
 void beamasm_init(void);
-void beamasm_init_perf(void);
-void *beamasm_new_assembler(Eterm mod, int num_labels, int num_functions);
+void *beamasm_new_assembler(Eterm mod,
+                            int num_labels,
+                            int num_functions,
+                            BeamFile *beam);
 void beamasm_codegen(void *ba,
-                     const void **native_module_exec,
-                     void **native_module_rw,
+                     const void **executable_region,
+                     void **writable_region,
                      const BeamCodeHeader *in_hdr,
                      const BeamCodeHeader **out_exec_hdr,
                      BeamCodeHeader **out_rw_hdr);
-void beamasm_purge_module(const void *native_module_exec,
-                          void *native_module_rw);
+void beamasm_prepare_metadata(void *ba, const BeamCodeHeader *header);
+void *beamasm_register_metadata(void *ba, const BeamCodeHeader *header);
+void beamasm_unregister_metadata(void *handle);
+void beamasm_purge_module(const void *executable_region,
+                          void *writable_region,
+                          size_t size);
 void beamasm_delete_assembler(void *ba);
 int beamasm_emit(void *ba, unsigned specific_op, BeamOp *op);
+void beamasm_emit_coverage(void *instance,
+                           void *coverage,
+                           Uint index,
+                           Uint size);
 ErtsCodePtr beamasm_get_code(void *ba, int label);
 ErtsCodePtr beamasm_get_lambda(void *ba, int index);
 const byte *beamasm_get_rodata(void *ba, char *label);
@@ -61,9 +85,15 @@ void beamasm_embed_rodata(void *ba,
 void beamasm_embed_bss(void *ba, char *labelName, size_t size);
 
 unsigned int beamasm_patch_catches(void *ba, char *rw_base);
-void beamasm_patch_import(void *ba, char *rw_base, int index, BeamInstr import);
+void beamasm_patch_import(void *ba,
+                          char *rw_base,
+                          int index,
+                          const Export *import);
 void beamasm_patch_literal(void *ba, char *rw_base, int index, Eterm lit);
-void beamasm_patch_lambda(void *ba, char *rw_base, int index, BeamInstr fe);
+void beamasm_patch_lambda(void *ba,
+                          char *rw_base,
+                          int index,
+                          const ErlFunEntry *fe);
 void beamasm_patch_strings(void *ba, char *rw_base, const byte *strtab);
 
 void beamasm_emit_call_nif(const ErtsCodeInfo *info,
@@ -81,20 +111,40 @@ char *beamasm_get_base(void *instance);
 /* Return current instruction offset, for line information. */
 size_t beamasm_get_offset(void *ba);
 
+enum erts_is_line_breakpoint beamasm_is_line_breakpoint_trampoline(
+        ErtsCodePtr addr);
+
+void beamasm_unseal_module(const void *executable_region,
+                           void *writable_region,
+                           size_t size);
+void beamasm_seal_module(const void *executable_region,
+                         void *writable_region,
+                         size_t size);
 void beamasm_flush_icache(const void *address, size_t size);
 
 /* Number of bytes emitted at first label in order to support trace and nif
  * load. */
-#    if defined(__aarch64__)
+#    if defined(__aarch64__) && defined(ERLANG_FRAME_POINTERS)
+#        define BEAM_ASM_FUNC_PROLOGUE_SIZE 20
 #        define BEAM_ASM_BP_RETURN_OFFSET 16
-#        define BEAM_ASM_FUNC_PROLOGUE_SIZE 16
+#    elif defined(__aarch64__)
+#        define BEAM_ASM_FUNC_PROLOGUE_SIZE 12
+#        define BEAM_ASM_BP_RETURN_OFFSET 12
 #    else
 #        define BEAM_ASM_FUNC_PROLOGUE_SIZE 8
+#        define BEAM_ASM_BP_RETURN_OFFSET 8
+#    endif
+
+/* Size (in bytes) of a ErtsNativeFunc/call_nif prologue. */
+#    if defined(__aarch64__)
+#        define BEAM_ASM_NFUNC_SIZE (BEAM_ASM_FUNC_PROLOGUE_SIZE + 4)
+#    else
+#        define BEAM_ASM_NFUNC_SIZE (BEAM_ASM_FUNC_PROLOGUE_SIZE + 8)
 #    endif
 
 /*
- * The code below is used to deal with intercepting the execution of
- * a process at the start of a function. It is used by tracing and nif loading.
+ * The code below is used to deal with intercepting the execution of a process
+ * at the start of a function. It is used by tracing and nif loading.
  *
  * In the interpreter this is solved by simply writing a new instruction as
  * the first instruction in a function. In asm mode it is not as simple as
@@ -103,39 +153,27 @@ void beamasm_flush_icache(const void *address, size_t size);
  * On x86, the solution is as follows:
  *
  *   When emitting a function the first word (or function prologue) is:
- *      0x0: jmp 6
- *      0x2: ERTS_ASM_BP_FLAG_NONE
- *      0x3: relative near call
- *      0x4: &genericBPTramp
+ *      0x0: short jmp 6
+ *      0x2: nop
+ *      0x3: relative near call to shared breakpoint fragment
  *      0x8: actual code for function
  *
- *   When code starts to execute it will simply see the "jmp 6" instruction
- *   which skips the prologue and starts to execute the code directly.
+ *   When code starts to execute it will simply see the `short jmp 6`
+ *   instruction which skips the prologue and starts to execute the code
+ *   directly.
  *
- *   When we want to enable a certain breakpoint we set the jmp target to
- *   be 1 (which means it will land on the call instruction) and will call
- *   genericBPTramp. genericBPTramp is a label at the top of each module
- *   that contains trampolines for all flag combinations.
+ *   When we want to enable a certain breakpoint we set the jmp target to be 1,
+ *   which means it will land on the call to the shared breakpoint fragment.
+ *   This fragment checks the current `breakpoint_flag` stored in the
+ *   ErtsCodeInfo of this function, and then calls `erts_call_nif_early` and
+ *   `erts_generic_breakpoint` accordingly.
  *
- *   genericBPTramp:
- *      0x0: ret
- *      0x10: jmp call_nif_early
- *      0x20: call generic_bp_local
- *      0x30: call generic_bp_local
- *      0x35: jmp call_nif_early
+ *   Note that the update of the branch and `breakpoint_flag` does not need to
+ *   be atomic: it's fine if a process only sees one of these being updated, as
+ *   the code that sets breakpoints/loads NIFs doesn't rely on the trampoline
+ *   being active until thread progress has been made.
  *
- *   Note that each target is 16 byte aligned. This is because the call target
- *   in the function prologue is updated to target the correct place when a flag
- *   is updated. So if CALL_NIF_EARLY is set, then it is updated to be
- *   genericBPTramp + 0x10. If BP is set, it is updated to genericBPTramp + 0x20
- *   and the combination makes it be genericBPTramp + 0x30.
- *
- * The solution for AArch64 is similar but we move the flag to a register
- * before jumping to `genericBPTramp`, where we branch on said flag value. This
- * is necessary because the maximum jump distance is limited to 128MB and we
- * need veneers to jump further than that, which are very annoying to deal with
- * here.
- */
+ * The solution for AArch64 is similar. */
 
 enum erts_asm_bp_flag {
     ERTS_ASM_BP_FLAG_NONE = 0,
@@ -147,126 +185,113 @@ enum erts_asm_bp_flag {
 
 static inline enum erts_asm_bp_flag erts_asm_bp_get_flags(
         const ErtsCodeInfo *ci_exec) {
-    enum erts_asm_bp_flag flag;
+    return (enum erts_asm_bp_flag)ci_exec->u.metadata.breakpoint_flag;
+}
 
 #    if defined(__aarch64__)
-    Uint32 *exec_code = (Uint32 *)erts_codeinfo_to_code(ci_exec);
+static inline void erts_asm_bp_update_branch(ErtsCodePtr rw_p,
+                                             Uint32 expected_offset,
+                                             Uint32 target_offset) {
+    Uint32 volatile *rw_code = (Uint32 *)rw_p;
+    Uint32 expected_branch = 0x14000000 | expected_offset;
 
-    /* MOVZ instruction, flag lives in bits 5..21 */
-    const Uint32 flag_immed_shift = 5;
-    const Uint32 flag_immed_mask = ((1 << 16) - 1) << flag_immed_shift;
+    ASSERT(rw_code[0] == expected_branch);
+    (void)expected_branch;
+    rw_code[0] = 0x14000000 | target_offset;
+}
 
-    Uint32 set_flag = exec_code[2]; /* MOVZ x0, flag */
+static inline void erts_asm_bp_switch(ErtsCodePtr rw_p, bool enable) {
+    const Uint32 branch_instruction_index =
+            erts_frame_layout == ERTS_FRAME_LAYOUT_FP_RA ? 2 : 1;
+    const Uint32 enabled_branch_offset =
+            BEAM_ASM_BP_RETURN_OFFSET / sizeof(Uint32) -
+            branch_instruction_index - 1;
+    const Uint32 disabled_branch_offset = enabled_branch_offset + 1;
+    Uint32 expected_branch_offset, target_branch_offset;
 
-    ASSERT((set_flag & ~flag_immed_mask) == 0xd2800000);
-    flag = (enum erts_asm_bp_flag)((set_flag & flag_immed_mask) >>
-                                   flag_immed_shift);
+    if (enable) {
+        expected_branch_offset = disabled_branch_offset;
+        target_branch_offset = enabled_branch_offset;
+    } else {
+        expected_branch_offset = enabled_branch_offset;
+        target_branch_offset = disabled_branch_offset;
+    }
 
-#    else /* x86_64 */
-    byte *codebytes = (byte *)erts_codeinfo_to_code(ci_exec);
-    /* 0xEB = relative jmp, 0xE8 = relative call */
-    flag = (enum erts_asm_bp_flag)codebytes[2];
+    rw_p = (ErtsCodePtr)((Uint32 *)rw_p + branch_instruction_index);
+    erts_asm_bp_update_branch(rw_p,
+                              expected_branch_offset,
+                              target_branch_offset);
+}
 #    endif
 
-    return flag;
+static inline void erts_asm_bp_enable(ErtsCodePtr rw_p) {
+#    if defined(__aarch64__)
+    /* B .next, .enabled: BL breakpoint_handler, .next: */
+    erts_asm_bp_update_branch(rw_p, 2, 1);
+#    else /* x86_64 */
+    byte volatile *rw_code = (byte *)rw_p;
+
+    /* SHORT JMP .next, NOP, .enabled: CALL breakpoint_handler, .next: */
+    ASSERT(rw_code[0] == 0xEB && rw_code[1] == 0x06 && rw_code[2] == 0x90 &&
+           rw_code[3] == 0xE8);
+
+    /* Reroute the initial jump instruction to `.enabled`. */
+    rw_code[1] = 0x01;
+#    endif
+}
+
+static inline void erts_asm_bp_disable(ErtsCodePtr rw_p) {
+#    if defined(__aarch64__)
+    /* B .enabled, .enabled: BL breakpoint_handler, .next: */
+    erts_asm_bp_update_branch(rw_p, 1, 2);
+#    else /* x86_64 */
+    byte volatile *rw_code = (byte *)rw_p;
+
+    /* SHORT JMP .enabled, NOP, .enabled: CALL breakpoint_handler, .next: */
+    ASSERT(rw_code[0] == 0xEB && rw_code[1] == 0x01 && rw_code[2] == 0x90 &&
+           rw_code[3] == 0xE8);
+
+    /* Reroute the initial jump instruction back to `.next`. */
+    rw_code[1] = 0x06;
+#    endif
 }
 
 static inline void erts_asm_bp_set_flag(ErtsCodeInfo *ci_rw,
                                         const ErtsCodeInfo *ci_exec,
                                         enum erts_asm_bp_flag flag) {
-#    if defined(__aarch64__)
-    const Uint32 *exec_code = (Uint32 *)erts_codeinfo_to_code(ci_exec);
-    Uint32 volatile *rw_code = (Uint32 *)erts_codeinfo_to_code(ci_rw);
-
-    const Uint32 branch_target_shift = 0;
-    const Uint32 branch_target_mask = ((1 << 26) - 1) << branch_target_shift;
-    const Uint32 flag_immed_shift = 5;
-    const Uint32 flag_immed_mask = ((1 << 16) - 1) << flag_immed_shift;
-
-    Uint32 old_guard_branch = rw_code[1]; /* B next */
-    Uint32 old_set_flag = rw_code[2];     /* MOVZ x0, flag */
-
-    ASSERT((old_guard_branch & ~branch_target_mask) == 0x14000000);
-    ASSERT((old_set_flag & ~flag_immed_mask) == 0xd2800000);
-    (void)flag_immed_mask;
-
-    /* MOVZ instruction, flag lives in bits 5..21 */
-    rw_code[2] = old_set_flag | (flag << flag_immed_shift);
-
-    /* Reroute the initial branch instruction to the flag instruction. */
-    rw_code[1] = (old_guard_branch & ~branch_target_mask) |
-                 (1 << branch_target_shift);
-
-    beamasm_flush_icache(&exec_code[1], sizeof(Uint32[2]));
-#    else /* x86_64 */
-    BeamInstr volatile *code_ptr = (BeamInstr *)erts_codeinfo_to_code(ci_rw);
-    BeamInstr code = *code_ptr;
-    byte *codebytes = (byte *)&code;
-    Uint32 *code32 = (Uint32 *)(codebytes + 4);
-    /* 0xEB = relative jmp, 0xE8 = relative call */
-    ASSERT(codebytes[0] == 0xEB && codebytes[3] == 0xE8);
-    codebytes[1] = 1;
-    codebytes[2] |= flag;
-    *code32 += flag * 16;
-    code_ptr[0] = code;
-
+    ASSERT(flag != ERTS_ASM_BP_FLAG_NONE);
     (void)ci_exec;
+
+    if (ci_rw->u.metadata.breakpoint_flag == ERTS_ASM_BP_FLAG_NONE) {
+        ErtsCodePtr rw_p = erts_codeinfo_to_code(ci_rw);
+#    if defined(__aarch64__)
+        erts_asm_bp_switch(rw_p, true);
+#    else
+        erts_asm_bp_enable(rw_p);
 #    endif
+    }
+
+    ci_rw->u.metadata.breakpoint_flag |= flag;
 }
 
 static inline void erts_asm_bp_unset_flag(ErtsCodeInfo *ci_rw,
                                           const ErtsCodeInfo *ci_exec,
                                           enum erts_asm_bp_flag flag) {
-#    if defined(__aarch64__)
-    const Uint32 *exec_code = (Uint32 *)erts_codeinfo_to_code(ci_exec);
-    Uint32 volatile *rw_code = (Uint32 *)erts_codeinfo_to_code(ci_rw);
+    ASSERT(flag != ERTS_ASM_BP_FLAG_NONE);
+    (void)ci_exec;
 
-    const Uint32 flag_immed_shift = 5;
-    const Uint32 flag_immed_mask = ((1 << 16) - 1) << flag_immed_shift;
-    const Uint32 branch_target_shift = 0;
-    const Uint32 branch_target_mask = ((1 << 26) - 1) << branch_target_shift;
+    ci_rw->u.metadata.breakpoint_flag &= ~flag;
 
-    Uint32 old_guard_branch = rw_code[1]; /* B next */
-    Uint32 old_set_flag = rw_code[2];     /* MOVZ x0, flag */
-    Uint32 new_set_flag;
-
-    ASSERT((old_guard_branch & ~branch_target_mask) == 0x14000000);
-    ASSERT((old_set_flag & ~flag_immed_mask) == 0xd2800000);
-
-    new_set_flag = old_set_flag & ~(flag << flag_immed_shift);
-    rw_code[2] = new_set_flag;
-
-    ERTS_CT_ASSERT(ERTS_ASM_BP_FLAG_NONE == 0);
-    if ((new_set_flag & flag_immed_mask) == 0) {
-        Uint32 new_guard_branch, new_target;
-
+    if (ci_rw->u.metadata.breakpoint_flag == ERTS_ASM_BP_FLAG_NONE) {
         /* We've removed the last flag, route the branch instruction back
          * past the prologue. */
-        new_target = (BEAM_ASM_FUNC_PROLOGUE_SIZE / sizeof(Uint32) - 1);
-
-        new_guard_branch = (old_guard_branch & ~branch_target_mask) |
-                           (new_target << branch_target_shift);
-        rw_code[1] = new_guard_branch;
-    }
-
-    beamasm_flush_icache(&exec_code[1], sizeof(Uint32[2]));
-
-#    else /* x86_64 */
-    BeamInstr volatile *code_ptr = (BeamInstr *)erts_codeinfo_to_code(ci_rw);
-    BeamInstr code = *code_ptr;
-    byte *codebytes = (byte *)&code;
-    Uint32 *code32 = (Uint32 *)(codebytes + 4);
-    /* 0xEB = relative jmp, 0xE8 = relative call */
-    ASSERT(codebytes[0] == 0xEB && codebytes[3] == 0xE8);
-    codebytes[2] &= ~flag;
-    *code32 -= flag * 16;
-    if (codebytes[2] == ERTS_ASM_BP_FLAG_NONE) {
-        codebytes[1] = 6;
-    }
-    code_ptr[0] = code;
-
-    (void)ci_exec;
+        ErtsCodePtr rw_p = erts_codeinfo_to_code(ci_rw);
+#    if defined(__aarch64__)
+        erts_asm_bp_switch(rw_p, false);
+#    else
+        erts_asm_bp_disable(rw_p);
 #    endif
+    }
 }
 
 #endif

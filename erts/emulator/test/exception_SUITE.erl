@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1997-2020. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,13 +16,14 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
 -module(exception_SUITE).
 
 -export([all/0, suite/0,
+         init_per_testcase/2, end_per_testcase/2,
          badmatch/1, pending_errors/1, nil_arith/1, top_of_stacktrace/1,
          stacktrace/1, nested_stacktrace/1, raise/1, gunilla/1, per/1,
          change_exception_class/1,
@@ -50,6 +53,11 @@ all() ->
      exception_with_heap_frag, backtrace_depth,
      error_3, error_info,
      no_line_numbers, line_numbers].
+
+init_per_testcase(_TestCase, Config) ->
+    Config.
+end_per_testcase(_TestCase, Config) ->
+    erts_test_utils:ept_check_leaked_nodes(Config).
 
 -define(try_match(E),
         catch ?MODULE:bar(),
@@ -145,6 +153,12 @@ pending({badarg,[{erlang,Bif,BifArgs,Loc1},
   when is_atom(Bif), is_list(BifArgs), length(Args) =:= Arity,
        is_list(Loc1), is_list(Loc2) ->
     ok;
+pending({badarith,[{erlang,Bif,BifArgs,Loc1},
+                   {?MODULE,Func,Arity,Loc2}|_]},
+        Func, Args, _Code)
+  when is_atom(Bif), is_list(BifArgs), length(Args) =:= Arity,
+       is_list(Loc1), is_list(Loc2) ->
+    ok;
 pending({undef,[{non_existing_module,foo,[],Loc}|_]}, _, _, _)
   when is_list(Loc) ->
     ok;
@@ -157,7 +171,7 @@ pending({Code,[{?MODULE,Func,Arity,Loc}|_]}, Func, Args, Code)
 pending(Reason, _Function, _Args, _Code) ->
     ct:fail({bad_exit_reason,Reason}).
 
-%% Test that doing arithmetics on [] gives a badarith EXIT and not a crash.
+%% Test that doing arithmetic on [] gives a badarith EXIT and not a crash.
 
 nil_arith(Config) when is_list(Config) ->
     ba_plus_minus_times([], []),
@@ -304,9 +318,7 @@ top_of_stacktrace(Conf) when is_list(Conf) ->
     ok.
 
 maxbig() ->
-    %% We assume that the maximum arity is (1 bsl 19) - 1.
-    Ws = erlang:system_info(wordsize),
-    (((1 bsl ((16777184 * (Ws div 4))-1)) - 1) bsl 1) + 1.
+    erlang:system_info(max_integer).
 
 maxbig_gc() ->
     Maxbig = maxbig(),
@@ -392,42 +404,46 @@ nested_stacktrace_1({X1,C1,V1}, {X2,C2,V2}) ->
 
 
 raise(Conf) when is_list(Conf) ->
-    erase(raise),
-    A =
-        try
-            try foo({'div',{1,0}})
-            catch
-                error:badarith:A0 ->
-                    put(raise, A0),
-                    erlang:raise(error, badarith, A0)
-            end
-        catch
-            error:badarith:A1 ->
-                A1 = get(raise)
-        end,
-    A = get(raise),
-    [{erlang,'div',[1, 0], _},{?MODULE,my_div,2,_}|_] = A,
-    %%
     N = 8, % Must be even
-    N = erlang:system_flag(backtrace_depth, N),
+    OldDepth = erlang:system_flag(backtrace_depth, N),
     try
-        even(N)
-    catch
-        error:function_clause -> ok
-    end,
-    %%
-    C = odd_even(N+1, []),
-    try
-        odd(N+1)
-    catch
-        error:function_clause -> ok
-    end,
-    try
-        erlang:raise(error, function_clause, C)
-    catch
-        error:function_clause -> ok
-    end,
-    ok.
+        erase(raise),
+        A =
+            try
+                try foo({'div',{1,0}})
+                catch
+                    error:badarith:A0 ->
+                        put(raise, A0),
+                        erlang:raise(error, badarith, A0)
+                end
+            catch
+                error:badarith:A1 ->
+                    A1 = get(raise)
+            end,
+        A = get(raise),
+        [{erlang,'div',[1, 0], _},{?MODULE,my_div,2,_}|_] = A,
+        %%
+        try
+            even(N)
+        catch
+            error:function_clause -> ok
+        end,
+        %%
+        C = odd_even(N+1, []),
+        try
+            odd(N+1)
+        catch
+            error:function_clause -> ok
+        end,
+        try
+            erlang:raise(error, function_clause, C)
+        catch
+            error:function_clause -> ok
+        end,
+        ok
+    after
+        erlang:system_flag(backtrace_depth, OldDepth)
+    end.
 
 odd_even(N, R) when is_integer(N), N > 1 ->
     odd_even(N-1, 
@@ -680,8 +696,10 @@ do_error_3(Reason, Args, Options) ->
 
 error_info(_Config) ->
     DeadProcess = dead_process(),
-    NewAtom = non_existing_atom(),
+    {NewAtom,NewAtomExt} = non_existing_atom(),
     Eons = 1 bsl 50,
+
+    Pid = spawn_link(fun () -> receive after infinity -> ok end end),
 
     %% We'll need an incorrect memory type for erlang:memory/1. We want to test an
     %% incorrect atom if our own allocators are enabled, but if they are disabled,
@@ -693,7 +711,7 @@ error_info(_Config) ->
                     end,
 
     %% Pick up external pid and port.
-    {ok, ExternalNode} = test_server:start_node(?FUNCTION_NAME, slave, []),
+    {ok, Peer, ExternalNode} = ?CT_PEER(),
     ExternalPid = rpc:call(ExternalNode, erlang, whereis, [code_server]),
     ExternalPort = hd(rpc:call(ExternalNode, erlang, ports, [])),
 
@@ -767,9 +785,14 @@ error_info(_Config) ->
          {binary_to_list, [<<1,2,3>>, 4, 5]},
 
          {binary_to_term, [abc]},
-         {binary_to_term, [<<"abc">>]},
+         {binary_to_term, [<<"bad">>]},
+
          {binary_to_term, [term_to_binary(a), abc]},
          {binary_to_term, [<<"bad">>, abc]},
+         {binary_to_term, [<<"bad">>, [bad]]},
+         {binary_to_term, [<<"bad">>, []]},
+         {binary_to_term, [<<"bad">>, [safe]]},
+         {binary_to_term, [NewAtomExt, [safe]]},
 
          {bit_size, [abc]},
          {bitstring_to_list, [abc]},
@@ -829,6 +852,8 @@ error_info(_Config) ->
 
          {display, ["test erlang:display/1"], [no_fail]},
          {display_string, [{a,b,c}]},
+         {display_string, [standard_out,"test erlang:display/2"]},
+         {display_string, [stdout,{a,b,c}]},
 
          %% Internal undcoumented BIFs.
          {dist_ctrl_get_data, 1},
@@ -857,7 +882,11 @@ error_info(_Config) ->
          {exit, 1},
 
          {exit, [a, b]},
+         {exit, [Pid, bye, [blipp]]},
+         {exit, [garbage, bye, [priority]]},
          {exit_signal, [a, b]},
+         {exit_signal, [Pid, bye, [blipp]]},
+         {exit_signal, [garbage, bye, [priority]]},
 
          {external_size, [a], [no_fail]},
          {external_size, [abc, xyz]},
@@ -888,6 +917,7 @@ error_info(_Config) ->
 
          {gather_gc_info_result, 1},            %Internal BIF.
 
+         {get_cookie, [{not_node}]},
          {get_keys, [value], [no_fail]},
          {get_module_info, 1},
          {get_module_info, 2},
@@ -905,24 +935,36 @@ error_info(_Config) ->
          {hibernate, [1,2,a]},
          {insert_element, [a, b, c]},
          {insert_element, [0, b, c]},
+         {integer_set_bits, [abc]},
+         {integer_signed_width, [abc]},
          {integer_to_binary, [42.0]},
          {integer_to_binary, [42, 100]},
          {integer_to_binary, [42.0, 100]},
          {integer_to_list, [abc]},
          {integer_to_list, [abc, 100]},
+         {integer_trailing_zeroes, [abc]},
+         {integer_unsigned_width, [abc]},
          {iolist_size, [abc]},
          {iolist_to_binary, [abc]},
          {iolist_to_iovec, [abc]},
          {is_builtin, [1, 2, a]},
          {is_function, [abc, bad_arity]},
          {is_function, [abc, -1]},
+         {is_integer, [5, a, b]},
          {is_map_key, [key, not_map]},
          {is_process_alive, [abc]},
+
+         {is_record, 1},                        %Can't fail.
          {is_record, [not_tuple,42]},
-         {is_record, [not_tuple,42,bad_size]},
+         {is_record, [not_tuple,mod,42.0]},
+
          {length, [abc]},
          {link, [42]},
          {link, [DeadProcess]},
+         {link, [42, priority]},
+         {link, [DeadProcess, priority]},
+         {link, [Pid, [blipp]]},
+         {link, [Pid, blapp]},
          {list_to_atom, [42]},
          {list_to_atom, [lists:duplicate(1024, $a)]},
          {list_to_binary, [42]},
@@ -1016,16 +1058,32 @@ error_info(_Config) ->
          {nif_error, 1},
          {nif_error, 2},
          {node, [abc]},
-         {nodes, [abc]},
+         {nodes, [abc], [{1, ".*not a valid node type.*"}]},
+         {nodes, [[abc]], [{1, ".*not a list of.*"}]},
+         {nodes, [DeadProcess], [{1, ".*not a valid node type or list of valid node types.*"}]},
+         {nodes, [abc, 17], [{1, ".*not a valid node type.*"},{2, ".*not a map.*"}]},
+         {nodes, [hidden, 17], [{2, ".*not a map.*"}]},
+         {nodes, [hidden, #{ 17 => true }], [{2, ".*invalid options in map.*"}]},
+         {nodes, [hidden, #{ connection_id => 17 }], [{2, ".*invalid options in map.*"}]},
+         {nodes, [hidden, #{ node_type => 17 }], [{2, ".*invalid options in map.*"}]},
+         {nodes, [abc, #{}], [{1, ".*not a valid node type.*"}]},
+         {nodes, [DeadProcess,#{node_type=>true}], [{1, ".*not a valid node type or list of valid node types.*"}]},
+         {nodes, [visible, 17], [{2,".*not a map.*"}]},
+         {nodes, [visible, #{connection_id=>blapp}], [{2,".*invalid options in map.*"}]},
+         {nodes, [visible, 17], [{2,".*not a map.*"}]},
+         {nodes, [known, #{connection_id=>true,node_type=>true}], [no_fail]},
+         {nodes, [[this,connected], #{connection_id=>true,node_type=>true}], [no_fail]},
          {phash, [any, -1]},
          {phash, [any, not_integer]},
          {phash2, [any], [no_fail]},
          {phash2, [any, not_integer]},
+         {pid_to_binary, [abc]},
          {pid_to_list, [abc]},
 
          {open_port, [{bad,name}, []]},
          {open_port, [{spawn, "no_command"}, bad_option_list]},
          {open_port, [{spawn, "no_command"}, [xyz]]},
+         {open_port, [{spawn, "no_command"}, [{args,[]}]],[{1,".*spawn_executable.*"}]},
 
          {port_call, 2},                        %Internal BIF.
 
@@ -1062,6 +1120,7 @@ error_info(_Config) ->
          {port_get_data, 1},
          {port_set_data, 2},
 
+         {port_to_binary, [abc]},
          {port_to_list, [abc]},
          {posixtime_to_universaltime, [abc]},
 
@@ -1074,6 +1133,10 @@ error_info(_Config) ->
          {process_display, [ExternalPid, backtrace]},
          {process_display, [ExternalPid, whatever]},
          {process_display, [DeadProcess, backtrace]},
+
+         {processes_next, [{a, []}]},
+         {processes_next, [{-1, []}]},
+         {processes_next, [a]},
 
          {process_flag, [trap_exit, some_value]},
          {process_flag, [bad_flag, some_value]},
@@ -1100,6 +1163,7 @@ error_info(_Config) ->
          {raise, 3},
          {read_timer, [bad_timer]},
          {read_timer, [bad_time, bad_options]},
+         {ref_to_binary, [abc]},
          {ref_to_list, [abc]},
 
          {register, [<<"name">>, abc]},
@@ -1143,7 +1207,9 @@ error_info(_Config) ->
          {seq_trace_info, 1},
          {seq_trace_print, 1},
          {seq_trace_print, 2},
-         {set_cookie, 2},
+         {set_cookie, [{not_cookie}]},
+         {set_cookie, [{not_node}, {not_cookie}]},
+         {set_cookie, [nonode@nohost, {not_cookie}]},
          {set_cpu_topology, 1},
 
          {setelement, [a, b, c]},
@@ -1299,7 +1365,7 @@ error_info(_Config) ->
     try
         do_error_info(L)
     after
-        test_server:stop_node(ExternalNode)
+        peer:stop(Peer)
     end.
 
 dead_process() ->
@@ -1319,7 +1385,9 @@ non_existing_atom(Atom) ->
             non_existing_atom([Char|Atom])
     catch
         error:badarg ->
-            Atom
+            AtomBin = list_to_binary(Atom),
+            AtomExt = <<131,100,(byte_size(AtomBin)):16,AtomBin/binary>>,
+            {Atom,AtomExt}
     end.
 
 do_error_info(L0) ->
@@ -1475,7 +1543,7 @@ line_numbers(Config) when is_list(Config) ->
     <<0,0>> = build_binary1(16),
     {'EXIT',{badarg,
              [{?MODULE,build_binary1,1,
-               [{file,"bit_syntax.erl"},{line,72503}]},
+               [{file,"bit_syntax.erl"},{line,72503},{error_info,_}]},
               {?MODULE,line_numbers,1,
                [{file,ModFile},{line,_}]}|_]}} =
     (catch build_binary1(bad_size)),
@@ -1483,21 +1551,20 @@ line_numbers(Config) when is_list(Config) ->
     <<7,1,2,3>> = build_binary2(8, <<1,2,3>>),
     {'EXIT',{badarg,
              [{?MODULE,build_binary2,2,
-               [{file,"bit_syntax.erl"},{line,72507}]},
+               [{file,"bit_syntax.erl"},{line,72507},{error_info,_}]},
               {?MODULE,line_numbers,1,
                [{file,ModFile},{line,_}]}|_]}} =
     (catch build_binary2(bad_size, <<>>)),
     {'EXIT',{badarg,
-             [{erlang,bit_size,[bad_binary],[{error_info,_}]},
-              {?MODULE,build_binary2,2,
-               [{file,"bit_syntax.erl"},{line,72507}]},
+             [{?MODULE,build_binary2,2,
+               [{file,"bit_syntax.erl"},{line,72507},{error_info,_}]},
               {?MODULE,line_numbers,1,
                [{file,ModFile},{line,_}]}|_]}} =
     (catch build_binary2(8, bad_binary)),
 
     <<"abc",357:16>> = build_binary3(<<"abc">>),
     {'EXIT',{badarg,[{?MODULE,build_binary3,1,
-                      [{file,"bit_syntax.erl"},{line,72511}]},
+                      [{file,"bit_syntax.erl"},{line,72511},{error_info,_}]},
                      {?MODULE,line_numbers,1,
                       [{file,ModFile},{line,_}]}|_]}} =
     (catch build_binary3(no_binary)),
@@ -1565,6 +1632,28 @@ line_numbers(Config) when is_list(Config) ->
              [{erlang,tl,[y],[{error_info,_}]},
               {?MODULE,test_tl,1,[{file,"list_bifs.erl"},{line,102}]}|_]}} =
         (catch test_tl(y)),
+
+    %% This line number is too large to be represented and will be silently
+    %% ignored by the emulator.
+    {'EXIT',{crash,
+             [{?MODULE,crash_huge_line,1,[]},
+              {?MODULE,line_numbers,1,_}|_]}} =
+        (catch crash_huge_line(gurka)),
+
+    {'EXIT',{{badrecord,[1,2,3]},
+             [{?MODULE,bad_record,1,[{file,"bad_records.erl"},{line,4}]}|_]}} =
+        catch bad_record([1,2,3]),
+
+    %% GH-5960: When an instruction raised an exception at the very end of the
+    %% instruction (e.g. badmatch), and was directly followed by a line
+    %% instruction, the exception was raised for the wrong line.
+    ok = ambiguous_line(0),
+    {'EXIT',{{badmatch,_},
+        [{?MODULE,ambiguous_line,1,[{file,"ambiguous_line.erl"},
+                                    {line,3}]}|_]}} = catch ambiguous_line(1),
+    {'EXIT',{{badmatch,_},
+        [{?MODULE,ambiguous_line,1,[{file,"ambiguous_line.erl"},
+                                    {line,4}]}|_]}} = catch ambiguous_line(2),
 
     ok.
 
@@ -1688,3 +1777,19 @@ update_map(M0) ->                               %Line 2
 test_hd(X) -> foo(), hd(X).                     %Line 101
 test_tl(X) -> foo(), tl(X).                     %Line 102
 foo() -> id(100).
+
+-file("huge_lines.erl", 100000000).             %Line 100000000
+
+crash_huge_line(_) ->                           %Line 100000002
+    erlang:error(crash).                        %Line 100000003
+
+-file("bad_records.erl", 1).
+-record(foobar, {a,b,c,d}).                     %Line 2.
+bad_record(R) ->                                %Line 3.
+    R#foobar.a.                                 %Line 4.
+
+-file("ambiguous_line.erl", 1).
+ambiguous_line(A) ->                            %Line 2.
+    true = A =/= 1,                             %Line 3.
+    true = A =/= 2,                             %Line 4.
+    ok.

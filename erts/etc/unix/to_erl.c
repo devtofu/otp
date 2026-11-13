@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
+ *
+ * SPDX-License-Identifier: Apache-2.0
  * 
- * Copyright Ericsson AB 1996-2020. All Rights Reserved.
+ * Copyright Ericsson AB 1996-2025. All Rights Reserved.
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -82,13 +84,13 @@
 #  define STRERROR(x) ""
 #endif
 
-#define noDEBUG
+#define noDEBUG_TOERL
 
 #define PIPE_DIR        "/tmp/"
 #define PIPE_STUBNAME   "erlang.pipe"
 #define PIPE_STUBLEN    strlen(PIPE_STUBNAME)
 
-#ifdef DEBUG
+#ifdef DEBUG_TOERL
 #define STATUS(s)  { fprintf(stderr, (s)); fflush(stderr); }
 #else
 #define STATUS(s)
@@ -106,7 +108,7 @@ static int protocol_ver = RUN_ERL_LO_VER; /* assume lowest to begin with */
 static int write_all(int fd, const char* buf, int len);
 static int window_size_seq(char* buf, size_t bufsz);
 static int version_handshake(char* buf, int len, int wfd);
-#ifdef DEBUG
+#ifdef DEBUG_TOERL
 static void show_terminal_settings(struct termios *);
 #endif
 
@@ -155,7 +157,7 @@ int main(int argc, char **argv)
 	pipeIx = 2;
     }
     
-#ifdef DEBUG
+#ifdef DEBUG_TOERL
     fprintf(stderr, "%s: pid is : %d\n", argv[0], (int)getpid());
 #endif
     
@@ -209,25 +211,25 @@ int main(int argc, char **argv)
     }
 
     if ((rfd = open (FIFO1, O_RDONLY|DONT_BLOCK_PLEASE, 0)) < 0) {
-#ifdef DEBUG
+#ifdef DEBUG_TOERL
 	fprintf(stderr, "Could not open FIFO %s for reading.\n", FIFO1);
 #endif
 	fprintf(stderr, "No running Erlang on pipe %s: %s\n", pipename, strerror(errno));
 	exit(1);
     }
-#ifdef DEBUG
+#ifdef DEBUG_TOERL
     fprintf(stderr, "to_erl: %s opened for reading\n", FIFO1);
 #endif
     
     if ((wfd = open (FIFO2, O_WRONLY|DONT_BLOCK_PLEASE, 0)) < 0) {
-#ifdef DEBUG
+#ifdef DEBUG_TOERL
 	fprintf(stderr, "Could not open FIFO %s for writing.\n", FIFO2);
 #endif
 	fprintf(stderr, "No running Erlang on pipe %s: %s\n", pipename, strerror(errno));
 	close(rfd);
 	exit(1);
     }
-#ifdef DEBUG
+#ifdef DEBUG_TOERL
     fprintf(stderr, "to_erl: %s opened for writing\n", FIFO2);
 #endif
     
@@ -245,7 +247,7 @@ int main(int argc, char **argv)
     }
     tty_smode = tty_rmode;
     tty_eof = '\004'; /* Ctrl+D to exit */
-#ifdef DEBUG
+#ifdef DEBUG_TOERL
     show_terminal_settings(&tty_rmode);
 #endif
     tty_smode.c_iflag =
@@ -347,20 +349,16 @@ int main(int argc, char **argv)
     
     tcsetattr(0, TCSADRAIN, &tty_smode);
     
-#ifdef DEBUG
+#ifdef DEBUG_TOERL
     show_terminal_settings(&tty_smode);
 #endif
     /*
-     * 	 "Write a ^L to the FIFO which causes the other end to redisplay
-     *    the input line."
-     * This does not seem to work as was intended in old comment above.
-     * However, this control character is now (R12B-3) used by run_erl
-     * to trigger the version handshaking between to_erl and run_erl
-     * at the start of every new to_erl-session.
+     * Write ^[l to the FIFO. This trigger the version handshaking
+     * between to_erl and run_erl and a redraw in erl, at the start
+     * of every new to_erl-session.
      */
-
-    if (write(wfd, "\014", 1) < 0) {
-	fprintf(stderr, "Error in writing ^L to FIFO.\n");
+    if (write(wfd, "\033l", 2) < 0) {
+        fprintf(stderr, "Error in writing ^[l to FIFO.\n");
     }
 
     /*
@@ -420,7 +418,7 @@ int main(int argc, char **argv)
 	}
 
 	if (len) {
-#ifdef DEBUG
+#ifdef DEBUG_TOERL
 	    write_all(1, buf, len);
 #endif
 	    if (write_all(wfd, buf, len) != len) {
@@ -487,7 +485,7 @@ int main(int argc, char **argv)
     }
 
     /* 
-     * Reset terminal characterstics 
+     * Reset terminal characteristics 
      * XXX
      */
     tcsetattr(0, TCSADRAIN, &tty_rmode);
@@ -580,7 +578,7 @@ static int version_handshake(char* buf, int len, int wfd)
 }
 
 
-#ifdef DEBUG
+#ifdef DEBUG_TOERL
 #define S(x)  ((x) > 0 ? 1 : 0)
 
 static void show_terminal_settings(struct termios *t)

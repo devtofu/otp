@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2015-2017. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2015-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -22,6 +24,7 @@
 %%----------------------------------------------------------------------
 
 -module(ssl_crl).
+-moduledoc false.
 
 -include("ssl_alert.hrl").
 -include("ssl_internal.hrl").
@@ -44,8 +47,8 @@ trusted_cert_and_path(CRL, issuer_not_found, CertPath, {Db, DbRef}) ->
 	{error, unknown_ca} ->
             Issuer = public_key:pkix_normalize_name(public_key:pkix_crl_issuer(CRL)),
             IsIssuerFun =
-                fun({_Key, #cert{otp=ErlCertCandidate}}, Acc) ->
-                        verify_crl_issuer(CRL, ErlCertCandidate, Issuer, Acc);
+                fun({_Key, CertCandidate}, Acc) ->
+                        verify_crl_issuer(CRL, CertCandidate, Issuer, Acc);
                    (_, Acc) ->
                         Acc
                 end,
@@ -63,13 +66,10 @@ trusted_cert_and_path(CRL, issuer_not_found, CertPath, {Db, DbRef}) ->
 search_certpath(CRL, CertPath, Db, DbRef) ->
     Issuer = public_key:pkix_normalize_name(public_key:pkix_crl_issuer(CRL)),
     IsIssuerFun =
-	fun(#cert{otp=ErlCertCandidate}, Acc) ->
-		verify_crl_issuer(CRL, ErlCertCandidate, Issuer, Acc);
-	   (_, Acc) ->
-		Acc
+	fun(CertCandidate, Acc) ->
+		verify_crl_issuer(CRL, CertCandidate, Issuer, Acc)
 	end,
-    Certs = [#cert{der=Der, otp=public_key:pkix_decode_cert(Der,otp)} || Der <- CertPath],
-    case find_issuer(IsIssuerFun, certpath, Certs) of
+    case find_issuer(IsIssuerFun, certpath, CertPath) of
 	{ok, OtpCert} ->
 	    {ok, Root, Chain} = ssl_certificate:certificate_chain(OtpCert, Db, DbRef),
 	    {ok, Root, lists:reverse(Chain)};
@@ -108,16 +108,21 @@ find_issuer(IsIssuerFun, Db, _) ->
             Result
     end.
 
-verify_crl_issuer(CRL, ErlCertCandidate, Issuer, NotIssuer) ->
-    TBSCert =  ErlCertCandidate#'OTPCertificate'.tbsCertificate,
+verify_crl_issuer(CRL, #cert{otp = OTPCertCandidate}, Issuer, NotIssuer) ->
+    TBSCert = OTPCertCandidate#'OTPCertificate'.tbsCertificate,
     case public_key:pkix_normalize_name(TBSCert#'OTPTBSCertificate'.subject) of
-	Issuer ->
-	    case public_key:pkix_crl_verify(CRL, ErlCertCandidate) of
-		true ->
-		    throw({ok, ErlCertCandidate});
-		false ->
-		    NotIssuer
-	    end;
-	_ ->
-	    NotIssuer
+        Issuer ->
+            try public_key:pkix_crl_verify(CRL, OTPCertCandidate) of
+                true ->
+                    throw({ok, OTPCertCandidate});
+                false ->
+                    NotIssuer
+            catch _:_ ->
+                    %% Fail gracefully unlikely to happen in valid use cases
+                    ?LOG_WARNING("SSL WARNING: Ignoring CRL "
+                                 "unexpected signature algorithm", [CRL]),
+                    NotIssuer
+            end;
+        _ ->
+            NotIssuer
     end.

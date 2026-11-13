@@ -1,7 +1,9 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 2008-2020. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 2008-2026. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -77,7 +79,8 @@ MODULES= \
 	ct_auto_clean_SUITE \
 	ct_util_SUITE \
 	ct_tc_repeat_SUITE \
-	ct_property_test_SUITE
+	ct_property_test_SUITE \
+	ct_doctest_SUITE
 
 ERL_FILES= $(MODULES:%=%.erl)
 HRL_FILES= test_server_test_lib.hrl
@@ -98,7 +101,8 @@ RELSYSDIR = $(RELEASE_PATH)/common_test_test
 # ----------------------------------------------------
 
 ERL_MAKE_FLAGS +=
-ERL_COMPILE_FLAGS +=
+ERL_COMPILE_FLAGS += +nowarn_missing_spec_documented
+ERL_COMPILE_FLAGS := $(filter-out +deterministic,$(ERL_COMPILE_FLAGS))
 
 EBIN = .
 
@@ -112,7 +116,7 @@ EBIN = .
 #	$(ERL_TOP)/make/make_emakefile $(ERL_COMPILE_FLAGS) -o$(EBIN) $(MODULES)\
 #	> $(EMAKEFILE)
 
-tests debug opt:
+tests $(TYPES):
 	erl $(ERL_MAKE_FLAGS) -make
 
 clean:
@@ -132,7 +136,7 @@ release_spec: opt
 release_tests_spec:
 	$(INSTALL_DIR) "$(RELSYSDIR)"
 	$(INSTALL_DATA) $(ERL_FILES) $(HRL_FILES) $(COVERFILE) "$(RELSYSDIR)"
-	$(INSTALL_DATA) common_test.spec common_test.cover "$(RELSYSDIR)"
+	$(INSTALL_DATA) common_test.spec common_test_gh.spec common_test.cover "$(RELSYSDIR)"
 	chmod -R u+w "$(RELSYSDIR)"
 	@tar cf - *_SUITE_data property_test | (cd "$(RELSYSDIR)"; tar xf -)
 

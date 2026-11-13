@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2010-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2010-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -166,6 +168,70 @@ typedef struct {
     size_t iov_len;
 } SysIOVec;
 #  endif
+#endif
+
+#define ERL_NAPI_ATTR_WUR
+#define ERL_NAPI_ATTR_ALLOC_SIZE(SZPOS)
+#define ERL_NAPI_ATTR_MALLOC_U
+#define ERL_NAPI_ATTR_MALLOC_US(SZPOS)
+#define ERL_NAPI_ATTR_MALLOC_UD(DTOR, PTRPOS)
+#define ERL_NAPI_ATTR_MALLOC_USD(SZPOS, DTOR, PTRPOS)
+#define ERL_NAPI_ATTR_MALLOC_D(DTOR, PTRPOS)
+
+/* ERL_NAPI_ATTR_MALLOC_xxx:
+ * U: Returns pointer to Undefined data. ((malloc))
+ * S: Has Size argument with nr of bytes of returned data. ((alloc_size(SZPOS)))
+ * D: Has 1-to-1 Deallocator function with ptr argument. ((malloc(DTOR,PTRPOS)))
+ */
+
+#if defined(__has_attribute) && !defined(__WIN32__)
+#  if __has_attribute(warn_unused_result)
+#    undef  ERL_NAPI_ATTR_WUR
+#    define ERL_NAPI_ATTR_WUR __attribute__((warn_unused_result))
+#  endif
+#  if __has_attribute(alloc_size)
+#    undef  ERL_NAPI_ATTR_ALLOC_SIZE
+#    define ERL_NAPI_ATTR_ALLOC_SIZE(SZPOS)                                \
+         __attribute__((alloc_size(SZPOS))) ERL_NAPI_ATTR_WUR
+#  endif
+#  if __has_attribute(malloc)
+#    undef  ERL_NAPI_ATTR_MALLOC_U
+#    define ERL_NAPI_ATTR_MALLOC_U __attribute__((malloc)) ERL_NAPI_ATTR_WUR
+
+#    undef  ERL_NAPI_ATTR_MALLOC_US
+#    define ERL_NAPI_ATTR_MALLOC_US(SZPOS)                                 \
+         __attribute__((malloc)) ERL_NAPI_ATTR_ALLOC_SIZE(SZPOS)
+
+#    undef  ERL_NAPI_ATTR_MALLOC_D
+#    if defined(__GNUC__) && __GNUC__ >= 11
+#      define ERL_NAPI_ATTR_MALLOC_D(DTOR, PTRPOS)                         \
+         __attribute__((malloc(DTOR,PTRPOS)))                              \
+         ERL_NAPI_ATTR_WUR
+#    else
+#      define ERL_NAPI_ATTR_MALLOC_D(DTOR, PTRPOS)                         \
+         ERL_NAPI_ATTR_WUR
+#    endif
+
+#    undef  ERL_NAPI_ATTR_MALLOC_UD
+#    define ERL_NAPI_ATTR_MALLOC_UD(DTOR, PTRPOS)                          \
+       ERL_NAPI_ATTR_MALLOC_U                                              \
+       ERL_NAPI_ATTR_MALLOC_D(DTOR, PTRPOS)
+
+#    undef  ERL_NAPI_ATTR_MALLOC_USD
+#    define ERL_NAPI_ATTR_MALLOC_USD(SZPOS, DTOR, PTRPOS)                  \
+       ERL_NAPI_ATTR_MALLOC_US(SZPOS)                                      \
+       ERL_NAPI_ATTR_MALLOC_D(DTOR, PTRPOS)
+#  endif
+#endif
+
+#if (defined(__WIN32__) || defined(_WIN32) || defined(_WIN32_))
+#  define ERL_NAPI_EXPORT __declspec(dllexport)
+#elif defined(__GNUC__) && __GNUC__ >= 4
+#  define ERL_NAPI_EXPORT __attribute__ ((visibility("default")))
+#elif defined (__SUNPRO_C) && (__SUNPRO_C >= 0x550)
+#  define ERL_NAPI_EXPORT __global
+#else
+#  define ERL_NAPI_EXPORT
 #endif
 
 #endif  /* __ERL_DRV_NIF_H__ */

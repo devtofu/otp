@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2011-2017. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2011-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -47,7 +49,7 @@
 %%      {title, Title}
 %%      {dnQualifer, DnQ}
 %%   issuer = {Issuer, IssuerKey}                   true (i.e. a ca cert is created) 
-%%                                                  (obs IssuerKey migth be {Key, Password}
+%%                                                  (obs IssuerKey might be {Key, Password}
 %%   key = KeyFile|KeyBin|rsa|dsa|ec                Subject PublicKey rsa, dsa or ec generates key
 %%   
 %%
@@ -111,6 +113,9 @@ gen_ec(Curve) when is_atom(Curve) ->
 verify_signature(DerEncodedCert, DerKey, _KeyParams) ->
     Key = decode_key(DerKey),
     case Key of 
+	{#'RSAPrivateKey'{modulus=Mod, publicExponent=Exp}, #'RSASSA-PSS-params'{}=P} ->
+	    public_key:pkix_verify(DerEncodedCert, 
+				   {#'RSAPublicKey'{modulus=Mod, publicExponent=Exp}, P});
 	#'RSAPrivateKey'{modulus=Mod, publicExponent=Exp} ->
 	    public_key:pkix_verify(DerEncodedCert, 
 				   #'RSAPublicKey'{modulus=Mod, publicExponent=Exp});
@@ -134,6 +139,8 @@ get_key(Opts) ->
 	    decode_key(Key, Password)
     end.
 
+decode_key({#'RSAPrivateKey'{},#'RSASSA-PSS-params'{}}=Key) ->
+	Key;
 decode_key({Key, Pw}) ->
     decode_key(Key, Pw);
 decode_key(Key) ->
@@ -143,6 +150,8 @@ decode_key(Key) ->
 decode_key(#'RSAPublicKey'{} = Key,_) ->
     Key;
 decode_key(#'RSAPrivateKey'{} = Key,_) ->
+    Key;
+decode_key({#'RSAPrivateKey'{},#'RSASSA-PSS-params'{}} = Key,_) ->
     Key;
 decode_key(#'DSAPrivateKey'{} = Key,_) ->
     Key;
@@ -155,13 +164,16 @@ decode_key(PemBin, Pw) ->
     decode_key(KeyInfo, Pw).
 
 encode_key(Key = #'RSAPrivateKey'{}) ->
-    {ok, Der} = 'OTP-PUB-KEY':encode('RSAPrivateKey', Key),
+    {ok, Der} = 'PKCS-1':encode('RSAPrivateKey', Key),
     {'RSAPrivateKey', Der, not_encrypted};
+encode_key(Key = {#'RSAPrivateKey'{},#'RSASSA-PSS-params'{}}) ->
+    Der = public_key:der_encode('PrivateKeyInfo', Key),
+    {'PrivateKeyInfo', Der, not_encrypted};
 encode_key(Key = #'DSAPrivateKey'{}) ->
-    {ok, Der} = 'OTP-PUB-KEY':encode('DSAPrivateKey', Key),
+    {ok, Der} = 'DSS':encode('DSAPrivateKey', Key),
     {'DSAPrivateKey', Der, not_encrypted};
 encode_key(Key = #'ECPrivateKey'{}) ->
-    {ok, Der} = 'OTP-PUB-KEY':encode('ECPrivateKey', Key),
+    {ok, Der} = 'ECPrivateKey':encode('ECPrivateKey', Key),
     {'ECPrivateKey', Der, not_encrypted}.
 
 make_tbs(SubjectKey, Opts) ->    
@@ -171,7 +183,7 @@ make_tbs(SubjectKey, Opts) ->
     {Issuer, IssuerKey}  = issuer(IssuerProp, Opts, SubjectKey),
 
     {Algo, Parameters} = sign_algorithm(IssuerKey, Opts),
-    
+
     SignAlgo = #'SignatureAlgorithm'{algorithm  = Algo,
 				     parameters = Parameters},    
     Subject = case IssuerProp of
@@ -295,6 +307,11 @@ publickey(#'RSAPrivateKey'{modulus=N, publicExponent=E}) ->
     Algo = #'PublicKeyAlgorithm'{algorithm= ?rsaEncryption, parameters='NULL'},
     #'OTPSubjectPublicKeyInfo'{algorithm = Algo,
 			       subjectPublicKey = Public};
+publickey({#'RSAPrivateKey'{modulus=N, publicExponent=E},#'RSASSA-PSS-params'{}=P}) ->
+    Public = #'RSAPublicKey'{modulus=N, publicExponent=E},
+    Algo = #'PublicKeyAlgorithm'{algorithm= ?'id-RSASSA-PSS', parameters=P},
+    #'OTPSubjectPublicKeyInfo'{algorithm = Algo,
+			       subjectPublicKey = Public};
 publickey(#'DSAPrivateKey'{p=P, q=Q, g=G, y=Y}) ->
     Algo = #'PublicKeyAlgorithm'{algorithm= ?'id-dsa', 
 				 parameters={params, #'Dss-Parms'{p=P, q=Q, g=G}}},
@@ -325,6 +342,8 @@ sign_algorithm(#'RSAPrivateKey'{}, Opts) ->
 	       md2    -> ?'md2WithRSAEncryption'
 	   end,
     {Type, 'NULL'};
+sign_algorithm({#'RSAPrivateKey'{},#'RSASSA-PSS-params'{}=P}, _Opts) ->
+    {?'id-RSASSA-PSS', P};
 sign_algorithm(#'DSAPrivateKey'{p=P, q=Q, g=G}, _Opts) ->
     {?'id-dsa-with-sha1', {params,#'Dss-Parms'{p=P, q=Q, g=G}}};
 sign_algorithm(#'ECPrivateKey'{parameters = Parms}, Opts) ->
@@ -351,7 +370,7 @@ make_key(ec, _Opts) ->
 
 gen_rsa2(Size) -> 
     try
-        %% The numbers 2048,17 is choosen to not cause the cryptolib on
+        %% The numbers 2048,17 is chosen to not cause the cryptolib on
         %% FIPS-enabled test machines be mad at us.
         public_key:generate_key({rsa, 2048, 17})
     catch

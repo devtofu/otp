@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2013-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2013-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -22,8 +24,10 @@
 
 %%------------------------------------------------------------------
 -module(ssh_message).
+-moduledoc false.
 
 -include_lib("public_key/include/public_key.hrl").
+-include_lib("kernel/include/logger.hrl").
 
 -include("ssh.hrl").
 -include("ssh_connect.hrl").
@@ -34,17 +38,21 @@
 -export([ssh2_pubkey_decode/1,
          ssh2_pubkey_encode/1,
          ssh2_privkey_decode2/1,
+         oid2ssh_curvename/1,
+         oid2ssh_curve_algo/1,
+         ssh_curvename2oid/1,
          %% experimental:
          ssh2_privkey_encode/1
         ]).
 
 -behaviour(ssh_dbg).
 -export([ssh_dbg_trace_points/0, ssh_dbg_flags/1, ssh_dbg_on/1, ssh_dbg_off/1, ssh_dbg_format/2]).
+-define(ALG_NAME_LIMIT, 64). % RFC4251 sec6
 
 ucl(B) ->
     try unicode:characters_to_list(B) of
 	L when is_list(L) -> L;
-	{error,_Matched,Rest} -> throw({error,{bad_unicode,Rest}})
+	{error,_Matched,_Rest} -> throw({error,bad_unicode})
     catch
 	_:_ -> throw({error,bad_unicode})
     end.
@@ -172,7 +180,7 @@ encode(#ssh_msg_userauth_pk_ok{
     <<?Ebyte(?SSH_MSG_USERAUTH_PK_OK), ?Estring(Alg), ?Ebinary(KeyBlob)>>;
 
 encode(#ssh_msg_userauth_passwd_changereq{prompt = Prompt,
-					  languge = Lang
+					  language = Lang
 					 })->
     <<?Ebyte(?SSH_MSG_USERAUTH_PASSWD_CHANGEREQ), ?Estring_utf8(Prompt), ?Estring(Lang)>>;
 
@@ -204,12 +212,12 @@ encode(#ssh_msg_disconnect{
 encode(#ssh_msg_service_request{
 	  name = Service
 	 }) ->
-    <<?Ebyte(?SSH_MSG_SERVICE_REQUEST), ?Estring_utf8(Service)>>;
+    <<?Ebyte(?SSH_MSG_SERVICE_REQUEST), ?Estring(Service)>>;
 
 encode(#ssh_msg_service_accept{
 	  name = Service
 	 }) ->
-    <<?Ebyte(?SSH_MSG_SERVICE_ACCEPT), ?Estring_utf8(Service)>>;
+    <<?Ebyte(?SSH_MSG_SERVICE_ACCEPT), ?Estring(Service)>>;
 
 encode(#ssh_msg_ext_info{
           nr_extensions = N,
@@ -289,6 +297,15 @@ encode(#ssh_msg_kex_ecdh_reply{public_host_key = {Key,SigAlg}, q_s = Q_s, h_sig 
     EncKey = ssh2_pubkey_encode(Key),
     EncSign = encode_signature(Key, SigAlg, Sign),
     <<?Ebyte(?SSH_MSG_KEX_ECDH_REPLY), ?Ebinary(EncKey), ?Ebinary(Q_s), ?Ebinary(EncSign)>>;
+
+encode(#ssh_msg_kex_hybrid_init{c_init = {C_pk2, C_pk1}}) ->
+    <<?Ebyte(?SSH_MSG_KEX_HYBRID_INIT), ?Ebinary(<<C_pk2/binary, C_pk1/binary>>)>>;
+
+encode(#ssh_msg_kex_hybrid_reply{public_host_key = {Key,SigAlg}, s_reply = S_reply,
+                                 h_sig = Sign}) ->
+    EncKey = ssh2_pubkey_encode(Key),
+    EncSign = encode_signature(Key, SigAlg, Sign),
+    <<?Ebyte(?SSH_MSG_KEX_HYBRID_REPLY), ?Ebinary(EncKey), ?Ebinary(S_reply), ?Ebinary(EncSign)>>;
 
 encode(#ssh_msg_ignore{data = Data}) ->
     <<?Ebyte(?SSH_MSG_IGNORE), ?Estring_utf8(Data)>>;
@@ -372,7 +389,7 @@ decode(<<?BYTE(?SSH_MSG_CHANNEL_REQUEST), ?UINT32(Recipient),
     try
         #ssh_msg_channel_request{
            recipient_channel = Recipient,
-           request_type = ?unicode_list(RequestType),
+           request_type = binary:bin_to_list(RequestType),
            want_reply = erl_boolean(Bool),
            data  = Data
           }
@@ -402,8 +419,8 @@ decode(<<?BYTE(?SSH_MSG_USERAUTH_REQUEST),
 	 Data/binary>>) ->
     #ssh_msg_userauth_request{
        user =    ?unicode_list(User),
-       service = ?unicode_list(Service),
-       method =  ?unicode_list(Method),
+       service = binary:bin_to_list(Service),
+       method =  binary:bin_to_list(Method),
        data = Data
       };
 
@@ -411,7 +428,7 @@ decode(<<?BYTE(?SSH_MSG_USERAUTH_FAILURE),
 	 ?DEC_BIN(Auths,__0),
 	 ?BYTE(Bool)>>) ->
     #ssh_msg_userauth_failure {
-       authentications = ?unicode_list(Auths),
+       authentications = binary:bin_to_list(Auths),
        partial_success = erl_boolean(Bool)
       };
 
@@ -438,7 +455,7 @@ decode(<<?BYTE(?SSH_MSG_USERAUTH_INFO_REQUEST),
 decode(<<?BYTE(?SSH_MSG_USERAUTH_PASSWD_CHANGEREQ), ?DEC_BIN(Prompt,__0), ?DEC_BIN(Lang,__1) >>) ->
     #ssh_msg_userauth_passwd_changereq{
        prompt = Prompt,
-       languge = Lang
+       language = Lang
       };
 
 %%% Unhandled message, also masked by same 1:st byte value as ?SSH_MSG_USERAUTH_INFO_REQUEST:
@@ -453,32 +470,48 @@ decode(<<?BYTE(?SSH_MSG_USERAUTH_INFO_RESPONSE), ?UINT32(Num), Data/binary>>) ->
        num_responses = Num,
        data = Data};
 
-decode(<<?BYTE(?SSH_MSG_EXT_INFO), ?UINT32(N), BinData/binary>>) ->
+decode(<<?BYTE(?SSH_MSG_EXT_INFO), ?UINT32(N), BinData/binary>>)
+  when byte_size(BinData) =< ?MAX_EXT_INFO_SIZE ->
     Data = bin_foldr(
              fun(Bin,Acc) when length(Acc) == N ->
                      {Bin,Acc};
-                (<<?DEC_BIN(V0,__0), ?DEC_BIN(V1,__1), Rest/binary>>, Acc) -> 
-                     {Rest,[{binary_to_list(V0),binary_to_list(V1)}|Acc]}
+                (<<?DEC_BIN(V0, L0), ?DEC_BIN(V1, L1), Rest/binary>>, Acc)
+                   when L0 =< ?MAX_SERVICE_NAME_SIZE, L1 =< ?MAX_EXT_VALUE_SIZE ->
+                     {Rest,[{binary_to_list(V0),binary_to_list(V1)}|Acc]};
+                (<<?DEC_BIN(_, L0), ?DEC_BIN(_, L1), _/binary>>, _Acc) ->
+                     throw({error,
+                            size_error([{ext_info_name_too_large, L0, ?MAX_SERVICE_NAME_SIZE},
+                                        {ext_info_value_too_large, L1, ?MAX_EXT_VALUE_SIZE}])})
              end, [], BinData),
-    #ssh_msg_ext_info{
-       nr_extensions = N,
-       data = Data
-      };
+    #ssh_msg_ext_info{nr_extensions = N, data = Data};
+decode(<<?BYTE(?SSH_MSG_EXT_INFO), ?UINT32(_), BinData/binary>>) ->
+    throw({error, {ext_info_too_large, byte_size(BinData), ?MAX_EXT_INFO_SIZE}});
 
 %%% Keyexchange messages
-decode(<<?BYTE(?SSH_MSG_KEXINIT), Cookie:128, Data/binary>>) ->
+decode(<<?BYTE(?SSH_MSG_KEXINIT), Cookie:128, Data/binary>>)
+  when byte_size(Data) =< ?MAX_KEXINIT_SIZE ->
     decode_kex_init(Data, [Cookie, ssh_msg_kexinit], 10);
+decode(<<?BYTE(?SSH_MSG_KEXINIT), _Cookie:128, Data/binary>>) ->
+    throw({error, {kexinit_too_large, byte_size(Data), ?MAX_KEXINIT_SIZE}});
 
-decode(<<"dh",?BYTE(?SSH_MSG_KEXDH_INIT), ?DEC_MPINT(E,__0)>>) ->
-    #ssh_msg_kexdh_init{e = E
-		       };
+decode(<<"dh",?BYTE(?SSH_MSG_KEXDH_INIT), ?DEC_MPINT(E, ELen)>>)
+  when ELen =< ?MAX_DH_MPINT_SIZE ->
+    #ssh_msg_kexdh_init{e = E};
+decode(<<"dh",?BYTE(?SSH_MSG_KEXDH_INIT), ?DEC_MPINT(_, ELen)>>) ->
+    throw({error, {kexdh_init_e_too_large, ELen, ?MAX_DH_MPINT_SIZE}});
 
-decode(<<"dh", ?BYTE(?SSH_MSG_KEXDH_REPLY), ?DEC_BIN(Key,__0), ?DEC_MPINT(F,__1), ?DEC_BIN(Hashsign,__2)>>) ->
-    #ssh_msg_kexdh_reply{
-       public_host_key = ssh2_pubkey_decode(Key),
-       f = F,
-       h_sig = decode_signature(Hashsign)
-      };
+decode(<<"dh", ?BYTE(?SSH_MSG_KEXDH_REPLY),
+         ?DEC_BIN(Key, KLen), ?DEC_MPINT(F, FLen), ?DEC_BIN(Hashsign, HLen)>>)
+  when KLen =< ?MAX_HOST_KEY_SIZE,
+       FLen =< ?MAX_DH_MPINT_SIZE,
+       HLen =< ?MAX_SIGNATURE_SIZE ->
+    #ssh_msg_kexdh_reply{public_host_key = ssh2_pubkey_decode(Key), f = F,
+                         h_sig = decode_signature(Hashsign)};
+decode(<<"dh",?BYTE(?SSH_MSG_KEXDH_REPLY),
+         ?DEC_BIN(_, KLen), ?DEC_MPINT(_, FLen), ?DEC_BIN(_, HLen)>>) ->
+    throw({error, size_error([{kexdh_host_key_too_large, KLen, ?MAX_HOST_KEY_SIZE},
+                              {kexdh_f_too_large, FLen, ?MAX_DH_MPINT_SIZE},
+                              {kexdh_signature_too_large, HLen, ?MAX_SIGNATURE_SIZE}])});
 
 decode(<<?BYTE(?SSH_MSG_KEX_DH_GEX_REQUEST), ?UINT32(Min), ?UINT32(N), ?UINT32(Max)>>) ->
     #ssh_msg_kex_dh_gex_request{
@@ -492,76 +525,121 @@ decode(<<"dh_gex",?BYTE(?SSH_MSG_KEX_DH_GEX_REQUEST_OLD), ?UINT32(N)>>) ->
        n = N
       };
 
-decode(<<"dh_gex",?BYTE(?SSH_MSG_KEX_DH_GEX_GROUP), ?DEC_MPINT(Prime,__0), ?DEC_MPINT(Generator,__1) >>) ->
-    #ssh_msg_kex_dh_gex_group{
-       p = Prime,
-       g = Generator
-      };
+decode(<<"dh_gex",?BYTE(?SSH_MSG_KEX_DH_GEX_GROUP),
+         ?DEC_MPINT(Prime, PLen), ?DEC_MPINT(Generator, GLen)>>)
+  when PLen =< ?MAX_DH_MPINT_SIZE, GLen =< ?MAX_DH_MPINT_SIZE ->
+    #ssh_msg_kex_dh_gex_group{p = Prime, g = Generator};
+decode(<<"dh_gex",?BYTE(?SSH_MSG_KEX_DH_GEX_GROUP), ?DEC_MPINT(_, PLen), ?DEC_MPINT(_, GLen)>>) ->
+    throw({error, size_error([{gex_p_too_large, PLen, ?MAX_DH_MPINT_SIZE},
+                              {gex_g_too_large, GLen, ?MAX_DH_MPINT_SIZE}])});
 
-decode(<<?BYTE(?SSH_MSG_KEX_DH_GEX_INIT), ?DEC_MPINT(E,__0)>>) ->
-    #ssh_msg_kex_dh_gex_init{
-       e = E
-      };
+decode(<<?BYTE(?SSH_MSG_KEX_DH_GEX_INIT), ?DEC_MPINT(E, ELen)>>)
+  when ELen =< ?MAX_DH_MPINT_SIZE ->
+    #ssh_msg_kex_dh_gex_init{e = E};
+decode(<<?BYTE(?SSH_MSG_KEX_DH_GEX_INIT), ?DEC_MPINT(_, ELen)>>) ->
+    throw({error, {gex_init_e_too_large, ELen, ?MAX_DH_MPINT_SIZE}});
 
-decode(<<?BYTE(?SSH_MSG_KEX_DH_GEX_REPLY), ?DEC_BIN(Key,__0), ?DEC_MPINT(F,__1), ?DEC_BIN(Hashsign,__2)>>) ->
-    #ssh_msg_kex_dh_gex_reply{
-       public_host_key = ssh2_pubkey_decode(Key),
-       f = F,
-       h_sig = decode_signature(Hashsign)
-      };
+decode(<<?BYTE(?SSH_MSG_KEX_DH_GEX_REPLY),
+         ?DEC_BIN(Key, KLen), ?DEC_MPINT(F, FLen), ?DEC_BIN(Hashsign, SLen)>>)
+  when KLen =< ?MAX_HOST_KEY_SIZE,
+       FLen =< ?MAX_DH_MPINT_SIZE,
+       SLen =< ?MAX_SIGNATURE_SIZE ->
+    #ssh_msg_kex_dh_gex_reply{public_host_key = ssh2_pubkey_decode(Key), f = F,
+                              h_sig = decode_signature(Hashsign)};
+decode(<<"dh_gex",?BYTE(?SSH_MSG_KEX_DH_GEX_REPLY),
+         ?DEC_BIN(_, KLen), ?DEC_MPINT(_, FLen), ?DEC_BIN(_, SLen)>>) ->
+    throw({error, size_error([{gex_host_key_too_large, KLen, ?MAX_HOST_KEY_SIZE},
+                              {gex_f_too_large, FLen, ?MAX_DH_MPINT_SIZE},
+                              {gex_signature_too_large, SLen, ?MAX_SIGNATURE_SIZE}])});
 
-decode(<<"ecdh",?BYTE(?SSH_MSG_KEX_ECDH_INIT), ?DEC_BIN(Q_c,__0)>>) ->
-    #ssh_msg_kex_ecdh_init{
-       q_c = Q_c
-      };
+decode(<<"ecdh",?BYTE(?SSH_MSG_KEX_ECDH_INIT), ?DEC_BIN(Q_c, QLen)>>)
+  when QLen =< ?MAX_ECDH_POINT_SIZE ->
+    #ssh_msg_kex_ecdh_init{q_c = Q_c};
+decode(<<"ecdh",?BYTE(?SSH_MSG_KEX_ECDH_INIT), ?DEC_BIN(_, QLen)>>) ->
+    throw({error, {ecdh_init_point_too_large, QLen, ?MAX_ECDH_POINT_SIZE}});
 
 decode(<<"ecdh",?BYTE(?SSH_MSG_KEX_ECDH_REPLY),
-	 ?DEC_BIN(Key,__1), ?DEC_BIN(Q_s,__2), ?DEC_BIN(Sig,__3)>>) ->
-    #ssh_msg_kex_ecdh_reply{
-       public_host_key = ssh2_pubkey_decode(Key),
-       q_s = Q_s,
-       h_sig = decode_signature(Sig)
-      };
+         ?DEC_BIN(Key, KLen), ?DEC_BIN(Q_s, QLen), ?DEC_BIN(Sig, SLen)>>)
+  when KLen =< ?MAX_HOST_KEY_SIZE,
+       QLen =< ?MAX_ECDH_POINT_SIZE,
+       SLen =< ?MAX_SIGNATURE_SIZE ->
+    #ssh_msg_kex_ecdh_reply{public_host_key = ssh2_pubkey_decode(Key), q_s = Q_s,
+                            h_sig = decode_signature(Sig)};
+decode(<<"ecdh",?BYTE(?SSH_MSG_KEX_ECDH_REPLY),
+         ?DEC_BIN(_, KLen), ?DEC_BIN(_, QLen), ?DEC_BIN(_, SLen)>>) ->
+    throw({error, size_error([{ecdh_host_key_too_large, KLen, ?MAX_HOST_KEY_SIZE},
+                              {ecdh_point_too_large, QLen, ?MAX_ECDH_POINT_SIZE},
+                              {ecdh_signature_too_large, SLen, ?MAX_SIGNATURE_SIZE}])});
 
-decode(<<?SSH_MSG_SERVICE_REQUEST, ?DEC_BIN(Service,__0)>>) ->
-    #ssh_msg_service_request{
-       name = ?unicode_list(Service)
-      };
+decode(<<"mlkem",?BYTE(?SSH_MSG_KEX_HYBRID_INIT), ?DEC_BIN(C_init, CLen)>>)
+  when CLen =:= ?MLKEM768_INIT_SIZE->
+    #ssh_msg_kex_hybrid_init{c_init = C_init};
+%% Reject invalid ML-KEM messages with proper error
+decode(<<"mlkem", ?BYTE(?SSH_MSG_KEX_HYBRID_INIT), ?DEC_BIN(_, CLen)>>) ->
+    throw({error, {mlkem_init_invalid_size, CLen, ?MLKEM768_INIT_SIZE}});
 
-decode(<<?SSH_MSG_SERVICE_ACCEPT, ?DEC_BIN(Service,__0)>>) ->
-    #ssh_msg_service_accept{
-       name = ?unicode_list(Service)
-      };
+decode(<<"mlkem",?BYTE(?SSH_MSG_KEX_HYBRID_REPLY),
+         ?DEC_BIN(Key, KLen), ?DEC_BIN(S_reply, SLen), ?DEC_BIN(Sig, SigLen)>>)
+  when KLen =< ?MAX_HOST_KEY_SIZE,
+       SLen =:= ?MLKEM768_REPLY_SIZE,
+       SigLen =< ?MAX_SIGNATURE_SIZE ->
+    #ssh_msg_kex_hybrid_reply{public_host_key = ssh2_pubkey_decode(Key), s_reply = S_reply,
+                              h_sig = decode_signature(Sig)};
+decode(<<"mlkem",?BYTE(?SSH_MSG_KEX_HYBRID_REPLY),
+         ?DEC_BIN(_, _KLen), ?DEC_BIN(_, SLen), ?DEC_BIN(_, _SigLen)>>)
+  when SLen =/= ?MLKEM768_REPLY_SIZE ->
+    throw({error, {mlkem_reply_invalid_size, SLen, ?MLKEM768_REPLY_SIZE}});
+decode(<<"mlkem",?BYTE(?SSH_MSG_KEX_HYBRID_REPLY),
+         ?DEC_BIN(_, KLen), ?DEC_BIN(_, _SLen), ?DEC_BIN(_, SigLen)>>) ->
+    throw({error, size_error([{mlkem_host_key_too_large, KLen, ?MAX_HOST_KEY_SIZE},
+                              {mlkem_signature_too_large, SigLen, ?MAX_SIGNATURE_SIZE}])});
 
-decode(<<?BYTE(?SSH_MSG_DISCONNECT), ?UINT32(Code), ?DEC_BIN(Desc,__0), ?DEC_BIN(Lang,__1)>>) ->
-    #ssh_msg_disconnect{
-       code = Code,
-       description = ?unicode_list(Desc),
-       language = Lang
-      };
+decode(<<?SSH_MSG_SERVICE_REQUEST, ?DEC_BIN(Service, Len)>>)
+  when Len =< ?MAX_SERVICE_NAME_SIZE ->
+    #ssh_msg_service_request{name = binary:bin_to_list(Service)};
+decode(<<?SSH_MSG_SERVICE_REQUEST, ?DEC_BIN(_, Len)>>) ->
+    throw({error, {service_request_name_too_large, Len, ?MAX_SERVICE_NAME_SIZE}});
+decode(<<?SSH_MSG_SERVICE_ACCEPT, ?DEC_BIN(Service, Len)>>)
+  when Len =< ?MAX_SERVICE_NAME_SIZE ->
+    #ssh_msg_service_accept{name = binary:bin_to_list(Service)};
+decode(<<?SSH_MSG_SERVICE_ACCEPT, ?DEC_BIN(_, Len)>>) ->
+    throw({error, {service_accept_name_too_large, Len, ?MAX_SERVICE_NAME_SIZE}});
 
-%% Accept bad disconnects from ancient openssh clients that doesn't send language tag.  Use english as a work-around.
-decode(<<?BYTE(?SSH_MSG_DISCONNECT), ?UINT32(Code), ?DEC_BIN(Desc,__0)>>) ->
-    #ssh_msg_disconnect{
-       code = Code,
-       description = ?unicode_list(Desc),
-       language = <<"en">>
-      };
+decode(<<?BYTE(?SSH_MSG_DISCONNECT), ?UINT32(Code), ?DEC_BIN(Desc, DLen), ?DEC_BIN(Lang, LLen)>>)
+    when DLen =< ?MAX_DISCONNECT_DESC_SIZE, LLen =< ?MAX_LANG_SIZE ->
+    #ssh_msg_disconnect{code = Code, description = ?unicode_list(Desc), language = Lang};
+decode(<<?BYTE(?SSH_MSG_DISCONNECT), ?UINT32(_), ?DEC_BIN(_, DLen), ?DEC_BIN(_, LLen)>>) ->
+    throw({error, size_error([{disconnect_desc_too_large, DLen, ?MAX_DISCONNECT_DESC_SIZE},
+                              {disconnect_lang_too_large, LLen, ?MAX_LANG_SIZE}])});
+
+%% Accept bad disconnects from ancient openssh clients that doesn't send language tag. Use english as a work-around.
+decode(<<?BYTE(?SSH_MSG_DISCONNECT), ?UINT32(Code), ?DEC_BIN(Desc, DLen)>>)
+  when DLen =< ?MAX_DISCONNECT_DESC_SIZE ->
+    #ssh_msg_disconnect{code = Code, description = ?unicode_list(Desc), language = <<"en">>};
+decode(<<?BYTE(?SSH_MSG_DISCONNECT), ?UINT32(_), ?DEC_BIN(_, DLen)>>) ->
+    throw({error, {disconnect_desc_too_large, DLen, ?MAX_DISCONNECT_DESC_SIZE}});
 
 decode(<<?SSH_MSG_NEWKEYS>>) ->
     #ssh_msg_newkeys{};
 
-decode(<<?BYTE(?SSH_MSG_IGNORE), ?DEC_BIN(Data,__0)>>) ->
+%% Accept SSH_MSG_IGNORE without data to have feature parity with other implementations like openssh
+decode(<<?BYTE(?SSH_MSG_IGNORE)>>) ->
+    #ssh_msg_ignore{};
+decode(<<?BYTE(?SSH_MSG_IGNORE), ?DEC_BIN(Data, Len)>>)
+  when Len =< ?MAX_IGNORE_DATA_SIZE ->
     #ssh_msg_ignore{data = Data};
+decode(<<?BYTE(?SSH_MSG_IGNORE), ?DEC_BIN(_, Len)>>) ->
+    throw({error, {ignore_data_too_large, Len, ?MAX_IGNORE_DATA_SIZE}});
 
 decode(<<?BYTE(?SSH_MSG_UNIMPLEMENTED), ?UINT32(Seq)>>) ->
     #ssh_msg_unimplemented{sequence = Seq};
 
-decode(<<?BYTE(?SSH_MSG_DEBUG), ?BYTE(Bool), ?DEC_BIN(Msg,__0), ?DEC_BIN(Lang,__1)>>) ->
-    #ssh_msg_debug{always_display = erl_boolean(Bool),
-		   message = Msg,
-		   language = Lang}.
-
+decode(<<?BYTE(?SSH_MSG_DEBUG), ?BYTE(Bool), ?DEC_BIN(Msg, MLen), ?DEC_BIN(Lang, LLen)>>)
+  when MLen =< ?MAX_DEBUG_MSG_SIZE, LLen =< ?MAX_LANG_SIZE ->
+    #ssh_msg_debug{always_display = erl_boolean(Bool), message = Msg, language = Lang};
+decode(<<?BYTE(?SSH_MSG_DEBUG), ?BYTE(_), ?DEC_BIN(_, MLen), ?DEC_BIN(_, LLen)>>) ->
+    throw({error, size_error([{debug_msg_too_large, MLen, ?MAX_DEBUG_MSG_SIZE},
+                              {debug_lang_too_large, LLen, ?MAX_LANG_SIZE}])}).
 
 %%%================================================================
 %%%
@@ -571,24 +649,43 @@ decode(<<?BYTE(?SSH_MSG_DEBUG), ?BYTE(Bool), ?DEC_BIN(Msg,__0), ?DEC_BIN(Lang,__
 %%%-------- public key --------
 ssh2_pubkey_encode(#'RSAPublicKey'{modulus = N, publicExponent = E}) ->
     <<?STRING(<<"ssh-rsa">>), ?Empint(E), ?Empint(N)>>;
+
+ssh2_pubkey_encode(#'ML-DSAPublicKey'{algorithm = mldsa44, key = Key})
+  when byte_size(Key) == 1312 ->
+    <<?STRING(<<"ssh-mldsa-44">>), ?Ebinary(Key)>>;
+ssh2_pubkey_encode(#'ML-DSAPublicKey'{algorithm = mldsa65, key = Key})
+  when byte_size(Key) == 1952 ->
+    <<?STRING(<<"ssh-mldsa-65">>), ?Ebinary(Key)>>;
+ssh2_pubkey_encode(#'ML-DSAPublicKey'{algorithm = mldsa87, key = Key})
+  when byte_size(Key) == 2592 ->
+    <<?STRING(<<"ssh-mldsa-87">>), ?Ebinary(Key)>>;
+
 ssh2_pubkey_encode({Y,  #'Dss-Parms'{p = P, q = Q, g = G}}) ->
     <<?STRING(<<"ssh-dss">>), ?Empint(P), ?Empint(Q), ?Empint(G), ?Empint(Y)>>;
+
+ssh2_pubkey_encode({#'ECPoint'{point = Q}, {namedCurve,OID}}) when OID == ?'id-Ed25519' orelse
+                                                                   OID == ?'id-Ed448' ->
+    {KeyType, _} = oid2ssh_curvename(OID),
+    <<?STRING(KeyType), ?Estring(Q)>>;
+
+ssh2_pubkey_encode(#'ECPrivateKey'{parameters = {namedCurve,OID},
+                                   publicKey = Key}) when OID == ?'id-Ed25519' orelse
+                                                          OID == ?'id-Ed448' ->
+    {KeyType, _} = oid2ssh_curvename(OID),
+    <<?STRING(KeyType), ?Estring(Key)>>;
+
+ssh2_pubkey_encode(#'ECPrivateKey'{parameters = {namedCurve,OID},
+                                   publicKey = Key}) ->
+    {KeyType,Curve} = oid2ssh_curvename(OID),
+    <<?STRING(KeyType), ?STRING(Curve), ?Estring(Key)>>;
+
 ssh2_pubkey_encode({#'ECPoint'{point = Q}, {namedCurve,OID}}) ->
-    Curve = public_key:oid2ssh_curvename(OID),
-    KeyType = <<"ecdsa-sha2-", Curve/binary>>,
-    <<?STRING(KeyType), ?STRING(Curve), ?Estring(Q)>>;
-ssh2_pubkey_encode({ed_pub, ed25519, Key}) ->
-    <<?STRING(<<"ssh-ed25519">>), ?Estring(Key)>>;
-ssh2_pubkey_encode({ed_pub, ed448, Key}) ->
-    <<?STRING(<<"ssh-ed448">>), ?Estring(Key)>>;
-ssh2_pubkey_encode({ed_priv, ed25519, Key, _}) ->
-    <<?STRING(<<"ssh-ed25519">>), ?Estring(Key)>>;
-ssh2_pubkey_encode({ed_priv, ed448, Key, _}) ->
-    <<?STRING(<<"ssh-ed448">>), ?Estring(Key)>>.
+    {KeyType,Curve} = oid2ssh_curvename(OID),
+    <<?STRING(KeyType), ?STRING(Curve), ?Estring(Q)>>.
 
 %%%--------
 ssh2_pubkey_decode(KeyBlob) ->
-    {Key,_RestBlob} = ssh2_pubkey_decode2(KeyBlob),
+    {Key, <<>>} = ssh2_pubkey_decode2(KeyBlob),
     Key.
     
 ssh2_pubkey_decode2(<<?UINT32(7), "ssh-rsa",
@@ -598,6 +695,18 @@ ssh2_pubkey_decode2(<<?UINT32(7), "ssh-rsa",
     {#'RSAPublicKey'{modulus = N,
                      publicExponent = E
                     }, Rest};
+ssh2_pubkey_decode2(<<?UINT32(12), "ssh-mldsa-44",
+                      ?UINT32(1312), Key:1312/binary,
+                      Rest/binary>>) ->
+    {#'ML-DSAPublicKey'{algorithm = mldsa44, key = Key}, Rest};
+ssh2_pubkey_decode2(<<?UINT32(12), "ssh-mldsa-65",
+                      ?UINT32(1952), Key:1952/binary,
+                      Rest/binary>>) ->
+    {#'ML-DSAPublicKey'{algorithm = mldsa65, key = Key}, Rest};
+ssh2_pubkey_decode2(<<?UINT32(12), "ssh-mldsa-87",
+                      ?UINT32(2592), Key:2592/binary,
+                      Rest/binary>>) ->
+    {#'ML-DSAPublicKey'{algorithm = mldsa87, key = Key}, Rest};
 ssh2_pubkey_decode2(<<?UINT32(7), "ssh-dss",
                       ?DEC_INT(P, _PL),
                       ?DEC_INT(Q, _QL),
@@ -608,26 +717,23 @@ ssh2_pubkey_decode2(<<?UINT32(7), "ssh-dss",
                       q = Q,
                       g = G}
      }, Rest};
-ssh2_pubkey_decode2(<<?UINT32(TL), "ecdsa-sha2-",KeyRest/binary>>) ->
-    Sz = TL-11,
-    <<_Curve:Sz/binary,
-      ?DEC_BIN(SshName, _IL),
-      ?DEC_BIN(Q, _QL),
-      Rest/binary>> = KeyRest,
-    OID = public_key:ssh_curvename2oid(SshName),
-    {{#'ECPoint'{point = Q}, {namedCurve,OID}
-     }, Rest};
-ssh2_pubkey_decode2(<<?UINT32(11), "ssh-ed25519",
-                      ?DEC_BIN(Key, _L),
-                      Rest/binary>>) ->
-    {{ed_pub, ed25519, Key},
-     Rest};
-ssh2_pubkey_decode2(<<?UINT32(9), "ssh-ed448",
-                      ?DEC_BIN(Key, _L),
-                      Rest/binary>>) ->
-    {{ed_pub, ed448, Key},
+
+ssh2_pubkey_decode2(<<?DEC_BIN(SshCurveName,SCNL), Rest0/binary>>) ->
+    {Pub, Rest} =
+        case {SshCurveName, Rest0} of
+            {<<"ecdsa-sha2-", _/binary>>,
+             <<?DEC_BIN(_Curve, _IL),
+               ?DEC_BIN(Q, _QL),
+               Rest1/binary>>} ->  {Q, Rest1};
+            
+            {<<"ssh-ed",_/binary>>,
+             <<?DEC_BIN(Key, _L),
+               Rest1/binary>>} ->  {Key, Rest1}
+        end,
+    OID = ssh_curvename2oid(SshCurveName),
+    {{#'ECPoint'{point = Pub}, {namedCurve,OID}},
      Rest}.
-                     
+
 %%%-------- private key --------
 
 %% dialyser... ssh2_privkey_decode(KeyBlob) ->
@@ -671,23 +777,29 @@ ssh2_privkey_encode(#'DSAPrivateKey'
     >>;
 
 ssh2_privkey_encode(#'ECPrivateKey'
-                    {version = 1,
+                    {version = Version,
                      parameters = {namedCurve,OID},
                      privateKey = Priv,
-                     publicKey = Q
-                    }) ->
-    CurveName = public_key:oid2ssh_curvename(OID),
-    <<?STRING(<<"ecdsa-sha2-",CurveName/binary>>),
-      ?STRING(<<"ecdsa-sha2-",CurveName/binary>>), % Yes
-      ?STRING(Q),
-      ?STRING(Priv)>>;
-      
-ssh2_privkey_encode({ed_pri, Alg, Pub, Priv}) ->
-    Name = atom_to_binary(Alg),
-    <<?STRING(<<"ssh-",Name/binary>>),
+                     publicKey = Pub})
+  when OID =:= ?'id-Ed25519' orelse OID =:= ?'id-Ed448',
+       Version =:= ecPrivkeyVer1 orelse Version =:= 1 -> % currently used atom and legacy value 1
+    {CurveName,_} = oid2ssh_curvename(OID),
+    <<?STRING(CurveName),
       ?STRING(Pub),
-      ?STRING(Priv)>>.
+      ?STRING(Priv)>>;
 
+ssh2_privkey_encode(#'ECPrivateKey'
+                    {version = Version,
+                     parameters = {namedCurve,OID},
+                     privateKey = Priv,
+                     publicKey = Q})
+  when Version =:= ecPrivkeyVer1 orelse Version =:= 1 -> % currently used atom and legacy value 1
+    {CurveName,_} = oid2ssh_curvename(OID),
+    <<?STRING(CurveName),
+      ?STRING(CurveName), % SIC!
+      ?STRING(Q),
+      ?STRING(Priv)>>.
+      
 %%%--------
 ssh2_privkey_decode2(<<?UINT32(7), "ssh-rsa",
                        ?DEC_INT(N, _NL), % Yes, N and E is reversed relative pubkey format
@@ -721,35 +833,66 @@ ssh2_privkey_decode2(<<?UINT32(7), "ssh-dss",
                       y = Y,
                       x = X
                      }, Rest};
-ssh2_privkey_decode2(<<?UINT32(TL), "ecdsa-sha2-",KeyRest/binary>>) ->
-    Sz = TL-11,
-    <<_Curve:Sz/binary,
-      ?DEC_BIN(CurveName, _SNN),
-      ?DEC_BIN(Q, _QL),
-      ?DEC_BIN(Priv, _PrivL),
-      Rest/binary>> = KeyRest,
-    OID = public_key:ssh_curvename2oid(CurveName),
+
+ssh2_privkey_decode2(<<?DEC_BIN(SshCurveName,SCNL), Rest0/binary>>) ->
+    {Pub, Priv, Rest} =
+        case {SshCurveName, Rest0} of
+            {<<"ecdsa-sha2-",_/binary>>,
+             <<?DEC_BIN(_Curve, _IL),
+               ?DEC_BIN(Pub1, _QL),
+               ?DEC_BIN(Priv1, _PrivL),
+               Rest1/binary>>} ->
+                {Pub1, Priv1, Rest1};
+
+            {<<"ssh-ed",_/binary>>,
+             <<?DEC_BIN(Pub1, PL),
+               ?DEC_BIN(PrivPub, PPL),
+               Rest1/binary>>} ->
+               PL = PPL div 2,
+                <<Priv1:PL/binary, _/binary>> = PrivPub,
+                {Pub1, Priv1, Rest1}
+        end,
+    OID = ssh_curvename2oid(SshCurveName),
     {#'ECPrivateKey'{version = 1,
                      parameters = {namedCurve,OID},
                      privateKey = Priv,
-                     publicKey = Q
-                    }, Rest};
-ssh2_privkey_decode2(<<?UINT32(11), "ssh-ed25519",
-                       ?DEC_BIN(Pub,_Lpub),
-                       ?DEC_BIN(Priv,_Lpriv),
-                       Rest/binary>>) ->
-    {{ed_pri, ed25519, Pub, Priv}, Rest};
-ssh2_privkey_decode2(<<?UINT32(9), "ssh-ed448",
-                       ?DEC_BIN(Pub,_Lpub),
-                       ?DEC_BIN(Priv,_Lpriv),
-                       Rest/binary>>) ->
-    {{ed_pri, ed448, Pub, Priv}, Rest}.
+                     publicKey = Pub
+                    }, Rest}.
 
+
+%% Description: Converts from the ssh name of elliptic curves to
+%% the OIDs.
+%%--------------------------------------------------------------------
+ssh_curvename2oid(<<"ssh-ed25519">>) -> ?'id-Ed25519';
+ssh_curvename2oid(<<"ssh-ed448">>  ) -> ?'id-Ed448';
+ssh_curvename2oid(<<"ecdsa-sha2-nistp256">>) -> ?'secp256r1';
+ssh_curvename2oid(<<"ecdsa-sha2-nistp384">>) -> ?'secp384r1';
+ssh_curvename2oid(<<"ecdsa-sha2-nistp521">>) -> ?'secp521r1'.
+
+%% Description: Converts from elliptic curve OIDs to the ssh name.
+%%--------------------------------------------------------------------
+oid2ssh_curvename(?'id-Ed25519')-> {<<"ssh-ed25519">>, 'n/a'};
+oid2ssh_curvename(?'id-Ed448')  -> {<<"ssh-ed448">>,   'n/a'};
+oid2ssh_curvename(?'secp256r1') -> {<<"ecdsa-sha2-nistp256">>, <<"nistp256">>};
+oid2ssh_curvename(?'secp384r1') -> {<<"ecdsa-sha2-nistp384">>, <<"nistp384">>};
+oid2ssh_curvename(?'secp521r1') -> {<<"ecdsa-sha2-nistp521">>, <<"nistp521">>}.
+
+oid2ssh_curve_algo(?'id-Ed25519') -> 'ssh-ed25519';
+oid2ssh_curve_algo(?'id-Ed448')   -> 'ssh-ed448';
+oid2ssh_curve_algo(?'secp256r1')  -> 'ecdsa-sha2-nistp256';
+oid2ssh_curve_algo(?'secp384r1')  -> 'ecdsa-sha2-nistp384';
+oid2ssh_curve_algo(?'secp521r1')  -> 'ecdsa-sha2-nistp521'.
 
 %%%================================================================
 %%%
 %%% Helper functions
 %%%
+size_error([{_, Actual, Max} | Rest]) when Actual =< Max ->
+    size_error(Rest);
+size_error([{Tag, Actual, Max} | _]) ->
+    {Tag, Actual, Max};
+size_error([]) ->
+    invalid_size_check.
 
 bin_foldr(Fun, Acc, Bin) ->
     lists:reverse(bin_foldl(Fun, Acc, Bin)).
@@ -786,33 +929,59 @@ decode_kex_init(<<?BYTE(Bool)>>, Acc, 0) ->
     %% See rfc 4253 7.1
     X = 0,
     list_to_tuple(lists:reverse([X, erl_boolean(Bool) | Acc]));
-decode_kex_init(<<?DEC_BIN(Data,__0), Rest/binary>>, Acc, N) ->
-    Names = string:tokens(?unicode_list(Data), ","),
-    decode_kex_init(Rest, [Names | Acc], N -1).
-
+decode_kex_init(<<?DEC_BIN(Data,__0), Rest/binary>>, Acc, N) when
+      byte_size(Data) < ?MAX_NUM_ALGORITHMS * ?ALG_NAME_LIMIT ->
+    BinParts = binary:split(Data, <<$,>>, [global]),
+    AlgCount = length(BinParts),
+    case AlgCount =< ?MAX_NUM_ALGORITHMS of
+        true ->
+            Process =
+                fun(<<>>, PAcc) ->
+                        PAcc;
+                   (Part, PAcc) ->
+                        case byte_size(Part) =< ?ALG_NAME_LIMIT of
+                            true ->
+                                Name = binary:bin_to_list(Part),
+                                [Name | PAcc];
+                            false ->
+                                ?LOG_DEBUG("Ignoring too long name", []),
+                                PAcc
+                        end
+                end,
+            Names = lists:foldr(Process, [], BinParts),
+            decode_kex_init(Rest, [Names | Acc], N - 1);
+        false ->
+            throw({error, {kexinit_error, N, {alg_count, AlgCount}}})
+    end;
+decode_kex_init(<<?DEC_BIN(Data,__0), _Rest/binary>>, _Acc, N) ->
+    throw({error, {kexinit, N, {string_size, byte_size(Data)}}}).
 
 %%%================================================================
 %%%
 %%% Signature decode/encode
 %%%
 
-decode_signature(<<?DEC_BIN(Alg,__0), ?UINT32(_), Signature/binary>>) ->
+decode_signature(<<?DEC_BIN(Alg, __0), ?DEC_BIN(Signature, _SignatureLen)>>) ->
     {binary_to_list(Alg), Signature}.
 
 
 encode_signature(#'RSAPublicKey'{}, SigAlg, Signature) ->
     SignName = list_to_binary(atom_to_list(SigAlg)),
     <<?Ebinary(SignName), ?Ebinary(Signature)>>;
+encode_signature(#'ML-DSAPublicKey'{algorithm = mldsa44}, 'ssh-mldsa-44', Signature)
+  when byte_size(Signature) == 2420 ->
+    <<?Ebinary(<<"ssh-mldsa-44">>), ?Ebinary(Signature)>>;
+encode_signature(#'ML-DSAPublicKey'{algorithm = mldsa65}, 'ssh-mldsa-65', Signature)
+  when byte_size(Signature) == 3309 ->
+    <<?Ebinary(<<"ssh-mldsa-65">>), ?Ebinary(Signature)>>;
+encode_signature(#'ML-DSAPublicKey'{algorithm = mldsa87}, 'ssh-mldsa-87', Signature)
+  when byte_size(Signature) == 4627 ->
+    <<?Ebinary(<<"ssh-mldsa-87">>), ?Ebinary(Signature)>>;
 encode_signature({_, #'Dss-Parms'{}}, _SigAlg, Signature) ->
     <<?Ebinary(<<"ssh-dss">>), ?Ebinary(Signature)>>;
 encode_signature({#'ECPoint'{}, {namedCurve,OID}}, _SigAlg, Signature) ->
-    Curve = public_key:oid2ssh_curvename(OID),
-    <<?Ebinary(<<"ecdsa-sha2-",Curve/binary>>), ?Ebinary(Signature)>>;
-encode_signature({ed_pub, ed25519,_}, _SigAlg, Signature) ->
-    <<?Ebinary(<<"ssh-ed25519">>), ?Ebinary(Signature)>>;
-encode_signature({ed_pub, ed448,_}, _SigAlg, Signature) ->
-    <<?Ebinary(<<"ssh-ed448">>), ?Ebinary(Signature)>>.
-    
+    {SshCurveName,_} = oid2ssh_curvename(OID),
+    <<?Ebinary(<<SshCurveName/binary>>), ?Ebinary(Signature)>>.
 
 
 %%%################################################################
@@ -938,4 +1107,3 @@ ssh_dbg_format(raw_messages, {return_from,{?MODULE,encode,1},BytesPT}) ->
 ?wr_record(ssh_msg_channel_failure);
 
 wr_record(R) -> io_lib:format('~p~n',[R]).
-

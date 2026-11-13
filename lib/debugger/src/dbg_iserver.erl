@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1998-2016. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1998-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,10 +16,11 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(dbg_iserver).
+-moduledoc false.
 -behaviour(gen_server).
 
 %% External exports
@@ -233,6 +236,14 @@ handle_call({load, Mod, Src, Bin}, _From, State) ->
     {reply, {module, Mod}, State};
 
 %% Module database
+handle_call({get_module_db, Mod}, _From, State) ->
+    Db = State#state.db,
+    Reply = case ets:lookup(Db, {Mod, refs}) of
+		[] -> not_found;
+		[{{Mod, refs}, [ModDb|_ModDbs]}] ->
+		    ModDb
+	    end,
+    {reply, Reply, State};
 handle_call({get_module_db, Mod, Pid}, _From, State) ->
     Db = State#state.db,
     Reply = case ets:lookup(Db, {Mod, refs}) of

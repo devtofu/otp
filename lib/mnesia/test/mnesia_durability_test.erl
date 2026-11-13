@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -27,6 +29,7 @@
          all/0, groups/0]).
 
 -export([durability_of_disc_copies/1,
+         durability_of_disc_copies2/1,
          durability_of_disc_only_copies/1,
          load_latest_data/1, load_local_contents_directly/1,
          load_directly_when_all_are_ram_copiesA/1,
@@ -47,17 +50,60 @@
          master_on_non_local_tables/1,
          remote_force_load_with_local_master_node/1,
          master_node_with_ram_copy_2/1, master_node_with_ram_copy_3/1,
+         force_load_table_when_loader_aborts_ram/1,
+         force_load_table_when_loader_aborts_disc/1,
+         force_load_table_when_loader_aborts_disc_only/1,
+         force_load_table_when_loader_aborts_ext_ram/1,
+         force_load_table_when_loader_aborts_ext_disc_only/1,
+         force_load_table_when_loader_on_different_pid/1,
          dump_ram_copies/1, dump_disc_copies/1, dump_disc_only/1]).
 
 -include("mnesia_test_lib.hrl").
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+init_per_testcase(Func, Conf0) when Func == force_load_table_when_loader_aborts_ram;
+                                    Func == force_load_table_when_loader_aborts_disc;
+                                    Func == force_load_table_when_loader_aborts_disc_only;
+                                    Func == force_load_table_when_loader_aborts_ext_ram;
+                                    Func == force_load_table_when_loader_aborts_ext_disc_only;
+                                    Func == force_load_table_when_loader_on_different_pid ->
+    OldTickTime = net_kernel:get_net_ticktime(),
+    Conf = [{old_ticktime, OldTickTime} | Conf0],
+    mnesia_test_lib:init_per_testcase(Func, Conf);
 init_per_testcase(Func, Conf) ->
     mnesia_test_lib:init_per_testcase(Func, Conf).
 
+end_per_testcase(Func, Conf) when Func == force_load_table_when_loader_aborts_ram;
+                                  Func == force_load_table_when_loader_aborts_disc;
+                                  Func == force_load_table_when_loader_aborts_disc_only;
+                                  Func == force_load_table_when_loader_aborts_ext_ram;
+                                  Func == force_load_table_when_loader_aborts_ext_disc_only;
+                                  Func == force_load_table_when_loader_on_different_pid ->
+    OldTickTime = proplists:get_value(old_ticktime, Conf),
+    Nodes = proplists:get_value(nodes, Conf, []),
+    NodeNames = proplists:get_value(nodenames, Conf, []),
+    All = lists:foldl(fun(Node, Acc) ->
+                              case lists:member(Node, Acc) of
+                                  true ->
+                                      Acc;
+                                  false ->
+                                      [Node | Acc]
+                              end
+                      end, [], [node() | (Nodes ++ NodeNames)]),
+    [reset_ticktime(Node, OldTickTime) || Node <- All],
+    mnesia_test_lib:end_per_testcase(Func, Conf);
 end_per_testcase(Func, Conf) ->
     mnesia_test_lib:end_per_testcase(Func, Conf).
+
+reset_ticktime(Node, TickTime) ->
+    case mnesia_test_lib:remote_call(Node, net_kernel, set_net_ticktime, [TickTime, 1]) of
+        unchanged -> ok;
+        {badrpc, nodedown} -> ok;
+        _ ->
+            timer:sleep(500),
+            reset_ticktime(Node, TickTime)
+    end.
 
 -record(test_rec,{key,val}).
 
@@ -67,9 +113,10 @@ all() ->
     [{group, load_tables},
      {group, durability_of_dump_tables},
      durability_of_disc_copies,
+     durability_of_disc_copies2,
      durability_of_disc_only_copies].
 
-groups() -> 
+groups() ->
     [{load_tables, [],
       [load_latest_data, load_local_contents_directly,
        load_directly_when_all_are_ram_copiesA,
@@ -85,7 +132,8 @@ groups() ->
        force_load_when_we_has_loaded,
        force_load_on_a_non_local_table,
        force_load_when_the_table_does_not_exist,
-       {group, load_tables_with_master_tables}]},
+       {group, load_tables_with_master_tables},
+       {group, load_tables_with_network_down}]},
      {late_load_when_all_are_ram_copies_on_ram_nodes, [],
       [late_load_all_ram_cs_ram_nodes1,
        late_load_all_ram_cs_ram_nodes2]},
@@ -95,8 +143,18 @@ groups() ->
        remote_force_load_with_local_master_node,
        master_node_with_ram_copy_2, master_node_with_ram_copy_3]},
      {durability_of_dump_tables, [],
-      [dump_ram_copies, dump_disc_copies, dump_disc_only]}].
+      [dump_ram_copies, dump_disc_copies, dump_disc_only]},
+     {load_tables_with_network_down, [],
+      [force_load_table_when_loader_aborts_ram,
+       force_load_table_when_loader_aborts_disc,
+       force_load_table_when_loader_aborts_disc_only,
+       force_load_table_when_loader_aborts_ext_ram,
+       force_load_table_when_loader_aborts_ext_disc_only,
+       force_load_table_when_loader_on_different_pid]
+     }].
 
+init_per_group(load_tables_with_network_down, Config) ->
+    mnesia_test_lib:skip_if_no_network_blocker(Config);
 init_per_group(_GroupName, Config) ->
     Config.
 
@@ -503,7 +561,7 @@ load_when_down_from_all_other_replica_nodes(Config) when is_list(Config) ->
     ?match([], mnesia_test_lib:kill_mnesia([N2])),
     ?match({atomic,ok},rpc:call(N3,mnesia,transaction,[Write_one,[33,33]])),
     ?match([], mnesia_test_lib:kill_mnesia([N3])),
-    ?verbose("Mnesia stoped on all three nodes.~n",[]),
+    ?verbose("Mnesia stopped on all three nodes.~n",[]),
 
     %%Start Mnesia on N3; wait for 'test_rec' table to load
     ?match(ok, rpc:call(N3, mnesia, start, [])),
@@ -528,7 +586,7 @@ load_when_down_from_all_other_replica_nodes(Config) when is_list(Config) ->
 late_load_transforms_into_disc_load(doc) ->
     ["Difficult case that needs instrumentation of Mnesia.",
      "A table is force loaded, and Mnesia decides to load it from another ",
-     "Mnesia node because it is avaliable there. The other Mnesia node then ",
+     "Mnesia node because it is available there. The other Mnesia node then ",
      "dies in mid copy which shall make the first Mnesia node to really ",
      "force load from disc.",
      "Check this by starting N1 and N2 and replicating a table between ",
@@ -1028,7 +1086,7 @@ master_nodes(Config) when is_list(Config) ->
     ?match({timeout, [Tab]}, rpc:call(A, mnesia, wait_for_tables, [[Tab], 2000])),
 
     %% Test 6: Force load on table that couldn't be loaded due to master 
-    %%         table setttings, loads other active replicas i.e. from C
+    %%         table settings, loads other active replicas i.e. from C
 
     ?match(yes, rpc:call(A, mnesia, force_load_table, [Tab])),
     ?match(ok, rpc:call(A, mnesia, wait_for_tables, [[Tab], 3000])),
@@ -1041,7 +1099,7 @@ master_nodes(Config) when is_list(Config) ->
     ?match([{Tab, 1, update_2}], rpc:call(C, mnesia, dirty_read, [{Tab, 1}])),
 
     %% Test 7: Master [B] and B is down the table should not be loaded, 
-    %%         force_load when there are no active replicas availible 
+    %%         force_load when there are no active replicas available 
     %%         should generate a load of a local table
 
     ?match(ok, rpc:call(A, mnesia, set_master_nodes, [Tab, [B]])),
@@ -1138,7 +1196,7 @@ master_on_non_local_tables(Config) when is_list(Config) ->
 remote_force_load_with_local_master_node(doc) ->
     ["Force load a table on a remote node while the ",
      "local node is down. Start the local node and ",
-     "verfify that the tables is loaded from disc locally "
+     "verify that the tables is loaded from disc locally "
      "if the local node has itself as master node and ",
      "the remote node has both the local and remote node ",
      "as master nodes"];
@@ -1268,6 +1326,102 @@ master_node_with_ram_copy_3(Config) when is_list(Config) ->
 
     ?verify_mnesia(Nodes, []).
 
+force_load_table_when_loader_aborts_ram(Config) ->
+    force_load_table_when_loader_aborts(Config, ?FUNCTION_NAME, ram_copies).
+
+force_load_table_when_loader_aborts_disc(Config) ->
+    force_load_table_when_loader_aborts(Config, ?FUNCTION_NAME, disc_copies).
+
+force_load_table_when_loader_aborts_disc_only(Config) ->
+    force_load_table_when_loader_aborts(Config, ?FUNCTION_NAME, disc_only_copies).
+
+force_load_table_when_loader_aborts_ext_ram(Config) ->
+    force_load_table_when_loader_aborts(Config, ?FUNCTION_NAME, ext_ram_copies).
+
+force_load_table_when_loader_aborts_ext_disc_only(Config) ->
+    force_load_table_when_loader_aborts(Config, ?FUNCTION_NAME, ext_disc_only_copies).
+
+force_load_table_when_loader_aborts(Config, Table, Storage) ->
+    process_flag(trap_exit, true),
+    [Node1, Node2] = Nodes = ?acquire_nodes(2, Config),
+    Populate = fun(F, N) when N > 0 ->
+                       mnesia:write({Table, N, []}),
+                       F(F, N - 1);
+                  (_F, _N) ->
+                       ok
+               end,
+    ?match({atomic, ok}, mnesia:create_table(Table, [{Storage, Nodes}])),
+    Fun = fun() ->
+                  mnesia:write_lock_table(Table),
+                  Populate(Populate, 1_000_000)
+          end,
+    ?match({atomic, ok}, mnesia:transaction(Fun)),
+    ?match(ok, mnesia:set_master_nodes([Node2])),
+    ?match(stopped, mnesia:stop()),
+    ?match(ok, mnesia:start()),
+    All = [node() | nodes()],
+    Res = lists:duplicate(length(All), change_initiated),
+    ?match({Res, []}, rpc:multicall(All, net_kernel, set_net_ticktime, [5, 1])),
+    ?match({ok, Node1}, mnesia:subscribe(system)),
+    ?match(ok, mnesia_test_lib:block_peer(Node1, Node2)),
+    ?match({timeout, [Table]}, mnesia:wait_for_tables([Table], 0)),
+    receive
+        {mnesia_system_event, {mnesia_down, Node2}} ->
+            ok
+    after timer:seconds(15) ->
+            ct:fail("Failed to receive {mnesia_down, ~p}~n", [Node2])
+    end,
+    Pid = spawn_link(fun() -> yes = mnesia:force_load_table(Table) end),
+    receive
+        {'EXIT', Pid, _} ->
+            ok
+    after timer:seconds(15) ->
+            ct:fail("Pid: ~p stuck in:~n~p~n",
+                    [Pid, process_info(Pid, current_stacktrace)])
+    end.
+
+force_load_table_when_loader_on_different_pid(Config) ->
+    process_flag(trap_exit, true),
+    [Node1, Node2] = Nodes = ?acquire_nodes(2, Config),
+    Table = ?FUNCTION_NAME,
+    Populate = fun(F, N) when N > 0 ->
+                       mnesia:write({Table, N, []}),
+                       F(F, N - 1);
+                  (_F, _N) ->
+                       ok
+               end,
+    ?match({atomic, ok}, mnesia:create_table(Table, [{disc_only_copies, Nodes}])),
+    Fun = fun() ->
+                  mnesia:write_lock_table(Table),
+                  Populate(Populate, 500_000)
+          end,
+    ?match({atomic, ok}, mnesia:transaction(Fun)),
+    ?match(ok, mnesia:set_master_nodes([Node2])),
+    ?match(stopped, mnesia:stop()),
+    ?match(ok, mnesia:start()),
+    All = [node() | nodes()],
+    Res = lists:duplicate(length(All), change_initiated),
+    ?match({Res, []}, rpc:multicall(All, net_kernel, set_net_ticktime, [5, 1])),
+    ?match({ok, Node1}, mnesia:subscribe(system)),
+    ?match(ok, mnesia_test_lib:block_peer(Node1, Node2)),
+    ?match({timeout, [Table]}, mnesia:wait_for_tables([Table], 0)),
+    receive
+        {mnesia_system_event, {mnesia_down, Node2}} ->
+            ok
+    after timer:seconds(15) ->
+            ct:fail("Failed to receive {mnesia_down, ~p}~n", [Node2])
+    end,
+    ?match(ok, timer:sleep(timer:seconds(1))),
+    Pid = spawn_link(fun() -> yes = mnesia:force_load_table(Table) end),
+    receive
+        {'EXIT', Pid, _} ->
+            ok
+    after timer:seconds(15) ->
+            ct:fail("Pid: ~p stuck in:~n~p~n",
+                    [Pid, [process_info(dets_server:get_pid(Table), K) ||
+                              K <- [monitored_by, current_stacktrace]]])
+    end.
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 
@@ -1345,13 +1499,13 @@ dump_ram_copies(Config) when is_list(Config)  ->
     %% start Mnesia only on node 3
     ?verbose("starting mnesia on Node3~n",[]),
     
-    %% test_lib:mnesia_start doesnt work, because it waits
+    %% test_lib:mnesia_start doesn't work, because it waits
     %% for the schema on all nodes ... ???
     ?match(ok,rpc:call(Node3,mnesia,start,[]) ),
     ?match(ok,rpc:call(Node3,mnesia,wait_for_tables,
 		       [[Tab],timer:seconds(30)]   ) ),
     
-    %% node3  shall have the conents of the dump
+    %% node3  shall have the contents of the dump
     cross_check_tables([C],Tab,{[{Tab,1,4711}],[{Tab,2,42}],[{Tab,3,256}]}),
     
     %% start Mnesia on the other 2 nodes, too
@@ -1569,9 +1723,72 @@ receive_messages(ListOfMsgs) ->
                     [{Pid, Msg} | receive_messages(ListOfMsgs -- [Msg])]
             end;
 
-        Else -> ?warning("Recevied unexpected Msg~n ~p ~n", [Else])
+        Else -> ?warning("Received unexpected Msg~n ~p ~n", [Else])
     after timer:seconds(40) -> 
             ?error("Timeout in receive msgs while waiting for ~p~n", 
                    [ListOfMsgs])
     end.  
 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+durability_of_disc_copies2(doc) ->
+    ["Perform regression test that checks if no data is lost after "
+     "restart of Mnesia.",
+     "This test is done for disc_copies"];
+
+durability_of_disc_copies2(suite) -> [];
+durability_of_disc_copies2(Config) when is_list(Config) ->
+    %% The error went like this:
+    %% 1.  Empty table is created, but nothing is written to it, Tab.DCD and LATEST.LOG exist
+    %% 2.  Table is deleted, and dirty_write is executed after prepare and before commit of
+    %%     schema transaction, that means write is part of this transaction now.
+    %% 3.  Schema update triggers transaction dump, calls mnesia_dumper:do_insert_rec/5 after
+    %%     transaction has been committed.
+    %% 4.  This function looks at Rec#commit.disc_copies, if there are any ops the Tab.DCL is created for
+    %%     the table via mnesia_dumper:open_disc_copies/2, also {mnesia_dumper, Tab} key in process
+    %%     dictionary is set to {opened_dumper, dcl}
+    %% 5.  mnesia_dumper:insert_ops/6 is called which calls insert_op(..., {op, delete_table, TabDef}, ...) ->
+    %%     which calls mnesia_dumper:disc_delete_table/2. If {mnesia_dumper, Tab} is set to {opened_dumper, dcl}
+    %%     mnesia_log:unsafe_close_log is called with invalid log name. After that Tab.DCL and Tab.DCD
+    %%     are deleted.
+    %% 6.  Now disk_log holds a file descriptor to a deleted file.
+    %% 7.  Same table is created again, this creates empty Tab.DCD
+    %% 8.  Data is written to the table, appended to LATEST.LOG
+    %% 9.  Transaction log dump is initiated manually, this causes mnesia_dumper:insert_recs/6 to call
+    %%     mnesia_dumper:do_insert_rec/5, which in turn calls mnesia_dumper:disc_insert/8
+    %% 10. disc_insert/8 calls mnesia_dumper:open_disc_copies/2, which calls mnesia_log:open_log/6
+    %% 11. Because the log was never closed, we get back the handle to previous log, so the dirty_writes
+    %%     go to the file which is already deleted on disk.
+    %% 12. do_perform_dump reaches the eof and calls close_files, which now closes the leaked disk_log,
+    %%     and OS removes the file.
+    %% 13. After mnesia restart, the table data is gone.
+    ?is_debug_compiled,
+    Nodes = ?acquire_nodes(1, Config),
+
+    Tab = durability_of_disc_copies2,
+    ?match({atomic, ok}, mnesia:create_table(Tab, [{disc_copies, Nodes}])),
+
+    TestPid = self(),
+    DebugId = {mnesia_tm, multi_commit_asym_got_votes},
+    DebugFun = fun(PrevContext, _) ->
+                       ?verbose("inject dirty_write after prepare but before commit~n", []),
+                       mnesia:dirty_write({Tab, 1, 1}),
+                       ?deactivate_debug_fun(DebugId),
+                       TestPid ! {self(), debug_fun_was_called},
+                       PrevContext
+               end,
+    ?activate_debug_fun(DebugId, DebugFun, ok),
+    ?match({atomic, ok}, mnesia:delete_table(Tab)),
+    ?match(false, lists:member({mnesia_dumper, Tab}, disk_log:all())),
+    receive_messages([debug_fun_was_called]),
+
+    ?match({atomic, ok}, mnesia:create_table(Tab, [{disc_copies, Nodes}])),
+    [?match(ok, mnesia:dirty_write({Tab, K, K})) || K <- lists:seq(1, 10)],
+    ?match(dumped, mnesia:dump_log()),
+    ?match(false, lists:member({mnesia_dumper, Tab}, disk_log:all())),
+    ?match([], mnesia_test_lib:stop_mnesia(Nodes)),
+
+    ?match([], mnesia_test_lib:start_mnesia(Nodes, [Tab])),
+    ?match(10, mnesia:table_info(Tab, size)),
+    [?match([{Tab, K, K}], mnesia:dirty_read({Tab, K})) || K <- lists:seq(1, 10)],
+    ?verify_mnesia(Nodes, []).

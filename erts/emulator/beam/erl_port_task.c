@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2006-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2006-2026. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -595,6 +597,11 @@ reset_executed_io_task_handle(Port *prt, ErtsPortTask *ptp)
                                                   reset_port_task_handle);
                 erts_atomic32_read_band_nob(&prt->state, ~ERTS_PORT_SFLG_CHECK_FD_CLEANUP);
             } else {
+                /* We don't have to call erts_io_notify_port_task_executed for scheduler events
+                   as we will keep the fd in the set. However, if driver_deselect was called in
+                   the ready_input callback, then we do need to call it in order to free the
+                   select structures from the fd state.
+                   */
                 reset_port_task_handle(ptp->u.alive.handle);
             }
         } else
@@ -994,7 +1001,13 @@ enqueue_task(Port *pp,
     if (ns_pthlp)
 	fail_flags |= ERTS_PTS_FLG_BUSY_PORT;
     erts_port_task_sched_lock(&pp->sched);
-    flags = erts_atomic32_read_nob(&pp->sched.flags);
+    if (ns_pthlp) {
+        /* set_busy_port() sets BUSY_PORT without the sched lock */
+        flags = erts_atomic32_read_bor_nob(&pp->sched.flags,
+                                           ERTS_PTS_FLG_HAVE_NS_TASKS);
+    }
+    else
+        flags = erts_atomic32_read_nob(&pp->sched.flags);
     if (flags & fail_flags)
 	res = 0;
     else {
@@ -1099,9 +1112,9 @@ finalize_exec(Port *pp, ErtsPortTask **execq, int processing_busy_q)
 	    break;
     }
 
-    if (prof_runnable_ports | IS_TRACED_FL(pp, F_TRACE_SCHED_PORTS)) {
+    if (prof_runnable_ports | ERTS_IS_P_TRACED_FL(pp, F_TRACE_SCHED_PORTS)) {
 	/* trace port scheduling, out */
-	if (IS_TRACED_FL(pp, F_TRACE_SCHED_PORTS))
+	if (ERTS_IS_P_TRACED_FL(pp, F_TRACE_SCHED_PORTS))
 	    trace_sched_ports(pp, am_out);
 	if (prof_runnable_ports) {
 	    if (!(act & (ERTS_PTS_FLG_EXEC_IMM|ERTS_PTS_FLG_HAVE_TASKS)))
@@ -1298,7 +1311,7 @@ erts_port_task_tmp_handle_detach(ErtsPortTaskHandle *pthp)
  */
 
 int
-erts_port_task_abort(ErtsPortTaskHandle *pthp)
+erts_port_task_abort(Port *pp, ErtsPortTaskHandle *pthp)
 {
     int res;
     ErtsPortTask *ptp;
@@ -1326,22 +1339,33 @@ erts_port_task_abort(ErtsPortTaskHandle *pthp)
 	    res = - 1; /* Task already aborted, executing, or executed */
 	else {
 	    reset_port_task_handle(pthp);
-
-#if ERTS_POLL_USE_SCHEDULER_POLLING
             switch (ptp->type) {
-	    case ERTS_PORT_TASK_INPUT:
-	    case ERTS_PORT_TASK_OUTPUT:
-                if (ptp->u.alive.td.io.is_scheduler_event) {
-                    ASSERT(erts_atomic_read_nob(
-                               &erts_port_task_outstanding_io_tasks) > 0);
-                    erts_atomic_dec_relb(&erts_port_task_outstanding_io_tasks);
+            case ERTS_PORT_TASK_PROC_SIG: {
+                int abort_type = ((ptp->u.alive.flags
+                                   & (ERTS_PT_FLG_NOSUSPEND
+                                      | ERTS_PT_FLG_ASYNC_NOSUSPEND))
+                                  ? ERTS_PROC2PORT_SIG_ABORT_NOSUSPEND
+                                  : ERTS_PROC2PORT_SIG_ABORT);
+                ASSERT(pp);
+                abort_signal_task(pp, abort_type, ptp->type, &ptp->u.alive.td,
+                                  pp->sched.taskq.bpq != NULL);
+                break;
+            }
+            case ERTS_PORT_TASK_INPUT:
+            case ERTS_PORT_TASK_OUTPUT:
+#if ERTS_POLL_USE_SCHEDULER_POLLING
+                if (erts_sched_poll_enabled()) {
+                    if (ptp->u.alive.td.io.is_scheduler_event) {
+                        ASSERT(erts_atomic_read_nob(
+                                   &erts_port_task_outstanding_io_tasks) > 0);
+                        erts_atomic_dec_relb(&erts_port_task_outstanding_io_tasks);
+                    }
                 }
-		break;
-	    default:
-		break;
-	    }
 #endif
-
+                break;
+            default:
+                break;
+            }
 	    res = 0;
 	}
     }
@@ -1369,7 +1393,6 @@ erts_port_task_abort_nosuspend_tasks(Port *pp)
 	ErtsPortTaskHandle *saved_pthp;
 #endif
 	ErtsPortTaskType type;
-	ErtsPortTaskTypeData td;
 	ErtsPortTaskHandle *pthp;
 	ErtsPortTask *ptp;
 	ErtsPortTaskHandleList *pthlp;
@@ -1413,13 +1436,14 @@ erts_port_task_abort_nosuspend_tasks(Port *pp)
 	reset_port_task_handle(pthp);
 
 	type = ptp->type;
-	td = ptp->u.alive.td;
+
+        abort_nosuspend_task(pp, type, &ptp->u.alive.td,
+                             pp->sched.taskq.bpq != NULL);
 
 	if (dhndl != ERTS_THR_PRGR_DHANDLE_MANAGED)
 	    erts_thr_progress_unmanaged_continue(dhndl);
 	schedule_port_task_handle_list_free(pthlp);
 
-	abort_nosuspend_task(pp, type, &td, pp->sched.taskq.bpq != NULL);
     }
 }
 
@@ -1520,8 +1544,6 @@ erts_port_task_schedule(Eterm id,
     }
 
     add_flags = ERTS_PTS_FLG_HAVE_TASKS;
-    if (ns_pthlp)
-	add_flags |= ERTS_PTS_FLG_HAVE_NS_TASKS;
 
     prof_runnable_ports = erts_system_profile_flags.runnable_ports;
     if (prof_runnable_ports)
@@ -1704,7 +1726,7 @@ erts_port_task_execute(ErtsRunQueue *runq, Port **curr_port_pp)
     erts_port_lock(pp);
 
     /* trace port scheduling, in */
-    if (IS_TRACED_FL(pp, F_TRACE_SCHED_PORTS)) {
+    if (ERTS_IS_P_TRACED_FL(pp, F_TRACE_SCHED_PORTS)) {
 	trace_sched_ports(pp, am_in);
     }
 
@@ -1748,8 +1770,8 @@ erts_port_task_execute(ErtsRunQueue *runq, Port **curr_port_pp)
 		if (!(state & ERTS_PORT_SFLGS_DEAD)) {
 		    DTRACE_DRIVER(driver_timeout, pp);
 		    LTTNG_DRIVER(driver_timeout, pp);
-                    if (IS_TRACED_FL(pp, F_TRACE_RECEIVE))
-                        trace_port(pp, am_receive, am_timeout);
+                    if (ERTS_IS_P_TRACED_FL(pp, F_TRACE_RECEIVE))
+                        trace_port(pp, am_receive, am_timeout, F_TRACE_RECEIVE);
 		    (*pp->drv_ptr->timeout)((ErlDrvData) pp->drv_data);
 		}
 	    }
@@ -1844,16 +1866,14 @@ erts_port_task_execute(ErtsRunQueue *runq, Port **curr_port_pp)
     }
 
     ERTS_MSACC_POP_STATE_M();
-
 #if ERTS_POLL_USE_SCHEDULER_POLLING
-    if (io_tasks_executed) {
+    if (erts_sched_poll_enabled() && io_tasks_executed) {
         ASSERT(erts_atomic_read_nob(&erts_port_task_outstanding_io_tasks)
 	       >= io_tasks_executed);
         erts_atomic_add_relb(&erts_port_task_outstanding_io_tasks,
 				 -1*io_tasks_executed);
     }
 #endif
-
     ASSERT(runq == erts_get_runq_port(pp));
 
     active = finalize_exec(pp, &execq, processing_busy_q);

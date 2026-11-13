@@ -1,38 +1,24 @@
-// AsmJit - Machine code generation for C++
+// This file is part of AsmJit project <https://asmjit.com>
 //
-//  * Official AsmJit Home Page: https://asmjit.com
-//  * Official Github Repository: https://github.com/asmjit/asmjit
-//
-// Copyright (c) 2008-2020 The AsmJit Authors
-//
-// This software is provided 'as-is', without any express or implied
-// warranty. In no event will the authors be held liable for any damages
-// arising from the use of this software.
-//
-// Permission is granted to anyone to use this software for any purpose,
-// including commercial applications, and to alter it and redistribute it
-// freely, subject to the following restrictions:
-//
-// 1. The origin of this software must not be misrepresented; you must not
-//    claim that you wrote the original software. If you use this software
-//    in a product, an acknowledgment in the product documentation would be
-//    appreciated but is not required.
-// 2. Altered source versions must be plainly marked as such, and must not be
-//    misrepresented as being the original software.
-// 3. This notice may not be removed or altered from any source distribution.
+// See <asmjit/core.h> or LICENSE.md for license and copyright information
+// SPDX-License-Identifier: Zlib
 
 #ifndef ASMJIT_CORE_RADEFS_P_H_INCLUDED
 #define ASMJIT_CORE_RADEFS_P_H_INCLUDED
 
-#include "../core/api-config.h"
-#include "../core/archtraits.h"
-#include "../core/compilerdefs.h"
-#include "../core/logger.h"
-#include "../core/operand.h"
-#include "../core/support.h"
-#include "../core/type.h"
-#include "../core/zone.h"
-#include "../core/zonevector.h"
+#include <asmjit/core/api-config.h>
+#ifndef ASMJIT_NO_COMPILER
+
+#include <asmjit/core/archtraits.h>
+#include <asmjit/core/builder.h>
+#include <asmjit/core/compilerdefs.h>
+#include <asmjit/core/logger.h>
+#include <asmjit/core/operand.h>
+#include <asmjit/core/type.h>
+#include <asmjit/support/arena.h>
+#include <asmjit/support/arenabitset_p.h>
+#include <asmjit/support/arenavector.h>
+#include <asmjit/support/support.h>
 
 ASMJIT_BEGIN_NAMESPACE
 
@@ -40,19 +26,15 @@ ASMJIT_BEGIN_NAMESPACE
 //! \addtogroup asmjit_ra
 //! \{
 
-// ============================================================================
-// [Logging]
-// ============================================================================
-
 #ifndef ASMJIT_NO_LOGGING
 # define ASMJIT_RA_LOG_FORMAT(...)  \
   do {                              \
-    if (logger)                     \
+    if (ASMJIT_UNLIKELY(logger))    \
       logger->logf(__VA_ARGS__);    \
   } while (0)
 # define ASMJIT_RA_LOG_COMPLEX(...) \
   do {                              \
-    if (logger) {                   \
+    if (ASMJIT_UNLIKELY(logger)) {  \
       __VA_ARGS__                   \
     }                               \
   } while (0)
@@ -61,221 +43,209 @@ ASMJIT_BEGIN_NAMESPACE
 # define ASMJIT_RA_LOG_COMPLEX(...) ((void)0)
 #endif
 
-// ============================================================================
-// [Forward Declarations]
-// ============================================================================
+// Forward declarations.
+struct RATiedReg;
 
 class BaseRAPass;
 class RABlock;
 class BaseNode;
 struct RAStackSlot;
 
-typedef ZoneVector<RABlock*> RABlocks;
-typedef ZoneVector<RAWorkReg*> RAWorkRegs;
+using RAWorkRegVector = ArenaVector<RAWorkReg*>;
 
-// ============================================================================
-// [asmjit::RAConstraints]
-// ============================================================================
+//! Work register identifier (RA).
+//!
+//! Work register is an actual virtual register that is used by the function and subject to register allocation.
+enum class RAWorkId : uint32_t {};
 
-class RAConstraints {
-public:
-  uint32_t _availableRegs[BaseReg::kGroupVirt] {};
+//! Basic block identifier (RA).
+enum class RABlockId : uint32_t {};
 
-  inline RAConstraints() noexcept {}
+//! Invalid register identifier or unassigned yet.
+static constexpr RAWorkId kBadWorkId = RAWorkId(Globals::kInvalidId);
 
-  ASMJIT_NOINLINE Error init(uint32_t arch) noexcept {
-    switch (arch) {
-      case Environment::kArchX86:
-      case Environment::kArchX64: {
-        uint32_t registerCount = arch == Environment::kArchX86 ? 8 : 16;
-        _availableRegs[BaseReg::kGroupGp] = Support::lsbMask<uint32_t>(registerCount) & ~Support::bitMask(4u);
-        _availableRegs[BaseReg::kGroupVec] = Support::lsbMask<uint32_t>(registerCount);
-        _availableRegs[BaseReg::kGroupOther0] = Support::lsbMask<uint32_t>(8);
-        _availableRegs[BaseReg::kGroupOther1] = Support::lsbMask<uint32_t>(8);
-        return kErrorOk;
-      }
+//! Invalid block identifier or unassigned yet.
+static constexpr RABlockId kBadBlockId = RABlockId(Globals::kInvalidId);
 
-      case Environment::kArchAArch64: {
-        _availableRegs[BaseReg::kGroupGp] = 0xFFFFFFFFu & ~Support::bitMask(18, 31u);
-        _availableRegs[BaseReg::kGroupVec] = 0xFFFFFFFFu;
-        _availableRegs[BaseReg::kGroupOther0] = 0;
-        _availableRegs[BaseReg::kGroupOther1] = 0;
-        return kErrorOk;
-      }
+//! Maximum number of consecutive registers aggregated from all supported backends.
+static constexpr uint32_t kMaxConsecutiveRegs = 4;
 
-      default:
-        return DebugUtils::errored(kErrorInvalidArch);
-    }
+enum class RAStrategyType : uint8_t {
+  kSimple  = 0,
+  kComplex = 1
+};
+ASMJIT_DEFINE_ENUM_COMPARE(RAStrategyType)
+
+enum class RAStrategyFlags : uint8_t {
+  kNone = 0
+};
+ASMJIT_DEFINE_ENUM_FLAGS(RAStrategyFlags)
+
+//! Register allocation strategy.
+//!
+//! The idea is to select the best register allocation strategy for each virtual register group based on the
+//! complexity of the code.
+struct RAStrategy {
+  //! \name Members
+  //! \{
+
+  RAStrategyType _type = RAStrategyType::kSimple;
+  RAStrategyFlags _flags = RAStrategyFlags::kNone;
+
+  //! \}
+
+  //! \name Accessors
+  //! \{
+
+  ASMJIT_INLINE_NODEBUG void reset() noexcept {
+    _type = RAStrategyType::kSimple;
+    _flags = RAStrategyFlags::kNone;
   }
 
-  inline uint32_t availableRegs(uint32_t group) const noexcept { return _availableRegs[group]; }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG RAStrategyType type() const noexcept { return _type; }
+
+  ASMJIT_INLINE_NODEBUG void set_type(RAStrategyType type) noexcept { _type = type; }
+
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool is_simple() const noexcept { return _type == RAStrategyType::kSimple; }
+
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool is_complex() const noexcept { return _type >= RAStrategyType::kComplex; }
+
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG RAStrategyFlags flags() const noexcept { return _flags; }
+
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool has_flag(RAStrategyFlags flag) const noexcept { return Support::test(_flags, flag); }
+
+  ASMJIT_INLINE_NODEBUG void add_flags(RAStrategyFlags flags) noexcept { _flags |= flags; }
+
+  //! \}
 };
-
-// ============================================================================
-// [asmjit::RAStrategy]
-// ============================================================================
-
-struct RAStrategy {
-  uint8_t _type;
-
-  enum StrategyType : uint32_t {
-    kStrategySimple  = 0,
-    kStrategyComplex = 1
-  };
-
-  inline RAStrategy() noexcept { reset(); }
-  inline void reset() noexcept { memset(this, 0, sizeof(*this)); }
-
-  inline uint32_t type() const noexcept { return _type; }
-  inline void setType(uint32_t type) noexcept { _type = uint8_t(type); }
-
-  inline bool isSimple() const noexcept { return _type == kStrategySimple; }
-  inline bool isComplex() const noexcept { return _type >= kStrategyComplex; }
-};
-
-
-// ============================================================================
-// [asmjit::RARegCount]
-// ============================================================================
 
 //! Count of virtual or physical registers per group.
 //!
-//! \note This class uses 8-bit integers to represent counters, it's only used
-//! in places where this is sufficient - for example total count of machine's
-//! physical registers, count of virtual registers per instruction, etc. There
-//! is also `RALiveCount`, which uses 32-bit integers and is indeed much safer.
+//! \note This class uses 8-bit integers to represent counters, it's only used in places where this is sufficient,
+//! for example total count of machine's physical registers, count of virtual registers per instruction, etc...
+//! There is also `RALiveCount`, which uses 32-bit integers and is indeed much safer.
 struct RARegCount {
-  union {
-    uint8_t _regs[4];
-    uint32_t _packed;
-  };
+  //! \name Members
+  //! \{
+
+  uint32_t _counters;
+
+  //! \}
 
   //! \name Construction & Destruction
   //! \{
 
   //! Resets all counters to zero.
-  inline void reset() noexcept { _packed = 0; }
+  ASMJIT_INLINE_NODEBUG void reset() noexcept { _counters = 0; }
 
   //! \}
 
   //! \name Overloaded Operators
   //! \{
 
-  inline uint8_t& operator[](uint32_t index) noexcept {
-    ASMJIT_ASSERT(index < BaseReg::kGroupVirt);
-    return _regs[index];
-  }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool operator==(const RARegCount& other) const noexcept { return _counters == other._counters; }
 
-  inline const uint8_t& operator[](uint32_t index) const noexcept {
-    ASMJIT_ASSERT(index < BaseReg::kGroupVirt);
-    return _regs[index];
-  }
-
-  inline RARegCount& operator=(const RARegCount& other) noexcept = default;
-
-  inline bool operator==(const RARegCount& other) const noexcept { return _packed == other._packed; }
-  inline bool operator!=(const RARegCount& other) const noexcept { return _packed != other._packed; }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool operator!=(const RARegCount& other) const noexcept { return _counters != other._counters; }
 
   //! \}
 
-  //! \name Utilities
+  //! \name Accessors
   //! \{
 
   //! Returns the count of registers by the given register `group`.
-  inline uint32_t get(uint32_t group) const noexcept {
-    ASMJIT_ASSERT(group < BaseReg::kGroupVirt);
+  [[nodiscard]]
+  ASMJIT_INLINE uint32_t get(RegGroup group) const noexcept {
+    ASMJIT_ASSERT(group <= RegGroup::kMaxVirt);
 
-    uint32_t shift = Support::byteShiftOfDWordStruct(group);
-    return (_packed >> shift) & uint32_t(0xFF);
+    uint32_t shift = uint32_t(group) * 8u;
+    return (_counters >> shift) & 0xFFu;
   }
 
   //! Sets the register count by a register `group`.
-  inline void set(uint32_t group, uint32_t n) noexcept {
-    ASMJIT_ASSERT(group < BaseReg::kGroupVirt);
-    ASMJIT_ASSERT(n <= 0xFF);
+  ASMJIT_INLINE void set(RegGroup group, uint32_t n) noexcept {
+    ASMJIT_ASSERT(group <= RegGroup::kMaxVirt);
+    ASMJIT_ASSERT(n <= 0xFFu);
 
-    uint32_t shift = Support::byteShiftOfDWordStruct(group);
-    _packed = (_packed & ~uint32_t(0xFF << shift)) + (n << shift);
+    uint32_t shift = uint32_t(group) * 8u;
+    _counters = (_counters & ~uint32_t(0xFFu << shift)) + (n << shift);
   }
 
   //! Adds the register count by a register `group`.
-  inline void add(uint32_t group, uint32_t n = 1) noexcept {
-    ASMJIT_ASSERT(group < BaseReg::kGroupVirt);
-    ASMJIT_ASSERT(0xFF - uint32_t(_regs[group]) >= n);
+  ASMJIT_INLINE void add(RegGroup group, uint32_t n = 1) noexcept {
+    ASMJIT_ASSERT(group <= RegGroup::kMaxVirt);
+    ASMJIT_ASSERT(get(group) + n <= 0xFFu);
 
-    uint32_t shift = Support::byteShiftOfDWordStruct(group);
-    _packed += n << shift;
+    uint32_t shift = uint32_t(group) * 8u;
+    _counters += n << shift;
   }
 
   //! \}
 };
 
-// ============================================================================
-// [asmjit::RARegIndex]
-// ============================================================================
-
+//! Provides mapping that can be used to fast index architecture register groups.
 struct RARegIndex : public RARegCount {
   //! Build register indexes based on the given `count` of registers.
-  inline void buildIndexes(const RARegCount& count) noexcept {
-    uint32_t x = uint32_t(count._regs[0]);
-    uint32_t y = uint32_t(count._regs[1]) + x;
-    uint32_t z = uint32_t(count._regs[2]) + y;
+  ASMJIT_INLINE void build_indexes(const RARegCount& count) noexcept {
+    ASMJIT_ASSERT(count.get(RegGroup(0)) + count.get(RegGroup(1)) <= 0xFFu);
+    ASMJIT_ASSERT(count.get(RegGroup(0)) + count.get(RegGroup(1)) + count.get(RegGroup(2)) <= 0xFFu);
 
-    ASMJIT_ASSERT(y <= 0xFF);
-    ASMJIT_ASSERT(z <= 0xFF);
-    _packed = Support::bytepack32_4x8(0, x, y, z);
+    uint32_t i = count._counters;
+    _counters = (i + (i << 8u) + (i << 16)) << 8u;
   }
 };
 
-// ============================================================================
-// [asmjit::RARegMask]
-// ============================================================================
-
 //! Registers mask.
 struct RARegMask {
-  uint32_t _masks[BaseReg::kGroupVirt];
+  //! \name Types
+  //! \{
+
+  using RegMasks = Support::Array<RegMask, Globals::kNumVirtGroups>;
+
+  //! \}
+
+  //! \name Members
+  //! \{
+
+  RegMasks _masks;
+
+  //! \}
 
   //! \name Construction & Destruction
   //! \{
 
-  inline void init(const RARegMask& other) noexcept {
-    for (uint32_t i = 0; i < BaseReg::kGroupVirt; i++)
-      _masks[i] = other._masks[i];
-  }
+  //! Initializes from other `RARegMask`.
+  ASMJIT_INLINE_NODEBUG void init(const RARegMask& other) noexcept { _masks = other._masks; }
+  //! Initializes directly from an array of masks.
+  ASMJIT_INLINE_NODEBUG void init(const RegMasks& masks) noexcept { _masks = masks; }
 
-  //! Reset all register masks to zero.
-  inline void reset() noexcept {
-    for (uint32_t i = 0; i < BaseReg::kGroupVirt; i++)
-      _masks[i] = 0;
-  }
+  //! Resets all register masks to zero.
+  ASMJIT_INLINE_NODEBUG void reset() noexcept { _masks.fill(0); }
 
   //! \}
 
   //! \name Overloaded Operators
   //! \{
 
-  inline RARegMask& operator=(const RARegMask& other) noexcept = default;
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool operator==(const RARegMask& other) const noexcept { return _masks == other._masks; }
 
-  inline bool operator==(const RARegMask& other) const noexcept {
-    return _masks[0] == other._masks[0] &&
-           _masks[1] == other._masks[1] &&
-           _masks[2] == other._masks[2] &&
-           _masks[3] == other._masks[3] ;
-  }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool operator!=(const RARegMask& other) const noexcept { return _masks != other._masks; }
 
-  inline bool operator!=(const RARegMask& other) const noexcept {
-    return !operator==(other);
-  }
+  template<typename Index>
+  [[nodiscard]]
+  inline uint32_t& operator[](const Index& index) noexcept { return _masks[index]; }
 
-  inline uint32_t& operator[](uint32_t index) noexcept {
-    ASMJIT_ASSERT(index < BaseReg::kGroupVirt);
-    return _masks[index];
-  }
-
-  inline const uint32_t& operator[](uint32_t index) const noexcept {
-    ASMJIT_ASSERT(index < BaseReg::kGroupVirt);
-    return _masks[index];
-  }
+  template<typename Index>
+  [[nodiscard]]
+  inline const uint32_t& operator[](const Index& index) const noexcept { return _masks[index]; }
 
   //! \}
 
@@ -283,44 +253,45 @@ struct RARegMask {
   //! \{
 
   //! Tests whether all register masks are zero (empty).
-  inline bool empty() const noexcept {
-    uint32_t m = 0;
-    for (uint32_t i = 0; i < BaseReg::kGroupVirt; i++)
-      m |= _masks[i];
-    return m == 0;
+  [[nodiscard]]
+  inline bool is_empty() const noexcept {
+    return _masks.aggregate<Support::Or>() == 0;
   }
 
-  inline bool has(uint32_t group, uint32_t mask = 0xFFFFFFFFu) const noexcept {
-    ASMJIT_ASSERT(group < BaseReg::kGroupVirt);
+  [[nodiscard]]
+  inline bool has(RegGroup group, RegMask mask = 0xFFFFFFFFu) const noexcept {
     return (_masks[group] & mask) != 0;
   }
 
   template<class Operator>
   inline void op(const RARegMask& other) noexcept {
-    for (uint32_t i = 0; i < BaseReg::kGroupVirt; i++)
-      _masks[i] = Operator::op(_masks[i], other._masks[i]);
+    _masks.combine<Operator>(other._masks);
   }
 
   template<class Operator>
-  inline void op(uint32_t group, uint32_t input) noexcept {
-    _masks[group] = Operator::op(_masks[group], input);
+  inline void op(RegGroup group, RegMask mask) noexcept {
+    _masks[group] = Operator::op(_masks[group], mask);
+  }
+
+  inline void clear(RegGroup group, RegMask mask) noexcept {
+    _masks[group] = _masks[group] & ~mask;
+  }
+
+  inline void clear(const RegMasks& masks) noexcept {
+    _masks.combine<Support::AndNot>(masks);
   }
 
   //! \}
 };
 
-// ============================================================================
-// [asmjit::RARegsStats]
-// ============================================================================
-
-//! Information associated with each instruction, propagated to blocks, loops,
-//! and the whole function. This information can be used to do minor decisions
-//! before the register allocator tries to do its job. For example to use fast
-//! register allocation inside a block or loop it cannot have clobbered and/or
-//! fixed registers, etc...
+//! Information associated with each instruction, propagated to blocks, loops, and the whole function. This
+//! information can be used to do minor decisions before the register allocator tries to do its job. For
+//! example to use fast register allocation inside a block or loop it cannot have clobbered and/or fixed
+//! registers, etc...
 class RARegsStats {
 public:
-  uint32_t _packed = 0;
+  //! \name Constants
+  //! \{
 
   enum Index : uint32_t {
     kIndexUsed       = 0,
@@ -334,56 +305,79 @@ public:
     kMaskClobbered   = 0xFFu << kIndexClobbered
   };
 
-  inline void reset() noexcept { _packed = 0; }
-  inline void combineWith(const RARegsStats& other) noexcept { _packed |= other._packed; }
+  //! \}
 
-  inline bool hasUsed() const noexcept { return (_packed & kMaskUsed) != 0u; }
-  inline bool hasUsed(uint32_t group) const noexcept { return (_packed & Support::bitMask(kIndexUsed + group)) != 0u; }
-  inline void makeUsed(uint32_t group) noexcept { _packed |= Support::bitMask(kIndexUsed + group); }
+  //! \name Members
+  //! \{
 
-  inline bool hasFixed() const noexcept { return (_packed & kMaskFixed) != 0u; }
-  inline bool hasFixed(uint32_t group) const noexcept { return (_packed & Support::bitMask(kIndexFixed + group)) != 0u; }
-  inline void makeFixed(uint32_t group) noexcept { _packed |= Support::bitMask(kIndexFixed + group); }
+  uint32_t _packed = 0;
 
-  inline bool hasClobbered() const noexcept { return (_packed & kMaskClobbered) != 0u; }
-  inline bool hasClobbered(uint32_t group) const noexcept { return (_packed & Support::bitMask(kIndexClobbered + group)) != 0u; }
-  inline void makeClobbered(uint32_t group) noexcept { _packed |= Support::bitMask(kIndexClobbered + group); }
+  //! \}
+
+  //! \name Accessors
+  //! \{
+
+  ASMJIT_INLINE_NODEBUG void reset() noexcept { _packed = 0; }
+  ASMJIT_INLINE_NODEBUG void combine_with(const RARegsStats& other) noexcept { _packed |= other._packed; }
+
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool has_used() const noexcept { return (_packed & kMaskUsed) != 0u; }
+
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool has_used(RegGroup group) const noexcept { return Support::bit_test(_packed, kIndexUsed + uint32_t(group)); }
+
+  ASMJIT_INLINE_NODEBUG void make_used(RegGroup group) noexcept { _packed |= Support::bit_mask<uint32_t>(kIndexUsed + uint32_t(group)); }
+
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool has_fixed() const noexcept { return (_packed & kMaskFixed) != 0u; }
+
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool has_fixed(RegGroup group) const noexcept { return Support::bit_test(_packed, kIndexFixed + uint32_t(group)); }
+
+  ASMJIT_INLINE_NODEBUG void make_fixed(RegGroup group) noexcept { _packed |= Support::bit_mask<uint32_t>(kIndexFixed + uint32_t(group)); }
+
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool has_clobbered() const noexcept { return (_packed & kMaskClobbered) != 0u; }
+
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool has_clobbered(RegGroup group) const noexcept { return Support::bit_test(_packed, kIndexClobbered + uint32_t(group)); }
+
+  ASMJIT_INLINE_NODEBUG void make_clobbered(RegGroup group) noexcept { _packed |= Support::bit_mask<uint32_t>(kIndexClobbered + uint32_t(group)); }
+
+  //! \}
 };
-
-// ============================================================================
-// [asmjit::RALiveCount]
-// ============================================================================
 
 //! Count of live registers, per group.
 class RALiveCount {
 public:
-  uint32_t n[BaseReg::kGroupVirt] {};
+  //! \name Members
+  //! \{
+
+  Support::Array<uint32_t, Globals::kNumVirtGroups> n {};
+
+  //! \}
 
   //! \name Construction & Destruction
   //! \{
 
-  inline RALiveCount() noexcept = default;
-  inline RALiveCount(const RALiveCount& other) noexcept = default;
+  ASMJIT_INLINE_NODEBUG RALiveCount() noexcept = default;
+  ASMJIT_INLINE_NODEBUG RALiveCount(const RALiveCount& other) noexcept = default;
 
-  inline void init(const RALiveCount& other) noexcept {
-    for (uint32_t group = 0; group < BaseReg::kGroupVirt; group++)
-      n[group] = other.n[group];
-  }
-
-  inline void reset() noexcept {
-    for (uint32_t group = 0; group < BaseReg::kGroupVirt; group++)
-      n[group] = 0;
-  }
+  ASMJIT_INLINE_NODEBUG void init(const RALiveCount& other) noexcept { n = other.n; }
+  ASMJIT_INLINE_NODEBUG void reset() noexcept { n.fill(0); }
 
   //! \}
 
   //! \name Overloaded Operators
   //! \{
 
-  inline RALiveCount& operator=(const RALiveCount& other) noexcept = default;
+  ASMJIT_INLINE_NODEBUG RALiveCount& operator=(const RALiveCount& other) noexcept = default;
 
-  inline uint32_t& operator[](uint32_t group) noexcept { return n[group]; }
-  inline const uint32_t& operator[](uint32_t group) const noexcept { return n[group]; }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG uint32_t& operator[](RegGroup group) noexcept { return n[group]; }
+
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG const uint32_t& operator[](RegGroup group) const noexcept { return n[group]; }
 
   //! \}
 
@@ -391,138 +385,106 @@ public:
   //! \{
 
   template<class Operator>
-  inline void op(const RALiveCount& other) noexcept {
-    for (uint32_t group = 0; group < BaseReg::kGroupVirt; group++)
-      n[group] = Operator::op(n[group], other.n[group]);
-  }
+  inline void op(const RALiveCount& other) noexcept { n.combine<Operator>(other.n); }
 
   //! \}
 };
 
-// ============================================================================
-// [asmjit::RALiveInterval]
-// ============================================================================
+//! Span that contains start (a) and end (b).
+struct RALiveSpan {
+  //! \name Constants
+  //! \{
 
-struct RALiveInterval {
-  uint32_t a, b;
+  static inline constexpr NodePosition kNaN = NodePosition(0);
+  static inline constexpr NodePosition kInf = NodePosition(0xFFFFFFFFu);
 
-  enum Misc : uint32_t {
-    kNaN = 0,
-    kInf = 0xFFFFFFFFu
-  };
+  //! \}
+
+  //! \name Members
+  //! \{
+
+  NodePosition a {};
+  NodePosition b {};
+
+  //! \}
 
   //! \name Construction & Destruction
   //! \{
 
-  inline RALiveInterval() noexcept : a(0), b(0) {}
-  inline RALiveInterval(uint32_t a, uint32_t b) noexcept : a(a), b(b) {}
-  inline RALiveInterval(const RALiveInterval& other) noexcept : a(other.a), b(other.b) {}
+  ASMJIT_INLINE_NODEBUG RALiveSpan() noexcept = default;
+  ASMJIT_INLINE_NODEBUG RALiveSpan(const RALiveSpan& other) noexcept = default;
+  ASMJIT_INLINE_NODEBUG RALiveSpan(NodePosition a, NodePosition b) noexcept : a(a), b(b) {}
 
-  inline void init(uint32_t aVal, uint32_t bVal) noexcept {
-    a = aVal;
-    b = bVal;
+  ASMJIT_INLINE_NODEBUG void init(NodePosition first, NodePosition last) noexcept {
+    a = first;
+    b = last;
   }
-  inline void init(const RALiveInterval& other) noexcept { init(other.a, other.b); }
-  inline void reset() noexcept { init(0, 0); }
+
+  ASMJIT_INLINE_NODEBUG void init(const RALiveSpan& other) noexcept { init(other.a, other.b); }
+  ASMJIT_INLINE_NODEBUG void reset() noexcept { init(NodePosition(0), NodePosition(0)); }
 
   //! \}
 
   //! \name Overloaded Operators
   //! \{
 
-  inline RALiveInterval& operator=(const RALiveInterval& other) = default;
+  ASMJIT_INLINE_NODEBUG RALiveSpan& operator=(const RALiveSpan& other) = default;
 
   //! \}
 
   //! \name Accessors
   //! \{
 
-  inline bool isValid() const noexcept { return a < b; }
-  inline uint32_t width() const noexcept { return b - a; }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool is_valid() const noexcept { return a < b; }
+
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG uint32_t width() const noexcept { return uint32_t(b) - uint32_t(a); }
 
   //! \}
 };
 
-// ============================================================================
-// [asmjit::RALiveSpan<T>]
-// ============================================================================
-
-template<typename T>
-class RALiveSpan : public RALiveInterval, public T {
-public:
-  typedef T DataType;
-
-  //! \name Construction & Destruction
-  //! \{
-
-  inline RALiveSpan() noexcept : RALiveInterval(), T() {}
-  inline RALiveSpan(const RALiveSpan<T>& other) noexcept : RALiveInterval(other), T() {}
-  inline RALiveSpan(const RALiveInterval& interval, const T& data) noexcept : RALiveInterval(interval), T(data) {}
-  inline RALiveSpan(uint32_t a, uint32_t b) noexcept : RALiveInterval(a, b), T() {}
-  inline RALiveSpan(uint32_t a, uint32_t b, const T& data) noexcept : RALiveInterval(a, b), T(data) {}
-
-  inline void init(const RALiveSpan<T>& other) noexcept {
-    RALiveInterval::init(static_cast<const RALiveInterval&>(other));
-    T::init(static_cast<const T&>(other));
-  }
-
-  inline void init(const RALiveSpan<T>& span, const T& data) noexcept {
-    RALiveInterval::init(static_cast<const RALiveInterval&>(span));
-    T::init(data);
-  }
-
-  inline void init(const RALiveInterval& interval, const T& data) noexcept {
-    RALiveInterval::init(interval);
-    T::init(data);
-  }
-
-  //! \}
-
-  //! \name Overloaded Operators
-  //! \{
-
-  inline RALiveSpan& operator=(const RALiveSpan& other) {
-    init(other);
-    return *this;
-  }
-
-  //! \}
-};
-
-// ============================================================================
-// [asmjit::RALiveSpans<T>]
-// ============================================================================
-
-template<typename T>
+//! Vector of `RALiveSpan` with additional convenience API.
 class RALiveSpans {
 public:
-  ASMJIT_NONCOPYABLE(RALiveSpans<T>)
+  ASMJIT_NONCOPYABLE(RALiveSpans)
 
-  typedef typename T::DataType DataType;
-  ZoneVector<T> _data;
+  //! \name Members
+  //! \{
+
+  ArenaVector<RALiveSpan> _data {};
+
+  //! \}
 
   //! \name Construction & Destruction
   //! \{
 
-  inline RALiveSpans() noexcept : _data() {}
+  ASMJIT_INLINE_NODEBUG RALiveSpans() noexcept = default;
 
-  inline void reset() noexcept { _data.reset(); }
-  inline void release(ZoneAllocator* allocator) noexcept { _data.release(allocator); }
+  ASMJIT_INLINE_NODEBUG void reset() noexcept { _data.reset(); }
+  ASMJIT_INLINE_NODEBUG void release(Arena& arena) noexcept { _data.release(arena); }
 
   //! \}
 
   //! \name Accessors
   //! \{
 
-  inline bool empty() const noexcept { return _data.empty(); }
-  inline uint32_t size() const noexcept { return _data.size(); }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool is_empty() const noexcept { return _data.is_empty(); }
 
-  inline T* data() noexcept { return _data.data(); }
-  inline const T* data() const noexcept { return _data.data(); }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG size_t size() const noexcept { return _data.size(); }
 
-  inline bool isOpen() const noexcept {
-    uint32_t size = _data.size();
-    return size > 0 && _data[size - 1].b == RALiveInterval::kInf;
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG RALiveSpan* data() noexcept { return _data.data(); }
+
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG const RALiveSpan* data() const noexcept { return _data.data(); }
+
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool is_open() const noexcept {
+    size_t size = _data.size();
+    return size && _data[size - 1].b == RALiveSpan::kInf;
   }
 
   //! \}
@@ -530,148 +492,156 @@ public:
   //! \name Utilities
   //! \{
 
-  inline void swap(RALiveSpans<T>& other) noexcept { _data.swap(other._data); }
+  ASMJIT_INLINE_NODEBUG void swap(RALiveSpans& other) noexcept { _data.swap(other._data); }
 
   //! Open the current live span.
-  ASMJIT_INLINE Error openAt(ZoneAllocator* allocator, uint32_t start, uint32_t end) noexcept {
-    bool wasOpen;
-    return openAt(allocator, start, end, wasOpen);
+  ASMJIT_INLINE Error open_at(Arena& arena, NodePosition start, NodePosition end) noexcept {
+    bool was_open;
+    return open_at(arena, start, end, was_open);
   }
 
-  ASMJIT_INLINE Error openAt(ZoneAllocator* allocator, uint32_t start, uint32_t end, bool& wasOpen) noexcept {
-    uint32_t size = _data.size();
-    wasOpen = false;
+  ASMJIT_INLINE Error open_at(Arena& arena, NodePosition start, NodePosition end, bool& was_open) noexcept {
+    size_t size = _data.size();
+    was_open = false;
 
     if (size > 0) {
-      T& last = _data[size - 1];
+      RALiveSpan& last = _data[size - 1];
       if (last.b >= start) {
-        wasOpen = last.b > start;
+        was_open = last.b > start;
         last.b = end;
-        return kErrorOk;
+        return Error::kOk;
       }
     }
 
-    return _data.append(allocator, T(start, end));
+    return _data.append(arena, RALiveSpan(start, end));
   }
 
-  inline void closeAt(uint32_t end) noexcept {
-    ASMJIT_ASSERT(!empty());
+  ASMJIT_INLINE void close_at(NodePosition end) noexcept {
+    ASMJIT_ASSERT(!is_empty());
 
-    uint32_t size = _data.size();
-    _data[size - 1].b = end;
+    size_t size = _data.size();
+    _data[size - 1u].b = end;
   }
 
   //! Returns the sum of width of all spans.
   //!
-  //! \note Don't overuse, this iterates over all spans so it's O(N).
-  //! It should be only called once and then cached.
-  ASMJIT_INLINE uint32_t width() const noexcept {
+  //! \note Don't overuse, this iterates over all spans so it's O(N). It should be only called once and then cached.
+  inline uint32_t width() const noexcept {
     uint32_t width = 0;
-    for (const T& span : _data)
+    for (const RALiveSpan& span : _data)
       width += span.width();
     return width;
   }
 
-  inline T& operator[](uint32_t index) noexcept { return _data[index]; }
-  inline const T& operator[](uint32_t index) const noexcept { return _data[index]; }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG RALiveSpan& operator[](uint32_t index) noexcept { return _data[index]; }
 
-  inline bool intersects(const RALiveSpans<T>& other) const noexcept {
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG const RALiveSpan& operator[](uint32_t index) const noexcept { return _data[index]; }
+
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool intersects(const RALiveSpans& other) const noexcept {
     return intersects(*this, other);
   }
 
-  ASMJIT_INLINE Error nonOverlappingUnionOf(ZoneAllocator* allocator, const RALiveSpans<T>& x, const RALiveSpans<T>& y, const DataType& yData) noexcept {
-    uint32_t finalSize = x.size() + y.size();
-    ASMJIT_PROPAGATE(_data.reserve(allocator, finalSize));
+  [[nodiscard]]
+  ASMJIT_INLINE Error non_overlapping_union_of(Arena& arena, const RALiveSpans& x, const RALiveSpans& y) noexcept {
+    size_t final_size = x.size() + y.size();
+    ASMJIT_PROPAGATE(_data.reserve_grow(arena, final_size));
 
-    T* dstPtr = _data.data();
-    const T* xSpan = x.data();
-    const T* ySpan = y.data();
+    RALiveSpan* dst_ptr = _data.data();
+    const RALiveSpan* x_span = x.data();
+    const RALiveSpan* y_span = y.data();
 
-    const T* xEnd = xSpan + x.size();
-    const T* yEnd = ySpan + y.size();
+    const RALiveSpan* x_end = x_span + x.size();
+    const RALiveSpan* y_end = y_span + y.size();
 
-    // Loop until we have intersection or either `xSpan == xEnd` or `ySpan == yEnd`,
-    // which means that there is no intersection. We advance either `xSpan` or `ySpan`
-    // depending on their ranges.
-    if (xSpan != xEnd && ySpan != yEnd) {
-      uint32_t xa, ya;
-      xa = xSpan->a;
+    // Loop until we have intersection or either `x_span == x_end` or `y_span == y_end`, which means that there is no
+    // intersection. We advance either `x_span` or `y_span` depending on their ranges.
+    if (x_span != x_end && y_span != y_end) {
+      NodePosition xa, ya;
+      xa = x_span->a;
       for (;;) {
-        while (ySpan->b <= xa) {
-          dstPtr->init(*ySpan, yData);
-          dstPtr++;
-          if (++ySpan == yEnd)
+        while (y_span->b <= xa) {
+          dst_ptr->init(*y_span);
+          dst_ptr++;
+          if (++y_span == y_end) {
             goto Done;
+          }
         }
 
-        ya = ySpan->a;
-        while (xSpan->b <= ya) {
-          *dstPtr++ = *xSpan;
-          if (++xSpan == xEnd)
+        ya = y_span->a;
+        while (x_span->b <= ya) {
+          *dst_ptr++ = *x_span;
+          if (++x_span == x_end) {
             goto Done;
+          }
         }
 
-        // We know that `xSpan->b > ySpan->a`, so check if `ySpan->b > xSpan->a`.
-        xa = xSpan->a;
-        if (ySpan->b > xa)
-          return 0xFFFFFFFFu;
+        // We know that `x_span->b > y_span->a`, so check if `y_span->b > x_span->a`.
+        xa = x_span->a;
+        if (y_span->b > xa) {
+          return Error::kByPass;
+        }
       }
     }
 
   Done:
-    while (xSpan != xEnd) {
-      *dstPtr++ = *xSpan++;
+    while (x_span != x_end) {
+      *dst_ptr++ = *x_span++;
     }
 
-    while (ySpan != yEnd) {
-      dstPtr->init(*ySpan, yData);
-      dstPtr++;
-      ySpan++;
+    while (y_span != y_end) {
+      dst_ptr->init(*y_span);
+      dst_ptr++;
+      y_span++;
     }
 
-    _data._setEndPtr(dstPtr);
-    return kErrorOk;
+    _data._set_end(dst_ptr);
+    return Error::kOk;
   }
 
-  static ASMJIT_INLINE bool intersects(const RALiveSpans<T>& x, const RALiveSpans<T>& y) noexcept {
-    const T* xSpan = x.data();
-    const T* ySpan = y.data();
+  [[nodiscard]]
+  static ASMJIT_INLINE bool intersects(const RALiveSpans& x, const RALiveSpans& y) noexcept {
+    const RALiveSpan* x_span = x.data();
+    const RALiveSpan* y_span = y.data();
 
-    const T* xEnd = xSpan + x.size();
-    const T* yEnd = ySpan + y.size();
+    const RALiveSpan* x_end = x_span + x.size();
+    const RALiveSpan* y_end = y_span + y.size();
 
-    // Loop until we have intersection or either `xSpan == xEnd` or `ySpan == yEnd`,
-    // which means that there is no intersection. We advance either `xSpan` or `ySpan`
-    // depending on their end positions.
-    if (xSpan == xEnd || ySpan == yEnd)
+    // Loop until we have intersection or either `x_span == x_end` or `y_span == y_end`, which means that there is no
+    // intersection. We advance either `x_span` or `y_span` depending on their end positions.
+    if (x_span == x_end || y_span == y_end) {
       return false;
+    }
 
-    uint32_t xa, ya;
-    xa = xSpan->a;
+    NodePosition xa, ya;
+    xa = x_span->a;
 
     for (;;) {
-      while (ySpan->b <= xa)
-        if (++ySpan == yEnd)
+      while (y_span->b <= xa) {
+        if (++y_span == y_end) {
           return false;
+        }
+      }
 
-      ya = ySpan->a;
-      while (xSpan->b <= ya)
-        if (++xSpan == xEnd)
+      ya = y_span->a;
+      while (x_span->b <= ya) {
+        if (++x_span == x_end) {
           return false;
+        }
+      }
 
-      // We know that `xSpan->b > ySpan->a`, so check if `ySpan->b > xSpan->a`.
-      xa = xSpan->a;
-      if (ySpan->b > xa)
+      // We know that `x_span->b > y_span->a`, so check if `y_span->b > x_span->a`.
+      xa = x_span->a;
+      if (y_span->b > xa) {
         return true;
+      }
     }
   }
 
   //! \}
 };
-
-// ============================================================================
-// [asmjit::RALiveStats]
-// ============================================================================
 
 //! Statistics about a register liveness.
 class RALiveStats {
@@ -683,388 +653,378 @@ public:
   //! \name Accessors
   //! \{
 
-  inline uint32_t width() const noexcept { return _width; }
-  inline float freq() const noexcept { return _freq; }
-  inline float priority() const noexcept { return _priority; }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG uint32_t width() const noexcept { return _width; }
+
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG float freq() const noexcept { return _freq; }
+
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG float priority() const noexcept { return _priority; }
 
   //! \}
 };
 
-// ============================================================================
-// [asmjit::LiveRegData]
-// ============================================================================
+//! Flags used by \ref RATiedReg.
+//!
+//! Register access information is encoded in 4 flags in total:
+//!
+//!   - `kRead`  - Register is Read    (ReadWrite if combined with `kWrite`).
+//!   - `kWrite` - Register is Written (ReadWrite if combined with `kRead`).
+//!   - `kUse`   - Encoded as Read or ReadWrite.
+//!   - `kOut`   - Encoded as WriteOnly.
+//!
+//! Let's describe all of these on two X86 instructions:
+//!
+//!   - ADD x{R|W|Use},  x{R|Use}              -> {x:R|W|Use            }
+//!   - LEA x{  W|Out}, [x{R|Use} + x{R|Out}]  -> {x:R|W|Use|Out        }
+//!   - ADD x{R|W|Use},  y{R|Use}              -> {x:R|W|Use     y:R|Use}
+//!   - LEA x{  W|Out}, [x{R|Use} + y{R|Out}]  -> {x:R|W|Use|Out y:R|Use}
+//!
+//! It should be obvious from the example above how these flags get created. Each operand contains READ/WRITE
+//! information, which is then merged to RATiedReg's flags. However, we also need to represent the possibility
+//! to view the operation as two independent operations - USE and OUT, because the register allocator first
+//! allocates USE registers, and then assigns OUT registers independently of USE registers.
+enum class RATiedFlags : uint32_t {
+  //! No flags.
+  kNone = 0,
 
-struct LiveRegData {
-  uint32_t id;
+  // Access Flags
+  // ------------
 
-  inline explicit LiveRegData(uint32_t id = BaseReg::kIdBad) noexcept : id(id) {}
-  inline LiveRegData(const LiveRegData& other) noexcept : id(other.id) {}
+  //! Register is read.
+  kRead = uint32_t(OpRWFlags::kRead),
+  //! Register is written.
+  kWrite = uint32_t(OpRWFlags::kWrite),
+  //! Register both read and written.
+  kRW = uint32_t(OpRWFlags::kRW),
 
-  inline void init(const LiveRegData& other) noexcept { id = other.id; }
+  // Use / Out Flags
+  // ---------------
 
-  inline bool operator==(const LiveRegData& other) const noexcept { return id == other.id; }
-  inline bool operator!=(const LiveRegData& other) const noexcept { return id != other.id; }
+  //! Register has a USE slot (read/rw).
+  kUse = 0x00000004u,
+  //! Register has an OUT slot (write-only).
+  kOut = 0x00000008u,
+  //! Register in USE slot can be patched to memory.
+  kUseRM = 0x00000010u,
+  //! Register in OUT slot can be patched to memory.
+  kOutRM = 0x00000020u,
+
+  //! Register has a fixed USE slot.
+  kUseFixed = 0x00000040u,
+  //! Register has a fixed OUT slot.
+  kOutFixed = 0x00000080u,
+  //! Register USE slot has been allocated.
+  kUseDone = 0x00000100u,
+  //! Register OUT slot has been allocated.
+  kOutDone = 0x00000200u,
+
+  // Consecutive Flags / Data
+  // ------------------------
+
+  //! Has consecutive registers in USE slots.
+  kUseConsecutive = 0x00000400u,
+  //! Has consecutive registers in OUT slots.
+  kOutConsecutive = 0x00000800u,
+  //! This is a consecutive lead (the first that is consecutive).
+  kLeadConsecutive = 0x00001000u,
+  //! Consecutive data payload.
+  kConsecutiveData = 0x00006000u,
+
+  // Other Constraints
+  // -----------------
+
+  //! This must be allocated to a unique physical register, not shared with other USE slots.
+  kUnique = 0x00008000u,
+
+  // Liveness Flags
+  // --------------
+
+  //! Register must be duplicated (function call only).
+  kDuplicate = 0x00010000u,
+  //! First occurrence of this virtual register in a basic block.
+  kFirst = 0x00020000u,
+  //! Last occurrence of this virtual register in a basic block.
+  kLast = 0x00040000u,
+  //! Kill this VirtReg after use.
+  kKill = 0x00080000u,
+
+  // X86 Specific Flags
+  // ------------------
+
+  // Architecture specific flags are used during RATiedReg building to ensure that architecture-specific constraints
+  // are handled properly. These flags are not really needed after RATiedReg[] is built and copied to `RAInst`.
+
+  //! This RATiedReg references GPB-LO or GPB-HI.
+  kX86_Gpb = 0x01000000u,
+
+  // Instruction Flags (Never used by RATiedReg)
+  // -------------------------------------------
+
+  //! Instruction has been patched to address a memory location instead of a register.
+  //!
+  //! This is currently only possible on X86 or X86_64 targets. It informs rewriter to rewrite the instruction if
+  //! necessary.
+  kInst_RegToMemPatched = 0x40000000u,
+
+  //! Instruction is transformable to another instruction if necessary.
+  //!
+  //! This is flag that is only used by \ref RAInst to inform register allocator that the instruction has some
+  //! constraints that can only be solved by transforming the instruction into another instruction, most likely
+  //! by changing its InstId.
+  kInst_IsTransformable = 0x80000000u
 };
+ASMJIT_DEFINE_ENUM_FLAGS(RATiedFlags)
 
-typedef RALiveSpan<LiveRegData> LiveRegSpan;
-typedef RALiveSpans<LiveRegSpan> LiveRegSpans;
+static_assert(uint32_t(RATiedFlags::kRead ) == 0x1, "RATiedFlags::kRead must be 0x1");
+static_assert(uint32_t(RATiedFlags::kWrite) == 0x2, "RATiedFlags::kWrite must be 0x2");
+static_assert(uint32_t(RATiedFlags::kRW   ) == 0x3, "RATiedFlags::kRW must be 0x3");
 
-// ============================================================================
-// [asmjit::RATiedReg]
-// ============================================================================
-
-//! Tied register merges one ore more register operand into a single entity. It
-//! contains information about its access (Read|Write) and allocation slots
-//! (Use|Out) that are used by the register allocator and liveness analysis.
+//! Tied register merges one ore more register operand into a single entity. It contains information about its access
+//! (Read|Write) and allocation slots (Use|Out) that are used by the register allocator and liveness analysis.
 struct RATiedReg {
-  //! WorkReg id.
-  uint32_t _workId;
+  //! \name Members
+  //! \{
+
+  RAWorkReg* _work_reg;
+  RAWorkReg* _consecutive_parent;
+
   //! Allocation flags.
-  uint32_t _flags;
-  //! Registers where input {R|X} can be allocated to.
-  uint32_t _allocableRegs;
-  //! Indexes used to rewrite USE regs.
-  uint32_t _useRewriteMask;
-  //! Indexes used to rewrite OUT regs.
-  uint32_t _outRewriteMask;
+  RATiedFlags _flags;
 
   union {
     struct {
       //! How many times the VirtReg is referenced in all operands.
-      uint8_t _refCount;
+      uint8_t _ref_count;
+      //! Size of a memory operand in case that it's use instead of the register.
+      uint8_t _rm_size;
       //! Physical register for use operation (ReadOnly / ReadWrite).
-      uint8_t _useId;
+      uint8_t _use_id;
       //! Physical register for out operation (WriteOnly).
-      uint8_t _outId;
-      //! Reserved for future use (padding).
-      uint8_t _rmSize;
+      uint8_t _out_id;
     };
     //! Packed data.
     uint32_t _packed;
   };
 
-  //! Flags.
-  //!
-  //! Register access information is encoded in 4 flags in total:
-  //!
-  //!   - `kRead`  - Register is Read    (ReadWrite if combined with `kWrite`).
-  //!   - `kWrite` - Register is Written (ReadWrite if combined with `kRead`).
-  //!   - `kUse`   - Encoded as Read or ReadWrite.
-  //!   - `kOut`   - Encoded as WriteOnly.
-  //!
-  //! Let's describe all of these on two X86 instructions:
-  //!
-  //!   - ADD x{R|W|Use},  x{R|Use}              -> {x:R|W|Use            }
-  //!   - LEA x{  W|Out}, [x{R|Use} + x{R|Out}]  -> {x:R|W|Use|Out        }
-  //!   - ADD x{R|W|Use},  y{R|Use}              -> {x:R|W|Use     y:R|Use}
-  //!   - LEA x{  W|Out}, [x{R|Use} + y{R|Out}]  -> {x:R|W|Use|Out y:R|Use}
-  //!
-  //! It should be obvious from the example above how these flags get created.
-  //! Each operand contains READ/WRITE information, which is then merged to
-  //! RATiedReg's flags. However, we also need to represent the possitility to
-  //! use see the operation as two independent operations - USE and OUT, because
-  //! the register allocator will first allocate USE registers, and then assign
-  //! OUT registers independently of USE registers.
-  enum Flags : uint32_t {
-    kRead         = OpRWInfo::kRead,     //!< Register is read.
-    kWrite        = OpRWInfo::kWrite,    //!< Register is written.
-    kRW           = OpRWInfo::kRW,       //!< Register both read and written.
+  //! Registers where inputs {R|X} can be allocated to.
+  RegMask _use_reg_mask;
+  //! Registers where outputs {W} can be allocated to.
+  RegMask _out_reg_mask;
+  //! Indexes used to rewrite USE regs.
+  uint32_t _use_rewrite_mask;
+  //! Indexes used to rewrite OUT regs.
+  uint32_t _out_rewrite_mask;
 
-    kUse          = 0x00000100u,         //!< Register has a USE slot (read/rw).
-    kOut          = 0x00000200u,         //!< Register has an OUT slot (write-only).
-    kUseRM        = 0x00000400u,         //!< Register in USE slot can be patched to memory.
-    kOutRM        = 0x00000800u,         //!< Register in OUT slot can be patched to memory.
+  //! \}
 
-    kUseFixed     = 0x00001000u,         //!< Register has a fixed USE slot.
-    kOutFixed     = 0x00002000u,         //!< Register has a fixed OUT slot.
-    kUseDone      = 0x00004000u,         //!< Register USE slot has been allocated.
-    kOutDone      = 0x00008000u,         //!< Register OUT slot has been allocated.
-
-    kDuplicate    = 0x00010000u,         //!< Register must be duplicated (function call only).
-    kLast         = 0x00020000u,         //!< Last occurrence of this VirtReg in basic block.
-    kKill         = 0x00040000u,         //!< Kill this VirtReg after use.
-
-    // Architecture specific flags are used during RATiedReg building to ensure
-    // that architecture-specific constraints are handled properly. These flags
-    // are not really needed after RATiedReg[] is built and copied to `RAInst`.
-
-    kX86Gpb       = 0x01000000u          //!< This RATiedReg references GPB-LO or GPB-HI.
-  };
-
-  static_assert(kRead  == 0x1, "RATiedReg::kRead flag must be 0x1");
-  static_assert(kWrite == 0x2, "RATiedReg::kWrite flag must be 0x2");
-  static_assert(kRW    == 0x3, "RATiedReg::kRW combination must be 0x3");
-
-  //! \name Construction & Destruction
+  //! \name Statics
   //! \{
 
-  ASMJIT_INLINE void init(uint32_t workId, uint32_t flags, uint32_t allocableRegs, uint32_t useId, uint32_t useRewriteMask, uint32_t outId, uint32_t outRewriteMask, uint32_t rmSize = 0) noexcept {
-    _workId = workId;
-    _flags = flags;
-    _allocableRegs = allocableRegs;
-    _useRewriteMask = useRewriteMask;
-    _outRewriteMask = outRewriteMask;
-    _refCount = 1;
-    _useId = uint8_t(useId);
-    _outId = uint8_t(outId);
-    _rmSize = uint8_t(rmSize);
+  static inline RATiedFlags consecutive_data_to_flags(uint32_t offset) noexcept {
+    ASMJIT_ASSERT(offset < 4);
+    constexpr uint32_t kOffsetShift = Support::ctz_const<RATiedFlags::kConsecutiveData>;
+    return (RATiedFlags)(offset << kOffsetShift);
+  }
+
+  static inline uint32_t consecutive_data_from_flags(RATiedFlags flags) noexcept {
+    constexpr uint32_t kOffsetShift = Support::ctz_const<RATiedFlags::kConsecutiveData>;
+    return uint32_t(flags & RATiedFlags::kConsecutiveData) >> kOffsetShift;
   }
 
   //! \}
 
-  //! \name Overloaded Operators
+  //! \name Construction & Destruction
   //! \{
 
-  inline RATiedReg& operator=(const RATiedReg& other) noexcept = default;
+  inline void init(RAWorkReg* work_reg, RATiedFlags flags, RegMask use_reg_mask, uint32_t use_id, uint32_t use_rewrite_mask, RegMask out_reg_mask, uint32_t out_id, uint32_t out_rewrite_mask, uint32_t rm_size = 0, RAWorkReg* consecutive_parent = nullptr) noexcept {
+    _work_reg = work_reg;
+    _consecutive_parent = consecutive_parent;
+    _flags = flags;
+    _ref_count = 1;
+    _rm_size = uint8_t(rm_size);
+    _use_id = uint8_t(use_id);
+    _out_id = uint8_t(out_id);
+    _use_reg_mask = use_reg_mask;
+    _out_reg_mask = out_reg_mask;
+    _use_rewrite_mask = use_rewrite_mask;
+    _out_rewrite_mask = out_rewrite_mask;
+  }
 
   //! \}
 
   //! \name Accessors
   //! \{
 
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG RAWorkReg* work_reg() const noexcept { return _work_reg; }
+
   //! Returns the associated WorkReg id.
-  inline uint32_t workId() const noexcept { return _workId; }
+  //[[nodiscard]]
+  //ASMJIT_INLINE_NODEBUG RAWorkId work_id() const noexcept { return _work_reg->work_id(); }
 
-  //! Checks if the given `flag` is set, see `Flags`.
-  inline bool hasFlag(uint32_t flag) const noexcept { return (_flags & flag) != 0; }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool has_consecutive_parent() const noexcept { return _consecutive_parent != nullptr; }
 
-  //! Returns TiedReg flags, see `RATiedReg::Flags`.
-  inline uint32_t flags() const noexcept { return _flags; }
-  //! Adds tied register flags, see `Flags`.
-  inline void addFlags(uint32_t flags) noexcept { _flags |= flags; }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG RAWorkReg* consecutive_parent() const noexcept { return _consecutive_parent; }
+
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG uint32_t consecutive_data() const noexcept { return consecutive_data_from_flags(_flags); }
+
+  //! Returns TiedReg flags.
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG RATiedFlags flags() const noexcept { return _flags; }
+
+  //! Checks if the given `flag` is set.
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool has_flag(RATiedFlags flag) const noexcept { return Support::test(_flags, flag); }
+
+  //! Adds tied register flags.
+  ASMJIT_INLINE_NODEBUG void add_flags(RATiedFlags flags) noexcept { _flags |= flags; }
 
   //! Tests whether the register is read (writes `true` also if it's Read/Write).
-  inline bool isRead() const noexcept { return hasFlag(kRead); }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool is_read() const noexcept { return has_flag(RATiedFlags::kRead); }
+
   //! Tests whether the register is written (writes `true` also if it's Read/Write).
-  inline bool isWrite() const noexcept { return hasFlag(kWrite); }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool is_write() const noexcept { return has_flag(RATiedFlags::kWrite); }
+
   //! Tests whether the register is read only.
-  inline bool isReadOnly() const noexcept { return (_flags & kRW) == kRead; }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool is_read_only() const noexcept { return (_flags & RATiedFlags::kRW) == RATiedFlags::kRead; }
+
   //! Tests whether the register is write only.
-  inline bool isWriteOnly() const noexcept { return (_flags & kRW) == kWrite; }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool is_write_only() const noexcept { return (_flags & RATiedFlags::kRW) == RATiedFlags::kWrite; }
+
   //! Tests whether the register is read and written.
-  inline bool isReadWrite() const noexcept { return (_flags & kRW) == kRW; }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool is_read_write() const noexcept { return (_flags & RATiedFlags::kRW) == RATiedFlags::kRW; }
 
   //! Tests whether the tied register has use operand (Read/ReadWrite).
-  inline bool isUse() const noexcept { return hasFlag(kUse); }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool is_use() const noexcept { return has_flag(RATiedFlags::kUse); }
+
   //! Tests whether the tied register has out operand (Write).
-  inline bool isOut() const noexcept { return hasFlag(kOut); }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool is_out() const noexcept { return has_flag(RATiedFlags::kOut); }
+
+  //! Tests whether the tied register has \ref RATiedFlags::kLeadConsecutive flag set.
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool is_lead_consecutive() const noexcept { return has_flag(RATiedFlags::kLeadConsecutive); }
+
+  //! Tests whether the tied register has \ref RATiedFlags::kUseConsecutive flag set.
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool is_use_consecutive() const noexcept { return has_flag(RATiedFlags::kUseConsecutive); }
+
+  //! Tests whether the tied register has \ref RATiedFlags::kOutConsecutive flag set.
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool is_out_consecutive() const noexcept { return has_flag(RATiedFlags::kOutConsecutive); }
+
+  //! Tests whether the tied register must be unique (cannot be allocated to any other allocated register).
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool is_unique() const noexcept { return has_flag(RATiedFlags::kUnique); }
+
+  //! Tests whether the tied register has any consecutive flag.
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool has_any_consecutive_flag() const noexcept { return has_flag(RATiedFlags::kLeadConsecutive | RATiedFlags::kUseConsecutive | RATiedFlags::kOutConsecutive); }
 
   //! Tests whether the USE slot can be patched to memory operand.
-  inline bool hasUseRM() const noexcept { return hasFlag(kUseRM); }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool has_use_rm() const noexcept { return has_flag(RATiedFlags::kUseRM); }
+
   //! Tests whether the OUT slot can be patched to memory operand.
-  inline bool hasOutRM() const noexcept { return hasFlag(kOutRM); }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool has_out_rm() const noexcept { return has_flag(RATiedFlags::kOutRM); }
 
-  inline uint32_t rmSize() const noexcept { return _rmSize; }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG uint32_t rm_size() const noexcept { return _rm_size; }
 
-  inline void makeReadOnly() noexcept {
-    _flags = (_flags & ~(kOut | kWrite)) | kUse;
-    _useRewriteMask |= _outRewriteMask;
-    _outRewriteMask = 0;
+  inline void make_read_only() noexcept {
+    _flags = (_flags & ~(RATiedFlags::kOut | RATiedFlags::kWrite)) | RATiedFlags::kUse;
+    _use_rewrite_mask |= _out_rewrite_mask;
+    _out_rewrite_mask = 0;
   }
 
-  inline void makeWriteOnly() noexcept {
-    _flags = (_flags & ~(kUse | kRead)) | kOut;
-    _outRewriteMask |= _useRewriteMask;
-    _useRewriteMask = 0;
+  inline void make_write_only() noexcept {
+    _flags = (_flags & ~(RATiedFlags::kUse | RATiedFlags::kRead)) | RATiedFlags::kOut;
+    _out_rewrite_mask |= _use_rewrite_mask;
+    _use_rewrite_mask = 0;
   }
 
   //! Tests whether the register would duplicate.
-  inline bool isDuplicate() const noexcept { return hasFlag(kDuplicate); }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool is_duplicate() const noexcept { return has_flag(RATiedFlags::kDuplicate); }
+
+  //! Tests whether the register (and the instruction it's part of) appears first in the basic block.
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool is_first() const noexcept { return has_flag(RATiedFlags::kFirst); }
 
   //! Tests whether the register (and the instruction it's part of) appears last in the basic block.
-  inline bool isLast() const noexcept { return hasFlag(kLast); }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool is_last() const noexcept { return has_flag(RATiedFlags::kLast); }
+
   //! Tests whether the register should be killed after USEd and/or OUTed.
-  inline bool isKill() const noexcept { return hasFlag(kKill); }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool is_kill() const noexcept { return has_flag(RATiedFlags::kKill); }
 
   //! Tests whether the register is OUT or KILL (used internally by local register allocator).
-  inline bool isOutOrKill() const noexcept { return hasFlag(kOut | kKill); }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool is_out_or_kill() const noexcept { return has_flag(RATiedFlags::kOut | RATiedFlags::kKill); }
 
-  inline uint32_t allocableRegs() const noexcept { return _allocableRegs; }
+  //! Returns a register mask that describes allocable USE registers (Read/ReadWrite access).
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG RegMask use_reg_mask() const noexcept { return _use_reg_mask; }
 
-  inline uint32_t refCount() const noexcept { return _refCount; }
-  inline void addRefCount(uint32_t n = 1) noexcept { _refCount = uint8_t(_refCount + n); }
+  //! Returns a register mask that describes allocable OUT registers (WriteOnly access).
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG RegMask out_reg_mask() const noexcept { return _out_reg_mask; }
+
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG uint32_t ref_count() const noexcept { return _ref_count; }
+
+  ASMJIT_INLINE_NODEBUG void add_ref_count(uint32_t n = 1) noexcept { _ref_count = uint8_t(_ref_count + n); }
 
   //! Tests whether the register must be allocated to a fixed physical register before it's used.
-  inline bool hasUseId() const noexcept { return _useId != BaseReg::kIdBad; }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool has_use_id() const noexcept { return _use_id != Reg::kIdBad; }
+
   //! Tests whether the register must be allocated to a fixed physical register before it's written.
-  inline bool hasOutId() const noexcept { return _outId != BaseReg::kIdBad; }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool has_out_id() const noexcept { return _out_id != Reg::kIdBad; }
 
   //! Returns a physical register id used for 'use' operation.
-  inline uint32_t useId() const noexcept { return _useId; }
-  //! Returns a physical register id used for 'out' operation.
-  inline uint32_t outId() const noexcept { return _outId; }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG uint32_t use_id() const noexcept { return _use_id; }
 
-  inline uint32_t useRewriteMask() const noexcept { return _useRewriteMask; }
-  inline uint32_t outRewriteMask() const noexcept { return _outRewriteMask; }
+  //! Returns a physical register id used for 'out' operation.
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG uint32_t out_id() const noexcept { return _out_id; }
+
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG uint32_t use_rewrite_mask() const noexcept { return _use_rewrite_mask; }
+
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG uint32_t out_rewrite_mask() const noexcept { return _out_rewrite_mask; }
 
   //! Sets a physical register used for 'use' operation.
-  inline void setUseId(uint32_t index) noexcept { _useId = uint8_t(index); }
+  ASMJIT_INLINE_NODEBUG void set_use_id(uint32_t index) noexcept { _use_id = uint8_t(index); }
+
   //! Sets a physical register used for 'out' operation.
-  inline void setOutId(uint32_t index) noexcept { _outId = uint8_t(index); }
+  ASMJIT_INLINE_NODEBUG void set_out_id(uint32_t index) noexcept { _out_id = uint8_t(index); }
 
-  inline bool isUseDone() const noexcept { return hasFlag(kUseDone); }
-  inline bool isOutDone() const noexcept { return hasFlag(kUseDone); }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool is_use_done() const noexcept { return has_flag(RATiedFlags::kUseDone); }
 
-  inline void markUseDone() noexcept { addFlags(kUseDone); }
-  inline void markOutDone() noexcept { addFlags(kUseDone); }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool is_out_done() const noexcept { return has_flag(RATiedFlags::kOutDone); }
 
-  //! \}
-};
+  ASMJIT_INLINE_NODEBUG void mark_use_done() noexcept { add_flags(RATiedFlags::kUseDone); }
 
-// ============================================================================
-// [asmjit::RAWorkReg]
-// ============================================================================
-
-class RAWorkReg {
-public:
-  ASMJIT_NONCOPYABLE(RAWorkReg)
-
-  //! RAPass specific ID used during analysis and allocation.
-  uint32_t _workId = 0;
-  //! Copy of ID used by \ref VirtReg.
-  uint32_t _virtId = 0;
-
-  //! Permanent association with \ref VirtReg.
-  VirtReg* _virtReg = nullptr;
-  //! Temporary association with \ref RATiedReg.
-  RATiedReg* _tiedReg = nullptr;
-  //! Stack slot associated with the register.
-  RAStackSlot* _stackSlot = nullptr;
-
-  //! Copy of a signature used by \ref VirtReg.
-  RegInfo _info {};
-  //! RAPass specific flags used during analysis and allocation.
-  uint32_t _flags = 0;
-  //! IDs of all physical registers this WorkReg has been allocated to.
-  uint32_t _allocatedMask = 0;
-  //! IDs of all physical registers that are clobbered during the lifetime of
-  //! this WorkReg.
-  //!
-  //! This mask should be updated by `RAPass::buildLiveness()`, because it's
-  //! global and should be updated after unreachable code has been removed.
-  uint32_t _clobberSurvivalMask = 0;
-
-  //! A byte-mask where each bit represents one valid byte of the register.
-  uint64_t _regByteMask = 0;
-
-  //! Argument index (or `kNoArgIndex` if none).
-  uint8_t _argIndex = kNoArgIndex;
-  //! Argument value index in the pack (0 by default).
-  uint8_t _argValueIndex = 0;
-  //! Global home register ID (if any, assigned by RA).
-  uint8_t _homeRegId = BaseReg::kIdBad;
-  //! Global hint register ID (provided by RA or user).
-  uint8_t _hintRegId = BaseReg::kIdBad;
-
-  //! Live spans of the `VirtReg`.
-  LiveRegSpans _liveSpans {};
-  //! Live statistics.
-  RALiveStats _liveStats {};
-
-  //! All nodes that read/write this VirtReg/WorkReg.
-  ZoneVector<BaseNode*> _refs;
-  //! All nodes that write to this VirtReg/WorkReg.
-  ZoneVector<BaseNode*> _writes;
-
-  enum Ids : uint32_t {
-    kIdNone = 0xFFFFFFFFu
-  };
-
-  enum Flags : uint32_t {
-    //! Has been coalesced to another WorkReg.
-    kFlagCoalesced = 0x00000001u,
-    //! Stack slot has to be allocated.
-    kFlagStackUsed = 0x00000002u,
-    //! Stack allocation is preferred.
-    kFlagStackPreferred = 0x00000004u,
-    //! Marked for stack argument reassignment.
-    kFlagStackArgToStack = 0x00000008u
-  };
-
-  enum ArgIndex : uint32_t {
-    kNoArgIndex = 0xFFu
-  };
-
-  //! \name Construction & Destruction
-  //! \{
-
-  ASMJIT_INLINE RAWorkReg(VirtReg* vReg, uint32_t workId) noexcept
-    : _workId(workId),
-      _virtId(vReg->id()),
-      _virtReg(vReg),
-      _info(vReg->info()) {}
-
-  //! \}
-
-  //! \name Accessors
-  //! \{
-
-  inline uint32_t workId() const noexcept { return _workId; }
-  inline uint32_t virtId() const noexcept { return _virtId; }
-
-  inline const char* name() const noexcept { return _virtReg->name(); }
-  inline uint32_t nameSize() const noexcept { return _virtReg->nameSize(); }
-
-  inline uint32_t typeId() const noexcept { return _virtReg->typeId(); }
-
-  inline bool hasFlag(uint32_t flag) const noexcept { return (_flags & flag) != 0; }
-  inline uint32_t flags() const noexcept { return _flags; }
-  inline void addFlags(uint32_t flags) noexcept { _flags |= flags; }
-
-  inline bool isStackUsed() const noexcept { return hasFlag(kFlagStackUsed); }
-  inline void markStackUsed() noexcept { addFlags(kFlagStackUsed); }
-
-  inline bool isStackPreferred() const noexcept { return hasFlag(kFlagStackPreferred); }
-  inline void markStackPreferred() noexcept { addFlags(kFlagStackPreferred); }
-
-  //! Tests whether this RAWorkReg has been coalesced with another one (cannot be used anymore).
-  inline bool isCoalesced() const noexcept { return hasFlag(kFlagCoalesced); }
-
-  inline const RegInfo& info() const noexcept { return _info; }
-  inline uint32_t group() const noexcept { return _info.group(); }
-  inline uint32_t signature() const noexcept { return _info.signature(); }
-
-  inline VirtReg* virtReg() const noexcept { return _virtReg; }
-
-  inline bool hasTiedReg() const noexcept { return _tiedReg != nullptr; }
-  inline RATiedReg* tiedReg() const noexcept { return _tiedReg; }
-  inline void setTiedReg(RATiedReg* tiedReg) noexcept { _tiedReg = tiedReg; }
-  inline void resetTiedReg() noexcept { _tiedReg = nullptr; }
-
-  inline bool hasStackSlot() const noexcept { return _stackSlot != nullptr; }
-  inline RAStackSlot* stackSlot() const noexcept { return _stackSlot; }
-
-  inline LiveRegSpans& liveSpans() noexcept { return _liveSpans; }
-  inline const LiveRegSpans& liveSpans() const noexcept { return _liveSpans; }
-
-  inline RALiveStats& liveStats() noexcept { return _liveStats; }
-  inline const RALiveStats& liveStats() const noexcept { return _liveStats; }
-
-  inline bool hasArgIndex() const noexcept { return _argIndex != kNoArgIndex; }
-  inline uint32_t argIndex() const noexcept { return _argIndex; }
-  inline uint32_t argValueIndex() const noexcept { return _argValueIndex; }
-
-  inline void setArgIndex(uint32_t argIndex, uint32_t valueIndex) noexcept {
-    _argIndex = uint8_t(argIndex);
-    _argValueIndex = uint8_t(valueIndex);
-  }
-
-  inline bool hasHomeRegId() const noexcept { return _homeRegId != BaseReg::kIdBad; }
-  inline uint32_t homeRegId() const noexcept { return _homeRegId; }
-  inline void setHomeRegId(uint32_t physId) noexcept { _homeRegId = uint8_t(physId); }
-
-  inline bool hasHintRegId() const noexcept { return _hintRegId != BaseReg::kIdBad; }
-  inline uint32_t hintRegId() const noexcept { return _hintRegId; }
-  inline void setHintRegId(uint32_t physId) noexcept { _hintRegId = uint8_t(physId); }
-
-  inline uint32_t allocatedMask() const noexcept { return _allocatedMask; }
-  inline void addAllocatedMask(uint32_t mask) noexcept { _allocatedMask |= mask; }
-
-  inline uint32_t clobberSurvivalMask() const noexcept { return _clobberSurvivalMask; }
-  inline void addClobberSurvivalMask(uint32_t mask) noexcept { _clobberSurvivalMask |= mask; }
-
-  inline uint64_t regByteMask() const noexcept { return _regByteMask; }
-  inline void setRegByteMask(uint64_t mask) noexcept { _regByteMask = mask; }
+  ASMJIT_INLINE_NODEBUG void mark_out_done() noexcept { add_flags(RATiedFlags::kOutDone); }
 
   //! \}
 };
@@ -1074,4 +1034,5 @@ public:
 
 ASMJIT_END_NAMESPACE
 
+#endif // !ASMJIT_NO_COMPILER
 #endif // ASMJIT_CORE_RADEFS_P_H_INCLUDED

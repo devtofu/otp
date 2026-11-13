@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1997-2017. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -52,6 +54,7 @@
 -import(ordsets, [subtract/2]).
 
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
 suite() ->
     [{ct_hooks,[ts_install_cth]},
@@ -330,7 +333,7 @@ unload_reload_thingie_3(Config) when is_list(Config) ->
              {'DOWN',Ref3, driver,echo_drv,{load_failure,_}} -> ok 
          after 1000 -> false 
          end,
-    {'EXIT',_} = (catch erl_ddll:info(echo_drv, port_count)),
+    ?assertError(_, erl_ddll:info(echo_drv, port_count)),
     {error, not_loaded} = erl_ddll:try_unload(echo_drv,[{monitor,pending}]),
     ok = receive X -> {error, X} after 300 -> ok end,
     ok.
@@ -461,7 +464,7 @@ reload_pending_fail_init(Config) when is_list(Config) ->
     erlang:port_close(Port),
     ok = receive {got,{'DOWN', Ref2, driver, echo_drv, unloaded}} -> ok after 300 -> error end,
     ok = receive {'DOWN', Ref3, driver, echo_drv, {load_failure,driver_init_failed}} -> ok  after 300 -> error end,
-    {'EXIT',{badarg,_}} = (catch erl_ddll:info(echo_drv,processes)),
+    ?assertError(badarg, erl_ddll:info(echo_drv,processes)),
 
     ok = receive Z -> {error, Z} after 300 -> ok end,
     ok.

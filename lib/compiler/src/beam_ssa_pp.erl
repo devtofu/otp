@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2018-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,10 +20,12 @@
 %% %CopyrightEnd%
 %%
 -module(beam_ssa_pp).
+-moduledoc false.
 
--export([format_function/1,format_instr/1,format_var/1]).
+-export([format_function/1,format_instr/1,format_var/1,format_type/1]).
 
 -include("beam_ssa.hrl").
+-include("beam_types.hrl").
 
 -spec format_function(beam_ssa:b_function()) -> iolist().
 
@@ -47,7 +51,7 @@ format_function(#b_function{anno=Anno0,args=Args,
      end,
      io_lib:format("%% Counter = ~p\n", [Counter]),
      [format_anno(Key, Value) ||
-         {Key,Value} <- lists:sort(maps:to_list(Anno))],
+         Key := Value <- maps:iterator(Anno, ordered)],
      io_lib:format("function `~p`:`~p`(~ts) {\n",
                    [M, F, format_args(Args, FuncAnno)]),
      [format_live_interval(Var, FuncAnno) || Var <- Args],
@@ -95,27 +99,27 @@ format_anno(parameter_info, Map) when is_map(Map) ->
                             [format_var(V),
                              Break,
                              format_param_info(I, Break)]) ||
-                 {V,I} <- Params]]
+                 {V,I} <:- Params]]
     end;
 format_anno(Key, Map) when is_map(Map) ->
-    Sorted = lists:sort(maps:to_list(Map)),
+    Sorted = maps:to_list(maps:iterator(Map, ordered)),
     [io_lib:format("%% ~s:\n", [Key]),
-     [io_lib:format("%%    ~w => ~w\n", [K,V]) || {K,V} <- Sorted]];
+     [io_lib:format("%%    ~kw => ~kw\n", [K,V]) || {K,V} <:- Sorted]];
 format_anno(Key, Value) ->
-    io_lib:format("%% ~s: ~p\n", [Key,Value]).
+    io_lib:format("%% ~s: ~kp\n", [Key,Value]).
 
 format_param_info([{type, T} | Infos], Break) ->
     [format_type(T, Break) |
      format_param_info(Infos, Break)];
 format_param_info([Info | Infos], Break) ->
-    [io_lib:format("~s~p", [Break, Info]) |
+    [io_lib:format("~s~kp", [Break, Info]) |
      format_param_info(Infos, Break)];
 format_param_info([], _Break) ->
     [].
 
 format_type(T, Break) ->
     %% Gross hack, but it's short and simple.
-    Indented = lists:flatten(io_lib:format("~p", [T])),
+    Indented = unicode:characters_to_list(format_type(T)),
     string:replace(Indented, [$\n], Break, all).
 
 format_blocks(Ls, Blocks, Anno) ->
@@ -126,9 +130,9 @@ format_block(L, Blocks, FuncAnno) ->
     #b_blk{anno=Anno,is=Is,last=Last} = maps:get(L, Blocks),
     [case map_size(Anno) of
          0 -> [];
-         _ -> io_lib:format("%% ~p\n", [Anno])
+         _ -> io_lib:format("%% ~kp\n", [Anno])
      end,
-     io_lib:format("~p:", [L]),
+     io_lib:format("~kp:", [L]),
      format_instrs(Is, FuncAnno, true),
      $\n,
      format_terminator(Last, FuncAnno)].
@@ -142,7 +146,7 @@ format_instrs([], _FuncAnno, _First) ->
 
 format_instr(#b_set{anno=Anno,op=Op,dst=Dst,args=Args},
              FuncAnno, First) ->
-    AnnoStr = format_anno(Anno),
+    AnnoStr = format_instr_anno(Anno, FuncAnno, Args),
     LiveIntervalStr = format_live_interval(Dst, FuncAnno),
     [if
          First ->
@@ -170,20 +174,31 @@ format_i_number(#{}) -> [].
 
 format_terminator(#b_br{anno=A,bool=#b_literal{val=true},
                         succ=Same,fail=Same}, _) ->
-    io_lib:format("  ~sbr ~ts\n", [format_i_number(A),format_label(Same)]);
+    io_lib:format("~s  ~sbr ~ts\n",
+                  [format_terminator_anno(A),
+                   format_i_number(A),
+                   format_label(Same)]);
 format_terminator(#b_br{anno=A,bool=Bool,succ=Succ,fail=Fail}, FuncAnno) ->
-    io_lib:format("  ~sbr ~ts, ~ts, ~ts\n",
-                  [format_i_number(A),
+    io_lib:format("~s  ~sbr ~ts, ~ts, ~ts\n",
+                  [format_terminator_anno(A),
+                   format_i_number(A),
                    format_arg(Bool, FuncAnno),
                    format_label(Succ),
                    format_label(Fail)]);
 format_terminator(#b_switch{anno=A,arg=Arg,fail=Fail,list=List}, FuncAnno) ->
-    io_lib:format("  ~sswitch ~ts, ~ts, ~ts\n",
-                  [format_i_number(A),format_arg(Arg, FuncAnno),
+    io_lib:format("~s  ~sswitch ~ts, ~ts, ~ts\n",
+                  [format_terminator_anno(A),
+                   format_i_number(A),format_arg(Arg, FuncAnno),
                    format_label(Fail),
                    format_switch_list(List, FuncAnno)]);
 format_terminator(#b_ret{anno=A,arg=Arg}, FuncAnno) ->
-    io_lib:format("  ~sret ~ts\n", [format_i_number(A),format_arg(Arg, FuncAnno)]).
+    io_lib:format("~s  ~sret ~ts\n",
+                  [format_terminator_anno(A),
+                   format_i_number(A),
+                   format_arg(Arg, FuncAnno)]).
+
+format_terminator_anno(Anno) ->
+    format_instr_anno(Anno, #{}, []).
 
 format_op({Prefix,Name}) ->
     io_lib:format("~p:~p", [Prefix,Name]);
@@ -202,13 +217,6 @@ format_var(Var, FuncAnno) ->
         [_|_]=Reg -> [Reg,$/,VarString]
     end.
 
-format_var_1(#b_var{name={Name,Uniq}}) ->
-    if
-        is_atom(Name) ->
-            io_lib:format("~ts:~p", [Name,Uniq]);
-        is_integer(Name) ->
-            io_lib:format("_~p:~p", [Name,Uniq])
-    end;
 format_var_1(#b_var{name=Name}) when is_atom(Name) ->
     atom_to_list(Name);
 format_var_1(#b_var{name=Name}) when is_integer(Name) ->
@@ -221,7 +229,7 @@ format_args(Args, FuncAnno) ->
 format_arg(#b_var{}=Arg, FuncAnno) ->
     format_var(Arg, FuncAnno);
 format_arg(#b_literal{val=Val}, _FuncAnno) ->
-    io_lib:format("`~p`", [Val]);
+    io_lib:format("`~kp`", [Val]);
 format_arg(#b_remote{mod=Mod,name=Name,arity=Arity}, FuncAnno) ->
     io_lib:format("(~ts:~ts/~p)",
                   [format_arg(Mod, FuncAnno),format_arg(Name, FuncAnno),Arity]);
@@ -231,42 +239,68 @@ format_arg({Value,Label}, FuncAnno) when is_integer(Label) ->
     io_lib:format("{ ~ts, ~ts }", [format_arg(Value, FuncAnno),
                                    format_label(Label)]);
 format_arg(Other, _) ->
-    io_lib:format("*** ~p ***", [Other]).
+    io_lib:format("*** ~kp ***", [Other]).
 
 format_switch_list(List, FuncAnno) ->
     Ss = [io_lib:format("{ ~ts, ~ts }", [format_arg(Val, FuncAnno),
-                                         format_label(L)]) || {Val,L} <- List],
+                                         format_label(L)]) || {Val,L} <:- List],
     io_lib:format("[\n    ~ts\n  ]", [lists:join(",\n    ", Ss)]).
 
 format_label(L) ->
     io_lib:format("^~w", [L]).
 
-format_anno(#{n:=_}=Anno) ->
-    format_anno(maps:remove(n, Anno));
-format_anno(#{location:={File,Line}}=Anno0) ->
+format_instr_anno(#{n:=_}=Anno, FuncAnno, Args) ->
+    format_instr_anno(maps:remove(n, Anno), FuncAnno, Args);
+format_instr_anno(#{location:={File,Line}}=Anno0, FuncAnno, Args) ->
     Anno = maps:remove(location, Anno0),
-    [io_lib:format("  %% ~ts:~p\n", [File,Line])|format_anno(Anno)];
-format_anno(#{result_type:=T}=Anno0) ->
+    [io_lib:format("  %% ~ts:~p\n", [File,Line]) |
+     format_instr_anno(Anno, FuncAnno, Args)];
+format_instr_anno(#{result_type:=T}=Anno0, FuncAnno, Args) ->
     Anno = maps:remove(result_type, Anno0),
     Break = "\n  %%    ",
     [io_lib:format("  %% Result type:~s~s\n",
-                   [Break, format_type(T, Break)]) | format_anno(Anno)];
-format_anno(Anno) ->
-    format_anno_1(Anno).
+                   [Break, format_type(T, Break)]) |
+                    format_instr_anno(Anno, FuncAnno, Args)];
+format_instr_anno(#{arg_types:=Ts}=Anno0, FuncAnno, Args) ->
+    Anno = maps:remove(arg_types, Anno0),
 
-format_anno_1(Anno) ->
+    Break = "\n  %%    ",
+
+    Iota = lists:seq(0, length(Args) - 1),
+    Formatted0 = [[format_arg(Arg, FuncAnno), " => ",
+                   format_type(map_get(Idx, Ts), Break)] ||
+                     Idx <- Iota && Arg <- Args, is_map_key(Idx, Ts)],
+    Formatted = lists:join(Break, Formatted0),
+
+    [io_lib:format("  %% Argument types:~s~ts\n",
+                   [Break, unicode:characters_to_list(Formatted)]) |
+     format_instr_anno(Anno, FuncAnno, Args)];
+format_instr_anno(#{aliased:=As}=Anno, FuncAnno, Args) ->
+    Break = "\n  %%    ",
+    ["  %% Aliased:",
+     string:join([[Break, format_var(V)] || V <- As], ", "), "\n",
+     format_instr_anno(maps:remove(aliased, Anno), FuncAnno, Args)];
+format_instr_anno(#{unique:=Us}=Anno, FuncAnno, Args) ->
+    Break = "\n  %%    ",
+    ["  %% Unique:",
+     string:join([[Break, format_var(V)] || V <- Us], ", "), "\n",
+     format_instr_anno(maps:remove(unique, Anno), FuncAnno, Args)];
+format_instr_anno(Anno, _FuncAnno, _Args) ->
+    format_instr_anno_1(Anno).
+
+format_instr_anno_1(Anno) ->
     case map_size(Anno) of
         0 ->
             [];
         _ ->
-            [io_lib:format("  %% Anno: ~p\n", [Anno])]
+            [io_lib:format("  %% Anno: ~kp\n", [Anno])]
     end.
 
 format_live_interval(#b_var{}=Dst, #{live_intervals:=Intervals}) ->
     case Intervals of
         #{Dst:=Rs0} ->
             Rs1 = [io_lib:format("~p..~p", [Start,End]) ||
-                      {Start,End} <- Rs0],
+                      {Start,End} <:- Rs0],
             Rs = lists:join(" ", Rs1),
             io_lib:format("  %% ~ts: ~s\n", [format_var_1(Dst),Rs]);
         #{} ->
@@ -274,3 +308,149 @@ format_live_interval(#b_var{}=Dst, #{live_intervals:=Intervals}) ->
     end;
 format_live_interval(_, _) -> [].
 
+-spec format_type(beam_types:type()) -> iolist().
+
+format_type(any) ->
+    "any()";
+format_type(#t_atom{elements=any}) ->
+    "atom()";
+format_type(#t_atom{elements=Es}) ->
+    string:join([io_lib:format("'~p'", [E])
+                 || E <- ordsets:to_list(Es)], " | ");
+format_type(#t_bs_matchable{tail_unit=U}) ->
+    io_lib:format("bs_matchable(~p)", [U]);
+format_type(#t_bitstring{size_unit=S,appendable=true}) ->
+    io_lib:format("bitstring(~p,appendable)", [S]);
+format_type(#t_bitstring{size_unit=S}) ->
+    io_lib:format("bitstring(~p)", [S]);
+format_type(#t_bs_context{tail_unit=U}) ->
+    io_lib:format("bs_context(~p)", [U]);
+format_type(#t_fun{arity=any,type=any}) ->
+    "fun()";
+format_type(#t_fun{arity=any,type=T}) ->
+    ["fun((...) -> ", format_type(T), ")"];
+format_type(#t_fun{arity=A,type=any}) ->
+    ["fun((", format_fun_args(A), "))"];
+format_type(#t_fun{arity=A,type=T}) ->
+    ["fun((", format_fun_args(A), ") -> ", format_type(T), ")"];
+format_type(#t_map{super_key=any,super_value=any}) ->
+    "map()";
+format_type(#t_map{super_key=none,super_value=none}) ->
+    "#{}";
+format_type(#t_map{super_key=K,super_value=V}) ->
+    ["#{", format_type(K), "=>", format_type(V), "}"];
+format_type(#t_float{elements=any}) ->
+    "float()";
+format_type(#t_float{elements={X,X}}) ->
+    io_lib:format("~p", [X]);
+format_type(#t_float{elements={Low,High}}) ->
+    io_lib:format("~p..~p", [Low,High]);
+format_type(#t_integer{elements=any}) ->
+    "integer()";
+format_type(#t_integer{elements={X,X}}) ->
+    io_lib:format("~p", [X]);
+format_type(#t_integer{elements={Low,High}}) ->
+    io_lib:format("~p..~p", [Low,High]);
+format_type(#t_number{elements=any}) ->
+    "number()";
+format_type(#t_number{elements={X,X}}) ->
+    io_lib:format("number(~p)", [X]);
+format_type(#t_number{elements={Low,High}}) ->
+    io_lib:format("number(~p, ~p)", [Low,High]);
+format_type(#t_list{type=ET,terminator=nil}) ->
+    ["list(", format_type(ET), ")"];
+format_type(#t_list{type=ET,terminator=TT}) ->
+    ["maybe_improper_list(", format_type(ET), ", ", format_type(TT), ")"];
+format_type(#t_cons{type=ET,terminator=nil}) ->
+    ["nonempty_list(", format_type(ET), ")"];
+format_type(#t_cons{type=ET,terminator=TT}) ->
+    ["nonempty_improper_list(", format_type(ET), ", ", format_type(TT), ")"];
+format_type(nil) ->
+    "nil()";
+format_type(#t_record{name=Name0,type=Es}) ->
+    NameStr = case Name0 of
+                  {Mod,Name} when is_atom(Mod), is_atom(Name) ->
+                      io_lib:format("~ts:~ts", [Mod,Name]);
+                  nil ->
+                      "_"
+              end,
+    ["#",NameStr,"{",
+     string:join(format_record_elems(Es), ", "),
+     "}"];
+format_type(#t_tuple{elements=Es,exact=Ex,size=S}) ->
+    ["{",
+     string:join(format_tuple_elems(S, Ex, Es, 1), ", "),
+     "}"];
+format_type(other) ->
+    "other()";
+format_type(pid) ->
+    "pid()";
+format_type(port) ->
+    "port()";
+format_type(reference) ->
+    "reference()";
+format_type(identifier) ->
+    "identifier()";
+format_type(none) ->
+    "none()";
+format_type(#t_union{atom=A,list=L,number=N,tuple_set=Ts,
+                     native_record_set=Rs,other=O}) ->
+    Es = case A of
+             none -> [];
+             _ -> [format_type(A)]
+         end
+        ++ case L of
+               none -> [];
+               _ -> [format_type(L)]
+           end
+        ++ case N of
+               none -> [];
+               _ -> [format_type(N)]
+           end
+        ++ case Ts of
+               none -> [];
+               _ -> [format_tuple_set(Ts)]
+           end
+        ++ case Rs of
+               none -> [];
+               _ -> [format_native_record_set(Rs)]
+           end
+        ++ case O of
+               none -> [];
+               _ -> [format_type(O)]
+           end,
+    string:join(Es, " | ").
+
+format_fun_args(A) ->
+    string:join(lists:duplicate(A, "_"), ", ").
+
+format_tuple_elems(Size, true, _Elems, Idx) when Idx > Size ->
+    [];
+format_tuple_elems(Size, false, _Elems, Idx) when Idx > Size ->
+    ["..."];
+format_tuple_elems(Size, Exact, Elems, Idx) ->
+    T = case Elems of
+            #{ Idx := Ty} -> Ty;
+            _ -> any
+        end,
+    [format_type(T)|format_tuple_elems(Size, Exact, Elems, Idx + 1)].
+
+format_record_elems(Es) ->
+    [io_lib:format("~p:~tw=~ts", [Tag,Key,format_type(Type)]) ||
+        Key := {Tag, Type} <:- Es].
+
+format_tuple_set(#t_tuple{}=T) ->
+    format_type(T);
+format_tuple_set(RecordSet) ->
+    string:join([format_tuple_set_1(T) || T <- ordsets:to_list(RecordSet)],
+                " | ").
+
+format_tuple_set_1({{Arity,Key},#t_tuple{size=Arity,elements=Elems}=Tuple}) ->
+    false = none =:= beam_types:meet(Key, map_get(1, Elems)), % Assertion
+    format_type(Tuple).
+
+format_native_record_set(#t_record{}=R) ->
+    format_type(R);
+format_native_record_set(RecordSet) ->
+    string:join([format_type(R) || R <- ordsets:to_list(RecordSet)],
+                " | ").

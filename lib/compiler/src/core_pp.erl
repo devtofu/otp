@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1999-2018. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1999-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,13 +16,13 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 %% Purpose : Core Erlang (naive) prettyprinter
 
 -module(core_pp).
-
+-moduledoc false.
 -export([format/1,format_all/1]).
 
 -include("core_parse.hrl").
@@ -61,7 +63,11 @@ maybe_anno(Node, Fun, #ctxt{clean=true}=Ctxt) ->
 	    maybe_anno(Node, Fun, Ctxt, As0);
   	Line ->
 	    As = strip_line(As0),
-	    if Line > Ctxt#ctxt.line ->
+            NeedsAnno = needs_line_anno(Node),
+	    if
+                NeedsAnno ->
+                    maybe_anno(Node, Fun, Ctxt, As0);
+                Line > Ctxt#ctxt.line ->
 		    [io_lib:format("%% Line ~w",[Line]),
 		     nl_indent(Ctxt),
 		     maybe_anno(Node, Fun, Ctxt#ctxt{line = Line}, As)
@@ -69,6 +75,14 @@ maybe_anno(Node, Fun, #ctxt{clean=true}=Ctxt) ->
 		true ->
 		    maybe_anno(Node, Fun, Ctxt, As)
 	    end
+    end.
+
+needs_line_anno(Node) ->
+    case (cerl:is_c_primop(Node) andalso
+          cerl:concrete(cerl:primop_name(Node))) of
+        debug_line -> true;
+        executable_line -> true;
+        _ -> false
     end.
 
 maybe_anno(Node, Fun, Ctxt, []) ->
@@ -134,11 +148,10 @@ format_1(#c_literal{anno=A,val=Bitstring}, Ctxt) when is_bitstring(Bitstring) ->
     Segs = segs_from_bitstring(Bitstring),
     format_1(#c_binary{anno=A,segments=Segs}, Ctxt);
 format_1(#c_literal{anno=A,val=M},Ctxt) when is_map(M) ->
-    Pairs = maps:to_list(M),
     Op = #c_literal{val=assoc},
     Cpairs = [#c_map_pair{op=Op,
 			  key=#c_literal{val=K},
-			  val=#c_literal{val=V}} || {K,V} <- Pairs],
+			  val=#c_literal{val=V}} || K := V <- M],
     format_1(#c_map{anno=A,arg=#c_literal{val=#{}},es=Cpairs},Ctxt);
 format_1(#c_literal{val=F},_Ctxt) when is_function(F) ->
     {module,M} = erlang:fun_info(F, module),
@@ -200,6 +213,22 @@ format_1(#c_map{arg=Var,es=Es}, Ctxt) ->
      "|",format(Var, add_indent(Ctxt, 1)),
      "}~"
     ];
+%% Native Record Pattern
+format_1(#c_record{arg=#c_literal{val=ok}, id = Id, es = Es}, Ctxt) ->
+    ["~#" ++ format_record_id(Id) ++ "{",
+     format_hseq(Es, ",", add_indent(Ctxt, 1), fun format/2),
+     "}"];
+%% Native Record Expression
+format_1(#c_record{arg=#c_literal{val=empty}, id = Id, es = Es}, Ctxt) ->
+    ["~#" ++ format_record_id(Id) ++ "{",
+     format_hseq(Es, ",", add_indent(Ctxt, 1), fun format/2),
+     "}"];
+format_1(#c_record{arg=Arg, id = Id, es = Es}, Ctxt) ->
+    ["~" ++ format(Arg, add_indent(Ctxt, 1)) ++ "#" ++ format_record_id(Id) ++ "{",
+     format_hseq(Es, ",", add_indent(Ctxt, 1), fun format/2),
+     "}"];
+format_1(#c_record_pair{key=K,val=V}, Ctxt) ->
+    format_record_pair("=", K, V, Ctxt);
 format_1(#c_map_pair{op=#c_literal{val=assoc},key=K,val=V}, Ctxt) ->
     format_map_pair("=>", K, V, Ctxt);
 format_1(#c_map_pair{op=#c_literal{val=exact},key=K,val=V}, Ctxt) ->
@@ -359,7 +388,9 @@ format_1(#c_module{name=N,exports=Es,attrs=As,defs=Ds}, Ctxt) ->
      format_funcs(Ds, Ctxt),
      nl_indent(Ctxt)
      | "end"
-    ].
+    ];
+format_1(#c_opaque{val=V}, Ctxt) ->
+    ["%% Opaque: ", format_1(#c_literal{val=V}, Ctxt)].
 
 format_funcs(Fs, Ctxt) ->
     format_vseq(Fs,
@@ -375,7 +406,13 @@ format_def({N,V}, Ctxt0) ->
      | format(V, Ctxt1)
     ].
 
-    
+format_record_id(#c_literal{val={M, N}}) ->
+    core_atom(M) ++ ":" ++ core_atom(N);
+format_record_id(#c_literal{val=[]}) ->
+    "/";
+format_record_id(#c_literal{val=Name}) when is_atom(Name) ->
+    core_atom(Name).
+
 format_values(Vs, Ctxt) ->
     [$<,
      format_hseq(Vs, ",", add_indent(Ctxt, 1), fun format/2),
@@ -463,6 +500,12 @@ format_list_tail(Tail, Ctxt) ->
     ["|",format(Tail, add_indent(Ctxt, 1)),"]"].
 
 format_map_pair(Op, K, V, Ctxt0) ->
+    Ctxt1 = add_indent(Ctxt0, 1),
+    Txt = format(K, Ctxt1),
+    Ctxt2 = add_indent(Ctxt0, width(Txt, Ctxt1)),
+    [Txt,Op,format(V, Ctxt2)].
+
+format_record_pair(Op, K, V, Ctxt0) ->
     Ctxt1 = add_indent(Ctxt0, 1),
     Txt = format(K, Ctxt1),
     Ctxt2 = add_indent(Ctxt0, width(Txt, Ctxt1)),

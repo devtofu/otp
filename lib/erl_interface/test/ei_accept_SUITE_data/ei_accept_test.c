@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 2001-2020. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2001-2025. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,7 +16,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * %CopyrightEnd%
  */
 
@@ -126,9 +128,9 @@ static void cmd_ei_connect_init(char* buf, int len)
     if (ei_decode_atom_as(buf, &index, socket_impl, sizeof(socket_impl),
                           ERLANG_ASCII, NULL, NULL) < 0)
 	fail("expected atom (socket_impl)");
-    if (strcmp(socket_impl,"default") == 0)
+    if (my_strcmp(socket_impl,"default") == 0)
         r = ei_connect_init(&ec, node_name, cp, creation);
-    else if (strcmp(socket_impl,"ussi") == 0)
+    else if (my_strcmp(socket_impl,"ussi") == 0)
         r = ei_connect_init_ussi(&ec, node_name, cp, creation,
                                  &my_ussi, sizeof(my_ussi), NULL);
     else
@@ -198,10 +200,13 @@ static void cmd_ei_accept(char* buf, int len)
 
 static void cmd_ei_receive(char* buf, int len)
 {
+    static int call_cnt = 0;
     ei_x_buff x;
     erlang_msg msg;
     long l;
     int fd, index = 0;
+
+    call_cnt++;
     
     if (ei_decode_long(buf, &index, &l) < 0)
 	fail("expected int (fd)");
@@ -215,6 +220,22 @@ static void cmd_ei_receive(char* buf, int len)
 	    fail1("ei_xreceive_msg, got==%d", got);
 	break;
     }
+
+    {
+        int index = 0;
+        int skip_ret;
+
+        if (ei_decode_version(x.buff, &index, NULL) != 0)
+            fail("ei_decode_version failed");
+
+        skip_ret = ei_skip_term(x.buff, &index);
+        if (skip_ret != 0)
+            fail1("ei_skip_term returned %d", skip_ret);
+        if (index != x.index )
+            fail3("ei_skip_term length mismatch %d != %d (call_cnt=%d)\n",
+                  index, x.index, call_cnt);
+    }
+
     index = 1;
     send_bin_term(&x);
     ei_x_free(&x);

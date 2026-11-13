@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1998-2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1998-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,6 +23,7 @@
 %%
 
 -module(ssl_dist_connection_sup).
+-moduledoc false.
 
 -behaviour(supervisor).
 
@@ -35,27 +38,29 @@
 %%%=========================================================================
 
 -spec start_link() -> {ok, pid()} | ignore | {error, term()}.
-			
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 %%%=========================================================================
 %%%  Supervisor callback
 %%%=========================================================================
-init([]) ->    
-    TLSSup = tls_sup_child_spec(),
-    {ok, {{one_for_one, 10, 3600}, [TLSSup]}}.
+init([]) ->
+    SupFlags = #{strategy  => one_for_one,
+                 intensity =>   10,
+                 period    => 3600
+                },
+    ChildSpecs = [tls_sup_child_spec()],
+    {ok, {SupFlags, ChildSpecs}}.
 
-    
 %%--------------------------------------------------------------------
 %%% Internal functions
 %%--------------------------------------------------------------------
 
 tls_sup_child_spec() ->
-    Name = dist_tls_sup,  
-    StartFunc = {tls_dist_sup, start_link, []},
-    Restart = permanent, 
-    Shutdown = 4000,
-    Modules = [tls_dist_sup],
-    Type = supervisor,
-    {Name, StartFunc, Restart, Shutdown, Type, Modules}.
+    #{id       => tls_dist_sup,
+      start    => {tls_dist_sup, start_link, []},
+      restart  => permanent,
+      shutdown => infinity,
+      modules  => [tls_dist_sup],
+      type     => supervisor
+     }.

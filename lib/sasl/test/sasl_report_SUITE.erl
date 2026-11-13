@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2015-2019. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2015-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -95,12 +97,8 @@ gen_server_crash(Config, Encoding, FormatterOpts, Min, Max) ->
     ok = file:write_file(ConfigFileName ++ ".config",
                          io_lib:format("[{kernel, ~p},~n{sasl, ~p}].",
                                        [KernelConfig,SaslConfig])),
-    {ok,Node} =
-        test_server:start_node(
-          TC, peer,
-          [{args, ["-pa ",filename:dirname(code:which(?MODULE)),
-                   " -boot start_sasl -kernel start_timer true "
-                   "-config ",ConfigFileName]}]),
+    {ok,Peer,Node} = ?CT_PEER(["-boot", "start_sasl", "-kernel", "start_timer", "true",
+                   "-config", ConfigFileName]),
 
     %% Set depth or chars_limit.
     ok = rpc:call(Node,logger,update_formatter_config,[default,FormatterOpts]),
@@ -126,7 +124,7 @@ gen_server_crash(Config, Encoding, FormatterOpts, Min, Max) ->
     ok = rpc:call(Node,logger_std_h,filesync,[default]),
     ok = rpc:call(Node,logger_std_h,filesync,[sasl]),
 
-    test_server:stop_node(Node),
+    peer:stop(Peer),
     ok = logger:remove_primary_filter(no_remote),
 
     check_file(KernelLog, utf8, Min, Max),
@@ -192,10 +190,10 @@ check_file(File, Encoding, Min, Max) ->
     if
 	Sz < Min ->
 	    %% Truncated? Other problem?
-	    ?t:fail({too_short,Base});
+	    ct:fail({too_short,Base});
 	Sz > Max ->
 	    %% Truncation doesn't work?
-	    ?t:fail({too_big,Base});
+	    ct:fail({too_big,Base});
 	true ->
 	    ok
     end.

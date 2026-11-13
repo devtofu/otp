@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2020-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,6 +21,7 @@
 %%
 
 -module(erl_stdlib_errors).
+-moduledoc false.
 -export([format_error/2]).
 
 -spec format_error(Reason, StackTrace) -> ErrorMap when
@@ -26,7 +29,7 @@
       StackTrace :: erlang:stacktrace(),
       ErrorMap :: #{pos_integer() => unicode:chardata()}.
 
-format_error(_Reason, [{M,F,As,Info}|_]) ->
+format_error(Reason, [{M,F,As,Info}|_]) ->
     ErrorInfoMap = proplists:get_value(error_info, Info, #{}),
     Cause = maps:get(cause, ErrorInfoMap, none),
     Res = case M of
@@ -46,6 +49,8 @@ format_error(_Reason, [{M,F,As,Info}|_]) ->
                   format_unicode_error(F, As);
               io ->
                   format_io_error(F, As, Cause);
+              json ->
+                  format_json_error(F, As, Reason, Cause);
               _ ->
                   []
           end,
@@ -73,10 +78,17 @@ format_binary_error(encode_unsigned, [Subject, Endianness], _) ->
     [must_be_non_neg_integer(Subject), must_be_endianness(Endianness)];
 format_binary_error(encode_hex, [Subject], _) ->
     [must_be_binary(Subject)];
+format_binary_error(encode_hex, [Subject, Case], _) ->
+    [must_be_binary(Subject), must_be_hex_case(Case)];
 format_binary_error(decode_hex, [Subject], _) ->
     if
-        is_binary(Subject), byte_size(Subject) rem 2 == 1 ->
-            ["must contain an even number of bytes"];
+        is_binary(Subject) ->
+            if
+                byte_size(Subject) rem 2 =:= 1 ->
+                    [<<"must contain an even number of bytes">>];
+                true ->
+                    [<<"must only contain hex digits 0-9, A-F, and a-f">>]
+            end;
         true ->
             [must_be_binary(Subject)]
     end;
@@ -92,6 +104,20 @@ format_binary_error(last, [Subject], _) ->
          <<>> -> empty_binary;
         _ -> must_be_binary(Subject)
      end];
+format_binary_error(join, [Binaries,Separator], _) ->
+    case must_be_binary(Separator) of
+        [] when is_list(Binaries) ->
+            case must_be_list(Binaries) of
+                [] ->
+                    [~"not a list of binaries", []];
+                Error ->
+                    [Error, []]
+            end;
+        [] ->
+            [must_be_list(Binaries), []];
+        Error ->
+            [[], Error]
+    end;
 format_binary_error(list_to_bin, [_], _) ->
     [not_iodata];
 format_binary_error(longest_common_prefix, [_], _) ->
@@ -155,7 +181,7 @@ format_binary_error(split, [Subject, Pattern, _Options], _) ->
 format_binary_error(replace, [Subject, Pattern, Replacement], _) ->
     [must_be_binary(Subject),
      must_be_pattern(Pattern),
-     must_be_binary(Replacement)];
+     must_be_binary_replacement(Replacement)];
 format_binary_error(replace, [Subject, Pattern, Replacement, _Options], Cause) ->
     Errors = format_binary_error(replace, [Subject, Pattern, Replacement], Cause),
     case Cause of
@@ -189,7 +215,20 @@ format_lists_error(keysearch, Args) ->
 format_lists_error(member, [_Key, List]) ->
     [[], must_be_list(List)];
 format_lists_error(reverse, [List, _Acc]) ->
-    [must_be_list(List)].
+    [must_be_list(List)];
+format_lists_error(seq, [First, Last, Inc]) ->
+    case [must_be_integer(First), must_be_integer(Last), must_be_integer(Inc)] of
+        [[], [], []] ->
+            IncError = if
+                (Inc =< 0 andalso First - Inc =< Last) ->
+                    <<"not a positive increment">>;
+                (Inc >= 0 andalso First - Inc >= Last) ->
+                    <<"not a negative increment">>
+            end,
+            [[], [], IncError];
+        Errors -> Errors
+    end.
+
 
 format_maps_error(filter, Args) ->
     format_maps_error(map, Args);
@@ -205,16 +244,29 @@ format_maps_error(from_keys, [List, _]) ->
     [must_be_list(List)];
 format_maps_error(from_list, [List]) ->
     [must_be_list(List)];
-format_maps_error(get, _Args) ->
-    [[], not_map];
+format_maps_error(get, [_Key,Map]) ->
+    if
+        is_map(Map) ->
+            [<<"not present in map">>];
+        true ->
+            [[],not_map]
+    end;
+format_maps_error(groups_from_list, [Fun, List]) ->
+    [must_be_fun(Fun, 1), must_be_list(List)];
+format_maps_error(groups_from_list, [Fun1, Fun2, List]) ->
+    [must_be_fun(Fun1, 1), must_be_fun(Fun2, 1), must_be_list(List)];
+format_maps_error(get, [_,_,_]) ->
+    [[],not_map];
 format_maps_error(intersect, [Map1, Map2]) ->
     [must_be_map(Map1), must_be_map(Map2)];
 format_maps_error(intersect_with, [Combiner, Map1, Map2]) ->
     [must_be_fun(Combiner, 3), must_be_map(Map1), must_be_map(Map2)];
 format_maps_error(is_key, _Args) ->
     [[], not_map];
-format_maps_error(iterator, _Args) ->
-    [not_map];
+format_maps_error(iterator, [Map]) ->
+    [must_be_map(Map)];
+format_maps_error(iterator, [Map, Order]) ->
+    [must_be_map(Map), must_be_map_iterator_order(Order)];
 format_maps_error(keys, _Args) ->
     [not_map];
 format_maps_error(map, [Pred, Map]) ->
@@ -223,10 +275,10 @@ format_maps_error(merge, [Map1, Map2]) ->
     [must_be_map(Map1), must_be_map(Map2)];
 format_maps_error(merge_with, [Combiner, Map1, Map2]) ->
     [must_be_fun(Combiner, 3), must_be_map(Map1), must_be_map(Map2)];
-format_maps_error(put, _Args) ->
-    [[], [], not_map];
 format_maps_error(next, _Args) ->
     [bad_iterator];
+format_maps_error(put, _Args) ->
+    [[], [], not_map];
 format_maps_error(remove, _Args) ->
     [[], not_map];
 format_maps_error(size, _Args) ->
@@ -234,7 +286,10 @@ format_maps_error(size, _Args) ->
 format_maps_error(take, _Args) ->
     [[], not_map];
 format_maps_error(to_list, _Args) ->
-    [not_map];
+    [not_map_or_iterator];
+format_maps_error(update, [Key, _Value, Map]) when is_map(Map) ->
+    false = is_map_key(Key, Map),               %Assertion.
+    [<<"not present in map">>, [], []];
 format_maps_error(update, _Args) ->
     [[], [], not_map];
 format_maps_error(update_with, [_Key, Fun, Map]) ->
@@ -289,7 +344,9 @@ format_re_error(compile, [_], _) ->
     [not_iodata];
 format_re_error(compile, [Re, _Options], Cause) ->
     ReError = try re:compile(Re) of
-                  _ -> []
+                  {ok, _} -> [];
+                  {error, Reason} ->
+                      {bad_regexp, Reason}
               catch
                   _:_ -> not_iodata
               end,
@@ -311,14 +368,16 @@ format_re_error(inspect, [CompiledRE, Item], _) ->
         true ->
             [ReError]
     end;
+format_re_error(import, [_], _) ->
+    [~"not an exported regular expression"];
 format_re_error(replace, [Subject, RE, Replacement], _) ->
     [must_be_iodata(Subject),
      must_be_regexp(RE),
-     must_be_iodata(Replacement)];
+     must_be_re_replacement(Replacement)];
 format_re_error(replace, [Subject, RE, Replacement, _Options], Cause) ->
     Errors = [must_be_iodata(Subject),
               must_be_regexp(RE),
-              must_be_iodata(Replacement)],
+              must_be_re_replacement(Replacement)],
     case Cause of
         badopt ->
             Errors ++ [bad_options];
@@ -369,10 +428,24 @@ format_unicode_error(characters_to_nfkc_list, [_]) ->
 format_unicode_error(characters_to_nfkd_binary, [_]) ->
     [bad_char_data];
 format_unicode_error(characters_to_nfkd_list, [_]) ->
-    [bad_char_data].
+    [bad_char_data];
+format_unicode_error(category, [_]) ->
+    [bad_char];
+format_unicode_error(is_whitespace, [_]) ->
+    [bad_char];
+format_unicode_error(is_id_start, [_]) ->
+    [bad_char];
+format_unicode_error(is_id_continue, [_]) ->
+    [bad_char].
 
 unicode_char_data(Chars) ->
     try unicode:characters_to_binary(Chars) of
+        {error,_,_} ->
+            bad_char_data;
+
+        {incomplete,_,_} ->
+            bad_char_data;
+
         _ ->
             []
     catch
@@ -417,6 +490,11 @@ format_io_error(_, _, {io, arguments}, true) ->
     [device_arguments];
 format_io_error(_, _, {io, arguments}, false) ->
     [{general,device_arguments}];
+%% calling_self, Io =:= self()
+format_io_error(_, _, {io, calling_self}, true) ->
+    [calling_self];
+format_io_error(_, _, {io, calling_self}, false) ->
+    [{general,calling_self}];
 %% terminated, monitor(Io) failed
 format_io_error(_, _, {io, terminated}, true) ->
     [device_terminated];
@@ -469,7 +547,7 @@ format_io_error_cause(_, _, _, _HasDevice) ->
 
 maybe_posix_message(Cause, HasDevice) ->
     case erl_posix_msg:message(Cause) of
-        "unknown POSIX error" ->
+        "unknown POSIX error" ++ _ ->
             unknown;
         PosixStr when HasDevice ->
             [io_lib:format("~ts (~tp)",[PosixStr, Cause])];
@@ -483,7 +561,7 @@ check_io_format([Fmt, Args], Cause) ->
     case is_io_format(Fmt) of
         false ->
             [invalid_format, must_be_list(Args)] ++
-                case (is_pid(Fmt) or is_atom(Fmt)) and is_io_format(Args) of
+                case (is_pid(Fmt) orelse is_atom(Fmt)) andalso is_io_format(Args) of
                     true ->
                         %% The user seems to have called io:format(Dev,"string").
                         [{general,missing_argument_list}];
@@ -493,7 +571,7 @@ check_io_format([Fmt, Args], Cause) ->
         _ when not is_list(Args) ->
                 [[],must_be_list(Args)];
         true ->
-            case erl_lint:check_format_string(Fmt) of
+            case erl_lint:check_format_string(Fmt, false) of
                 {error,S} ->
                     [io_lib:format("format string invalid (~ts)",[S])];
                 {ok,ArgTypes} when length(ArgTypes) =/= length(Args) ->
@@ -540,6 +618,11 @@ check_io_arguments([], [], _No) ->
     [];
 check_io_arguments([Type|TypeT], [Arg|ArgT], No) ->
     case Type of
+	'fun' when Arg =:= undefined; Arg =:= ordered; Arg =:= reversed; is_function(Arg, 2) ->
+	    check_io_arguments(TypeT, ArgT, No+1);
+	'fun' ->
+	    [io_lib:format("element ~B must be 'undefined', 'ordered', 'reversed', or a fun that takes two arguments", [No]) |
+	     check_io_arguments(TypeT, ArgT, No+1)];
         float when is_float(Arg) ->
             check_io_arguments(TypeT, ArgT, No+1);
         int when is_integer(Arg) ->
@@ -563,6 +646,18 @@ check_io_arguments([Type|TypeT], [Arg|ArgT], No) ->
             [io_lib:format("element ~B must be of type ~p", [No, Type]) |
              check_io_arguments(TypeT, ArgT, No+1)]
     end.
+
+format_json_error(_F, _As, {invalid_byte, Int}, #{position := Position}) ->
+    Str = if 32 =< Int, Int < 127 ->
+                  io_lib:format("invalid byte 16#~2.16.0B '~c' at byte position ~w",
+                                [Int, Int, Position]);
+             true ->
+                  io_lib:format("invalid byte 16#~2.16.0B at byte position ~w",
+                                [Int, Position])
+          end,
+    [{general, Str}];
+format_json_error(_, _, _, _) ->
+    [""].
 
 format_ets_error(delete_object, Args, Cause) ->
     format_object(Args, Cause);
@@ -604,6 +699,9 @@ format_ets_error(lookup_element, [_,_,Pos]=Args, Cause) ->
                     [TabCause, "", PosCause]
             end
     end;
+format_ets_error(lookup_element, [Tab, Key, Pos, _Default], Cause) ->
+    % The default argument cannot cause an error.
+    format_ets_error(lookup_element, [Tab, Key, Pos], Cause);
 format_ets_error(match, [_], _Cause) ->
     [bad_continuation];
 format_ets_error(match, [_,_,_]=Args, Cause) ->
@@ -616,19 +714,25 @@ format_ets_error(match_spec_compile, [_], _Cause) ->
     [bad_matchspec];
 format_ets_error(next, Args, Cause) ->
     format_default(bad_key, Args, Cause);
-format_ets_error(new, [Name,Options], _Cause) ->
+format_ets_error(next_lookup, Args, Cause) ->
+    format_default(bad_key, Args, Cause);
+format_ets_error(new, [Name,Options], Cause) ->
     NameError = if
                     is_atom(Name) -> [];
                     true -> not_atom
                 end,
     OptsError = must_be_list(Options),
-    case {NameError,OptsError} of
-        {[],[]} ->
-            [[],bad_options];
-        {_,_} ->
-            [NameError,OptsError]
+    case {NameError, OptsError, Cause} of
+        {[], [], already_exists} ->
+            [name_already_exists, []];
+        {[], [], _} ->
+            [[], bad_options];
+        {_, _, _} ->
+            [NameError, OptsError]
     end;
 format_ets_error(prev, Args, Cause) ->
+    format_default(bad_key, Args, Cause);
+format_ets_error(prev_lookup, Args, Cause) ->
     format_default(bad_key, Args, Cause);
 format_ets_error(rename, [_,NewName]=Args, Cause) ->
     case [format_cause(Args, Cause),
@@ -694,7 +798,7 @@ format_ets_error(update_counter, [_,_,UpdateOp,Default]=Args, Cause) ->
         "" ->
             %% The table is OK. The error is in one or more of the
             %% other arguments.
-            TupleCause = format_tuple(Default),
+            TupleCause = format_default_tuple(Default, Cause),
             case Cause of
                 badkey ->
                     ["", bad_key, format_update_op(UpdateOp) | TupleCause];
@@ -721,6 +825,8 @@ format_ets_error(update_element, [_,_,ElementSpec]=Args, Cause) ->
      case Cause of
          keypos ->
              [same_as_keypos];
+	 position ->
+	     [update_op_range];
          _ ->
              case is_element_spec_top(ElementSpec) of
                  true ->
@@ -734,6 +840,27 @@ format_ets_error(update_element, [_,_,ElementSpec]=Args, Cause) ->
                      [<<"is not a valid element specification">>]
              end
      end];
+format_ets_error(update_element, [_, _, ElementSpec, Default]=Args, Cause) ->
+    TabCause = format_cause(Args, Cause),
+    ArgsCause = case Cause of
+		    keypos ->
+			 [same_as_keypos];
+		    position ->
+			[update_op_range];
+		    _ ->
+			case {is_element_spec_top(ElementSpec),
+                              format_default_tuple(Default, Cause)} of
+			    {true, [""]} ->
+				[range];
+			    {true, TupleCause} ->
+				["" | TupleCause];
+			    {false, [""]} ->
+				[<<"is not a valid element specification">>];
+			    {false, TupleCause} ->
+				["" | TupleCause]
+			end
+		end,
+    [TabCause, "" | ArgsCause];
 format_ets_error(whereis, _Args, _Cause) ->
     [bad_table_name];
 format_ets_error(_, Args, Cause) ->
@@ -776,6 +903,11 @@ format_non_negative_integer(N) ->
 
 format_object([_,Object|_]=Args, Cause) ->
     [format_cause(Args, Cause) | format_tuple(Object)].
+
+format_default_tuple(Tuple, default) when is_tuple(Tuple) ->
+    [<<"default tuple too small">>];
+format_default_tuple(Term, _Cause) ->
+    format_tuple(Term).
 
 format_tuple(Term) ->
     if tuple_size(Term) > 0 -> [""];
@@ -826,6 +958,8 @@ format_cause(Args, Cause) ->
         owner ->
             "";
         not_owner ->
+            "";
+        default ->
             ""
     end.
 
@@ -858,6 +992,15 @@ is_update_op({Pos, Incr, Threshold, SetValue})
 is_update_op(Incr) ->
     is_integer(Incr).
 
+is_iodata(<<_/binary>>) -> true;
+is_iodata(Term) when is_list(Term) ->
+    try iolist_size(Term) of
+        _ -> true
+    catch
+        error:_ -> false
+    end;
+is_iodata(_) -> false.
+
 format_error_map([""|Es], ArgNum, Map) ->
     format_error_map(Es, ArgNum + 1, Map);
 format_error_map([{general, E}|Es], ArgNum, Map) ->
@@ -873,6 +1016,10 @@ must_be_binary(Bin) ->
 must_be_binary(Bin, Error) when is_binary(Bin) -> Error;
 must_be_binary(Bin, _Error) when is_bitstring(Bin) -> bitstring;
 must_be_binary(_, _) -> not_binary.
+
+must_be_hex_case(uppercase) -> [];
+must_be_hex_case(lowercase) -> [];
+must_be_hex_case(_) -> bad_hex_case.
 
 must_be_endianness(little) -> [];
 must_be_endianness(big) -> [];
@@ -900,10 +1047,9 @@ must_be_non_neg_integer(N) ->
     must_be_integer(N, 0, infinity).
 
 must_be_iodata(Term) ->
-    try iolist_size(Term) of
-        _ -> []
-    catch
-        error:_ -> not_iodata
+    case is_iodata(Term) of
+        true -> [];
+        false -> not_iodata
     end.
 
 must_be_list(List) when is_list(List) ->
@@ -920,14 +1066,21 @@ must_be_list(_) ->
 must_be_map(#{}) -> [];
 must_be_map(_) -> not_map.
 
+must_be_map_iterator_order(undefined) ->
+    [];
+must_be_map_iterator_order(ordered) ->
+    [];
+must_be_map_iterator_order(CmpFun) when is_function(CmpFun, 2) ->
+    [];
+must_be_map_iterator_order(_) ->
+    not_map_iterator_order.
+
 must_be_map_or_iter(Map) when is_map(Map) ->
     [];
 must_be_map_or_iter(Iter) ->
-    try maps:next(Iter) of
-        _ -> []
-    catch
-        error:_ ->
-            not_map_or_iterator
+    case maps:is_iterator_valid(Iter) of
+        true -> [];
+        false -> not_map_or_iterator
     end.
 
 must_be_number(N) ->
@@ -945,15 +1098,37 @@ must_be_pattern(P) ->
             bad_binary_pattern
     end.
 
+must_be_binary_replacement(R) when is_binary(R) -> [];
+must_be_binary_replacement(R) when is_function(R, 1) -> [];
+must_be_binary_replacement(_R) -> bad_replacement.
+
 must_be_position(Pos) when is_integer(Pos), Pos >= 0 -> [];
 must_be_position(Pos) when is_integer(Pos) -> range;
 must_be_position(_) -> not_integer.
 
 must_be_regexp(Term) ->
-    try re:run("", Term) of
-        _ -> []
-    catch
-        error:_ -> not_regexp
+    %% First check if we can compile the regexp as this
+    %% returns better error messages
+    try re:compile(Term) of
+        {ok, _} ->
+            [];
+        {error, Reason} ->
+            {bad_regexp, Reason}
+    catch error:_ ->
+            %% Then check if we can run it as this also allows
+            %% compiled reg exps
+            try re:run("", Term) of
+                _ -> []
+            catch
+                error:_ -> not_regexp
+            end
+    end.
+
+must_be_re_replacement(R) when is_function(R, 1) -> [];
+must_be_re_replacement(R) ->
+    case is_iodata(R) of
+        true -> [];
+        false -> bad_replacement
     end.
 
 expand_error(already_owner) ->
@@ -962,6 +1137,8 @@ expand_error(bad_boolean) ->
     <<"not a boolean value">>;
 expand_error(bad_binary_list) ->
     <<"not a flat list of binaries">>;
+expand_error(bad_char) ->
+    <<"not a valid character">>;
 expand_error(bad_char_data) ->
     <<"not valid character data (an iodata term)">>;
 expand_error(bad_binary_pattern) ->
@@ -982,12 +1159,16 @@ expand_error(bad_matchspec) ->
     <<"not a valid match specification">>;
 expand_error(bad_options) ->
     <<"invalid options">>;
+expand_error(bad_replacement) ->
+    <<"not a valid replacement">>;
 expand_error(bad_table_name) ->
     <<"invalid table name (must be an atom)">>;
 expand_error(bad_update_op) ->
     <<"not a valid update operation">>;
 expand_error(bitstring) ->
     <<"is a bitstring (expected a binary)">>;
+expand_error(calling_self) ->
+    <<"the device is not allowed to be the current process">>;
 expand_error(counter_not_integer) ->
     <<"the value in the given position, in the object, is not an integer">>;
 expand_error(dead_process) ->
@@ -1017,6 +1198,8 @@ expand_error(not_atom) ->
     <<"not an atom">>;
 expand_error(not_binary) ->
     <<"not a binary">>;
+expand_error(bad_hex_case) ->
+    <<"not 'uppercase' or 'lowercase'">>;
 expand_error(not_compiled_regexp) ->
     <<"not a compiled regular expression">>;
 expand_error(not_iodata) ->
@@ -1031,6 +1214,8 @@ expand_error(not_integer) ->
     <<"not an integer">>;
 expand_error(not_list) ->
     <<"not a list">>;
+expand_error(not_map_iterator_order) ->
+    <<"not 'undefined', 'ordered', 'reversed', or a fun that takes two arguments">>;
 expand_error(not_map_or_iterator) ->
     <<"not a map or an iterator">>;
 expand_error(not_number) ->
@@ -1045,6 +1230,11 @@ expand_error(not_pid) ->
     <<"not a pid">>;
 expand_error(not_regexp) ->
     <<"neither an iodata term nor a compiled regular expression">>;
+expand_error({bad_regexp, {Reason,Column}}) ->
+    unicode:characters_to_binary(
+      io_lib:format("could not parse regular expression~n"
+                    "~ts on character ~p",
+                    [Reason, Column]));
 expand_error(not_tuple) ->
     <<"not a tuple">>;
 expand_error(not_tuple_or_list) ->

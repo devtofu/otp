@@ -1,101 +1,95 @@
-// AsmJit - Machine code generation for C++
+// This file is part of AsmJit project <https://asmjit.com>
 //
-//  * Official AsmJit Home Page: https://asmjit.com
-//  * Official Github Repository: https://github.com/asmjit/asmjit
-//
-// Copyright (c) 2008-2020 The AsmJit Authors
-//
-// This software is provided 'as-is', without any express or implied
-// warranty. In no event will the authors be held liable for any damages
-// arising from the use of this software.
-//
-// Permission is granted to anyone to use this software for any purpose,
-// including commercial applications, and to alter it and redistribute it
-// freely, subject to the following restrictions:
-//
-// 1. The origin of this software must not be misrepresented; you must not
-//    claim that you wrote the original software. If you use this software
-//    in a product, an acknowledgment in the product documentation would be
-//    appreciated but is not required.
-// 2. Altered source versions must be plainly marked as such, and must not be
-//    misrepresented as being the original software.
-// 3. This notice may not be removed or altered from any source distribution.
+// See <asmjit/core.h> or LICENSE.md for license and copyright information
+// SPDX-License-Identifier: Zlib
 
 #ifndef ASMJIT_CORE_EMITTERUTILS_P_H_INCLUDED
 #define ASMJIT_CORE_EMITTERUTILS_P_H_INCLUDED
 
-#include "../core/emitter.h"
-#include "../core/operand.h"
+#include <asmjit/core/emitter.h>
+#include <asmjit/core/operand.h>
+#include <asmjit/support/support.h>
 
 ASMJIT_BEGIN_NAMESPACE
 
 class BaseAssembler;
+class FormatOptions;
 
 //! \cond INTERNAL
 //! \addtogroup asmjit_core
 //! \{
 
-// ============================================================================
-// [asmjit::EmitterUtils]
-// ============================================================================
-
+//! Utilities used by various emitters, mostly Assembler implementations.
 namespace EmitterUtils {
 
-static const Operand_ noExt[3] {};
+//! Default paddings used by Emitter utils and Formatter.
 
-enum kOpIndex {
+static constexpr Operand no_ext[3] = { {}, {}, {} };
+
+enum kOpIndex : uint32_t {
   kOp3 = 0,
   kOp4 = 1,
   kOp5 = 2
 };
 
-static ASMJIT_INLINE uint32_t opCountFromEmitArgs(const Operand_& o0, const Operand_& o1, const Operand_& o2, const Operand_* opExt) noexcept {
-  uint32_t opCount = 0;
+[[nodiscard]]
+static ASMJIT_INLINE uint32_t op_count_from_emit_args(const Operand_& o0, const Operand_& o1, const Operand_& o2, const Operand_* op_ext) noexcept {
+  uint32_t op_count = 0;
 
-  if (opExt[kOp3].isNone()) {
-    if (!o0.isNone()) opCount = 1;
-    if (!o1.isNone()) opCount = 2;
-    if (!o2.isNone()) opCount = 3;
+  if (op_ext[kOp3].is_none()) {
+    if (!o0.is_none()) op_count = 1;
+    if (!o1.is_none()) op_count = 2;
+    if (!o2.is_none()) op_count = 3;
   }
   else {
-    opCount = 4;
-    if (!opExt[kOp4].isNone()) {
-      opCount = 5 + uint32_t(!opExt[kOp5].isNone());
+    op_count = 4;
+    if (!op_ext[kOp4].is_none()) {
+      op_count = 5 + uint32_t(!op_ext[kOp5].is_none());
     }
   }
 
-  return opCount;
+  return op_count;
 }
 
-static ASMJIT_INLINE void opArrayFromEmitArgs(Operand_ dst[Globals::kMaxOpCount], const Operand_& o0, const Operand_& o1, const Operand_& o2, const Operand_* opExt) noexcept {
-  dst[0].copyFrom(o0);
-  dst[1].copyFrom(o1);
-  dst[2].copyFrom(o2);
-  dst[3].copyFrom(opExt[kOp3]);
-  dst[4].copyFrom(opExt[kOp4]);
-  dst[5].copyFrom(opExt[kOp5]);
+static ASMJIT_INLINE void op_array_from_emit_args(Operand_ dst[Globals::kMaxOpCount], const Operand_& o0, const Operand_& o1, const Operand_& o2, const Operand_* op_ext) noexcept {
+  dst[0].copy_from(o0);
+  dst[1].copy_from(o1);
+  dst[2].copy_from(o2);
+  dst[3].copy_from(op_ext[kOp3]);
+  dst[4].copy_from(op_ext[kOp4]);
+  dst[5].copy_from(op_ext[kOp5]);
+}
+
+[[nodiscard]]
+static bool ASMJIT_INLINE_NODEBUG is_encodable_offset_32(int32_t offset, uint32_t num_bits) noexcept {
+  uint32_t n_rev = 32 - num_bits;
+  return Support::sar(Support::shl(offset, n_rev), n_rev) == offset;
+}
+
+[[nodiscard]]
+static bool ASMJIT_INLINE_NODEBUG is_encodable_offset_64(int64_t offset, uint32_t num_bits) noexcept {
+  uint32_t n_rev = 64 - num_bits;
+  return Support::sar(Support::shl(offset, n_rev), n_rev) == offset;
 }
 
 #ifndef ASMJIT_NO_LOGGING
-enum : uint32_t {
-  // Has to be big to be able to hold all metadata compiler can assign to a
-  // single instruction.
-  kMaxInstLineSize = 44,
-  kMaxBinarySize = 26
-};
+Error finish_formatted_line(String& sb, const FormatOptions& format_options, const uint8_t* bin_data, size_t bin_size, size_t offset_size, size_t imm_size, const char* comment) noexcept;
 
-Error formatLine(String& sb, const uint8_t* binData, size_t binSize, size_t dispSize, size_t immSize, const char* comment) noexcept;
+void log_label_bound(BaseAssembler* self, const Label& label) noexcept;
 
-void logLabelBound(BaseAssembler* self, const Label& label) noexcept;
-
-void logInstructionEmitted(
+void log_instruction_emitted(
   BaseAssembler* self,
-  uint32_t instId, uint32_t options, const Operand_& o0, const Operand_& o1, const Operand_& o2, const Operand_* opExt,
-  uint32_t relSize, uint32_t immSize, uint8_t* afterCursor);
+  InstId inst_id,
+  InstOptions options,
+  const Operand_& o0, const Operand_& o1, const Operand_& o2, const Operand_* op_ext,
+  uint32_t rel_size, uint32_t imm_size, uint8_t* after_cursor);
 
-Error logInstructionFailed(
-  BaseAssembler* self,
-  Error err, uint32_t instId, uint32_t options, const Operand_& o0, const Operand_& o1, const Operand_& o2, const Operand_* opExt);
+Error log_instruction_failed(
+  BaseEmitter* self,
+  Error err,
+  InstId inst_id,
+  InstOptions options,
+  const Operand_& o0, const Operand_& o1, const Operand_& o2, const Operand_* op_ext);
 #endif
 
 }

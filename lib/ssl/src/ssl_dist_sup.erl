@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2011-2017. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2011-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,6 +23,7 @@
 %%
 
 -module(ssl_dist_sup).
+-moduledoc false.
 
 -behaviour(supervisor).
 
@@ -38,10 +41,9 @@
 %%%=========================================================================
 
 -spec start_link() -> {ok, pid()} | ignore | {error, term()}.
-			
 start_link() ->
     case init:get_argument(ssl_dist_optfile) of
-        {ok, [File]} ->
+        {ok, [[File]]} ->
             DistOpts = consult(File),
             TabOpts = [set, protected, named_table],
             Tab = ets:new(ssl_dist_opts, TabOpts),
@@ -57,35 +59,39 @@ start_link() ->
 %%%  Supervisor callback
 %%%=========================================================================
 
-init([]) ->    
-    AdminSup = ssl_admin_child_spec(),
-    ConnectionSup = ssl_connection_sup(),
-    {ok, {{one_for_all, 10, 3600}, [AdminSup, ConnectionSup]}}.
+init([]) ->
+    SupFlags = #{strategy  => one_for_all,
+                 intensity =>   10,
+                 period    => 3600
+                },
+    ChildSpecs = [ssl_admin_child_spec(),
+                  ssl_connection_sup()],
+    {ok, {SupFlags, ChildSpecs}}.
 
 %%--------------------------------------------------------------------
 %%% Internal functions
 %%--------------------------------------------------------------------
 ssl_admin_child_spec() ->
-    Name = ssl_dist_admin_sup,  
-    StartFunc = {ssl_dist_admin_sup, start_link , []},
-    Restart = permanent, 
-    Shutdown = 4000,
-    Modules = [ssl_dist_admin_sup],
-    Type = supervisor,
-    {Name, StartFunc, Restart, Shutdown, Type, Modules}.
+    #{id       => ssl_dist_admin_sup,
+      start    =>  {ssl_dist_admin_sup, start_link , []},
+      restart  => permanent,
+      shutdown => infinity,
+      modules  => [ssl_dist_admin_sup],
+      type     => supervisor
+     }.
 
 ssl_connection_sup() ->
-    Name = tls_dist_sup,
-    StartFunc = {tls_dist_sup, start_link, []},
-    Restart = permanent,
-    Shutdown = 4000,
-    Modules = [tls_dist_sup],
-    Type = supervisor,
-    {Name, StartFunc, Restart, Shutdown, Type, Modules}.
+    #{id       => tls_dist_sup,
+      start    => {tls_dist_sup, start_link, []},
+      restart  => permanent,
+      shutdown => infinity,
+      modules  => [tls_dist_sup],
+      type     => supervisor
+     }.
 
 consult(File) ->
-    case erl_prim_loader:get_file(File) of
-        {ok, Binary, _FullName} ->
+    case erl_prim_loader:read_file(File) of
+        {ok, Binary} ->
             Encoding =
                 case epp:read_encoding_from_binary(Binary) of
                     none -> latin1;

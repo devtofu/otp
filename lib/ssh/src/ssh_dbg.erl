@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2004-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2004-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -47,6 +49,7 @@
 %%%
 
 -module(ssh_dbg).
+-moduledoc false.
 
 -export([start/0, start/1, 
          stop/0,
@@ -113,7 +116,7 @@ start(IoFmtFun) when is_function(IoFmtFun,2) ; is_function(IoFmtFun,3) ->
 
 stop() ->
     try
-        dbg:stop_clear(),
+        dbg:stop(),
         gen_server:stop(?SERVER)
     catch
         _:_ -> ok
@@ -156,26 +159,26 @@ go_on() ->
     on(IsOn).
 
 %%%----------------------------------------------------------------
-shrink_bin(B) when is_binary(B), size(B)>256 -> {'*** SHRINKED BIN',
-						 size(B),
-						 element(1,split_binary(B,64)),
-						 '...',
-						 element(2,split_binary(B,size(B)-64))
-						};
+shrink_bin(B) when is_binary(B), byte_size(B)>256 -> {'*** SHRUNK BIN',
+                                              byte_size(B),
+                                              element(1,split_binary(B,64)),
+                                              '...',
+                                              element(2,split_binary(B,byte_size(B)-64))
+                                             };
 shrink_bin(L) when is_list(L) -> lists:map(fun shrink_bin/1, L);
 shrink_bin(T) when is_tuple(T) -> list_to_tuple(shrink_bin(tuple_to_list(T)));
 shrink_bin(X) -> X.
 
 %%%----------------------------------------------------------------    
-%% Replace any occurence of {Name,...}, with "#Name{}"
+%% Replace any occurrence of {Name,...}, with "#Name{}"
 reduce_state(T, RecordExample) ->
     Name = element(1, RecordExample),
-    Arity = size(RecordExample),
+    Arity = tuple_size(RecordExample),
     reduce_state(T, Name, Arity).
 
-%% Replace any occurence of {Name,...}, with "#Name{}"
+%% Replace any occurrence of {Name,...}, with "#Name{}"
 reduce_state(T, Name, Arity) when element(1,T) == Name,
-                                  size(T) == Arity ->
+                                  tuple_size(T) == Arity ->
     lists:concat(['#',Name,'{}']);
 reduce_state(L, Name, Arity) when is_list(L) ->
     [reduce_state(E,Name,Arity) || E <- L];
@@ -353,7 +356,7 @@ trace_pid(T) when element(1,T)==trace
 
 %% Pick last element, the Time Stamp, and format it
 trace_ts(T) when  element(1,T)==trace_ts ->
-    ts( element(size(T), T) ).
+    ts( element(tuple_size(T), T) ).
 
 %% Make a tuple of all elements but the 1st, 2nd and last
 trace_info(T) ->
@@ -400,7 +403,7 @@ try_all_types_in_all_modules(TypesOn, Arg, WriteFun, Acc0) ->
                                     catch
                                         _:_ ->
                                             %% and finally, signal for special formatting
-                                            %% if noone else formats it
+                                            %% if no one else formats it
                                             Acc
                                     end
                             end

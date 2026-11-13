@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2010-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2010-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,92 +22,6 @@
 
 #include "aes.h"
 #include "cipher.h"
-
-ERL_NIF_TERM aes_cfb_8_crypt(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
-{/* (Key, IVec, Data, IsEncrypt) */
-     ErlNifBinary key, ivec, text;
-     AES_KEY aes_key;
-     unsigned char ivec_clone[16]; /* writable copy */
-     int new_ivlen = 0;
-     ERL_NIF_TERM ret;
-     unsigned char *outp;
-
-     CHECK_NO_FIPS_MODE();
-
-     ASSERT(argc == 4);
-
-     if (!enif_inspect_iolist_as_binary(env, argv[0], &key))
-         goto bad_arg;
-     if (key.size != 16 && key.size != 24 && key.size != 32)
-         goto bad_arg;
-     if (!enif_inspect_binary(env, argv[1], &ivec))
-         goto bad_arg;
-     if (ivec.size != 16)
-         goto bad_arg;
-     if (!enif_inspect_iolist_as_binary(env, argv[2], &text))
-         goto bad_arg;
-
-     memcpy(ivec_clone, ivec.data, 16);
-
-     /* NOTE: This function returns 0 on success unlike most OpenSSL functions */
-     if (AES_set_encrypt_key(key.data, (int)key.size * 8, &aes_key) != 0)
-         goto err;
-     if ((outp = enif_make_new_binary(env, text.size, &ret)) == NULL)
-         goto err;
-     AES_cfb8_encrypt((unsigned char *) text.data,
-                      outp,
-                      text.size, &aes_key, ivec_clone, &new_ivlen,
-                      (argv[3] == atom_true));
-     CONSUME_REDS(env,text);
-     return ret;
-
- bad_arg:
- err:
-     return enif_make_badarg(env);
-}
-
-ERL_NIF_TERM aes_cfb_128_crypt_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
-{/* (Key, IVec, Data, IsEncrypt) */
-    ErlNifBinary key, ivec, text;
-    AES_KEY aes_key;
-    unsigned char ivec_clone[16]; /* writable copy */
-    int new_ivlen = 0;
-    ERL_NIF_TERM ret;
-    unsigned char *outp;
-
-    ASSERT(argc == 4);
-
-    if (!enif_inspect_iolist_as_binary(env, argv[0], &key))
-        goto bad_arg;
-    if (key.size != 16 && key.size != 24 && key.size != 32)
-        goto bad_arg;
-    if (!enif_inspect_binary(env, argv[1], &ivec))
-        goto bad_arg;
-    if (ivec.size != 16)
-        goto bad_arg;
-    if (!enif_inspect_iolist_as_binary(env, argv[2], &text))
-        goto bad_arg;
-
-    memcpy(ivec_clone, ivec.data, 16);
-
-    /* NOTE: This function returns 0 on success unlike most OpenSSL functions */
-    if (AES_set_encrypt_key(key.data, (int)key.size * 8, &aes_key) != 0)
-        goto err;
-
-    if ((outp = enif_make_new_binary(env, text.size, &ret)) == NULL)
-        goto err;
-    AES_cfb128_encrypt((unsigned char *) text.data,
-                       outp,
-                       text.size, &aes_key, ivec_clone, &new_ivlen,
-                       (argv[3] == atom_true));
-    CONSUME_REDS(env,text);
-    return ret;
-
- bad_arg:
- err:
-    return enif_make_badarg(env);
-}
-
 
 #if !defined(HAVE_EVP_AES_CTR)
 ERL_NIF_TERM aes_ctr_stream_encrypt_compat(ErlNifEnv* env, const ERL_NIF_TERM state_arg, const ERL_NIF_TERM data_arg)
@@ -174,14 +90,14 @@ ERL_NIF_TERM aes_ctr_stream_encrypt_compat(ErlNifEnv* env, const ERL_NIF_TERM st
 
 #ifdef HAVE_GCM_EVP_DECRYPT_BUG
 ERL_NIF_TERM aes_gcm_decrypt_NO_EVP(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
-{/* (Type,Key,Iv,AAD,In,Tag) */
+{/* (Type,Key,Iv,In,AAD,Tag,false) */
     GCM128_CONTEXT *ctx = NULL;
     ErlNifBinary key, iv, aad, in, tag;
     AES_KEY aes_key;
     unsigned char *outp;
     ERL_NIF_TERM out, ret;
 
-    ASSERT(argc == 6);
+    ASSERT(argc == 7);
 
     if (!enif_inspect_iolist_as_binary(env, argv[1], &key))
         goto bad_arg;
@@ -191,12 +107,16 @@ ERL_NIF_TERM aes_gcm_decrypt_NO_EVP(ErlNifEnv* env, int argc, const ERL_NIF_TERM
         goto bad_arg;
     if (iv.size == 0)
         goto bad_arg;
-    if (!enif_inspect_iolist_as_binary(env, argv[3], &aad))
+    if (!enif_inspect_iolist_as_binary(env, argv[3], &in))
         goto bad_arg;
-    if (!enif_inspect_iolist_as_binary(env, argv[4], &in))
+    if (!enif_inspect_iolist_as_binary(env, argv[4], &aad))
         goto bad_arg;
     if (!enif_inspect_iolist_as_binary(env, argv[5], &tag))
         goto bad_arg;
+
+    /* Keep same behavior as non decrypt bug branch, aes_gcm will fail decryption on empty tag */
+    if (!tag.size)
+        goto err;
 
     /* NOTE: This function returns 0 on success unlike most OpenSSL functions */
     if (AES_set_encrypt_key(key.data, (int)key.size * 8, &aes_key) != 0)

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2013-2015. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2013-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -25,16 +27,23 @@
 
 -module(diameter_config_SUITE).
 
--export([suite/0,
-         all/0]).
+%% testscases, no common_test dependency
+-export([run/0,
+         run/1]).
 
-%% testcases
--export([start/1,
+%% common_test wrapping
+-export([
+         %% Framework functions
+         suite/0,
+         all/0,
+         init_per_suite/1,
+         end_per_suite/1,
+
+         %% The test cases
          start_service/1,
-         add_transport/1,
-         stop/1]).
+         add_transport/1]).
 
--define(util, diameter_util).
+-include("diameter_util.hrl").
 
 %% Lists of {Key, GoodConfigList, BadConfigList} with which to
 %% configure.
@@ -201,52 +210,127 @@
            [x,x]],
           []}]).
 
+
+-define(CL(F),    ?CL(F, [])).
+-define(CL(F, A), ?LOG("DCONF", F, A)).
+
+
 %% ===========================================================================
 
 suite() ->
-    [{timetrap, {seconds, 60}}].
+    [{timetrap, {seconds, 15}}].
 
 all() ->
-    [start,
+    [
      start_service,
-     add_transport,
-     stop].
+     add_transport
+    ].
+
+
+init_per_suite(Config) ->
+    ?DUTIL:init_per_suite(Config).
+
+end_per_suite(Config) ->
+    ?DUTIL:end_per_suite(Config).
+
+
+start_service(Config) ->
+    ?CL("~w -> entry", [?FUNCTION_NAME]),
+    put(dia_factor, dia_factor(Config)),
+    Res = run([?FUNCTION_NAME]),
+    ?CL("~w -> done when"
+        "~n   Res: ~p", [?FUNCTION_NAME, Res]),
+    Res.
+
+add_transport(Config) ->
+    ?CL("~w -> entry", [?FUNCTION_NAME]),
+    put(dia_factor, dia_factor(Config)),
+    Res = run([?FUNCTION_NAME]),
+    ?CL("~w -> done when"
+        "~n   Res: ~p", [?FUNCTION_NAME, Res]),
+    Res.
+
+dia_factor(Config) ->
+    {value, {?FUNCTION_NAME, DiaFactor}} =
+        lists:keysearch(?FUNCTION_NAME, 1, Config),
+    DiaFactor.
 
 %% ===========================================================================
 
-start(_) ->
-    ok = diameter:start().
+%% Factor: >= 1
+to(Base, Factor) when (Factor >= 0) ->
+    round(Base * (((Factor-1) + 10) / 10)).
 
-start_service(T)
-  when is_tuple(T) ->
-    do(fun start/3, T);
+run() ->
+    run(all()).
 
-start_service(_) ->
-    [] = ?util:run([{?MODULE, start_service, [T]}
-                    || T <- [lists:keyfind(capabilities, 1, ?TRANSPORT_CONFIG)
-                             | ?SERVICE_CONFIG]]).
+run(List)
+  when is_list(List) ->
+    BaseTo = 5000,
+    To = case get(dia_factor) of
+             undefined ->
+                 BaseTo;
+             DF when is_integer(DF) ->
+                 to(BaseTo, DF)
+         end,
+    ?CL("~w -> timeout calculated to ~w", [?FUNCTION_NAME, To]),
+    try
+        ?RUN([[[fun run/1, {F, To}] || F <- List]])
+    after
+        dbg:stop(),
+        diameter:stop()
+    end;
 
-add_transport(T)
-  when is_tuple(T) ->
-    do(fun add/3, T);
+run({F, Tmo}) ->
+    ?CL("~w -> entry - try start diameter", [?FUNCTION_NAME]),
+    ok = diameter:start(),
+    try
+        ?CL("~w -> try - run ~p", [?FUNCTION_NAME, F]),
+        ?RUN([{[fun run/1, F], Tmo}])
+    after
+        ?CL("~w -> after - try stop diameter", [?FUNCTION_NAME]),
+        ok = diameter:stop()
+    end;
 
-add_transport(_) ->
-    [] = ?util:run([{?MODULE, add_transport, [T]}
-                    || T <- ?TRANSPORT_CONFIG]).
+run(start_service = Case) ->
+    ?CL("~w(~w) -> entry", [?FUNCTION_NAME, Case]),
+    ?RUN([[fun start/1, T]
+               || T <- [lists:keyfind(capabilities, 1, ?TRANSPORT_CONFIG)
+                       | ?SERVICE_CONFIG]]);
 
-stop(_) ->
-    ok = diameter:stop().
+run(add_transport = Case) ->
+    ?CL("~w(~w) -> entry", [?FUNCTION_NAME, Case]),
+    ?RUN([[fun add/1, T] || T <- ?TRANSPORT_CONFIG]).
+
+start(T) ->
+    ?CL("~w -> entry with"
+        "~n   T: ~p", [?FUNCTION_NAME, T]),
+    do(fun start/3, T).
+
+add(T) ->
+    ?CL("~w -> entry with"
+        "~n   T: ~p", [?FUNCTION_NAME, T]),
+    do(fun add/3, T).
+
 
 %% ===========================================================================
 
 %% do/2
 
 do(F, {Key, Good, Bad}) ->
+    ?CL("~w -> entry with"
+        "~n   Key:  ~p"
+        "~n   Good: ~p"
+        "~n   Bad:  ~p", [?FUNCTION_NAME, Key, Good, Bad]),
     F(Key, Good, Bad).
 
 %% add/3
 
 add(Key, Good, Bad) ->
+    ?CL("~w -> entry with"
+        "~n   Key:  ~p"
+        "~n   Good: ~p"
+        "~n   Bad:  ~p", [?FUNCTION_NAME, Key, Good, Bad]),
     {[],[]} = {[{Vs,T} || Vs <- Good,
                           T <- [add(Key, Vs)],
                           [T] /= [T || {ok,_} <- [T]]],
@@ -255,12 +339,19 @@ add(Key, Good, Bad) ->
                           [T] /= [T || {error,_} <- [T]]]}.
 
 add(Key, Vs) ->
+    ?CL("~w -> entry with"
+        "~n   Key: ~p"
+        "~n   Vs:  ~p", [?FUNCTION_NAME, Key, Vs]),
     T = list_to_tuple([Key | Vs]),
     diameter:add_transport(make_ref(), {connect, [T]}).
 
 %% start/3
 
 start(Key, Good, Bad) ->
+    ?CL("~w -> entry with"
+        "~n   Key:  ~p"
+        "~n   Good: ~p"
+        "~n   Bad:  ~p", [?FUNCTION_NAME, Key, Good, Bad]),
     {[],[]} = {[{Vs,T} || Vs <- Good,
                           T <- [start(Key, Vs)],
                           T /= ok],
@@ -269,6 +360,9 @@ start(Key, Good, Bad) ->
                           [T] /= [T || {error,_} <- [T]]]}.
 
 start(capabilities = K, [Vs]) ->
+    ?CL("~w -> entry with"
+        "~n   K:  ~p"
+        "~n   Vs: ~p", [?FUNCTION_NAME, K, Vs]),
     if is_list(Vs) ->
             start(make_ref(), Vs ++ apps(K));
        true ->
@@ -277,13 +371,27 @@ start(capabilities = K, [Vs]) ->
 
 start(Key, Vs)
   when is_atom(Key) ->
+    ?CL("~w -> entry with"
+        "~n   Key: ~p"
+        "~n   Vs:  ~p", [?FUNCTION_NAME, Key, Vs]),
     start(make_ref(), [list_to_tuple([Key | Vs]) | apps(Key)]);
 
 start(SvcName, Opts) ->
     try
-        diameter:start_service(SvcName, Opts)
+        ?CL("~w -> [try] - start service: "
+            "~n   SvcName: ~p"
+            "~n   Opts:    ~p", [?FUNCTION_NAME, SvcName, Opts]),
+        Res1 = diameter:start_service(SvcName, Opts),
+        ?CL("~w -> [try] - start service result: "
+            "~n   Res: ~p", [?FUNCTION_NAME, Res1]),
+        Res1
     after
-        diameter:stop_service(SvcName)
+        ?CL("~w -> [after] - try stop service: "
+            "~n   SvcName: ~p", [?FUNCTION_NAME, SvcName]),
+        Res2 = diameter:stop_service(SvcName),
+        ?CL("~w -> [after] - stop service result: "
+            "~n   Res: ~p", [?FUNCTION_NAME, Res2]),
+        Res2
     end.
 
 apps(application) ->

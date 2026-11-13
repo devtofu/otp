@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2019. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,6 +22,7 @@
 -module(gen_fsm_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
 %% Test cases
 -export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1,
@@ -46,7 +49,7 @@
 
 -export([hibernate/1,auto_hibernate/1,hiber_idle/3,hiber_wakeup/3,hiber_idle/2,hiber_wakeup/2]).
 
--export([format_log_1/1, format_log_2/1]).
+-export([format_log_1/1, format_log_2/1, format_log_with_process_label/1]).
 
 -export([reply_by_alias_with_payload/1]).
 
@@ -89,7 +92,8 @@ groups() ->
      {undef_callbacks, [],
       [undef_handle_event, undef_handle_sync_event, undef_handle_info,
        undef_init, undef_code_change, undef_terminate1, undef_terminate2]},
-     {format_log, [], [format_log_1, format_log_2]}].
+     {format_log, [], [format_log_1, format_log_2,
+                       format_log_with_process_label]}].
 
 init_per_suite(Config) ->
     Config.
@@ -134,8 +138,7 @@ start2(Config) when is_list(Config) ->
     shutdown_stopped =
 	gen_fsm:sync_send_all_state_event(Pid0, stop_shutdown),
     receive {'DOWN',MRef,_,_,shutdown} -> ok end,
-    {'EXIT', {noproc,_}} =
-	(catch gen_fsm:sync_send_event(Pid0, hej)),
+    ?assertExit({noproc,_}, gen_fsm:sync_send_event(Pid0, hej)),
 
     [] = get_messages(),
     ok.
@@ -311,7 +314,7 @@ stop1(_Config) ->
     {ok, Pid} = gen_fsm:start(?MODULE, [], []),
     ok = gen_fsm:stop(Pid),
     false = erlang:is_process_alive(Pid),
-    {'EXIT',noproc} = (catch gen_fsm:stop(Pid)),
+    ?assertExit(noproc, gen_fsm:stop(Pid)),
     ok.
 
 %% Anonymous, other reason
@@ -324,7 +327,7 @@ stop2(_Config) ->
 %% Anonymous, invalid timeout
 stop3(_Config) ->
     {ok,Pid} = gen_fsm:start(?MODULE, [], []),
-    {'EXIT',_} = (catch gen_fsm:stop(Pid, other_reason, invalid_timeout)),
+    ?assertExit(_, gen_fsm:stop(Pid, other_reason, invalid_timeout)),
     true = erlang:is_process_alive(Pid),
     ok = gen_fsm:stop(Pid),
     false = erlang:is_process_alive(Pid),
@@ -335,7 +338,7 @@ stop4(_Config) ->
     {ok,Pid} = gen_fsm:start({local,to_stop},?MODULE, [], []),
     ok = gen_fsm:stop(to_stop),
     false = erlang:is_process_alive(Pid),
-    {'EXIT',noproc} = (catch gen_fsm:stop(to_stop)),
+    ?assertExit(noproc, gen_fsm:stop(to_stop)),
     ok.
 
 %% Registered name and local node
@@ -343,7 +346,7 @@ stop5(_Config) ->
     {ok,Pid} = gen_fsm:start({local,to_stop},?MODULE, [], []),
     ok = gen_fsm:stop({to_stop,node()}),
     false = erlang:is_process_alive(Pid),
-    {'EXIT',noproc} = (catch gen_fsm:stop({to_stop,node()})),
+    ?assertExit(noproc, gen_fsm:stop({to_stop,node()})),
     ok.
 
 %% Globally registered name
@@ -351,7 +354,7 @@ stop6(_Config) ->
     {ok, Pid} = gen_fsm:start({global, to_stop}, ?MODULE, [], []),
     ok = gen_fsm:stop({global,to_stop}),
     false = erlang:is_process_alive(Pid),
-    {'EXIT',noproc} = (catch gen_fsm:stop({global,to_stop})),
+    ?assertExit(noproc, gen_fsm:stop({global,to_stop})),
     ok.
 
 %% 'via' registered name
@@ -361,48 +364,48 @@ stop7(_Config) ->
 			      ?MODULE, [], []),
     ok = gen_fsm:stop({via, dummy_via, to_stop}),
     false = erlang:is_process_alive(Pid),
-    {'EXIT',noproc} = (catch gen_fsm:stop({via, dummy_via, to_stop})),
+    ?assertExit(noproc, gen_fsm:stop({via, dummy_via, to_stop})),
     ok.
 
 %% Anonymous on remote node
 stop8(_Config) ->
-    {ok,Node} = test_server:start_node(gen_fsm_SUITE_stop8,slave,[]),
+    {ok,Peer,Node} = ?CT_PEER(),
     Dir = filename:dirname(code:which(?MODULE)),
     rpc:call(Node,code,add_path,[Dir]),
     {ok, Pid} = rpc:call(Node,gen_fsm,start,[?MODULE,[],[]]),
     ok = gen_fsm:stop(Pid),
     false = rpc:call(Node,erlang,is_process_alive,[Pid]),
-    {'EXIT',noproc} = (catch gen_fsm:stop(Pid)),
-    true = test_server:stop_node(Node),
-    {'EXIT',{{nodedown,Node},_}} = (catch gen_fsm:stop(Pid)),
+    ?assertExit(noproc, gen_fsm:stop(Pid)),
+    peer:stop(Peer),
+    ?assertExit({{nodedown,Node},_}, gen_fsm:stop(Pid)),
     ok.
 
 %% Registered name on remote node
 stop9(_Config) ->
-    {ok,Node} = test_server:start_node(gen_fsm_SUITE_stop9,slave,[]),
+    {ok,Peer,Node} = ?CT_PEER(),
     Dir = filename:dirname(code:which(?MODULE)),
     rpc:call(Node,code,add_path,[Dir]),
     {ok, Pid} = rpc:call(Node,gen_fsm,start,[{local,to_stop},?MODULE,[],[]]),
     ok = gen_fsm:stop({to_stop,Node}),
     undefined = rpc:call(Node,erlang,whereis,[to_stop]),
     false = rpc:call(Node,erlang,is_process_alive,[Pid]),
-    {'EXIT',noproc} = (catch gen_fsm:stop({to_stop,Node})),
-    true = test_server:stop_node(Node),
-    {'EXIT',{{nodedown,Node},_}} = (catch gen_fsm:stop({to_stop,Node})),
+    ?assertExit(noproc, gen_fsm:stop({to_stop,Node})),
+    peer:stop(Peer),
+    ?assertExit({{nodedown,Node},_}, gen_fsm:stop({to_stop,Node})),
     ok.
 
 %% Globally registered name on remote node
 stop10(_Config) ->
-    {ok,Node} = test_server:start_node(gen_fsm_SUITE_stop10,slave,[]),
+    {ok,Peer,Node} = ?CT_PEER(),
     Dir = filename:dirname(code:which(?MODULE)),
     rpc:call(Node,code,add_path,[Dir]),
     {ok, Pid} = rpc:call(Node,gen_fsm,start,[{global,to_stop},?MODULE,[],[]]),
     ok = global:sync(),
     ok = gen_fsm:stop({global,to_stop}),
     false = rpc:call(Node,erlang,is_process_alive,[Pid]),
-    {'EXIT',noproc} = (catch gen_fsm:stop({global,to_stop})),
-    true = test_server:stop_node(Node),
-    {'EXIT',noproc} = (catch gen_fsm:stop({global,to_stop})),
+    ?assertExit(noproc, gen_fsm:stop({global,to_stop})),
+    peer:stop(Peer),
+    ?assertExit(noproc, gen_fsm:stop({global,to_stop})),
     ok.
 
 %% Check that time outs in calls work
@@ -411,8 +414,7 @@ abnormal1(Config) when is_list(Config) ->
 
     %% timeout call.
     delayed = gen_fsm:sync_send_event(my_fsm, {delayed_answer,1}, 100),
-    {'EXIT',{timeout,_}} =
-	(catch gen_fsm:sync_send_event(my_fsm, {delayed_answer,10}, 1)),
+    ?assertExit({timeout, _}, gen_fsm:sync_send_event(my_fsm, {delayed_answer,10}, 1)),
 
     [] = get_messages(),
     ok.
@@ -425,8 +427,7 @@ abnormal2(Config) when is_list(Config) ->
 	gen_fsm:start_link(gen_fsm_SUITE, [], []),
 
     %% bad return value in the gen_fsm loop
-    {'EXIT',{{bad_return_value, badreturn},_}} =
-	(catch gen_fsm:sync_send_event(Pid, badreturn)),
+    ?assertExit({{bad_return_value, badreturn}, _}, gen_fsm:sync_send_event(Pid, badreturn)),
 
     [{'EXIT',Pid,{bad_return_value,badreturn}}] = get_messages(),
     process_flag(trap_exit, OldFl),
@@ -445,8 +446,7 @@ shutdown(Config) when is_list(Config) ->
     receive {'EXIT',Pid0,{shutdown,reason}} -> ok end,
     process_flag(trap_exit, false),
 
-    {'EXIT', {noproc,_}} =
-	(catch gen_fsm:sync_send_event(Pid0, hej)),
+    ?assertExit({noproc, _}, gen_fsm:sync_send_event(Pid0, hej)),
 
     receive
 	Any ->
@@ -465,8 +465,7 @@ sys1(Config) when is_list(Config) ->
 	gen_fsm:start(gen_fsm_SUITE, [], []),
     {status, Pid, {module,gen_fsm}, _} = sys:get_status(Pid),
     sys:suspend(Pid),
-    {'EXIT', {timeout,_}} =
-	(catch gen_fsm:sync_send_event(Pid, hej)),
+    ?assertExit({timeout, _}, gen_fsm:sync_send_event(Pid, hej)),
     sys:resume(Pid),
     stop_it(Pid).
 
@@ -525,8 +524,7 @@ error_format_status(Config) when is_list(Config) ->
     Parent = self(),
     {ok, Pid} = gen_fsm:start(gen_fsm_SUITE, {state_data, StateData}, []),
     %% bad return value in the gen_fsm loop
-    {'EXIT',{{bad_return_value, badreturn},_}} =
-	(catch gen_fsm:sync_send_event(Pid, badreturn)),
+    ?assertExit({{bad_return_value, badreturn}, _}, gen_fsm:sync_send_event(Pid, badreturn)),
     receive
 	{error,_GroupLeader,{Pid,
 			     "** State machine "++_,
@@ -601,9 +599,10 @@ replace_state(Config) when is_list(Config) ->
     {state0, NState2} = sys:get_state(Pid),
     %% verify no change in state if replace function crashes
     Replace3 = fun(_) -> error(fail) end,
-    {'EXIT',{{callback_failed,
-	      {gen_fsm,system_replace_state},{error,fail}},_}} =
-	(catch sys:replace_state(Pid, Replace3)),
+    ?assertError({callback_failed,
+                  {gen_fsm, system_replace_state},
+                  {error, fail}},
+                 sys:replace_state(Pid, Replace3)),
     {state0, NState2} = sys:get_state(Pid),
     %% verify state replaced if process sys suspended
     ok = sys:suspend(Pid),
@@ -1032,7 +1031,8 @@ format_log_1(_Config) ->
                state_data=>Term,
                log=>[Term],
                reason=>Term,
-               client_info=>{self(),{clientname,[]}}},
+               client_info=>{self(),{clientname,[]}},
+               process_label=>undefined},
     {F1,A1} = gen_fsm:format_log(Report),
     FExpected1 = "** State machine ~tp terminating \n"
         "** Last message in was ~tp~n"
@@ -1066,7 +1066,8 @@ format_log_1(_Config) ->
                                    state_data=>Term,
                                    log=>[Term],
                                    reason=>Term,
-                                   client_info=>{self(),{clientname,[]}}}),
+                                   client_info=>{self(),{clientname,[]}},
+                                   process_label=>undefined}),
     FExpected2 =  "** State machine ~tP terminating \n"
         "** Last message in was ~tP~n"
         "** When State == ~tP~n"
@@ -1107,7 +1108,8 @@ format_log_2(_Config) ->
                state_data=>Term,
                log=>[Term],
                reason=>Term,
-               client_info=>{self(),{clientname,[]}}},
+               client_info=>{self(),{clientname,[]}},
+               process_label=>undefined},
     FormatOpts1 = #{},
     Str1 = flatten_format_log(Report, FormatOpts1),
     L1 = length(Str1),
@@ -1246,6 +1248,96 @@ format_log_2(_Config) ->
 
     ok.
 
+format_log_with_process_label(_Config) ->
+    %% Previous test cases test with process_label set to undefined,
+    %% so in this test case, test setting it, and test:
+    %% * multiple and single line line
+    %% * depth-limited and unlimited
+
+    FD = application:get_env(kernel, error_logger_format_depth),
+    application:unset_env(kernel, error_logger_format_depth),
+    Term = lists:seq(1,15),
+    Name = self(),
+    NameStr = pid_to_list(Name),
+    ProcessLabel = {some_id, #{term => Term}},
+    LastMsg = dummy_msg,
+    Reason = dummy_reason,
+    StateName = dummy_state_name,
+    StateData = dummy_state_data,
+    Report = #{label=>{gen_fsm,terminate},
+               name=>Name,
+               last_message=>LastMsg,
+               state_name=>StateName,
+               state_data=>StateData,
+               log=>[],
+               reason=>Reason,
+               client_info=>{self(),{clientname,[]}},
+               process_label=>ProcessLabel},
+
+    %% multiple and single line (unlimited depth)
+
+    {F1,A1} = gen_fsm:format_log(Report),
+    FExpected1 = "** State machine ~tp terminating \n"
+        "** Process label == ~tp~n"
+        "** Last message in was ~tp~n"
+        "** When State == ~tp~n"
+        "**      Data  == ~tp~n"
+        "** Reason for termination ==~n** ~tp~n"
+        "** Client ~tp stacktrace~n** ~tp~n",
+    ct:log("F1: ~ts~nA1: ~tp", [F1,A1]),
+    FExpected1=F1,
+
+    [Name,ProcessLabel,LastMsg,StateName,StateData,Reason,clientname,[]] = A1,
+
+    FormatOpts2 = #{single_line=>true},
+    Str2 = flatten_format_log(Report, FormatOpts2),
+    Expected2 = "State machine "++NameStr++" terminating. "
+        "Label: {some_id,#{term => [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]}}. "
+        "Reason: dummy_reason. "
+        "Last event: [dummy_msg]. "
+        "State: dummy_state_name. "
+        "Data: dummy_state_data. "
+        "Client clientname stacktrace: [].",
+    ct:log("Str2: ~ts", [Str2]),
+    true = Expected2 =:= Str2,
+
+    %% multiple and single line (depth-limited)
+
+    Depth = 10,
+    FormatOpts3 = #{depth=>Depth},
+    Str3 = flatten_format_log(Report, FormatOpts3),
+    Expected3 = "** State machine "++NameStr++" terminating \n"
+        "** Process label == {some_id,#{term => [1,2,3,4,5,6|...]}}\n"
+        "** Last message in was dummy_msg\n"
+        "** When State == dummy_state_name\n"
+        "**      Data  == dummy_state_data\n"
+        "** Reason for termination ==\n"
+        "** dummy_reason\n"
+        "** Client clientname stacktrace\n"
+        "** []\n",
+    ct:log("Str3: ~ts", [Str3]),
+    true = lists:prefix(Expected3,Str3),
+
+    FormatOpts4 = #{single_line=>true, depth=>Depth},
+    Str4 = flatten_format_log(Report, FormatOpts4),
+    Expected4 = "State machine "++NameStr++" terminating. "
+        "Label: {some_id,#{term => [1,2,3,4,5,6|...]}}. "
+        "Reason: dummy_reason. "
+        "Last event: [dummy_msg]. "
+        "State: dummy_state_name. "
+        "Data: dummy_state_data. "
+        "Client clientname stacktrace: [].",
+    ct:log("Str4: ~ts", [Str4]),
+    true = Expected4 =:= Str4,
+
+    case FD of
+        undefined ->
+            application:unset_env(kernel, error_logger_format_depth);
+        _ ->
+            application:set_env(kernel, error_logger_format_depth, FD)
+    end,
+    ok.
+
 flatten_format_log(Report, Format) ->
     lists:flatten(gen_fsm:format_log(Report, Format)).
 
@@ -1280,7 +1372,7 @@ wfor(Msg) ->
 
 stop_it(FSM) ->
     stopped = gen_fsm:sync_send_all_state_event(FSM, stop),
-    {'EXIT',_} = 	(catch gen_fsm:sync_send_event(FSM, hej)),
+    ?assertExit(_, gen_fsm:sync_send_event(FSM, hej)),
     ok.
 
 

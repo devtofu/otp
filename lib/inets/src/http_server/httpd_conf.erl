@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,12 +21,14 @@
 %%
 %%
 -module(httpd_conf).
+-moduledoc false.
 
 %% Application internal API
 -export([load_mime_types/1, store/1, store/2,
-	 remove/1, remove_all/1, get_config/3, get_config/4,
-	 lookup_socket_type/1, 
-	 lookup/2, lookup/3, lookup/4, 
+         remove/1, remove_all/1, get_config/3, get_config/4,
+         validate_config/1,
+         lookup_socket_type/1,
+         lookup/2, lookup/3, lookup/4,
 	 validate_properties/1, white_space_clean/1]).
 
 -define(VMODULE,"CONF").
@@ -35,8 +39,8 @@
 %% Removed functions
 
 -removed([{check_enum,2,"use lists:member/2 instead"},
-          {clean,1,"use sting:strip/1 instead or possibly the re module"},
-          {custom_clean,3,"use sting:strip/1 instead or possibly the re module"},
+          {clean,1,"use string:strip/1 instead or possibly the re module"},
+          {custom_clean,3,"use string:strip/1 instead or possibly the re module"},
           {is_directory,1,"use filelib:is_dir/1 instead"},
           {is_file,1,"use filelib:is_file/1 instead"},
           {make_integer,1,"use erlang:list_to_integer/1 instead"}]).
@@ -56,9 +60,9 @@ validate_ipfamily(inet6) ->
     inet6;
 %% Backwards compatibility wrapper, 
 %% fallback to the default, IPV4,
-%% as it will most proably work.
+%% as it will most probably work.
 %% IPv6 standard moved away from 
-%% beeing able to fallback to ipv4
+%% being able to fallback to ipv4
 validate_ipfamily(inet6fb4) ->
     inet;
 validate_ipfamily(IpFamilyStr) ->
@@ -75,12 +79,23 @@ load_mime_types(MimeTypesFile) ->
 	    {error, ?NICE("Can't open " ++ MimeTypesFile)}
     end.
 
+%% Add any optional properties if they are not present.
+optional_properties(Properties) ->
+    case proplists:get_value(server_name, Properties) of
+        undefined ->
+            Localhost = net_adm:localhost(),
+            [{server_name, Localhost} | Properties];
+        _Name ->
+            Properties
+    end.
 
-validate_properties(Properties) ->
-    %% First, check that all mandatory properties are present
+validate_properties(RawProperties) ->
+    %% First, prefill any optional properties
+    Properties = optional_properties(RawProperties),
+    %% Then check that all mandatory properties are present
     case mandatory_properties(Properties) of
 	ok -> 
-	    %% Second, check that property dependency are ok
+	    %% Finally, check that property dependency are ok
 	    {ok, check_minimum_bytes_per_second(validate_properties2(Properties))};
 	Error ->
 	    throw(Error)
@@ -88,9 +103,22 @@ validate_properties(Properties) ->
 
 %% This function is used to validate inter-property dependencies.
 %% That is, if property A depends on property B.
-%% The only sunch preperty at this time is bind_address that depends 
-%% on ipfamily.
+%% The only such preperties at this time are:
+%%  - bind_address that depends on ipfamily
+%%  - keep_alive_timeout that depends on keep_alive
 validate_properties2(Properties0) ->
+    case proplists:get_value(keep_alive, Properties0) of
+        undefined -> ok; %% defaults to true
+        true -> ok;
+        false ->
+            KeepaliveTimeout = proplists:get_value(keep_alive_timeout, Properties0),
+            case KeepaliveTimeout of
+                infinity -> ok; %%% timeout disabled
+                undefined -> ok;
+                _ ->
+                    throw({error, invalid_keep_alive_timeout})
+            end
+    end,
     Properties = fix_ipfamily(Properties0),
     case proplists:get_value(bind_address, Properties) of
 	undefined ->
@@ -176,6 +204,13 @@ validate_config_params([{max_body_size, Value} | Rest])
 validate_config_params([{max_body_size, Value} | _]) -> 
     throw({max_body_size, Value});
 
+validate_config_params([{request_timeout, Value} | Rest])
+  when (is_integer(Value) andalso (Value > 0));
+       Value =:= infinity ->
+    validate_config_params(Rest);
+validate_config_params([{request_timeout, Value} | _]) ->
+    throw({request_timeout, Value});
+
 validate_config_params([{max_content_length, Value} | Rest]) 
   when is_integer(Value) andalso (Value > 0) ->
     validate_config_params(Rest);
@@ -206,9 +241,8 @@ validate_config_params([{socket_type, ip_comm} | Rest]) ->
     validate_config_params(Rest);
 
 validate_config_params([{socket_type, {Value, Opts}} | Rest]) when Value == ip_comm; 
-								   Value == ssl; 
-								   Value == essl ->
-    %% Make sure not to set socket values used internaly
+								   Value == ssl ->
+    %% Make sure not to set socket values used internally
     validate_config_params(Opts), 
     validate_config_params(Rest);
 
@@ -250,7 +284,8 @@ validate_config_params([{max_keep_alive_request, Value} | _]) ->
     throw({max_keep_alive_request, Value});
 
 validate_config_params([{keep_alive_timeout, Value} | Rest]) 
-  when is_integer(Value) andalso (Value >= 0) ->
+  when (is_integer(Value) andalso (Value >= 0));
+       Value =:= infinity ->
     validate_config_params(Rest);
 validate_config_params([{keep_alive_timeout, Value} | _]) ->
     throw({keep_alive_timeout, Value});
@@ -287,56 +322,16 @@ validate_config_params([{default_type, Value} | Rest]) when is_list(Value) ->
 validate_config_params([{default_type, Value} | _]) ->
     throw({default_type, Value});
 
+validate_config_params([{mime_type, Value} | Rest]) when is_list(Value) ->
+    validate_config_params(Rest);
+validate_config_params([{mime_type, Value} | _]) ->
+    throw({mime_type, Value});
+
 validate_config_params([{logger, Value} | Rest]) when is_list(Value) ->
     true = validate_logger(Value),
     validate_config_params(Rest);
 validate_config_params([{logger, Value} | _]) ->
     throw({logger, Value});
-
-validate_config_params([{ssl_certificate_file = Key, Value} | Rest]) ->
-    ok = httpd_util:file_validate(Key, Value),
-    validate_config_params(Rest);
-
-validate_config_params([{ssl_certificate_key_file = Key, Value} | Rest]) ->
-    ok = httpd_util:file_validate(Key, Value),
-    validate_config_params(Rest);
-
-validate_config_params([{ssl_verify_client, Value} | Rest]) 
-  when (Value =:= 0) orelse (Value =:= 1) orelse (Value =:= 2) ->
-    validate_config_params(Rest);
-
-validate_config_params([{ssl_verify_client_depth, Value} | Rest]) 
-  when is_integer(Value) andalso (Value >= 0) ->
-    validate_config_params(Rest);
-validate_config_params([{ssl_verify_client_depth, Value} | _]) ->
-    throw({ssl_verify_client_depth, Value});
-
-validate_config_params([{ssl_ciphers, Value} | Rest]) when is_list(Value) ->
-    validate_config_params(Rest);
-validate_config_params([{ssl_ciphers, Value} | _]) ->
-    throw({ssl_ciphers, Value});
-
-validate_config_params([{ssl_ca_certificate_file = Key, Value} | Rest]) ->
-    ok = httpd_util:file_validate(Key, Value),
-    validate_config_params(Rest);
-
-validate_config_params([{ssl_password_callback_module, Value} | Rest]) 
-  when is_atom(Value) ->
-    validate_config_params(Rest);
-validate_config_params([{ssl_password_callback_module, Value} | _]) ->
-    throw({ssl_password_callback_module, Value});
-
-validate_config_params([{ssl_password_callback_function, Value} | Rest]) 
-  when is_atom(Value) ->
-    validate_config_params(Rest);
-validate_config_params([{ssl_password_callback_function, Value} | _]) ->
-    throw({ssl_password_callback_function, Value});
-
-validate_config_params([{ssl_password_callback_arguments, Value} | Rest]) 
-  when is_list(Value) ->
-    validate_config_params(Rest);
-validate_config_params([{ssl_password_callback_arguments, Value} | _]) ->
-    throw({ssl_password_callback_arguments, Value});
 
 validate_config_params([{disable_chunked_transfer_encoding_send, Value} |
 			Rest])  
@@ -370,7 +365,14 @@ is_bind_address(Value, IpFamily) ->
 	_ ->
 	    false
     end.
- 
+
+validate_config(ConfigList) ->
+    try validate_config_params(ConfigList) of
+        ok -> ok
+    catch
+        throw:Error -> {error, {invalid_option, Error}}
+    end.
+
 store(ConfigList0) -> 
     try validate_config_params(ConfigList0) of
 	ok ->
@@ -449,7 +451,7 @@ store(ConfigListEntry, _ConfigList) ->
 %%   os:      "inets/1.2.3 (unix)
 %%   full:    "inets/1.2.3 (unix/linux) OTP/R15B"
 %% Note that the format of SERVER_SOFTWARE is that of 'minimal'.
-%% Also, there will always be atleast two digits in a version: 
+%% Also, there will always be at least two digits in a version: 
 %% Not just 1 but 1.0
 %% 
 %% We have already checked that the value is valid, 
@@ -503,28 +505,51 @@ remove_all(ConfigDB) ->
     remove_traverse(ConfigDB, lists:append(Modules,[?MODULE])).
 
 remove(ConfigDB) ->
-    ets:delete(ConfigDB),
+    try ets:delete(ConfigDB)
+    catch _:_ -> ok
+    end,
     ok.
 
-
+-spec get_config(Address, Port, Profile) -> [tuple()] when
+      Address :: inet:ip_address() | any,
+      Port    :: integer(),
+      Profile :: atom().
 get_config(Address, Port, Profile) ->    
     Tab = httpd_util:make_name("httpd_conf", Address, Port, Profile),
     Properties =  ets:tab2list(Tab),
     MimeTab = proplists:get_value(mime_types, Properties),
     NewProperties = proplists:delete(mime_types, Properties),
     [{mime_types, ets:tab2list(MimeTab)} | NewProperties].
-     
+
+-spec get_config(Address, Port, Profile, Properties) -> [tuple()] when
+      Address :: inet:ip_address() | any,
+      Port    :: integer(),
+      Profile :: atom(),
+      Properties :: [tuple() | atom()].
 get_config(Address, Port, Profile, Properties) ->    
     Tab = httpd_util:make_name("httpd_conf", Address, Port, Profile),
     Config = 
 	lists:map(fun(Prop) -> {Prop, httpd_util:lookup(Tab, Prop)} end,
 		  Properties),
-    [{Proporty, Value} || {Proporty, Value} <- Config, Value =/= undefined].  
+    [{Property, Value} || {Property, Value} <- Config, Value =/= undefined].
 	
-		   
+-spec lookup(Tab, Key) -> Result when
+      Tab :: ets:tab(),
+      Key :: term(),
+      Result :: [tuple()] | atom().
 lookup(Tab, Key) ->
     httpd_util:lookup(Tab, Key).
 
+-spec lookup(Tab, Key, Default) -> Object when
+      Tab :: ets:tab(),
+      Key :: atom(),
+      Default :: atom(),
+      Object :: [tuple()] | atom();
+            (Address, Port, Key) -> Object when
+      Address :: inet:ip_address() | any,
+      Port    :: integer(),
+      Key     :: atom(),
+      Object  :: [tuple()] | atom().
 lookup(Tab, Key, Default) when is_atom(Key) ->
     httpd_util:lookup(Tab, Key, Default);
 
@@ -532,6 +557,12 @@ lookup(Address, Port, Key) when is_integer(Port) ->
     Tab = table(Address, Port),
     lookup(Tab, Key).
 
+-spec lookup(Address, Port, Key, Default) -> Object when
+      Address :: inet:ip_address() | any,
+      Port    :: integer(),
+      Key     :: atom(),
+      Default :: atom(),
+      Object  :: [tuple()] | atom().
 lookup(Address, Port, Key, Default) when is_integer(Port) ->
     Tab = table(Address, Port),
     lookup(Tab, Key, Default).
@@ -547,34 +578,9 @@ lookup_socket_type(ConfigDB) ->
 	{ip_comm, _} = Type ->
 	    Type;
 	{Tag, Conf} ->
-	    {Tag, Conf};
-	SSL when (SSL =:= ssl) orelse (SSL =:= essl) ->
-	    SSLTag = 
-		if
-		    (SSL =:= ssl) ->
-			?HTTP_DEFAULT_SSL_KIND;
-		    true ->
-			SSL
-		end,
-	    case ssl_certificate_file(ConfigDB) of
-		undefined ->
-		    Reason = "Directive SSLCertificateFile "
-			"not found in the config file", 
-		    throw({error, Reason}); 
-		SSLCertificateFile ->
-		    {SSLTag, SSLCertificateFile ++ ssl_config(ConfigDB)}
-	    end
+	    {Tag, Conf}
     end.
 
-ssl_config(ConfigDB) ->
-    ssl_certificate_key_file(ConfigDB) ++
-	ssl_verify_client(ConfigDB) ++
-	ssl_ciphers(ConfigDB) ++
-	ssl_password(ConfigDB) ++
-	ssl_verify_depth(ConfigDB) ++
-	ssl_ca_certificate_file(ConfigDB) ++
-	ssl_log_level(ConfigDB).
-	    
 %%%========================================================================
 %%% Internal functions
 %%%========================================================================
@@ -676,96 +682,9 @@ remove_traverse(ConfigDB,[Module|Rest]) ->
 	    remove_traverse(ConfigDB,Rest)
     end.
 
-ssl_certificate_file(ConfigDB) ->
-    case httpd_util:lookup(ConfigDB,ssl_certificate_file) of
-	undefined ->
-	    undefined;
-	SSLCertificateFile ->
-	    [{certfile,SSLCertificateFile}]
-    end.
-
-ssl_certificate_key_file(ConfigDB) ->
-    case httpd_util:lookup(ConfigDB,ssl_certificate_key_file) of
-	undefined ->
-	    [];
-	SSLCertificateKeyFile ->
-	    [{keyfile,SSLCertificateKeyFile}]
-    end.
-
-ssl_log_level(ConfigDB) ->
-    case httpd_util:lookup(ConfigDB,ssl_log_alert) of
-	undefined ->
-	    [];
-	SSLLogLevel ->
-	    [{log_alert,SSLLogLevel}]
-    end.
-
-ssl_verify_client(ConfigDB) ->
-    case httpd_util:lookup(ConfigDB,ssl_verify_client) of
-	undefined ->
-	    [];
-	SSLVerifyClient ->
-	    [{verify,SSLVerifyClient}]
-    end.
-
-ssl_ciphers(ConfigDB) ->
-    case httpd_util:lookup(ConfigDB,ssl_ciphers) of
-	undefined ->
-	    [];
-	Ciphers ->
-	    [{ciphers, Ciphers}]
-    end.
-
-ssl_password(ConfigDB) ->
-    case httpd_util:lookup(ConfigDB,ssl_password_callback_module) of
-	undefined ->
-	    [];
-	Module ->
-	    case httpd_util:lookup(ConfigDB, 
-				   ssl_password_callback_function) of
-		undefined ->
-		    [];
-		Function ->
-		    Args = case httpd_util:lookup(ConfigDB, 
-					   ssl_password_callback_arguments) of
-			       undefined ->
-				   [];
-			       Arguments  ->
-				   [Arguments]
-			   end,
-	       
-		    case catch apply(Module, Function, Args) of
-			Password when is_list(Password) ->
-			    [{password, Password}];
-			Error ->
-			    error_report(ssl_password,Module,Function,Error),
-			    []
-		    end
-	    end
-    end.
-
-ssl_verify_depth(ConfigDB) ->
-    case httpd_util:lookup(ConfigDB, ssl_verify_client_depth) of
-	undefined ->
-	    [];
-	Depth ->
-	    [{depth, Depth}]
-    end.
-
-ssl_ca_certificate_file(ConfigDB) ->
-    case httpd_util:lookup(ConfigDB, ssl_ca_certificate_file) of
-	undefined ->
-	    [];
-	File ->
-	    [{cacertfile, File}]
-    end.
-
 plain_server_tokens() ->
     [none, prod, major, minor, minimum, os, full].
 
-error_report(Where,M,F,Error) ->
-    error_logger:error_report([{?MODULE, Where}, 
-			       {apply, {M, F, []}}, Error]).
 white_space_clean(String) ->
     re:replace(String, "^[ \t\n\r\f]*|[ \t\n\r\f]*\$","", 
 	       [{return,list}, global]).

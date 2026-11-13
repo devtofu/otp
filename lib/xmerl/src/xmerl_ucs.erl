@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2005-2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2005-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,6 +21,7 @@
 %%
 
 -module(xmerl_ucs).
+-moduledoc false.
 
 -compile([verbose,report_warnings,warn_unused_vars]).
 
@@ -423,7 +426,7 @@ char_to_utf8(Ch) when is_integer(Ch), Ch >= 0 ->
 
 %% expand_utf8([Byte]) -> {[UnicodeChar],NumberOfBadBytes}
 %%  Expand UTF8 byte sequences to ISO 10646/Unicode
-%%  charactes. Any illegal bytes are removed and the number of
+%%  characters. Any illegal bytes are removed and the number of
 %%  bad bytes are returned.
 %%
 %%  Reference:

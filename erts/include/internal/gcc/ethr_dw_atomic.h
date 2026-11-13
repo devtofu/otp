@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2011-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2011-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -72,7 +74,7 @@ typedef volatile ETHR_NATIVE_SU_DW_SINT_T * ethr_native_dw_ptr_t;
  * This code assumes 8 byte aligned memory in 64-bit mode, and 4 byte
  * aligned memory in 32-bit mode. A malloc implementation that does
  * not adhere to these alignment requirements is seriously broken,
- * and we wont bother trying to work around it.
+ * and we won't bother trying to work around it.
  *
  * Since memory alignment may be off by one word we need to align at
  * runtime. We, therefore, need an extra word allocated.
@@ -229,12 +231,12 @@ ethr_native_su_dw_atomic_cmpxchg_acqb(ethr_native_dw_atomic_t *var,
 
 static ETHR_INLINE ETHR_NATIVE_SU_DW_SINT_T
 ethr_native_su_dw_atomic_cmpxchg_mb(ethr_native_dw_atomic_t *var,
-				    ETHR_NATIVE_SU_DW_SINT_T new,
+				    ETHR_NATIVE_SU_DW_SINT_T new_val,
 				    ETHR_NATIVE_SU_DW_SINT_T old)
 {
     ethr_native_dw_ptr_t p = (ethr_native_dw_ptr_t) ETHR_DW_NATMC_MEM__(var);
     ETHR_DW_DBG_ALIGNED__(p);
-    return __sync_val_compare_and_swap(p, old, new);
+    return __sync_val_compare_and_swap(p, old, new_val);
 }
 
 #endif /* ETHR_HAVE___sync_val_compare_and_swap */

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2003-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2003-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,112 +20,25 @@
 %% %CopyrightEnd%
 %%
 
-%% Description  : Simgle-pass XML scanner. See xmerl.hrl for data defs.
-
-%% @doc This module is the interface to the XML parser, it handles XML 1.0.
-%%     The XML parser is activated through
-%%     <tt>xmerl_scan:string/[1,2]</tt> or
-%%     <tt>xmerl_scan:file/[1,2]</tt>.
-%%     It returns records of the type defined in xmerl.hrl.
-%% See also <a href="xmerl_examples.html">tutorial</a> on customization
-%% functions.
-%% @type global_state(). <p>
-%% The global state of the scanner, represented by the #xmerl_scanner{} record.
-%% </p>
-%% @type option_list(). <p>Options allow to customize the behaviour of the
-%%     scanner.
-%% See also <a href="xmerl_examples.html">tutorial</a> on customization
-%% functions.
-%% </p>
-%% <p>
-%% Possible options are:
-%% </p>
-%% <dl>
-%%  <dt><code>{acc_fun, Fun}</code></dt>
-%%    <dd>Call back function to accumulate contents of entity.</dd>
-%%  <dt><code>{continuation_fun, Fun} |
-%%            {continuation_fun, Fun, ContinuationState}</code></dt>
-%%    <dd>Call back function to decide what to do if the scanner runs into EOF
-%%     before the document is complete.</dd>
-%%  <dt><code>{event_fun, Fun} |
-%%            {event_fun, Fun, EventState}</code></dt>
-%%    <dd>Call back function to handle scanner events.</dd>
-%%  <dt><code>{fetch_fun, Fun} |
-%%            {fetch_fun, Fun, FetchState}</code></dt>
-%%    <dd>Call back function to fetch an external resource.</dd>
-%%  <dt><code>{hook_fun, Fun} |
-%%            {hook_fun, Fun, HookState}</code></dt>
-%%    <dd>Call back function to process the document entities once
-%%     identified.</dd>
-%%  <dt><code>{close_fun, Fun}</code></dt>
-%%    <dd>Called when document has been completely parsed.</dd>
-%%  <dt><code>{rules, ReadFun, WriteFun, RulesState} |
-%%            {rules, Rules}</code></dt>
-%%    <dd>Handles storing of scanner information when parsing.</dd>
-%%  <dt><code>{user_state, UserState}</code></dt>
-%%    <dd>Global state variable accessible from all customization functions</dd>
-%%
-%%  <dt><code>{fetch_path, PathList}</code></dt>
-%%    <dd>PathList is a list of
-%%     directories to search when fetching files. If the file in question
-%%     is not in the fetch_path, the URI will be used as a file
-%%     name.</dd>
-%%  <dt><code>{space, Flag}</code></dt>
-%%    <dd>'preserve' (default) to preserve spaces, 'normalize' to
-%%    accumulate consecutive whitespace and replace it with one space.</dd>
-%%  <dt><code>{line, Line}</code></dt>
-%%    <dd>To specify starting line for scanning in document which contains
-%%    fragments of XML.</dd>
-%%  <dt><code>{namespace_conformant, Flag}</code></dt>
-%%    <dd>Controls whether to behave as a namespace conformant XML parser,
-%%    'false' (default) to not otherwise 'true'.</dd>
-%%  <dt><code>{validation, Flag}</code></dt>
-%%    <dd>Controls whether to process as a validating XML parser:
-%%    'off' (default) no validation, or validation 'dtd' by DTD or 'schema'
-%%    by XML Schema. 'false' and 'true' options are obsolete
-%%    (i.e. they may be removed in a future release), if used 'false'
-%%    equals 'off' and 'true' equals 'dtd'.</dd>
-%%  <dt><code>{schemaLocation, [{Namespace,Link}|...]}</code></dt>
-%%    <dd>Tells explicitly which XML Schema documents to use to validate
-%%    the XML document. Used together with the
-%%    <code>{validation,schema}</code> option.</dd>
-%%  <dt><code>{quiet, Flag}</code></dt>
-%%    <dd>Set to 'true' if xmerl should behave quietly and not output any
-%%    information to standard output (default 'false').</dd>
-%%  <dt><code>{doctype_DTD, DTD}</code></dt>
-%%    <dd>Allows to specify DTD name when it isn't available in the XML
-%%    document. This option has effect only together with
-%%    <code>{validation,'dtd'</code> option.</dd>
-%%  <dt><code>{xmlbase, Dir}</code></dt>
-%%    <dd>XML Base directory. If using string/1 default is current directory.
-%%    If using file/1 default is directory of given file.</dd>
-%%  <dt><code>{encoding, Enc}</code></dt>
-%%    <dd>Set default character set used (default UTF-8).
-%%    This character set is used only if not explicitly given by the XML
-%%    declaration. </dd>
-%%  <dt><code>{document, Flag}</code></dt>
-%%    <dd>Set to 'true' if xmerl should return a complete XML document
-%%    as an xmlDocument record (default 'false').</dd>
-%%  <dt><code>{comments, Flag}</code></dt>
-%%    <dd>Set to 'false' if xmerl should skip comments otherwise they will
-%%    be returned as xmlComment records (default 'true').</dd>
-%%  <dt><code>{default_attrs, Flag}</code></dt>
-%%    <dd>Set to 'true' if xmerl should add to elements missing attributes
-%%    with a defined default value (default 'false').</dd>
-%% </dl>
-%% @type xmlElement() = #xmlElement{}.
-%% The record definition is found in xmerl.hrl.
-%% @type xmlDocument() = #xmlDocument{}.
-%% The record definition is found in xmerl.hrl.
-%% @type document() = xmlElement() | xmlDocument(). <p>
-%% The document returned by <tt>xmerl_scan:string/[1,2]</tt> and
-%% <tt>xmerl_scan:file/[1,2]</tt>. The type of the returned record depends on
-%% the value of the document option passed to the function.
-%% </p>
-
 -module(xmerl_scan).
+-moduledoc """
+Single pass XML scanner.
+
+This module is the interface to the XML parser, it handles XML 1.0.
+The XML parser is activated through
+[`xmerl_scan:string/[1,2]`](`string/1`) or
+[`xmerl_scan:file/[1,2]`](`file/1`). It returns records
+of the type defined in `xmerl.hrl`.
+
+See also the
+["Customization functions" tutorial](`e:xmerl:xmerl_examples.html`).
+""".
 -vsn('0.20').
 -date('03-09-16').
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
+
+-unsafe([{'_', '_', possibly}]).
 
 %% main API
 -export([string/1, string/2,
@@ -140,14 +55,97 @@
 %% helper functions. To xmerl_lib ??
 -export([accumulate_whitespace/4]).
 
--export_type([xmlElement/0]).
+-export_type([xmlElement/0, document/0]).
 
 %-define(debug, 1).
 -include("xmerl.hrl").		% record def, macros
 -include("xmerl_internal.hrl").
 -include_lib("kernel/include/file.hrl").
 
--type xmlElement() :: #xmlElement{}.
+-compile({nowarn_hidden_doc, [xmerl_scanner/0]}).
+-doc hidden.
+-type xmerl_scanner() :: #xmerl_scanner{}.
+-doc """
+The global state of the scanner, represented by the `#xmerl_scanner{}` record.
+""".
+-type global_state() :: xmerl_scanner().
+
+-doc """
+Options allow to customize the behaviour of the scanner.  See also the
+["Customization functions" tutorial](`e:xmerl:xmerl_examples.html`).
+
+Possible options are:
+
+- **`{acc_fun, Fun}`** - Call back function to accumulate contents of entity.
+- **`{continuation_fun, Fun} | {continuation_fun, Fun, ContinuationState}`** - Call back function to decide what to do if the scanner runs into EOF
+   before the document is complete.
+- **`{event_fun, Fun} | {event_fun, Fun, EventState}`** - Call back function to handle scanner events.
+- **`{fetch_fun, Fun} | {fetch_fun, Fun, FetchState}`** - Call back function to fetch an external resource.
+- **`{hook_fun, Fun} | {hook_fun, Fun, HookState}`** - Call back function to process the document entities once
+   identified.
+- **`{close_fun, Fun}`** - Called when document has been completely parsed.
+- **`{rules, ReadFun, WriteFun, RulesState} | {rules, Rules}`** - Handles storing of scanner information when parsing.
+- **`{user_state, UserState}`** - Global state variable accessible from all customization functions.
+- **`{fetch_path, PathList}`** - PathList is a list of
+   directories to search when fetching files. If the file in question is not in the fetch_path,
+   the URI will be used as a file name.
+- **`{space, Flag}`** - `preserve` (default) to preserve spaces,
+  `normalize` to accumulate consecutive whitespace and replace it with one space.
+- **`{line, Line}`** - To specify starting line for scanning in document which contains
+  fragments of XML.
+- **`{namespace_conformant, Flag}`** - Controls whether to behave as a namespace conformant XML parser,
+  `false` (default) to not otherwise `true`.
+- **`{validation, Flag}`** - Controls whether to process as a validating XML parser:
+  `off` (default) no validation, or validation `dtd` by DTD or `schema` by XML Schema.
+  `false` and `true` options are obsolete (i.e. they may be removed in a future release),
+  if used `false` equals `off` and `true` equals `dtd`.
+- **`{schemaLocation, [{Namespace,Link}|...]}`** - Tells explicitly which XML Schema documents to use to validate
+  the XML document. Used together with the `{validation,schema}` option.
+- **`{quiet, Flag}`** - Set to `true` if Xmerl should behave quietly
+  and not output any information to standard output (default `false`).
+- **`{doctype_DTD, DTD}`** - Allows to specify DTD name when it isn't available in the XML
+  document. This option has effect only together with `{validation,dtd}` option.
+- **`{xmlbase, Dir}`** - XML Base directory. If using string/1 default is current directory.
+  If using file/1 default is directory of given file.
+- **`{encoding, Enc}`** - Set default character set used (default UTF-8).
+  This character set is used only if not explicitly given by the XML declaration.
+- **`{document, Flag}`** - Set to `true` if Xmerl should return a complete XML document
+  as an xmlDocument record (default `false`).
+- **`{comments, Flag}`** - Set to `false` if Xmerl should skip comments otherwise
+  they will be returned as xmlComment records (default `true`).
+- **`{default_attrs, Flag}`** - Set to `true` if Xmerl should add to elements
+  missing attributes with a defined default value (default `false`).
+- **`{allow_entities, Flag}`** - Set to `true` if `xmerl_scan` shouldn't fail
+  when there is an ENTITY declaration in the XML document (default `false`).
+""".
+-type option_list() ::
+        [{atom(), term()} |
+         {atom(), fun(), term()} |
+         {atom(), fun(), fun(), term()}].
+
+-doc """
+Record `#xmlElement{}`.
+
+The record definition is found in `xmerl.hrl`.
+""".
+-type xmlElement() :: xmerl:xmlElement().
+
+-doc """
+Record `#xmlDocument{}`.
+
+The record definition is found in `xmerl.hrl`.
+""".
+-type xmlDocument() :: xmerl:xmlDocument().
+
+-doc """
+An XML document.
+
+The document returned by [`xmerl_scan:string/[1,2]`](`string/1`) and
+[`xmerl_scan:file/[1,2]`](`file/1`). The type of the returned record
+depends on the value of the [`document`](`t:option_list/0`) option
+passed to the function.
+""".
+-type document() :: xmlElement() | xmlDocument().
 
 -define(fatal(Reason, S),
 	if
@@ -165,90 +163,146 @@
 
 %% Functions to access the various states
 
-%%% @spec user_state(S::global_state()) -> global_state()
-%%% @equiv user_state(UserState,S)
+-doc """
+Fetch the `UserState`.
+
+See the ["Customization functions" tutorial](`e:xmerl:xmerl_examples.html`).
+""".
+-spec user_state(global_state()) -> UserState when
+      UserState :: term().
 user_state(#xmerl_scanner{user_state = S}) -> S.
 
-%%% @spec event_state(S::global_state()) -> global_state()
-%%% @equiv event_state(EventState,S)
+-doc """
+Fetch the `EventState`.
+
+See the ["Customization functions" tutorial](`e:xmerl:xmerl_examples.html`).
+""".
+-spec event_state(global_state()) -> EventState when
+      EventState :: term().
 event_state(#xmerl_scanner{fun_states = #xmerl_fun_states{event = S}}) -> S.
 
-%%% @spec hook_state(S::global_state()) -> global_state()
-%%% @equiv hook_state(HookState,S)
+-doc """
+Fetch the `HookState`.
+
+See the ["Customization functions" tutorial](`e:xmerl:xmerl_examples.html`).
+""".
+-spec hook_state(global_state()) -> HookState when
+      HookState :: term().
 hook_state(#xmerl_scanner{fun_states = #xmerl_fun_states{hook = S}}) -> S.
 
-%%% @spec rules_state(S::global_state()) -> global_state()
-%%% @equiv rules_state(RulesState,S)
+-doc """
+Fetch the `RulesState`.
+
+See the ["Customization functions" tutorial](`e:xmerl:xmerl_examples.html`).
+""".
+-spec rules_state(global_state()) -> RulesState when
+      RulesState :: term().
 rules_state(#xmerl_scanner{fun_states = #xmerl_fun_states{rules = S}}) -> S.
 
-%%% @spec fetch_state(S::global_state()) -> global_state()
-%%% @equiv fetch_state(FetchState,S)
+-doc """
+Fetch the `FetchState`.
+
+See the ["Customization functions" tutorial](`e:xmerl:xmerl_examples.html`).
+""".
+-spec fetch_state(global_state()) -> FetchState when
+      FetchState :: term().
 fetch_state(#xmerl_scanner{fun_states = #xmerl_fun_states{fetch = S}}) -> S.
 
-%%% @spec cont_state(S::global_state()) -> global_state()
-%%% @equiv cont_state(ContinuationState,S)
+-doc """
+Fetch the `ContinuationState`.
+
+See the ["Customization functions" tutorial](`e:xmerl:xmerl_examples.html`).
+""".
+-spec cont_state(global_state()) -> ContinuationState when
+      ContinuationState :: term().
 cont_state(#xmerl_scanner{fun_states = #xmerl_fun_states{cont = S}}) -> S.
 
 
 %%%% Functions to modify the various states
 
-%%% @spec user_state(UserState, S::global_state()) -> global_state()
-%%% @doc For controlling the UserState, to be used in a user function.
-%%% See <a href="xmerl_examples.html">tutorial</a> on customization functions.
+-doc """
+Set the `UserState`, to be used in a user function.
+
+See the ["Customization functions" tutorial](`e:xmerl:xmerl_examples.html`).
+""".
+-spec user_state(UserState :: term(), G :: global_state()) -> global_state().
 user_state(X, S) ->
     S#xmerl_scanner{user_state = X}.
 
-%%% @spec event_state(EventState, S::global_state()) -> global_state()
-%%% @doc For controlling the EventState, to be used in an event
-%%% function, and called at the beginning and at the end of a parsed entity.
-%%% See <a href="xmerl_examples.html">tutorial</a> on customization functions.
+-doc """
+Set the EventState, to be used in an event function.
+
+The event function is called at the beginning and at the end
+of a parsed entity. See the
+["Customization functions" tutorial](`e:xmerl:xmerl_examples.html`).
+""".
+-spec event_state(EventState :: term(), global_state()) -> global_state().
 event_state(X, S=#xmerl_scanner{fun_states = FS}) ->
     FS1 = FS#xmerl_fun_states{event = X},
     S#xmerl_scanner{fun_states = FS1}.
 
-%%% @spec hook_state(HookState, S::global_state()) -> global_state()
-%%% @doc For controlling the HookState, to be used in a hook
-%%% function, and called when the parser has parsed a complete entity.
-%%% See <a href="xmerl_examples.html">tutorial</a> on customization functions.
+-doc """
+Set the HookState, to be used in a hook function.
+
+The hook function is and called when the parser has parsed
+a complete entity.  See the
+["Customization functions" tutorial](`e:xmerl:xmerl_examples.html`).
+""".
+-spec hook_state(HookState :: term(), global_state()) -> global_state().
 hook_state(X, S=#xmerl_scanner{fun_states = FS}) ->
     FS1 = FS#xmerl_fun_states{hook = X},
     S#xmerl_scanner{fun_states = FS1}.
 
-%%% @spec rules_state(RulesState, S::global_state()) -> global_state()
-%%% @doc For controlling the RulesState, to be used in a rules
-%%% function, and called when the parser store scanner information in a rules
-%%% database.
-%%% See <a href="xmerl_examples.html">tutorial</a> on customization functions.
+-doc """
+Set the RulesState, to be used in a rules function.
+
+The rules function is and called when the parser store scanner information
+in a rules database. See the
+["Customization functions" tutorial](`e:xmerl:xmerl_examples.html`).
+""".
+-spec rules_state(RulesState :: term(), global_state()) -> global_state().
 rules_state(X, S=#xmerl_scanner{fun_states = FS}) ->
     FS1 = FS#xmerl_fun_states{rules = X},
     S#xmerl_scanner{fun_states = FS1}.
 
-%%% @spec fetch_state(FetchState, S::global_state()) -> global_state()
-%%% @doc For controlling the FetchState, to be used in a fetch
-%%% function, and called when the parser fetch an external resource (eg. a DTD).
-%%% See <a href="xmerl_examples.html">tutorial</a> on customization functions.
+-doc """
+Set the FetchState, to be used in a fetch function.
+
+The fetch function is and called when the parser fetches
+an external resource (eg. a DTD). See the
+["Customization functions" tutorial](`e:xmerl:xmerl_examples.html`).
+""".
+-spec fetch_state(FetchState :: term(), global_state()) -> global_state().
 fetch_state(X, S=#xmerl_scanner{fun_states = FS}) ->
     FS1 = FS#xmerl_fun_states{fetch = X},
     S#xmerl_scanner{fun_states = FS1}.
 
-%%% @spec cont_state(ContinuationState, S::global_state()) -> global_state()
-%%% @doc For controlling the ContinuationState, to be used in a continuation
-%%% function, and called when the parser encounters the end of the byte stream.
-%%% See <a href="xmerl_examples.html">tutorial</a> on customization functions.
+-doc """
+Set the ContinuationState, to be used in a continuation function.
+
+The continuation function is called when the parser encounters
+the end of the byte stream. See the
+["Customization functions" tutorial](`e:xmerl:xmerl_examples.html`).
+""".
+-spec cont_state(ContState :: term(), global_state()) -> global_state().
 cont_state(X, S=#xmerl_scanner{fun_states = FS}) ->
     FS1 = FS#xmerl_fun_states{cont = X},
     S#xmerl_scanner{fun_states = FS1}.
 
 
-%% @spec file(Filename::string()) -> {xmlElement(),Rest}
-%%   Rest = list()
-%% @equiv file(Filename, [])
+-doc(#{ equiv => file(Filename, []) }).
+-spec file(Filename :: string()) ->
+          {xmlElement(), Rest} | {error, Reason} when
+      Rest   :: string(),
+      Reason :: term().
 file(F) ->
     file(F, []).
 
-%% @spec file(Filename::string(), Options::option_list()) -> {document(),Rest}
-%%   Rest = list()
-%%% @doc Parse file containing an XML document
+-doc "Parse a file containing an XML document".
+-spec file(Filename :: string(), option_list()) ->
+          {dynamic(), Rest} | {error, Reason} when
+      Rest   :: string(),
+      Reason :: term().
 file(F, Options) ->
     ExtCharset=case lists:keysearch(encoding,1,Options) of
 		   {value,{_,Val}} -> Val;
@@ -280,15 +334,17 @@ int_file_decl(F, Options,_ExtCharset) ->
 	    Error
     end.
 
-%% @spec string(Text::list()) -> {xmlElement(),Rest}
-%%   Rest = list()
-%% @equiv string(Text, [])
+-doc(#{ equiv => string(Text, []) }).
+-spec string(Text :: string()) ->
+          {xmlElement(), Rest} when
+      Rest :: string().
 string(Str) ->
     string(Str, []).
 
-%% @spec string(Text::list(),Options::option_list()) -> {document(),Rest}
-%%   Rest = list()
-%%% @doc Parse string containing an XML document
+-doc "Parse a string containing an XML document".
+-spec string(Text :: string(), option_list()) ->
+          {dynamic(), Rest} when
+      Rest :: string().
 string(Str, Options) ->
      {Res, Tail, S=#xmerl_scanner{close_fun = Close}} =
 	int_string(Str, Options,file_name_unknown),
@@ -417,6 +473,8 @@ initial_state([{xmlbase, D}|T], S) ->
     initial_state(T, S#xmerl_scanner{xmlbase = D});
 initial_state([{encoding, Enc}|T], S) ->
     initial_state(T, S#xmerl_scanner{encoding = Enc});
+initial_state([{allow_entities, F} |T], S) when F==true; F==false ->
+    initial_state(T, S#xmerl_scanner{allow_entities = F});
 initial_state([], S=#xmerl_scanner{rules = undefined}) ->
     Tab = ets:new(rules, [set, public]),
     S#xmerl_scanner{rules = Tab};
@@ -1102,8 +1160,8 @@ scan_pi(Str = [H1,H2,H3 | T],S0=#xmerl_scanner{line = L, col = C}, Pos, Ps)
     %% names beginning with [xX][mM][lL] are reserved for future use.
     ?bump_col(3),
     if
-	((H2==$m) or (H2==$M)) and
-	((H3==$l) or (H3==$L)) ->
+	H2==$m orelse H2==$M,
+	H3==$l orelse H3==$L ->
 	    scan_wellknown_pi(T,S,Pos,Ps);
 	true ->
 	    {Target, _NamespaceInfo, T1, S1} = scan_name(Str, S),
@@ -1320,7 +1378,8 @@ fetch_and_parse(ExtSpec,S=#xmerl_scanner{fetch_fun=Fetch,
 			rules_write_fun = Write,
 			validation = Valid,
 			quiet = Quiet,
-			encoding = Charset
+			encoding = Charset,
+                        allow_entities = AllowEntities
 		       }} ->
 	    EvS = event_state(NewS),
 	    HoS = hook_state(NewS),
@@ -1338,7 +1397,8 @@ fetch_and_parse(ExtSpec,S=#xmerl_scanner{fetch_fun=Fetch,
 				 {acc_fun, Acc},
 				 {validation,Valid},
 				 {quiet,Quiet},
-				 {encoding,Charset}],
+				 {encoding,Charset},
+                                 {allow_entities, AllowEntities}],
 
 	    case DataRet of
 		{file, F} ->
@@ -1410,7 +1470,7 @@ check_notations(Tab,S) ->
     end.
 
 check_elements(Tab,S) ->
-    case catch ets:match(Tab,{{elem_def,'_'},'$2'},10) of
+    try ets:match(Tab,{{elem_def,'_'},'$2'},10) of
 	{_,_}=M ->
 	    Fun = fun({Match,'$end_of_table'},_F) ->
 			  lists:foreach(fun(X)->check_elements2(X,S) end,
@@ -1424,8 +1484,9 @@ check_elements(Tab,S) ->
 			  F(ets:match(Cont),F)
 		  end,
 	    Fun(M,Fun);
-	'$end_of_table' -> ok;
-	Err -> ?fatal({error_missing_declaration_in_DTD,Err},S)
+	'$end_of_table' -> ok
+    catch
+	_:Err -> ?fatal({error_missing_declaration_in_DTD,Err},S)
     end.
 
 % it is not an error to declare attributes for an element that is not
@@ -1688,10 +1749,15 @@ scan_markup_decl("<!ENTITY" ++ T, S0) ->
     %% <!ENTITY [%] entity.name "replacement text">
     %% <!ENTITY [%] entity.name SYSTEM "system.identifier">
     %% <!ENTITY [%] entity.name PUBLIC public.identifier "system.identifier">
-    ?bump_col(8),
-    {_,T1,S1} = mandatory_strip(T,S),
-    {T2, S2} = scan_entity(T1, S1),
-    strip(T2,S2);
+    case S0#xmerl_scanner.allow_entities of
+        false ->
+            ?fatal( {error, entities_not_allowed}, S0);
+        true ->
+            ?bump_col(8),
+            {_,T1,S1} = mandatory_strip(T,S),
+            {T2, S2} = scan_entity(T1, S1),
+            strip(T2,S2)
+    end;
 scan_markup_decl("<!NOTATION" ++ T, S0) ->
     %% <!NOTATION notation.name "public.identifier" "helper.application">
     ?bump_col(10),
@@ -2776,11 +2842,11 @@ scan_reference("#" ++ T, S0) ->
 	    ?fatal(invalid_char_ref, S)
     end;
 scan_reference(T, S) ->
-    case catch scan_entity_ref(T, S) of
-	{'EXIT', _} ->
-	    ?fatal(error_scanning_entity_ref,S);
-	Other ->
-	    Other
+    try
+        scan_entity_ref(T, S)
+    catch
+	exit:_ ->
+	    ?fatal(error_scanning_entity_ref,S)
     end.
 
 
@@ -3637,7 +3703,7 @@ scan_entity_value("%" ++ T, S0, Delim, Acc, PEName,Namespace,PENesting) ->
 		     ExpRef ->
 			{string_to_char_set(S1#xmerl_scanner.encoding, ExpRef) ,S1}
 		end,
-	    %% single or duoble qoutes are not treated as delimeters
+	    %% single or duoble quotes are not treated as delimiters
 	    %% in passages "included in literal"
 	    S3 = S2#xmerl_scanner{col=S2#xmerl_scanner.col+1},
 	    {Acc2,_,S4} = scan_entity_value(ExpandedRef,S3,no_delim,Acc,
@@ -3678,32 +3744,32 @@ scan_entity_value("&" ++ T, S0, Delim, Acc, PEName,Namespace,PENesting) ->
 	    scan_entity_value(T2,S2,Delim,[";",atom_to_list(Name),"&"|Acc],PEName,Namespace,PENesting)
     end;
 %% The following clauses is for PE Nesting VC constraint
-%% Start delimeter for ConditionalSection
+%% Start delimiter for ConditionalSection
 scan_entity_value("<!["++T,S0,Delim,Acc,PEName,parameter=NS,PENesting)->
     ?bump_col(3),
     scan_entity_value(T,S,Delim,["<!["|Acc],PEName,NS,
 		      pe_push("<![",PENesting,S));
-%% Start delimeter for ConditionalSection (2)
+%% Start delimiter for ConditionalSection (2)
 scan_entity_value("["++T,S0,Delim,Acc,PEName,parameter=NS,PENesting)->
     ?bump_col(1),
     scan_entity_value(T,S,Delim,["["|Acc],PEName,NS,
 		      pe_push("[",PENesting,S));
-%% Start delimeter for comment
+%% Start delimiter for comment
 scan_entity_value("<!--"++T,S0,Delim,Acc,PEName,parameter=NS,PENesting)->
     ?bump_col(4),
     scan_entity_value(T,S,Delim,["<!--"|Acc],PEName,NS,
 		      pe_push("<!--",PENesting,S));
-%% Start delimeter for ElementDecl, AttListDecl,EntityDecl,NotationDecl
+%% Start delimiter for ElementDecl, AttListDecl,EntityDecl,NotationDecl
 scan_entity_value("<!"++ T,S0,Delim,Acc,PEName, parameter=NS,PENesting) ->
     ?bump_col(2),
     scan_entity_value(T,S,Delim,["<!"|Acc],PEName,NS,
 		      pe_push("<!",PENesting,S));
-%% Start delimeter for PI
+%% Start delimiter for PI
 scan_entity_value("<?"++T,S0,Delim,Acc,PEName, parameter=NS,PENesting) ->
     ?bump_col(2),
     scan_entity_value(T,S,Delim,["<?"|Acc],PEName,NS,
 		      pe_push("<?",PENesting,S));
-%% Start delimeter for elements that matches the proper stop delimeter
+%% Start delimiter for elements that matches the proper stop delimiter
 %% for a markupdecl
 scan_entity_value("</"++T,S0,Delim,Acc,PEName,parameter=NS,PENesting)->
     ?bump_col(2),
@@ -3713,32 +3779,32 @@ scan_entity_value("<"++T,S0,Delim,Acc,PEName,parameter=NS,PENesting)->
     ?bump_col(1),
     scan_entity_value(T,S,Delim,["<"|Acc],PEName,NS,
 		      pe_push("<",PENesting,S));
-%% Delimeter for contentspecs
+%% Delimiter for contentspecs
 scan_entity_value("("++T,S0,Delim,Acc,PEName,parameter=NS,PENesting)->
     ?bump_col(1),
     scan_entity_value(T,S,Delim,["("|Acc],PEName,NS,
 		      pe_push("(",PENesting,S));
-%% Stop delimeter for ElementDecl, AttListDecl,EntityDecl,NotationDecl
+%% Stop delimiter for ElementDecl, AttListDecl,EntityDecl,NotationDecl
 scan_entity_value(">"++ T,S0,Delim,Acc,PEName, parameter=NS,PENesting) ->
     ?bump_col(1),
     scan_entity_value(T,S,Delim,[">"|Acc],PEName,NS,
 		      pe_pop(">",PENesting,S));
-%% Stop delimeter for PI
+%% Stop delimiter for PI
 scan_entity_value("?>"++ T,S0,Delim,Acc,PEName, parameter=NS,PENesting) ->
     ?bump_col(2),
     scan_entity_value(T,S,Delim,["?>"|Acc],PEName,NS,
 		      pe_pop("?>",PENesting,S));
-%% Stop delimeter for comment
+%% Stop delimiter for comment
 scan_entity_value("-->"++ T,S0,Delim,Acc,PEName, parameter=NS,PENesting) ->
     ?bump_col(3),
     scan_entity_value(T,S,Delim,["-->"|Acc],PEName,NS,
 		      pe_pop("-->",PENesting,S));
-%% Stop delimeter for ConditionalSection
+%% Stop delimiter for ConditionalSection
 scan_entity_value("]]>"++ T,S0,Delim,Acc,PEName, parameter=NS,PENesting) ->
     ?bump_col(3),
     scan_entity_value(T,S,Delim,["]]>"|Acc],PEName,NS,
 		      pe_pop("]]>",PENesting,S));
-%% Stop delimeter added to match a content start delimeter included
+%% Stop delimiter added to match a content start delimiter included
 scan_entity_value("/>"++ T,S0,Delim,Acc,PEName, parameter=NS,PENesting) ->
     ?bump_col(2),
     scan_entity_value(T,S,Delim,["/>"|Acc],PEName,NS,
@@ -3834,16 +3900,14 @@ predefined_entity(_) ->    false.
 check_entity_recursion(EName,
 		       S=#xmerl_scanner{entity_references=EntityRefList}) ->
     Set = sofs:family(EntityRefList),
-    case catch sofs:family_to_digraph(Set, [acyclic]) of
-	{'EXIT',{cyclic,_}} ->
-	    ?fatal({illegal_recursion_in_Entity, EName}, S);
-	DG ->
+    try sofs:family_to_digraph(Set, [acyclic]) of
+        DG ->
 	    digraph:delete(DG),
-	    ok
+            ok
+    catch
+        error:{cyclic,_} ->
+	    ?fatal({illegal_recursion_in_Entity, EName}, S)
     end.
-
-
-
 
 %%%%%%% [15] Comment
 scan_comment(Str, S) ->
@@ -4015,10 +4079,14 @@ fast_acc_end(T, S, N, Col, C, CD_I) ->
     end.
 
 
-%%% @spec accumulate_whitespace(T::string(),S::global_state(),
-%%%                             atom(),Acc::string()) -> {Acc, T1, S1}
-%%%
-%%% @doc Function to accumulate and normalize whitespace.
+-doc "Accumulate and normalize whitespace.".
+-spec accumulate_whitespace(Text, global_state(), How, Acc) ->
+          {NewAcc, NewText, global_state()} when
+      Text    :: string(),
+      How     :: 'preserve' | 'normalize',
+      Acc     :: string(),
+      NewAcc  :: string(),
+      NewText :: string().
 accumulate_whitespace(T, S, preserve, Acc) ->
     accumulate_whitespace(T, S, Acc);
 accumulate_whitespace(T, S, normalize, Acc) ->

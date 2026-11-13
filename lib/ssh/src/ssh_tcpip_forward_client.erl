@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2009-2019. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2009-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,6 +21,7 @@
 %%
 
 -module(ssh_tcpip_forward_client).
+-moduledoc false.
 
 -behaviour(ssh_client_channel).
 
@@ -70,6 +73,8 @@ handle_ssh_msg({ssh_cm, _, {exit_status, ChId, _Status}}, State) ->
     {stop, ChId, State}.
 
 
+terminate(_Reason, #state{fwd_socket=undefined}) ->
+    ok;
 terminate(_Reason, #state{fwd_socket=Sock}) ->
     gen_tcp:close(Sock),
     ok.

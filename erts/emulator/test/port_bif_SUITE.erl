@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1997-2020. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -31,6 +33,7 @@
 -export([do_command_e_1/1, do_command_e_2/1, do_command_e_4/1]).
 
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
 suite() ->
     [{ct_hooks,[ts_install_cth]},
@@ -313,11 +316,11 @@ connect(Config) when is_list(Config) ->
 
     %% Tests some errors.
 
-    {'EXIT',{badarg, _}}=(catch erlang:port_connect(self(), self())),
-    {'EXIT',{badarg, _}}=(catch erlang:port_connect(self(), P)),
-    {'EXIT',{badarg, _}}=(catch erlang:port_connect(P, P)),
-    {'EXIT',{badarg, _}}=(catch erlang:port_connect(P, xxxx)),
-    {'EXIT',{badarg, _}}=(catch erlang:port_connect(P, [])),
+    ?assertError(badarg, erlang:port_connect(self(), self())),
+    ?assertError(badarg, erlang:port_connect(self(), P)),
+    ?assertError(badarg, erlang:port_connect(P, P)),
+    ?assertError(badarg, erlang:port_connect(P, xxxx)),
+    ?assertError(badarg, erlang:port_connect(P, [])),
 
     process_flag(trap_exit, true),
     exit(P, you_should_die),
@@ -336,22 +339,22 @@ control(Config) when is_list(Config) ->
 
     %% Test invalid (out-of-range) arguments.
 
-    {'EXIT', {badarg, _}} = (catch erlang:port_control(self(), 1, [])),
+    ?assertError(badarg, erlang:port_control(self(), 1, [])),
 
-    {'EXIT', {badarg, _}} = (catch erlang:port_control(P, -1, [])),
-    {'EXIT', {badarg, _}} = (catch erlang:port_control(P, -34887348739733833, [])),
-    {'EXIT', {badarg, _}} = (catch erlang:port_control(P, 16#100000000, [])),
-    {'EXIT', {badarg, _}} = (catch erlang:port_control(P, a, [])),
-    {'EXIT', {badarg, _}} = (catch erlang:port_control(P, 'e', dum)),
-    {'EXIT', {badarg, _}} = (catch erlang:port_control(P, $e, dum)),
-    {'EXIT', {badarg, _}} = (catch erlang:port_control(P, $e, fun(X) -> X end)),
-    {'EXIT', {badarg, _}} = (catch erlang:port_control(P, $e, [fun(X) -> X end])),
-    {'EXIT', {badarg, _}} = (catch erlang:port_control(P, $e, [1|fun(X) -> X end])),
+    ?assertError(badarg, erlang:port_control(P, -1, [])),
+    ?assertError(badarg, erlang:port_control(P, -34887348739733833, [])),
+    ?assertError(badarg, erlang:port_control(P, 16#100000000, [])),
+    ?assertError(badarg, erlang:port_control(P, a, [])),
+    ?assertError(badarg, erlang:port_control(P, 'e', dum)),
+    ?assertError(badarg, erlang:port_control(P, $e, dum)),
+    ?assertError(badarg, erlang:port_control(P, $e, fun(X) -> X end)),
+    ?assertError(badarg, erlang:port_control(P, $e, [fun(X) -> X end])),
+    ?assertError(badarg, erlang:port_control(P, $e, [1|fun(X) -> X end])),
 
     %% Test errors detected by the driver.
 
-    {'EXIT', {badarg, _}} = (catch erlang:port_control(P, 177, [])),
-    {'EXIT', {badarg, _}} = (catch erlang:port_control(P, 155, random_packet(1024))),
+    ?assertError(badarg, erlang:port_control(P, 177, [])),
+    ?assertError(badarg, erlang:port_control(P, 155, random_packet(1024))),
 
     %% Test big op codes.
 
@@ -621,27 +624,31 @@ wait_until(Fun, MaxTime) ->
     wait_until_aux(Fun, End).
 
 wait_until_aux(Fun, End) ->
-    case catch Fun() of
+    try Fun() of
         true ->
             true;
         _ ->
-            if End == infinity ->
-                    receive after 100 -> ok end,
-                    wait_until_aux(Fun, infinity);
-               true ->
-                    Now = erlang:monotonic_time(millisecond),
-                    case End =< Now of
-                        true ->
-                            false;
+            wait_until_retry(Fun, End)
+    catch
+        _:_ ->
+            wait_until_retry(Fun, End)
+    end.
+
+wait_until_retry(Fun, infinity) ->
+    receive after 100 -> ok end,
+    wait_until_aux(Fun, infinity);
+wait_until_retry(Fun, End) ->
+    Now = erlang:monotonic_time(millisecond),
+    case End =< Now of
+        true ->
+            false;
+        _ ->
+            Wait = case End - Now of
+                        Short when End - Now < 100 ->
+                            Short;
                         _ ->
-                            Wait = case End - Now of
-                                       Short when End - Now < 100 ->
-                                           Short;
-                                       _ ->
-                                           100
-                                   end,
-                            receive after Wait -> ok end,
-                            wait_until_aux(Fun, End)
-                    end
-            end
+                            100
+                    end,
+            receive after Wait -> ok end,
+            wait_until_aux(Fun, End)
     end.

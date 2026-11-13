@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2004-2019. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2004-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -30,8 +32,10 @@
 
 -module(hash_property_test_SUITE).
 
--export([suite/0,all/0,groups/0,init_per_suite/1,
-         end_per_suite/1,init_per_group/2,end_per_group/2]).
+-export([suite/0,all/0,groups/0,
+         init_per_testcase/2, end_per_testcase/2,
+         init_per_suite/1, end_per_suite/1,
+         init_per_group/2, end_per_group/2]).
 
 -export([test_phash2_no_diff/1,
          test_phash2_no_diff_long/1,
@@ -42,10 +46,10 @@
 suite() ->
     [{ct_hooks,[ts_install_cth]}].
 
-all() -> [{group, proper}].
+all() -> [{group, property}].
 
 groups() ->
-    [{proper, [], [test_phash2_no_diff,
+    [{property, [], [test_phash2_no_diff,
                    test_phash2_no_diff_long,
                    test_phash2_no_diff_between_versions]}].
 
@@ -57,10 +61,9 @@ init_per_suite(Config) ->
 end_per_suite(Config) ->
     Config.
 
-%%% Only proper is supported
-init_per_group(proper, Config) ->
+init_per_group(property, Config) ->
     case proplists:get_value(property_test_tool,Config) of
-	proper -> Config;
+	Tool when Tool =:= proper; Tool =:= eqc -> Config;
 	X -> {skip, lists:concat([X," is not supported"])}
     end;
 init_per_group(_, Config) ->
@@ -68,6 +71,11 @@ init_per_group(_, Config) ->
 
 end_per_group(_, Config) ->
     Config.
+
+init_per_testcase(_TestCase, Config) ->
+    Config.
+end_per_testcase(_TestCase, Config) ->
+    erts_test_utils:ept_check_leaked_nodes(Config).
 
 test_phash2_no_diff(Config) when is_list(Config) ->
     true = ct_property_test:quickcheck(
@@ -80,24 +88,16 @@ test_phash2_no_diff_long(Config) when is_list(Config) ->
              Config).
 
 test_phash2_no_diff_between_versions(Config) when is_list(Config) ->
-    R = "21",
-    case test_server:is_release_available(R) of
-        true ->
-            Rel = {release,R},
-            case test_server:start_node(rel21,peer,[{erl,[Rel]}]) of
-                {error, Reason} -> {skip, io_lib:format("Could not start node: ~p~n", [Reason])};
-                {ok, Node} ->
-                    try
-                        true = ct_property_test:quickcheck(
-                                 phash2_properties:prop_phash2_same_in_different_versions(Node),
-                                 Config),
-                        true = ct_property_test:quickcheck(
-                                 phash2_properties:prop_phash2_same_in_different_versions_with_long_input(Node),
-                                 Config)
-                    after
-                        test_server:stop_node(Node)
-                    end
-            end;
-        false ->
+    R = integer_to_list(list_to_integer(erlang:system_info(otp_release))-2) ++ "_latest",
+    case ?CT_PEER_REL([], R, proplists:get_value(priv_dir, Config)) of
+        {ok, Peer, Node} ->
+            true = ct_property_test:quickcheck(
+                     phash2_properties:prop_phash2_same_in_different_versions(Node),
+                     Config),
+            true = ct_property_test:quickcheck(
+                     phash2_properties:prop_phash2_same_in_different_versions_with_long_input(Node),
+                     Config),
+            peer:stop(Peer);
+        not_available ->
             {skip, io_lib:format("Release ~s not available~n", [R])}
     end.

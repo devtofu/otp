@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2007-2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2007-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -28,7 +30,7 @@
 	 init_per_testcase/2, end_per_testcase/2]).
 
 %% Test cases
--export([floor_ceil/1, error_info/1]).
+-export([floor_ceil/1, error_info/1, constants/1, doctests/1]).
 
 
 suite() ->
@@ -36,7 +38,7 @@ suite() ->
      {timetrap,{minutes,1}}].
 
 all() ->
-    [floor_ceil, error_info].
+    [floor_ceil, error_info, constants, doctests].
 
 groups() ->
     [].
@@ -60,11 +62,16 @@ init_per_testcase(_Case, Config) ->
 end_per_testcase(_Case, _Config) ->
     ok.
 
+constants(_Config) ->
+    3.1415926535897932 = math:pi(),
+    6.2831853071795864 = math:tau(),
+    ok.
+
 floor_ceil(_Config) ->
     MinusZero = 0.0/(-1.0),
     -43.0 = do_floor_ceil(-42.1),
     -43.0 = do_floor_ceil(-42.7),
-    0.0 = do_floor_ceil(MinusZero),
+    true = (0.0 == do_floor_ceil(MinusZero)),
     10.0 = do_floor_ceil(10.1),
     10.0 = do_floor_ceil(10.9),
 
@@ -170,3 +177,7 @@ ignore_undefined([H|T]) ->
     end;
 ignore_undefined([]) ->
     [].
+
+doctests(_Config) ->
+    ct_doctest:module(math, [{skipped_blocks, 0},
+                              {missing_tests, []}]).

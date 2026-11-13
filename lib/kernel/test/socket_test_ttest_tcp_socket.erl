@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2018-2019. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2018-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,8 +16,13 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
+%%
+
+%%
+%% socket with a basic wrapper that (basically)
+%% provides active = false | true | once | n.
 %%
 
 -module(socket_test_ttest_tcp_socket).
@@ -32,27 +39,42 @@
 	 recv/2, recv/3,
 	 send/2,
 	 shutdown/2,
-	 sockname/1
+	 sockname/1,
+         info/1
 	]).
 
+
+-include("socket_test_ttest.hrl").
 
 -define(LIB, socket_test_lib).
 
 -define(READER_RECV_TIMEOUT, 1000).
 
+-define(CSOCK(SOCK, METHOD),
+        ?CSOCK(SOCK, self(), METHOD)).
+-define(CSOCK(SOCK, READER, METHOD),
+        #{sock => Sock, reader => READER, method => METHOD}).
+
 -define(DATA_MSG(Sock, Method, Data),
-        {socket,
-         #{sock => Sock, reader => self(), method => Method},
-         Data}).
+        {socket, ?CSOCK(Sock, Method), Data}).
 
 -define(CLOSED_MSG(Sock, Method),
-        {socket_closed,
-         #{sock => Sock, reader => self(), method => Method}}).
+        {socket_closed, ?CSOCK(Sock, Method)}).
+
+-define(PASSIVE_MSG(Sock, Method),
+        {socket_passive, ?CSOCK(Sock, Method)}).
 
 -define(ERROR_MSG(Sock, Method, Reason),
-        {socket_error,
-         #{sock => Sock, reader => self(), method => Method},
-         Reason}).
+        {socket_error, ?CSOCK(Sock, Method), Reason}).
+
+
+-define(SELECT_INFO(TAG, REF),     {select_info, TAG, REF}).
+-define(COMPLETION_INFO(TAG, REF), {completion_info, TAG, REF}).
+
+-define(SELECT_MSG(SOCK, REF),
+        {'$socket', (SOCK), select, (REF)}).
+-define(COMPLETION_MSG(SOCK, REF, STATUS),
+        {'$socket', (SOCK), completion, {(REF), (STATUS)}}).
 
 
 %% ==========================================================================
@@ -79,12 +101,12 @@ accept(#{sock := LSock, opts := #{async  := Async,
                                    reader_init(Self, Sock, Async, false, Method)
                            end),
             maybe_start_stats_timer(Opts, Reader),
-	    {ok, #{sock => Sock, reader => Reader, method => Method}};
+	    {ok, ?CSOCK(Sock, Reader, Method)};
 	{error, _} = ERROR ->
 	    ERROR
     end.
 
-%% If a timeout has been explictly specified, then we do not use
+%% If a timeout has been explicitly specified, then we do not use
 %% async here. We will pass it on to the reader process.
 accept(#{sock := LSock, opts := #{async  := Async,
                                   method := Method} = Opts}, Timeout) ->
@@ -95,7 +117,7 @@ accept(#{sock := LSock, opts := #{async  := Async,
                                    reader_init(Self, Sock, Async, false, Method)
                            end),
             maybe_start_stats_timer(Opts, Reader),
-	    {ok, #{sock => Sock, reader => Reader, method => Method}};
+	    {ok, ?CSOCK(Sock, Reader, Method)};
 	{error, _} = ERROR ->
 	    ERROR
     end.
@@ -104,7 +126,16 @@ accept(#{sock := LSock, opts := #{async  := Async,
 active(#{reader := Pid}, NewActive) 
   when (is_boolean(NewActive) orelse (NewActive =:= once)) ->
     Pid ! {?MODULE, active, NewActive},
-    ok.
+    ok;
+active(#{reader := Pid}, NewActive) 
+  when (is_integer(NewActive) andalso
+        (-32768 =< NewActive) andalso (NewActive =< 32767)) ->
+    Ref = make_ref(),
+    Pid ! {?MODULE, self(), active, NewActive, Ref},
+    receive
+        {?MODULE, Pid, active, Reply, Ref} ->
+            Reply
+    end.
 
 
 close(#{sock := Sock, reader := Pid}) ->
@@ -120,7 +151,7 @@ close(#{sock := Sock, reader := Pid}) ->
     Res.
 
 %% Create a socket and connect it to a peer
-connect(ServerPath) when is_list(ServerPath) ->
+connect(ServerPath) when is_list(ServerPath) orelse is_binary(ServerPath) ->
     Domain     = local,
     ClientPath = mk_unique_path(),
     LocalSA    = #{family => Domain,
@@ -145,7 +176,7 @@ connect(Addr, Port) when is_tuple(Addr) andalso is_integer(Port) ->
     do_connect(LocalSA, ServerSA, Cleanup, Opts);
 connect(ServerPath,
         #{domain := local = Domain} = Opts)
-  when is_list(ServerPath) ->
+  when is_list(ServerPath) orelse is_binary(ServerPath) ->
     ClientPath = mk_unique_path(),
     LocalSA    = #{family => Domain,
                    path   => ClientPath},
@@ -179,7 +210,7 @@ do_connect(LocalSA, ServerSA, Cleanup, #{domain := Domain,
 		ok ->
 		    ok;
 		{error, BReason} ->
-		    (catch socket:close(Sock)),
+		    ?CATCH_AND_IGNORE( socket:close(Sock) ),
                     Cleanup(),
 		    throw({error, {bind, BReason}})
 	    end,
@@ -187,7 +218,7 @@ do_connect(LocalSA, ServerSA, Cleanup, #{domain := Domain,
 		ok ->
 		    ok;
 		{error, CReason} ->
-		    (catch socket:close(Sock)),
+		    ?CATCH_AND_IGNORE( socket:close(Sock) ),
                     Cleanup(),
 		    throw({error, {connect, CReason}})
 	    end,
@@ -204,8 +235,8 @@ do_connect(LocalSA, ServerSA, Cleanup, #{domain := Domain,
     end.
 
 mk_unique_path() ->
-    [NodeName | _] = string:tokens(atom_to_list(node()), [$@]),
-    ?LIB:f("/tmp/esock_~s_~w", [NodeName, erlang:system_time(nanosecond)]).
+    ?LIB:mk_unique_path().
+
 
 maybe_start_stats_timer(#{stats_to       := Pid,
                           stats_interval := T},
@@ -233,13 +264,14 @@ listen() ->
 
 listen(Port) when is_integer(Port) ->
     listen(Port, #{domain => inet, async => false, method => plain});
-listen(Path) when is_list(Path) ->
+listen(Path) when is_list(Path) orelse is_binary(Path) ->
     listen(Path, #{domain => local, async => false, method => plain}).
 
 listen(0, #{domain := local} = Opts) ->
     listen(mk_unique_path(), Opts);
 listen(Path, #{domain := local = Domain} = Opts)
-  when is_list(Path) andalso (Path =/= []) ->
+  when (is_list(Path) andalso (Path =/= [])) orelse
+       (is_binary(Path) andalso (Path =/= <<"">>)) ->
     SA = #{family => Domain,
            path   => Path},
     Cleanup = fun() -> os:cmd("unlink " ++ Path), ok end,
@@ -276,7 +308,7 @@ do_listen(SA,
 		ok ->
 		    ok;
 		{error, BReason} ->
-		    (catch socket:close(Sock)),
+		    ?CATCH_AND_IGNORE( socket:close(Sock) ),
                     Cleanup(),
 		    throw({error, {bind, BReason}})
 	    end,
@@ -284,7 +316,7 @@ do_listen(SA,
 		ok ->
                     ok;
                 {error, LReason} ->
-		    (catch socket:close(Sock)),
+		    ?CATCH_AND_IGNORE( socket:close(Sock) ),
                     Cleanup(),
                     throw({error, {listen, LReason}})
             end,
@@ -358,20 +390,26 @@ sockname(#{sock := Sock}) ->
     end.
 
 
+info(#{sock := Sock}) ->
+    socket:info(Sock).
+
+
 %% ==========================================================================
 
 reader_init(ControllingProcess, Sock, Async, Active, Method) 
   when is_pid(ControllingProcess) andalso
        is_boolean(Async) andalso
-       (is_boolean(Active) orelse (Active =:= once)) andalso 
+       (is_boolean(Active) orelse (Active =:= once) orelse
+        is_integer(Active)) andalso 
        ((Method =:= plain) orelse (Method =:= msg)) ->
     put(verbose, false),
     MRef = erlang:monitor(process, ControllingProcess),
     reader_loop(#{ctrl_proc      => ControllingProcess,
 		  ctrl_proc_mref => MRef,
                   async          => Async,
-                  select_info    => undefined,
-                  select_num     => 0, % Count the number of select messages
+                  asynch_info    => undefined,
+                  %% Count the number of select|completion messages
+                  asynch_num     => 0,
 		  active         => Active,
 		  sock           => Sock,
                   method         => Method}).
@@ -394,6 +432,29 @@ reader_loop(#{active    := false,
 
 	{?MODULE, active, NewActive} ->
 	    reader_loop(State#{active => NewActive});
+
+	{?MODULE, From, active, NewActive, Ref} ->
+            OldActive = maps:get(active, State),
+            N =
+                if
+                    is_integer(OldActive) ->
+                        OldActive + NewActive;
+                    true ->
+                        NewActive
+                end,
+            if
+                32767 < N ->
+                    From ! {?MODULE, self(), active, {error, einval}, Ref};
+                N =< 0 ->
+                    From ! {?MODULE, self(), active, ok, Ref},
+                    Sock   = maps:get(sock,   State),
+                    Method = maps:get(method, State),
+                    Pid ! ?PASSIVE_MSG(Sock, Method),
+                    reader_loop(State);
+                true ->
+                    From ! {?MODULE, self(), active, ok, Ref},
+                    reader_loop(State#{active => N})
+            end;
 
 	{'DOWN', MRef, process, Pid, Reason} ->
 	    case maps:get(ctrl_proc_mref, State) of
@@ -430,6 +491,29 @@ reader_loop(#{active    := once,
 		{?MODULE, active, NewActive} ->
 		    reader_loop(State#{active => NewActive});
 
+                {?MODULE, From, active, NewActive, Ref} ->
+                    OldActive = maps:get(active, State),
+                    N =
+                        if
+                            is_integer(OldActive) ->
+                                OldActive + NewActive;
+                            true ->
+                                NewActive
+                        end,
+                    if
+                        32767 < N ->
+                            From ! {?MODULE, self(), active, {error, einval}, Ref};
+                        N =< 0 ->
+                            From ! {?MODULE, self(), active, ok, Ref},
+                            Sock   = maps:get(sock,   State),
+                            Method = maps:get(method, State),
+                            Pid ! ?PASSIVE_MSG(Sock, Method),
+                            reader_loop(State#{active => false});
+                        true ->
+                            From ! {?MODULE, self(), active, ok, Ref},
+                            reader_loop(State#{active => N})
+                    end;
+
 		{'DOWN', MRef, process, Pid, Reason} ->
 		    case maps:get(ctrl_proc_mref, State) of
                         MRef ->
@@ -451,13 +535,16 @@ reader_loop(#{active    := once,
     end;
 reader_loop(#{active      := once,
 	      async       := true,
-              select_info := undefined,
+              asynch_info := undefined,
               sock        := Sock,
               method      := Method,
 	      ctrl_proc   := Pid} = State) ->
     case do_recv(Method, Sock, nowait) of
         {select, SelectInfo} ->
-            reader_loop(State#{select_info => SelectInfo});
+            reader_loop(State#{asynch_info => SelectInfo});
+        {completion, CompletionInfo} ->
+            reader_loop(State#{asynch_info => CompletionInfo});
+
 	{ok, Data} ->
 	    Pid ! ?DATA_MSG(Sock, Method, Data),
 	    reader_loop(State#{active => false});
@@ -472,15 +559,21 @@ reader_loop(#{active      := once,
     end;
 reader_loop(#{active      := once,
 	      async       := true,
-              select_info := {select_info, _, Ref},
-              select_num  := N,
+              asynch_info := AsynchInfo,
+              asynch_num  := ANum,
               sock        := Sock,
               method      := Method,
-	      ctrl_proc   := Pid} = State) ->
+	      ctrl_proc   := Pid} = State) when (AsynchInfo =/= undefined) ->
+    Ref = case AsynchInfo of
+              ?SELECT_INFO(_, SR) ->
+                  SR;
+              ?COMPLETION_INFO(_, CR) ->
+                  CR
+          end,
     receive
         {?MODULE, stop} ->
             reader_exit(State, stop);
-        
+
         {?MODULE, Pid, controlling_process, NewPid} ->
             OldMRef = maps:get(ctrl_proc_mref, State),
             erlang:demonitor(OldMRef, [flush]),
@@ -488,10 +581,33 @@ reader_loop(#{active      := once,
             Pid ! {?MODULE, self(), controlling_process},
             reader_loop(State#{ctrl_proc      => NewPid,
                                ctrl_proc_mref => NewMRef});
-        
+
         {?MODULE, active, NewActive} ->
             reader_loop(State#{active => NewActive});
-        
+
+	{?MODULE, From, active, NewActive, Ref} ->
+            OldActive = maps:get(active, State),
+            N =
+                if
+                    is_integer(OldActive) ->
+                        OldActive + NewActive;
+                    true ->
+                        NewActive
+                end,
+            if
+                32767 < N ->
+                    From ! {?MODULE, self(), active, {error, einval}, Ref};
+                N =< 0 ->
+                    From ! {?MODULE, self(), active, ok, Ref},
+                    Sock   = maps:get(sock,   State),
+                    Method = maps:get(method, State),
+                    Pid ! ?PASSIVE_MSG(Sock, Method),
+                    reader_loop(State#{active => false});
+                true ->
+                    From ! {?MODULE, self(), active, ok, Ref},
+                    reader_loop(State#{active => N})
+            end;
+
         {'DOWN', MRef, process, Pid, Reason} ->
             case maps:get(ctrl_proc_mref, State) of
                 MRef ->
@@ -500,23 +616,300 @@ reader_loop(#{active      := once,
                     reader_loop(State)
             end;
 
-        {'$socket', Sock, select, Ref} ->
+        ?SELECT_MSG(Sock, Ref) ->
             case do_recv(Method, Sock, nowait) of
                 {ok, Data} when is_binary(Data) ->
                     Pid ! ?DATA_MSG(Sock, Method, Data),
                     reader_loop(State#{active      => false,
-                                       select_info => undefined,
-                                       select_num  => N+1});
-                
+                                       asynch_info => undefined,
+                                       asynch_num  => ANum+1});
+
                 {error, closed} = E1 ->
                     Pid ! ?CLOSED_MSG(Sock, Method),
                     reader_exit(State, E1);
-                
+
+                {error, {Reason, _}} ->
+                    E2 = {error, Reason},
+                    Pid ! ?ERROR_MSG(Sock, Method, Reason),
+                    reader_exit(State, E2);
+
+                {error, Reason} = E3 ->
+                    Pid ! ?ERROR_MSG(Sock, Method, Reason),
+                    reader_exit(State, E3);
+
+                {select, SelectInfo} ->
+                    %% Why would this happen?
+                    %% We get a select message telling us that
+                    %% something happened on the socket (data or maybe
+                    %% an error) but then when we try to read
+                    %% we get nothing...
+                    reader_loop(State#{asynch_info => SelectInfo,
+                                       asynch_num  => ANum+1})
+
+            end;
+
+        ?COMPLETION_MSG(Sock, Ref, Result) ->
+            %% Note that *Windows* does not support sendmsg/recvmsg
+            %% but we assume we can get it. Just to be future proof
+            case Result of
+                {ok, Data} when is_binary(Data) ->
+                    Pid ! ?DATA_MSG(Sock, Method, Data),
+                    reader_loop(State#{active      => false,
+                                       asynch_info => undefined,
+                                       asynch_num  => ANum+1});
+                {ok, #{iov := [Data]}} when is_binary(Data) ->
+                    Pid ! ?DATA_MSG(Sock, Method, Data),
+                    reader_loop(State#{active      => false,
+                                       asynch_info => undefined,
+                                       asynch_num  => ANum+1});
+
+                {error, closed} = E1 ->
+                    Pid ! ?CLOSED_MSG(Sock, Method),
+                    reader_exit(State, E1);
+
                 {error, Reason} = E2 ->
                     Pid ! ?ERROR_MSG(Sock, Method, Reason),
                     reader_exit(State, E2)
             end
     end;
+
+
+
+%% Read *n* times and then change to false
+reader_loop(#{active    := N,
+	      async     := false,
+              sock      := Sock,
+              method    := Method,
+	      ctrl_proc := Pid} = State) when is_integer(N) andalso (N > 0) ->
+    case do_recv(Method, Sock) of
+	{ok, Data} ->
+	    Pid ! ?DATA_MSG(Sock, Method, Data),
+            N2 =
+                if
+                    (N > 1) ->
+                        N-1;
+                    true ->
+                        Pid ! ?PASSIVE_MSG(Sock, Method),
+                        false
+                end,
+	    reader_loop(State#{active => N2});
+	{error, timeout} ->
+	    receive
+		{?MODULE, stop} ->
+		    reader_exit(State, stop);
+
+		{?MODULE, Pid, controlling_process, NewPid} ->
+		    OldMRef = maps:get(ctrl_proc_mref, State),
+		    erlang:demonitor(OldMRef, [flush]),
+		    NewMRef = erlang:monitor(process, NewPid),
+		    Pid ! {?MODULE, self(), controlling_process},
+		    reader_loop(State#{ctrl_proc      => NewPid,
+				       ctrl_proc_mref => NewMRef});
+
+		{?MODULE, active, NewActive} ->
+		    reader_loop(State#{active => NewActive});
+
+                {?MODULE, From, active, NewActive, Ref} ->
+                    OldActive = maps:get(active, State),
+                    N =
+                        if
+                            is_integer(OldActive) ->
+                                OldActive + NewActive;
+                            true ->
+                                NewActive
+                        end,
+                    if
+                        32767 < N ->
+                            From ! {?MODULE, self(), active, {error, einval}, Ref};
+                        N =< 0 ->
+                            From ! {?MODULE, self(), active, ok, Ref},
+                            Sock   = maps:get(sock,   State),
+                            Method = maps:get(method, State),
+                            Pid ! ?PASSIVE_MSG(Sock, Method),
+                            reader_loop(State#{active => false});
+                        true ->
+                            From ! {?MODULE, self(), active, ok, Ref},
+                            reader_loop(State#{active => N})
+                    end;
+
+		{'DOWN', MRef, process, Pid, Reason} ->
+		    case maps:get(ctrl_proc_mref, State) of
+                        MRef ->
+                            reader_exit(State, {ctrl_exit, Reason});
+			_ ->
+			    reader_loop(State)
+		    end
+	    after 0 ->
+		    reader_loop(State)
+	    end;
+
+	{error, closed} = E1 ->
+            Pid ! ?CLOSED_MSG(Sock, Method),
+            reader_exit(State, E1);
+
+	{error, Reason} = E2 ->
+	    Pid ! ?ERROR_MSG(Sock, Method, Reason),
+            reader_exit(State, E2)
+    end;
+reader_loop(#{active      := N,
+	      async       := true,
+              asynch_info := undefined = _AsynchInfo,
+              sock        := Sock,
+              method      := Method,
+	      ctrl_proc   := Pid} = State) when is_integer(N) andalso (N > 0) ->
+    case do_recv(Method, Sock, nowait) of
+        {select, SelectInfo} ->
+            reader_loop(State#{asynch_info => SelectInfo});
+        {completion, CompletionInfo} ->
+            reader_loop(State#{asynch_info => CompletionInfo});
+
+	{ok, Data} ->
+	    Pid ! ?DATA_MSG(Sock, Method, Data),
+            N2 =
+                if
+                    (N > 1) ->
+                        N-1;
+                    true ->
+                        Pid ! ?PASSIVE_MSG(Sock, Method),
+                        false
+                end,
+	    reader_loop(State#{active => N2});
+
+	{error, closed} = E1 ->
+	    Pid ! ?CLOSED_MSG(Sock, Method),
+            reader_exit(State, E1);
+
+	{error, Reason} = E2 ->
+	    Pid ! ?ERROR_MSG(Sock, Method, Reason),
+            reader_exit(State, E2)
+    end;
+reader_loop(#{active      := N,
+	      async       := true,
+              asynch_info := AsynchInfo,
+              asynch_num  := ANum,
+              sock        := Sock,
+              method      := Method,
+	      ctrl_proc   := Pid} = State)
+  when (AsynchInfo =/= undefined) andalso
+       is_integer(N) andalso (N > 0) ->
+    Ref = case AsynchInfo of
+              ?SELECT_INFO(_, SR) ->
+                  SR;
+              ?COMPLETION_INFO(_, CR) ->
+                  CR
+          end,
+    receive
+        {?MODULE, stop} ->
+            reader_exit(State, stop);
+
+        {?MODULE, Pid, controlling_process, NewPid} ->
+            OldMRef = maps:get(ctrl_proc_mref, State),
+            erlang:demonitor(OldMRef, [flush]),
+            NewMRef = erlang:monitor(process, NewPid),
+            Pid ! {?MODULE, self(), controlling_process},
+            reader_loop(State#{ctrl_proc      => NewPid,
+                               ctrl_proc_mref => NewMRef});
+
+        {?MODULE, active, NewActive} ->
+            reader_loop(State#{active => NewActive});
+
+	{?MODULE, From, active, NewActive, Ref} ->
+            OldActive = maps:get(active, State),
+            N2 =
+                if
+                    is_integer(OldActive) ->
+                        OldActive + NewActive;
+                    true ->
+                        NewActive
+                end,
+            if
+                32767 < N2 ->
+                    From ! {?MODULE, self(), active, {error, einval}, Ref};
+                N2 =< 0 ->
+                    From ! {?MODULE, self(), active, ok, Ref},
+                    Sock   = maps:get(sock,   State),
+                    Method = maps:get(method, State),
+                    Pid ! ?PASSIVE_MSG(Sock, Method),
+                    reader_loop(State#{active => false});
+                true ->
+                    From ! {?MODULE, self(), active, ok, Ref},
+                    reader_loop(State#{active => N2})
+            end;
+
+        {'DOWN', MRef, process, Pid, Reason} ->
+            case maps:get(ctrl_proc_mref, State) of
+                MRef ->
+                    reader_exit(State, {ctrl_exit, Reason});
+                _ ->
+                    reader_loop(State)
+            end;
+
+        ?SELECT_MSG(Sock, Ref) ->
+            case do_recv(Method, Sock, nowait) of
+                {ok, Data} when is_binary(Data) ->
+                    Pid ! ?DATA_MSG(Sock, Method, Data),
+                    N2 =
+                        if
+                            (N > 1) ->
+                                N-1;
+                            true ->
+                                Pid ! ?PASSIVE_MSG(Sock, Method),
+                                false
+                        end,
+                    reader_loop(State#{active      => N2,
+                                       asynch_info => undefined,
+                                       asynch_num  => ANum+1});
+
+                {error, closed} = E1 ->
+                    Pid ! ?CLOSED_MSG(Sock, Method),
+                    reader_exit(State, E1);
+
+                {error, Reason} = E2 ->
+                    Pid ! ?ERROR_MSG(Sock, Method, Reason),
+                    reader_exit(State, E2)
+            end;
+
+        ?COMPLETION_MSG(Sock, Ref, Result) ->
+            %% Note that *Windows* does not support sendmsg/recvmsg
+            %% but we assume we can get it. Just to be future proof
+            case Result of
+                {ok, Data} when is_binary(Data) ->
+                    Pid ! ?DATA_MSG(Sock, Method, Data),
+                    N2 =
+                        if
+                            (N > 1) ->
+                                N-1;
+                            true ->
+                                Pid ! ?PASSIVE_MSG(Sock, Method),
+                                false
+                        end,
+                    reader_loop(State#{active      => N2,
+                                       asynch_info => undefined,
+                                       asynch_num  => ANum+1});
+                {ok, #{iov := [Data]}} when is_binary(Data) ->
+                    Pid ! ?DATA_MSG(Sock, Method, Data),
+                    N2 =
+                        if
+                            (N > 1) ->
+                                N-1;
+                            true ->
+                                Pid ! ?PASSIVE_MSG(Sock, Method),
+                                false
+                        end,
+                    reader_loop(State#{active      => N2,
+                                       asynch_info => undefined,
+                                       asynch_num  => ANum+1});
+
+                {error, closed} = E1 ->
+                    Pid ! ?CLOSED_MSG(Sock, Method),
+                    reader_exit(State, E1);
+
+                {error, Reason} = E2 ->
+                    Pid ! ?ERROR_MSG(Sock, Method, Reason),
+                    reader_exit(State, E2)
+            end
+    end;
+
 
 %% Read and forward data continuously
 reader_loop(#{active    := true,
@@ -544,6 +937,29 @@ reader_loop(#{active    := true,
 		{?MODULE, active, NewActive} ->
 		    reader_loop(State#{active => NewActive});
 
+                {?MODULE, From, active, NewActive, Ref} ->
+                    OldActive = maps:get(active, State),
+                    N =
+                        if
+                            is_integer(OldActive) ->
+                                OldActive + NewActive;
+                            true ->
+                                NewActive
+                        end,
+                    if
+                        32767 < N ->
+                            From ! {?MODULE, self(), active, {error, einval}, Ref};
+                        N =< 0 ->
+                            From ! {?MODULE, self(), active, ok, Ref},
+                            Sock   = maps:get(sock,   State),
+                            Method = maps:get(method, State),
+                            Pid ! ?PASSIVE_MSG(Sock, Method),
+                            reader_loop(State#{active => false});
+                        true ->
+                            From ! {?MODULE, self(), active, ok, Ref},
+                            reader_loop(State#{active => N})
+                    end;
+
 		{'DOWN', MRef, process, Pid, Reason} ->
 		    case maps:get(ctrl_proc_mref, State) of
 			MRef ->
@@ -565,13 +981,16 @@ reader_loop(#{active    := true,
     end;
 reader_loop(#{active      := true,
 	      async       := true,
-              select_info := undefined,
+              asynch_info := undefined,
 	      sock        := Sock,
               method      := Method,
 	      ctrl_proc   := Pid} = State) ->
     case do_recv(Method, Sock) of
         {select, SelectInfo} ->
-            reader_loop(State#{select_info => SelectInfo});
+            reader_loop(State#{asynch_info => SelectInfo});
+        {completion, CompletionInfo} ->
+            reader_loop(State#{asynch_info => CompletionInfo});
+
 	{ok, Data} ->
 	    Pid ! ?DATA_MSG(Sock, Method, Data),
 	    reader_loop(State);
@@ -586,11 +1005,17 @@ reader_loop(#{active      := true,
     end;
 reader_loop(#{active      := true,
 	      async       := true,
-              select_info := {select_info, _, Ref},
-              select_num  := N,
+              asynch_info := AsynchInfo,
+              asynch_num  := ANum,
 	      sock        := Sock,
               method      := Method,
-	      ctrl_proc   := Pid} = State) ->
+	      ctrl_proc   := Pid} = State) when (AsynchInfo =/= undefined) ->
+    Ref = case AsynchInfo of
+              ?SELECT_INFO(_, SR) ->
+                  SR;
+              ?COMPLETION_INFO(_, CR) ->
+                  CR
+          end,
     receive
         {?MODULE, stop} ->
             reader_exit(State, stop);
@@ -606,6 +1031,29 @@ reader_loop(#{active      := true,
         {?MODULE, active, NewActive} ->
             reader_loop(State#{active => NewActive});
         
+	{?MODULE, From, active, NewActive, Ref} ->
+            OldActive = maps:get(active, State),
+            N =
+                if
+                    is_integer(OldActive) ->
+                        OldActive + NewActive;
+                    true ->
+                        NewActive
+                end,
+            if
+                32767 < N ->
+                    From ! {?MODULE, self(), active, {error, einval}, Ref};
+                N =< 0 ->
+                    From ! {?MODULE, self(), active, ok, Ref},
+                    Sock   = maps:get(sock,   State),
+                    Method = maps:get(method, State),
+                    Pid ! ?PASSIVE_MSG(Sock, Method),
+                    reader_loop(State#{active => false});
+                true ->
+                    From ! {?MODULE, self(), active, ok, Ref},
+                    reader_loop(State#{active => N})
+            end;
+
         {'DOWN', MRef, process, Pid, Reason} ->
             case maps:get(ctrl_proc_mref, State) of
                 MRef ->
@@ -614,12 +1062,12 @@ reader_loop(#{active      := true,
                     reader_loop(State)
             end;
 
-        {'$socket', Sock, select, Ref} ->
+        ?SELECT_MSG(Sock, Ref) ->
             case do_recv(Method, Sock, nowait) of
                 {ok, Data} when is_binary(Data) ->
                     Pid ! ?DATA_MSG(Sock, Method, Data),
-                    reader_loop(State#{select_info => undefined,
-                                       select_num  => N+1});
+                    reader_loop(State#{asynch_info => undefined,
+                                       asynch_num  => ANum+1});
                 
                 {error, closed} = E1 ->
                     Pid ! ?CLOSED_MSG(Sock, Method),
@@ -628,8 +1076,220 @@ reader_loop(#{active      := true,
                 {error, Reason} = E2 ->
                     Pid ! ?ERROR_MSG(Sock, Method, Reason),
                     reader_exit(State, E2)
+            end;
+
+        ?COMPLETION_MSG(Sock, Ref, Result) ->
+            %% Note that *Windows* does not support sendmsg/recvmsg
+            %% but we assume we can get it. Just to be future proof
+            case Result of
+                {ok, Data} when is_binary(Data) ->
+                    Pid ! ?DATA_MSG(Sock, Method, Data),
+                    reader_loop(State#{active      => false,
+                                       asynch_info => undefined,
+                                       asynch_num  => ANum+1});
+                {ok, #{iov := [Data]}} when is_binary(Data) ->
+                    Pid ! ?DATA_MSG(Sock, Method, Data),
+                    reader_loop(State#{active      => false,
+                                       asynch_info => undefined,
+                                       asynch_num  => ANum+1});
+
+                {error, closed} = E1 ->
+                    Pid ! ?CLOSED_MSG(Sock, Method),
+                    reader_exit(State, E1);
+
+                {error, Reason} = E2 ->
+                    Pid ! ?ERROR_MSG(Sock, Method, Reason),
+                    reader_exit(State, E2)
+            end
+    end;
+
+%% Read *once* and then change to false
+reader_loop(#{active    := once,
+	      async     := false,
+              sock      := Sock,
+              method    := Method,
+	      ctrl_proc := Pid} = State) ->
+    case do_recv(Method, Sock) of
+	{ok, Data} ->
+	    Pid ! ?DATA_MSG(Sock, Method, Data),
+	    reader_loop(State#{active => false});
+	{error, timeout} ->
+	    receive
+		{?MODULE, stop} ->
+		    reader_exit(State, stop);
+
+		{?MODULE, Pid, controlling_process, NewPid} ->
+		    OldMRef = maps:get(ctrl_proc_mref, State),
+		    erlang:demonitor(OldMRef, [flush]),
+		    NewMRef = erlang:monitor(process, NewPid),
+		    Pid ! {?MODULE, self(), controlling_process},
+		    reader_loop(State#{ctrl_proc      => NewPid,
+				       ctrl_proc_mref => NewMRef});
+
+		{?MODULE, active, NewActive} ->
+		    reader_loop(State#{active => NewActive});
+
+                {?MODULE, From, active, NewActive, Ref} ->
+                    OldActive = maps:get(active, State),
+                    N = OldActive + NewActive,
+                    if
+                        32767 < N ->
+                            From ! {?MODULE, self(), active, {error, einval}, Ref};
+                        N =< 0 ->
+                            From ! {?MODULE, self(), active, ok, Ref},
+                            Sock   = maps:get(sock,   State),
+                            Method = maps:get(method, State),
+                            Pid ! ?PASSIVE_MSG(Sock, Method),
+                            reader_loop(State#{active => false});
+                        true ->
+                            From ! {?MODULE, self(), active, ok, Ref},
+                            reader_loop(State#{active => N})
+                    end;
+
+		{'DOWN', MRef, process, Pid, Reason} ->
+		    case maps:get(ctrl_proc_mref, State) of
+                        MRef ->
+                            reader_exit(State, {ctrl_exit, Reason});
+			_ ->
+			    reader_loop(State)
+		    end
+	    after 0 ->
+		    reader_loop(State)
+	    end;
+
+	{error, closed} = E1 ->
+            Pid ! ?CLOSED_MSG(Sock, Method),
+            reader_exit(State, E1);
+
+	{error, Reason} = E2 ->
+	    Pid ! ?ERROR_MSG(Sock, Method, Reason),
+            reader_exit(State, E2)
+    end;
+reader_loop(#{active      := once,
+	      async       := true,
+              asynch_info := undefined,
+              sock        := Sock,
+              method      := Method,
+	      ctrl_proc   := Pid} = State) ->
+    case do_recv(Method, Sock, nowait) of
+        {select, SelectInfo} ->
+            reader_loop(State#{asynch_info => SelectInfo});
+        {completion, CompletionInfo} ->
+            reader_loop(State#{asynch_info => CompletionInfo});
+
+	{ok, Data} ->
+	    Pid ! ?DATA_MSG(Sock, Method, Data),
+	    reader_loop(State#{active => false});
+
+	{error, closed} = E1 ->
+	    Pid ! ?CLOSED_MSG(Sock, Method),
+            reader_exit(State, E1);
+
+	{error, Reason} = E2 ->
+	    Pid ! ?ERROR_MSG(Sock, Method, Reason),
+            reader_exit(State, E2)
+    end;
+reader_loop(#{active      := once,
+	      async       := true,
+              asynch_info := AsynchInfo,
+              asynch_num  := ANum,
+              sock        := Sock,
+              method      := Method,
+	      ctrl_proc   := Pid} = State) when (AsynchInfo =/= undefined) ->
+    Ref = case AsynchInfo of
+              ?SELECT_INFO(_, SR) ->
+                  SR;
+              ?COMPLETION_INFO(_, CR) ->
+                  CR
+          end,
+    receive
+        {?MODULE, stop} ->
+            reader_exit(State, stop);
+
+        {?MODULE, Pid, controlling_process, NewPid} ->
+            OldMRef = maps:get(ctrl_proc_mref, State),
+            erlang:demonitor(OldMRef, [flush]),
+            NewMRef = erlang:monitor(process, NewPid),
+            Pid ! {?MODULE, self(), controlling_process},
+            reader_loop(State#{ctrl_proc      => NewPid,
+                               ctrl_proc_mref => NewMRef});
+
+        {?MODULE, active, NewActive} ->
+            reader_loop(State#{active => NewActive});
+
+	{?MODULE, From, active, NewActive, Ref} ->
+            OldActive = maps:get(active, State),
+            N =
+                if
+                    is_integer(OldActive) ->
+                        OldActive + NewActive;
+                    true ->
+                        NewActive
+                end,
+            if
+                32767 < N ->
+                    From ! {?MODULE, self(), active, {error, einval}, Ref};
+                N =< 0 ->
+                    From ! {?MODULE, self(), active, ok, Ref},
+                    Sock   = maps:get(sock,   State),
+                    Method = maps:get(method, State),
+                    Pid ! ?PASSIVE_MSG(Sock, Method),
+                    reader_loop(State#{active => false});
+                true ->
+                    From ! {?MODULE, self(), active, ok, Ref},
+                    reader_loop(State#{active => N})
+            end;
+
+        {'DOWN', MRef, process, Pid, Reason} ->
+            case maps:get(ctrl_proc_mref, State) of
+                MRef ->
+                    reader_exit(State, {ctrl_exit, Reason});
+                _ ->
+                    reader_loop(State)
+            end;
+
+        ?SELECT_MSG(Sock, Ref) ->
+            case do_recv(Method, Sock, nowait) of
+                {ok, Data} when is_binary(Data) ->
+                    Pid ! ?DATA_MSG(Sock, Method, Data),
+                    reader_loop(State#{active      => false,
+                                       asynch_info => undefined,
+                                       asynch_num  => ANum+1});
+
+                {error, closed} = E1 ->
+                    Pid ! ?CLOSED_MSG(Sock, Method),
+                    reader_exit(State, E1);
+
+                {error, Reason} = E2 ->
+                    Pid ! ?ERROR_MSG(Sock, Method, Reason),
+                    reader_exit(State, E2)
+            end;
+
+        ?COMPLETION_MSG(Sock, Ref, Result) ->
+            %% Note that *Windows* does not support sendmsg/recvmsg
+            %% but we assume we can get it. Just to be future proof
+            case Result of
+                {ok, Data} when is_binary(Data) ->
+                    Pid ! ?DATA_MSG(Sock, Method, Data),
+                    reader_loop(State#{active      => false,
+                                       asynch_info => undefined,
+                                       asynch_num  => ANum+1});
+                {ok, #{iov := [Data]}} when is_binary(Data) ->
+                    Pid ! ?DATA_MSG(Sock, Method, Data),
+                    reader_loop(State#{active      => false,
+                                       asynch_info => undefined,
+                                       asynch_num  => ANum+1});
+
+                {error, closed} = E1 ->
+                    Pid ! ?CLOSED_MSG(Sock, Method),
+                    reader_exit(State, E1);
+
+                {error, Reason} = E2 ->
+                    Pid ! ?ERROR_MSG(Sock, Method, Reason),
+                    reader_exit(State, E2)
             end
     end.
+
 
 
 do_recv(Method, Sock) ->
@@ -643,6 +1303,8 @@ do_recv(msg, Sock, Timeout) ->
             {ok, Bin};
         {select, _} = SELECT ->
             SELECT;
+        {completion, _} = COMPLETION ->
+            COMPLETION;
         {error, _} = ERROR ->
             ERROR
     end.
@@ -653,55 +1315,55 @@ reader_exit(#{async := false, active := Active}, stop) ->
     exit(normal);
 reader_exit(#{async       := true, 
               active      := Active,
-              select_info := SelectInfo,
-              select_num  := N}, stop) ->
+              asynch_info := AsynchInfo,
+              asynch_num  := ANum}, stop) ->
     vp("reader stopped when active: ~w"
-       "~n   Current select info:       ~p"
-       "~n   Number of select messages: ~p", [Active, SelectInfo, N]),
+       "~n   Current asynch info:       ~p"
+       "~n   Number of asynch messages: ~p", [Active, AsynchInfo, ANum]),
     exit(normal);
 reader_exit(#{async := false, active := Active}, {ctrl_exit, normal}) ->
     vp("reader ctrl exit when active: ~w", [Active]),
     exit(normal);
 reader_exit(#{async       := true, 
               active      := Active,
-              select_info := SelectInfo,
-              select_num  := N}, {ctrl_exit, normal}) ->
+              asynch_info := AsynchInfo,
+              asynch_num  := ANum}, {ctrl_exit, normal}) ->
     vp("reader ctrl exit when active: ~w"
-       "~n   Current select info:       ~p"
-       "~n   Number of select messages: ~p", [Active, SelectInfo, N]),
+       "~n   Current asynch info:       ~p"
+       "~n   Number of asynch messages: ~p", [Active, AsynchInfo, ANum]),
     exit(normal);
 reader_exit(#{async := false, active := Active}, {ctrl_exit, Reason}) ->
     vp("reader exit when ctrl crash when active: ~w", [Active]),
     exit({controlling_process, Reason});
 reader_exit(#{async       := true, 
               active      := Active,
-              select_info := SelectInfo,
-              select_num  := N}, {ctrl_exit, Reason}) ->
+              asynch_info := AsynchInfo,
+              asynch_num  := ANum}, {ctrl_exit, Reason}) ->
     vp("reader exit when ctrl crash when active: ~w"
-       "~n   Current select info:       ~p"
-       "~n   Number of select messages: ~p", [Active, SelectInfo, N]),
+       "~n   Current asynch info:       ~p"
+       "~n   Number of asynch messages: ~p", [Active, AsynchInfo, ANum]),
     exit({controlling_process, Reason});
 reader_exit(#{async := false, active := Active}, {error, closed}) ->
     vp("reader exit when socket closed when active: ~w", [Active]),
     exit(normal);
 reader_exit(#{async       := true, 
               active      := Active,
-              select_info := SelectInfo,
-              select_num  := N}, {error, closed}) ->
+              asynch_info := AsynchInfo,
+              asynch_num  := ANum}, {error, closed}) ->
     vp("reader exit when socket closed when active: ~w "
-       "~n   Current select info:       ~p"
-       "~n   Number of select messages: ~p", [Active, SelectInfo, N]),
+       "~n   Current asynch info:       ~p"
+       "~n   Number of asynch messages: ~p", [Active, AsynchInfo, ANum]),
     exit(normal);
 reader_exit(#{async := false, active := Active}, {error, Reason}) ->
     vp("reader exit when socket error when active: ~w", [Active]),
     exit(Reason);
 reader_exit(#{async       := true, 
               active      := Active,
-              select_info := SelectInfo,
-              select_num  := N}, {error, Reason}) ->
+              asynch_info := AsynchInfo,
+              asynch_num  := ANum}, {error, Reason}) ->
     vp("reader exit when socket error when active: ~w: "
-       "~n   Current select info:       ~p"
-       "~n   Number of select messages: ~p", [Active, SelectInfo, N]),
+       "~n   Current asynch info:       ~p"
+       "~n   Number of asynch messages: ~p", [Active, AsynchInfo, ANum]),
     exit(Reason).
 
 
@@ -709,6 +1371,16 @@ reader_exit(#{async       := true,
 
 
 
+%% ==========================================================================
+
+%% mq() ->
+%%     mq(self()).
+
+%% mq(Pid) when is_pid(Pid) ->
+%%     {messages, MQ} = process_info(Pid, messages),
+%%     MQ.
+
+             
 %% ==========================================================================
 
 vp(F, A) ->

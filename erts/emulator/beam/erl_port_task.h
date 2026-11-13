@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 2006-2020. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2006-2026. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,7 +16,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * %CopyrightEnd%
  */
 
@@ -44,6 +46,7 @@ typedef erts_atomic_t ErtsPortTaskHandle;
 #if (defined(ERL_PROCESS_C__) \
      || defined(ERL_PORT_TASK_C__) \
      || defined(ERL_IO_C__) \
+     || defined(ERL_CHECK_IO_C__) \
      || (ERTS_GLB_INLINE_INCL_FUNC_DEF \
 	 && defined(ERTS_DO_INCL_GLB_INLINE_FUNC_DEF)))
 #define ERTS_INCLUDE_SCHEDULER_INTERNALS
@@ -54,6 +57,7 @@ typedef erts_atomic_t ErtsPortTaskHandle;
 #define ERTS_PT_FLG_NOSUSPEND		(1 << 2)
 #define ERTS_PT_FLG_REF			(1 << 3)
 #define ERTS_PT_FLG_BAD_OUTPUT		(1 << 4)
+#define ERTS_PT_FLG_ASYNC_NOSUSPEND     (1 << 5)
 
 typedef enum {
     ERTS_PORT_TASK_INPUT = 0,
@@ -138,6 +142,8 @@ ERTS_GLB_INLINE void erts_port_task_sched_enter_exiting_state(ErtsPortTaskSched 
 
 #if defined(ERTS_INCLUDE_SCHEDULER_INTERNALS) && ERTS_POLL_USE_SCHEDULER_POLLING
 ERTS_GLB_INLINE int erts_port_task_have_outstanding_io_tasks(void);
+ERTS_GLB_INLINE void erts_port_task_inc_outstanding_io_tasks(void);
+ERTS_GLB_INLINE void erts_port_task_dec_outstanding_io_tasks(void);
 /* NOTE: Do not access any of the exported variables directly */
 extern erts_atomic_t erts_port_task_outstanding_io_tasks;
 #endif
@@ -226,6 +232,18 @@ erts_port_task_have_outstanding_io_tasks(void)
     return (erts_atomic_read_acqb(&erts_port_task_outstanding_io_tasks)
 	    != 0);
 }
+
+ERTS_GLB_INLINE void
+erts_port_task_inc_outstanding_io_tasks(void)
+{
+    erts_atomic_inc_nob(&erts_port_task_outstanding_io_tasks);
+}
+
+ERTS_GLB_INLINE void
+erts_port_task_dec_outstanding_io_tasks(void)
+{
+    erts_atomic_dec_nob(&erts_port_task_outstanding_io_tasks);
+}
 #endif
 
 #endif
@@ -239,7 +257,7 @@ void erts_port_task_init(void);
 void erts_port_task_pre_alloc_init_thread(void);
 
 void erts_port_task_tmp_handle_detach(ErtsPortTaskHandle *);
-int erts_port_task_abort(ErtsPortTaskHandle *);
+int erts_port_task_abort(Port *, ErtsPortTaskHandle *);
 
 void erts_port_task_abort_nosuspend_tasks(Port *);
 

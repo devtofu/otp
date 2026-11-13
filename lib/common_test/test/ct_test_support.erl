@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -46,6 +48,8 @@
 -export([unique_timestamp/0]).
 
 -export([rm_dir/1]).
+%% Tracing
+-export([handle_trace/3]).
 
 -include_lib("kernel/include/file.hrl").
 
@@ -94,7 +98,7 @@ start_slave(NodeName, Config, Level) ->
     PR = proplists:get_value(printable_range,Config,io:printable_range()),
     case slave:start(Host, NodeName, "+pc " ++ atom_to_list(PR)) of
 	{error,Reason} ->
-	    test_server:fail(Reason);
+	    ct:fail(Reason);
 	{ok,CTNode} ->
 	    test_server:format(0, "Node ~p started~n", [CTNode]),
 	    IsCover = test_server:is_cover(),
@@ -522,7 +526,7 @@ verify_events(TEvs, Evs, Node, Config) ->
 
 verify_events1([TestEv|_], [{TEH,#event{name=stop_logging,node=Node,data=_}}|_], Node, _)
   when element(1,TestEv) == TEH, element(2,TestEv) =/= stop_logging ->
-    test_server:format("Failed to find ~tp in the list of events!~n", [TestEv]),
+    test_server:format("(I) Failed to find ~tp in the list of events!~n", [TestEv]),
     exit({event_not_found,TestEv});
 
 verify_events1(TEvs = [TestEv | TestEvs], Evs = [_|Events], Node, Config) ->
@@ -545,7 +549,7 @@ verify_events1(TEvs = [TestEv | TestEvs], Evs = [_|Events], Node, Config) ->
     end;
 
 verify_events1([TestEv|_], [], _, _) ->
-    test_server:format("Failed to find ~tp in the list of events!~n", [TestEv]),
+    test_server:format("(II) Failed to find ~tp in the list of events!~n", [TestEv]),
     exit({event_not_found,TestEv});
 
 verify_events1([], Evs, _, Config) ->
@@ -1135,10 +1139,10 @@ locate({TEH,tc_done,{undefined,undefined,{testcase_aborted,
 
 %% to match variable data as a result of a failed test case
 locate({TEH,tc_done,{Mod,Func,R={SkipOrFail,{_ErrInd,ErrInfo}}}},
-       Node, [Ev|Evs], Config) when ((SkipOrFail == skipped) or
-				     (SkipOrFail == failed)) and
-				    ((size(ErrInfo) == 2) or
-				     (size(ErrInfo) == 3)) ->
+       Node, [Ev|Evs], Config) when SkipOrFail == skipped orelse
+                                    SkipOrFail == failed,
+                                    size(ErrInfo) == 2 orelse
+                                    size(ErrInfo) == 3 ->
     case Ev of
 	{TEH,#event{name=tc_done, node=Node, 
 		    data={Mod,Func,Result}}} ->
@@ -1216,6 +1220,9 @@ result_match({failed,{timetrap_timeout,{'$approx',Num}}},
     end;
 result_match({user_timetrap_error,{Why,'_'}},
 	     {user_timetrap_error,{Why,_Stack}}) ->
+    true;
+result_match({SkipOrFail,{ErrorInd,{thrown,{Why,'_'}}}},
+         {SkipOrFail,{ErrorInd,{thrown,{Why,_Stack}}}}) ->
     true;
 result_match(Result, Result) ->
     true;
@@ -1466,3 +1473,14 @@ slave_stop(Node) ->
 	    receive {nodedown, Node} -> ok after 0 -> ok end %flush
     end,
     ok.
+
+%%%################################################################
+%%%#
+%%%# Tracing
+%%%#
+handle_trace(ct,
+             {return_from, {?MODULE, start_slave, 3}, Return},
+             Stack) ->
+    {io_lib:format("CT Node = ~p",
+                   [proplists:get_value(ct_node, Return, not_found)]), Stack}.
+

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2018-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2018-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,6 +20,8 @@
 %% %CopyrightEnd%
 %%
 -module(beam_ssa_SUITE).
+-include_lib("stdlib/include/assert.hrl").
+-include("test_lib.hrl").
 
 -export([all/0,suite/0,groups/0,init_per_suite/1,end_per_suite/1,
 	 init_per_group/2,end_per_group/2,
@@ -25,7 +29,12 @@
          cover_ssa_dead/1,combine_sw/1,share_opt/1,
          beam_ssa_dead_crash/1,stack_init/1,
          mapfoldl/0,mapfoldl/1,
-         grab_bag/1,coverage/1]).
+         grab_bag/1,redundant_br/1,
+         coverage/1,normalize/1,
+         trycatch/1,gh_6599/1,cs_div/1,gh_11494/1,
+         gh_12046/1]).
+
+-import_record(beam_ssa, [b_set, b_var, b_literal]).
 
 suite() -> [{ct_hooks,[ts_install_cth]}].
 
@@ -45,7 +54,14 @@ groups() ->
        beam_ssa_dead_crash,
        stack_init,
        grab_bag,
-       coverage
+       redundant_br,
+       coverage,
+       normalize,
+       trycatch,
+       gh_6599,
+       cs_div,
+       gh_11494,
+       gh_12046
       ]}].
 
 init_per_suite(Config) ->
@@ -66,9 +82,14 @@ calls(Config) ->
     Ret = fun_call(fun(42) -> ok end, Ret),
     Ret = apply_fun(fun(a, b) -> ok end, [a,b], Ret),
     Ret = apply_mfa(test_lib, id, [anything], Ret),
-    {'EXIT',{badarg,_}} = (catch call_error()),
-    {'EXIT',{badarg,_}} = (catch call_error(42)),
+    ?assertError(badarg, call_error()),
+    ?assertError(badarg, call_error(42)),
     5 = start_it([erlang,length,1,2,3,4,5]),
+
+    {_,ok} = cover_call(id(true)),
+    {_,ok} = cover_call(id(false)),
+    ?assertError({case_clause,ok}, cover_call(id(ok))),
+
     ok.
 
 fun_call(Fun, X0) ->
@@ -98,6 +119,16 @@ start_it([_|_]=MFA) ->
     case MFA of
 	[M,F|Args] -> M:F(Args)
     end.
+
+cover_call(A) ->
+    case A =/= ok of
+        B ->
+            {(term_to_binary(ok)),
+             case ok of
+                 _  when B -> ok
+             end}
+    end.
+
 
 tuple_matching(_Config) ->
     do_tuple_matching({tag,42}),
@@ -178,7 +209,7 @@ recv(_Config) ->
     self() ! 1,
     {1,yes} = tricky_recv_2(),
     self() ! 2,
-    {2,maybe} = tricky_recv_2(),
+    {2,'maybe'} = tricky_recv_2(),
 
     %% Test 'receive after infinity' in try/catch.
     Pid = spawn(fun recv_after_inf_in_try/0),
@@ -282,7 +313,7 @@ tricky_recv_2() ->
                 end,
             a;
         X=2 ->
-            Y = maybe,
+            Y = 'maybe',
             b
     end,
     {X,Y}.
@@ -439,7 +470,7 @@ recv_coverage_2() ->
     end.
 
 maps(_Config) ->
-    {'EXIT',{{badmatch,#{}},_}} = (catch maps_1(any)),
+    ?assertError({badmatch,#{}}, maps_1(any)),
 
     {jkl,nil,nil} = maps_2(#{abc => 0, jkl => 0}),
     {def,ghi,abc} = maps_2(#{abc => 0, def => 0}),
@@ -447,6 +478,12 @@ maps(_Config) ->
     {mno,nil,abc} = maps_2(#{abc => 0, mno => 0, jkl => 0}),
     {jkl,nil,nil} = maps_2(#{jkl => 0}),
     error = maps_2(#{}),
+
+    [] = maps_3(),
+
+    ?assertError({badmap,true}, maps_4(id(true), id(true))),
+    error = maps_4(id(#{}), id(true)),
+    error = maps_4(id(#{}), id(#{})),
 
     ok.
 
@@ -520,6 +557,25 @@ maps_2b(#{}=Map) ->
             end
     end.
 
+%% Cover code in beam_ssa_codegen.
+maps_3() ->
+    [] = case #{} of
+             #{ok := {}} ->
+                 ok;
+             _ ->
+                 []
+         end -- [].
+
+maps_4(A, B = A) when B; A ->
+    A#{ok := ok},
+    try A of
+        B -> B
+    after
+        ok
+    end#{ok := ok};
+maps_4(_, _) ->
+    error.
+
 -record(wx_ref, {type=any_type,ref=any_ref}).
 
 cover_ssa_dead(_Config) ->
@@ -562,7 +618,7 @@ cover_ssa_dead(_Config) ->
     40.0 = percentage(4.0, 10.0),
     60.0 = percentage(6, 10),
 
-    {'EXIT',{{badmatch,42},_}} = (catch #{key => abs(("a" = id(42)) /= teacher)}),
+    ?assertError({badmatch,42}, #{key => abs(("a" = id(42)) /= teacher)}),
 
     <<>> = id(<< V || V <- [], V andalso false >>),
 
@@ -667,6 +723,7 @@ do_comb_sw_2(X) ->
 share_opt(_Config) ->
     ok = do_share_opt_1(0),
     ok = do_share_opt_2(),
+    ok = do_share_opt_3(),
     ok.
 
 do_share_opt_1(A) ->
@@ -697,7 +754,16 @@ sopt_2({Flags, Opts}, ok) ->
         [] ->
             ok
     end.
-    
+
+do_share_opt_3() ->
+    true = sopt_3(id(ok)),
+    false = sopt_3(id(nok)),
+    ok.
+
+sopt_3(X) ->
+    %% Must be one line to trigger bug.
+    case X of ok -> id(?LINE), true; _ -> id(?LINE), false end.
+
 beam_ssa_dead_crash(_Config) ->
     not_A_B = do_beam_ssa_dead_crash(id(false), id(true)),
     not_A_not_B = do_beam_ssa_dead_crash(false, false),
@@ -712,7 +778,7 @@ do_beam_ssa_dead_crash(A, B) ->
     %% paths happens to end up in the same place.
     %%
     %% During the simulated execution of this function, the boolean
-    %% varible for a `br` instruction would be replaced with the
+    %% variable for a `br` instruction would be replaced with the
     %% literal atom `nil`, which is not allowed, and would crash the
     %% compiler. In practice, during the actual execution, control
     %% would never be transferred to that `br` instruction when the
@@ -846,12 +912,13 @@ fast_mapfoldl(F, Acc0, [Hd|Tail]) ->
 fast_mapfoldl(F, Acc, []) when is_function(F, 2) -> {[],Acc}.
 
 grab_bag(_Config) ->
-    {'EXIT',_} = (catch grab_bag_1()),
-    {'EXIT',_} = (catch grab_bag_2()),
-    {'EXIT',_} = (catch grab_bag_3()),
-    {'EXIT',_} = (catch grab_bag_4()),
-    {'EXIT',{function_clause,[{?MODULE,grab_bag_5,[a,17],_}|_]}} =
-        (catch grab_bag_5(a, 17)),
+    ?assertError(_, grab_bag_1()),
+    ?assertError(_, grab_bag_2()),
+    ?assertError(_, grab_bag_3()),
+    ?assertError(_, grab_bag_4()),
+    ?AssertErrorStack(function_clause,
+                      [{?MODULE,grab_bag_5,[a,17],_}|_],
+                      grab_bag_5(a, 17)),
     way = grab_bag_6(face),
     no_match = grab_bag_6("ABC"),
     no_match = grab_bag_6(any),
@@ -860,17 +927,33 @@ grab_bag(_Config) ->
     ok = grab_bag_9(),
     whatever = grab_bag_10(ignore, whatever),
     other = grab_bag_11(),
-    {'EXIT',_} = (catch grab_bag_12()),
-    {'EXIT',{{badmatch,[]},_}} = (catch grab_bag_13()),
+    ?assertError(_, grab_bag_12()),
+    ?assertError({badmatch,[]}, grab_bag_13()),
     timeout = grab_bag_14(),
     ?MODULE = grab_bag_15(?MODULE),
 
     error = grab_bag_16a(timeout_value),
-    {'EXIT',{timeout_value,_}} = (catch grab_bag_16a(whatever)),
-    {'EXIT',{timeout_value,_}} = (catch grab_bag_16b(whatever)),
+    ?assertError(timeout_value, grab_bag_16a(whatever)),
+    ?assertError(timeout_value, grab_bag_16b(whatever)),
     timeout_value = grab_bag_16b(error),
 
     fact = grab_bag_17(),
+
+    ?assertError({try_clause,[]}, grab_bag_18()),
+
+    ?assertError({badmatch,[whatever]}, grab_bag_19()),
+
+    ?assertError(if_clause, grab_bag_20()),
+
+    6 = grab_bag_21(id(64)),
+    ?assertError(badarith, grab_bag_21(id(a))),
+
+    false = grab_bag_22(),
+
+    {reply,{ok,foo_bar},#{page_title := foo_bar}} =
+        grab_bag_23(id(#{page_title => unset})),
+
+    ok = grab_bag_24(),
 
     ok.
 
@@ -933,7 +1016,7 @@ grab_bag_4() ->
             end
     end.
 
-grab_bag_5(A, B) when <<business:(node(power))>> ->
+grab_bag_5(_A, _B) when <<business:(node(power))>> ->
     true.
 
 grab_bag_6(face) ->
@@ -997,7 +1080,7 @@ grab_bag_11() ->
         _ -> other
     catch
         _:_ ->
-            catched
+            caught
     end.
 
 grab_bag_12() ->
@@ -1084,6 +1167,129 @@ grab_bag_17() ->
             []
     end.
 
+grab_bag_18() ->
+    try 0 of
+        _V0 ->
+            bnot false
+    after
+        try [] of
+            wrong ->
+                ok
+        catch
+            _:_ when false ->
+                error
+        end
+    end.
+
+grab_bag_19() ->
+    ([<<bad/utf8>>] =
+         %% beam_ssa_pre_codegen would produce single-valued phi
+         %% nodes, which in turn would cause the constant propagation
+         %% in beam_ssa_codegen:prefer_xregs/2 to produce get_hd and
+         %% get_tl instructions with literal operands.
+         try
+             [whatever]
+         catch
+             _:_ when false ->
+                 ok
+         end) ! (some_atom ++ <<>>).
+
+grab_bag_20() ->
+    %% Similarly to grab_bag_19, beam_ssa_pre_codegen would produce
+    %% single-valued phi nodes. The fix for grab_bag_19 would not
+    %% suffice because several phi nodes were involved.
+    {[_ | _] =
+         receive
+             list ->
+                 "list";
+             1 when day ->
+                 []
+         after
+             0 ->
+                 if
+                     false ->
+                         error
+                 end
+         end,
+     try
+         ok
+     catch
+         error:_ ->
+             error
+     end}.
+
+%% With the `no_copt` and `no_ssa_opt` options, an internal
+%% consistency error would be reported:
+%%
+%% Internal consistency check failed - please report this bug.
+%% Instruction: {test_heap,2,2}
+%% Error:       {{x,0},not_live}:
+grab_bag_21(A) ->
+    _ = id(0),
+    grab_bag_21(ok, A div 10, node(), [-1]).
+
+grab_bag_21(_, D, _, _) ->
+    D.
+
+%% GH-7128: With optimizations disabled, the code would fail to
+%% load with the following message:
+%%
+%%    beam/beam_load.c(367): Error loading function
+%%      beam_ssa_no_opt_SUITE:grab_bag_22/0: op get_list: Sdd:
+%%         bad tag 2 for destination
+grab_bag_22() ->
+    maybe
+        [_ | _] ?= ((true xor true) andalso foo),
+        bar ?= id(42)
+    end.
+
+%% GH-8296: When the cse pass in beam_ssa_opt was changed to
+%% eliminate unreachable phi nodes, it failed to fix up phi nodes
+%% that reference eliminated blocks.
+grab_bag_23(#{page_title := unset} = State1) ->
+    State2 = State1#{page_title := foo_bar},
+    {reply,
+     {ok,
+      case State2 of
+          #{page_title := Val} -> Val;
+          _ -> lists:flatten([State2])
+      end},
+     State2}.
+
+
+-record(test, {a,b,c}).
+-record(test_a, {a}).
+
+%% GH-8818: The CSE pass in beam_ssa_opt failed to intersect candidates on
+%% the failure path, crashing the type optimization pass.
+grab_bag_24() ->
+    ?assertError(_, do_grab_bag_24(id(0), id(0), id(0), id(0))),
+    ok.
+
+do_grab_bag_24(A, B, C, D) ->
+    A#test.a,
+    {E, F} = ext:ernal(D#test_a.a),
+    if
+        D#test_a.a == 0 andalso (B < E * A#test.a) orelse (B > F * A#test.a) ->
+            false;
+        (C =:= A#test.b) orelse (C =:= A#test.a) ->
+            true
+    end.
+
+redundant_br(_Config) ->
+    {false,{x,y,z}} = redundant_br_1(id({x,y,z})),
+    {true,[[a,b,c]]} = redundant_br_1(id([[[a,b,c]]])),
+    ok.
+
+redundant_br_1(Specs0) ->
+    {Join,Specs} =
+        if
+            is_list(hd(hd(Specs0))) -> {true,hd(Specs0)};
+            true -> {false,Specs0}
+        end,
+    id({Join,Specs}).
+
+-record(coverage, {name}).
 
 coverage(_Config) ->
 
@@ -1097,10 +1303,12 @@ coverage(_Config) ->
                    <<$f:1.7>> -> ok;
                    _ -> no_match
                end,
-    {'EXIT',{{badmatch,$T},_}} = (catch coverage_1()),
+    ?assertError({badmatch,$T}, coverage_1()),
 
     error = coverage_2(),
     ok = coverage_3(),
+    #coverage{name=whatever} = coverage_4(),
+    ?assertError({badrecord,ok}, coverage_5()),
 
     ok.
 
@@ -1114,6 +1322,326 @@ coverage_3() ->
     %% Cover a line in beam_ssa_pre_codegen:need_frame_1/2.
     get(),
     ok.
+
+coverage_4() ->
+    try
+        << <<42>> || false >>,
+        #coverage{}
+    catch
+        _:_ ->
+            error
+    end#coverage{name = whatever}.
+
+coverage_5() ->
+    try
+        << <<42>> || false >>,
+        ok
+    catch
+        _:_ ->
+            error
+    end#coverage{name = whatever}.
+
+%% Test beam_ssa:normalize/1, especially that argument types are
+%% correctly updated when arguments are swapped.
+normalize(_Config) ->
+    normalize_commutative({bif,'band'}),
+    normalize_commutative({bif,'+'}),
+
+    normalize_noncommutative({bif,'div'}),
+
+    ok.
+
+normalize_commutative(Op) ->
+    A = #b_var{name=a},
+    B = #b_var{name=b},
+    Lit = #b_literal{val=42},
+
+    normalize_same(Op, [A,B]),
+    normalize_same(Op, [A,Lit]),
+
+    normalize_swapped(Op, [Lit,A]),
+
+    ok.
+
+normalize_noncommutative(Op) ->
+    A = #b_var{name=a},
+    B = #b_var{name=b},
+    Lit = #b_literal{val=42},
+
+    normalize_same(Op, [A,B]),
+    normalize_same(Op, [A,Lit]),
+
+    ArgTypes0 = [{1,beam_types:make_integer(0, 1023)}],
+    I1 = make_bset(ArgTypes0, Op, [Lit,A]),
+    I1 = beam_ssa:normalize(I1),
+
+    ok.
+
+normalize_same(Op, Args) ->
+    I0 = make_bset(#{}, Op, Args),
+    I0 = beam_ssa:normalize(I0),
+
+    ArgTypes0 = [{0,beam_types:make_integer(0, 1023)}],
+    I1 = make_bset(ArgTypes0, Op, Args),
+    I1 = beam_ssa:normalize(I1),
+
+    case Args of
+        [#b_var{},#b_var{}] ->
+            ArgTypes1 = [{0,beam_types:make_integer(0, 1023)},
+                         {1,beam_types:make_integer(42)}],
+            I2 = make_bset(ArgTypes1, Op, Args),
+            I2 = beam_ssa:normalize(I2);
+        [_,_] ->
+            ok
+    end,
+
+    ok.
+
+normalize_swapped(Op, [#b_literal{}=Lit,#b_var{}=Var]=Args) ->
+    EmptyAnno = #{},
+    I0 = make_bset(EmptyAnno, Op, Args),
+    #b_set{anno=EmptyAnno,
+           dst=#b_var{name=1000},
+           op=Op,args=[Var,Lit]} = beam_ssa:normalize(I0),
+
+    EmptyTypes = #{arg_types => #{}},
+    I1 = make_bset(EmptyTypes, Op, Args),
+    #b_set{anno=EmptyTypes,
+           dst=#b_var{name=1000},
+           op=Op,args=[Var,Lit]} = beam_ssa:normalize(I1),
+
+    IntRange = beam_types:make_integer(0, 1023),
+    ArgTypes0 = [{1,IntRange}],
+    I2 = make_bset(ArgTypes0, Op, Args),
+    {[{0,IntRange}],Op,[Var,Lit]} = unpack_bset(beam_ssa:normalize(I2)),
+
+    LitType = beam_types:make_type_from_value(Lit),
+
+    ArgTypes1 = [{0,LitType}],
+    I3 = make_bset(ArgTypes1, Op, Args),
+    {[],Op,[Var,Lit]} = unpack_bset(beam_ssa:normalize(I3)),
+
+    ArgTypes2 = [{0,LitType},{1,IntRange}],
+    I4 = make_bset(ArgTypes1, Op, Args),
+    {[],Op,[Var,Lit]} = unpack_bset(beam_ssa:normalize(I4)),
+
+    ok.
+
+make_bset(ArgTypes, Op, Args) when is_list(ArgTypes) ->
+    Anno = #{arg_types => maps:from_list(ArgTypes)},
+    #b_set{anno=Anno,dst=#b_var{name=1000},op=Op,args=Args};
+make_bset(Anno, Op, Args) when is_map(Anno) ->
+    #b_set{anno=Anno,dst=#b_var{name=1000},op=Op,args=Args}.
+
+unpack_bset(#b_set{anno=Anno,dst=#b_var{name=1000},op=Op,args=Args}) ->
+    ArgTypes = maps:get(arg_types, Anno, #{}),
+    {lists:sort(maps:to_list(ArgTypes)),Op,Args}.
+
+trycatch(_Config) ->
+    8 = trycatch_1(),
+
+    ok = trycatch_2(id(ok)),
+    ok = trycatch_2(id(z)),
+
+    false = trycatch_3(id(42)),
+
+    ok.
+
+trycatch_1() ->
+    try B = (A = bit_size(iolist_to_binary("a"))) rem 1 of
+        _ ->
+            A;
+        _ ->
+            B
+    after
+        ok
+    end.
+
+trycatch_2(A) ->
+    try not (B = (ok >= A)) of
+        B ->
+            iolist_size(maybe
+                            [] ?= B,
+                            <<>> ?= list_to_binary(ok)
+                        end);
+        _ ->
+            ok
+    after
+        ok
+    end.
+
+trycatch_3(A) ->
+    try erlang:bump_reductions(A) of
+        B ->
+            try not (C = (B andalso is_number(ok))) of
+                C ->
+                    ok andalso ok;
+                _ ->
+                    C
+            catch
+                _ ->
+                    ok
+            end
+    after
+        ok
+    end.
+
+%% GH-6599. beam_validator would not realize that the code was safe.
+gh_6599(_Config) ->
+    ok = gh_6599_1(id(42), id(42)),
+    #{ok := ok} = gh_6599_1(id(#{ok => 0}), id(#{ok => 0})),
+
+    ?assertError({try_clause,#{ok:=ok}},
+                 gh_6599_2(id(whatever), id(#{0 => whatever}))),
+
+    ok = gh_6599_3(id(true), id(true)),
+    ?assertError(function_clause, gh_6599_3(id(false), id(false))),
+    0.0 = gh_6599_3(id(0.0), id(0.0)),
+
+    ?assertError({badmatch,true}, gh_6599_4(id(false))),
+
+    ?assertError({badmatch,ok}, gh_6599_5(id([a]), id(#{0 => [a]}), id([a]))),
+
+    #{ok := ok} = gh_6599_6(id(#{}), id(#{})),
+    ?assertError({badmap,a}, gh_6599_6(id(a), id(a))),
+
+    ?assertError({badarg,ok}, gh_6599_7(id([a]), id([a]))),
+
+    ok.
+
+gh_6599_1(X, X) when is_integer(X) ->
+    ok;
+gh_6599_1(Y, Y = #{}) ->
+    Y#{ok := ok}.
+
+gh_6599_2(X, #{0 := X, 0 := Y}) ->
+    try #{ok => ok} of
+        Y ->
+            bnot (Y = X)
+    after
+        ok
+    end.
+
+gh_6599_3(X, X) when X ->
+    ok;
+gh_6599_3(X, X = 0.0) ->
+    X + X.
+
+gh_6599_4(X) ->
+    Y =
+        try
+            false = X
+        catch
+            _ ->
+                ok
+        end /= ok,
+    X = Y,
+    false = Y,
+    0 = ok.
+
+%% Crashes in beam_ssa_type because a type assertion fails.
+gh_6599_5(X, #{0 := X, 0 := Y}, Y=[_ | _]) ->
+    try
+        Y = ok
+    catch
+        _ ->
+            [_ | []] = Y = X
+    end.
+
+gh_6599_6(A, B = A) ->
+    A#{},
+    case A of B -> B end#{ok => ok}.
+
+gh_6599_7(X, Y) ->
+    try Y of
+        X ->
+            (id(
+                try ([_ | _] = Y) of
+                    X ->
+                        ok
+                after
+                    ok
+                end
+            ) orelse X) bsl 0
+    after
+        ok
+    end.
+
+cs_div(_Config) ->
+    ?assertError(badarith, cs_div_1(id(2.0))),
+    2 = cs_div_2(id(2)),
+    ok.
+
+cs_div_1(X) when is_number(X) ->
+    X div 1.
+
+cs_div_2(X) when is_integer(X) ->
+    X div 1.
+
+gh_11494(_Config) ->
+    100 = inspect([100]),
+    <<>> = inspect(<<>>),
+    ok.
+
+inspect(Value) ->
+    case Value of
+        Res when is_integer(Res);
+                 is_bitstring(Res) -> Res;
+        [Num] -> inspect(Num)
+    end.
+
+%% GH-12046: ssa_opt_try added a new block for each try on every
+%% pass, even when it had nothing to hoist, so the code never stopped
+%% changing and beam_ssa_opt's fixpoint ran until the iteration limit.
+gh_12046(_Config) ->
+    Src = "-module(gh_12046).\n"
+          "-export([f/1]).\n"
+          "f(X) -> try g(X) of R -> R catch error:_ -> error end.\n"
+          "g(X) -> X + 1.\n",
+    {ok,Tokens,_} = erl_scan:string(Src),
+    Forms = gh_12046_forms(Tokens, []),
+
+    %% Count the calls to beam_ssa_opt:fixpoint/6. A process cannot
+    %% trace itself, so a separate process collects the trace messages.
+    {module,beam_ssa_opt} = code:ensure_loaded(beam_ssa_opt),
+    Counter = spawn_link(fun() -> gh_12046_count(0) end),
+    Session = trace:session_create(?FUNCTION_NAME, Counter, []),
+    try
+        1 = trace:function(Session, {beam_ssa_opt,fixpoint,6}, true, [local]),
+        1 = trace:process(Session, self(), true, [call,arity]),
+        {ok,gh_12046,_} = compile:forms(Forms, [binary,report,
+                                                no_spawn_compiler_process])
+    after
+        trace:session_destroy(Session)
+    end,
+    Counter ! {done,self()},
+    Calls = receive {Counter,Count} -> Count end,
+
+    %% Each call is one pass over the repeated passes. 17 calls (the
+    %% first pass and 16 repetitions) means that the fixpoint was never
+    %% reached.
+    {true,Calls} = {Calls < 16,Calls},
+    ok.
+
+gh_12046_forms([{dot,_}=Dot|Ts], Acc) ->
+    {Form,Rest} = gh_12046_form(Ts, [Dot|Acc]),
+    [Form|gh_12046_forms(Rest, [])];
+gh_12046_forms([T|Ts], Acc) ->
+    gh_12046_forms(Ts, [T|Acc]);
+gh_12046_forms([], []) ->
+    [].
+
+gh_12046_form(Rest, Acc) ->
+    {ok,Form} = erl_parse:parse_form(lists:reverse(Acc)),
+    {Form,Rest}.
+
+gh_12046_count(N) ->
+    receive
+        {trace,_,call,{beam_ssa_opt,fixpoint,6}} ->
+            gh_12046_count(N + 1);
+        {done,From} ->
+            From ! {self(),N}
+    end.
 
 %% The identity function.
 id(I) -> I.

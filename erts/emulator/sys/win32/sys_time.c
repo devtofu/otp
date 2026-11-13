@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 1997-2018. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 1997-2025. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,7 +16,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * %CopyrightEnd%
  */
 /*
@@ -29,8 +31,12 @@
 #include "erl_os_monotonic_time_extender.h"
 #include "erl_time.h"
 
-/* Need to look more closely at qpc before use... */
-#define ERTS_DISABLE_USE_OF_QPC_FOR_MONOTONIC_TIME 1
+/*
+ * How much to reduce the resolution of the by QueryPerformanceCounter()
+ * returned values in order to make them monotonic...
+ */
+#define ERTS_WIN_QPC_SKIP_BITS 10
+#define ERTS_WIN_QPC_SKIP_MASK ((1 << ERTS_WIN_QPC_SKIP_BITS) - 1)
 
 #define LL_LITERAL(X) ERTS_I64_LITERAL(X)
 
@@ -72,6 +78,7 @@
 
 static TIME_ZONE_INFORMATION static_tzi;
 static int have_static_tzi = 0;
+int sys_daylight = 0;
 
 static int days_in_month[2][13] = {
     {0,31,28,31,30,31,30,31,31,30,31,30,31},
@@ -86,7 +93,7 @@ static int days_in_month[2][13] = {
 struct sys_time_internal_state_read_only__ {
     ULONGLONG (WINAPI *pGetTickCount64)(void);
     BOOL (WINAPI *pQueryPerformanceCounter)(LARGE_INTEGER *);
-    Sint32 pcf;
+    Uint32 pcf;
     int using_get_tick_count_time_unit;
 };
 
@@ -159,9 +166,9 @@ os_monotonic_time_qpc(void)
         if (!(*internal_state.r.o.pQueryPerformanceCounter)(&pc))
             erts_exit(ERTS_ABORT_EXIT, "QueryPerformanceCounter() failed\n");
         temp = (ErtsMonotonicTime) pc.QuadPart;
-    } while(!(temp & SKIP));
+    } while(!(temp & ERTS_WIN_QPC_SKIP_MASK));
 
-    return temp & (ERTS_I64_LITERAL(0xFFFFFFFFFFFFFFFF)-SKIP);
+    return temp & (ERTS_I64_LITERAL(0xFFFFFFFFFFFFFFFF)-ERTS_WIN_QPC_SKIP_MASK);
 }
 
 static void
@@ -170,15 +177,9 @@ os_times_qpc(ErtsMonotonicTime *mtimep, ErtsSystemTime *stimep)
     LARGE_INTEGER pc;
     SYSTEMTIME st;
     ErtsSystemTime stime;
-    BOOL qpcr;
 
-    qpcr = (*internal_state.r.o.pQueryPerformanceCounter)(&pc);
+    *mtimep = os_monotonic_time_qpc();
     GetSystemTime(&st);
-
-    if (!qpcr)
-	erts_exit(ERTS_ABORT_EXIT, "QueryPerformanceCounter() failed\n");
-
-    *mtimep = (ErtsMonotonicTime) pc.QuadPart;
 
     stime = SystemTime2MilliSec(&st);
 
@@ -287,9 +288,65 @@ sys_hrtime_gtc64(void)
     return time;
 }
 
-/*
- * Init
- */
+/* Struct and algorithm taken from https://learn.microsoft.com/en-us/windows/win32/api/timezoneapi/ns-timezoneapi-time_zone_information */
+typedef struct _REG_TZI_FORMAT
+{
+    LONG Bias;
+    LONG StandardBias;
+    LONG DaylightBias;
+    SYSTEMTIME StandardDate;
+    SYSTEMTIME DaylightDate;
+} REG_TZI_FORMAT;
+
+static int sys_init_tzinfo(void) {
+    char *tz = getenv("TZ");
+    char regKey[255];
+    HKEY tzKey;
+    DWORD res, size;
+    REG_TZI_FORMAT tzi;
+
+
+    /* If TZ is not set we fallback to GetTimeZoneInformation, just like mktime and friends. */
+    if (!tz) {
+        return GetTimeZoneInformation(&static_tzi);
+    }
+
+    snprintf(regKey, sizeof(regKey), "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Time Zones\\%s", tz);
+
+    if ((res = RegOpenKey(HKEY_LOCAL_MACHINE, regKey, &tzKey)) != ERROR_SUCCESS) {
+        return 0;
+    }
+
+    size = sizeof(tzi);
+    if ((res = RegGetValueW(tzKey, NULL, L"TZI", RRF_RT_REG_BINARY, NULL,
+            &tzi, &size)) != ERROR_SUCCESS) {
+        RegCloseKey(tzKey);
+        return 0;
+    }
+
+    static_tzi.Bias = tzi.Bias;
+    static_tzi.StandardBias = tzi.StandardBias;
+    static_tzi.DaylightBias = tzi.DaylightBias;
+    static_tzi.StandardDate = tzi.StandardDate;
+    static_tzi.DaylightDate = tzi.DaylightDate;
+
+    size = sizeof(static_tzi.StandardName);
+    if ((res = RegGetValueW(tzKey, NULL, L"Std", RRF_RT_REG_SZ, NULL,
+            &static_tzi.StandardName, &size)) != ERROR_SUCCESS) {
+        RegCloseKey(tzKey);
+        return 0;
+    }
+
+    size = sizeof(static_tzi.DaylightName);
+    if ((res = RegGetValueW(tzKey, NULL, L"Dlt", RRF_RT_REG_SZ, NULL,
+            &static_tzi.DaylightName, &size)) != ERROR_SUCCESS) {
+        RegCloseKey(tzKey);
+        return 0;
+    }
+
+    RegCloseKey(tzKey);
+    return 1;
+}
 
 void
 sys_init_time(ErtsSysInitTimeResult *init_resp)
@@ -372,7 +429,7 @@ sys_init_time(ErtsSysInitTimeResult *init_resp)
 	    if (!internal_state.r.o.pQueryPerformanceCounter)
 		goto get_tick_count64;
 
-	    if (pf.QuadPart > (((LONGLONG) 1) << 32))
+	    if (pf.QuadPart >= (((LONGLONG) 1) << 32))
 		goto get_tick_count64;
 
 	    internal_state.r.o.pcf = (Uint32) pf.QuadPart;
@@ -387,6 +444,9 @@ sys_init_time(ErtsSysInitTimeResult *init_resp)
 	    time_unit = (ErtsMonotonicTime) pf.QuadPart;
 	    internal_state.r.o.using_get_tick_count_time_unit = 0;
 	    init_resp->os_monotonic_time_info.resolution = time_unit;
+            /* We reduce the used resolution in order to make it monotonic... */
+	    init_resp->os_monotonic_time_info.used_resolution
+                = time_unit >> ERTS_WIN_QPC_SKIP_BITS;
 	    os_mtime_func = os_monotonic_time_qpc;
 	    os_times_func = os_times_qpc;
 	}
@@ -405,10 +465,11 @@ sys_init_time(ErtsSysInitTimeResult *init_resp)
     init_resp->os_system_time_info.resolution = 100;
     init_resp->os_system_time_info.locked_use = 0;
 
-    if(GetTimeZoneInformation(&static_tzi) && 
-       static_tzi.StandardDate.wMonth != 0 &&
-       static_tzi.DaylightDate.wMonth != 0) {
-	have_static_tzi = 1;
+    have_static_tzi = sys_init_tzinfo();
+
+    if (have_static_tzi) {
+        sys_daylight = static_tzi.StandardDate.wMonth != 0 &&
+                    static_tzi.DaylightDate.wMonth != 0;
     }
 }
 

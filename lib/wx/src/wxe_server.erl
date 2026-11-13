@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -25,8 +27,8 @@
 %%% Created : 17 Jan 2007 by Dan Gudmundsson <dgud@erix.ericsson.se>
 %%%-------------------------------------------------------------------
 
-%% @hidden
 -module(wxe_server).
+-moduledoc false.
 -behaviour(gen_server).
 
 %% API
@@ -41,10 +43,10 @@
 %%-record(event, {object, callback, cb_handler}).
 
 -define(APPLICATION, wxe).
--define(log(S,A), log(?MODULE,?LINE,S,A)).
+-define(log(S,A), log(?MODULE_STRING,?LINE,S,A)).
 
 -include("wxe.hrl").
--include("../include/wx.hrl").
+-include_lib("wx/include/wx.hrl").
 
 %%====================================================================
 %% API
@@ -59,7 +61,8 @@ start(SilentStart) ->
 	    case gen_server:start(?MODULE, [SilentStart], []) of
 		{ok, Pid}  ->
 		    {ok, Ref} = gen_server:call(Pid, get_env, infinity),
-		    wx:set_env(Env = #wx_env{ref=Ref,sv=Pid}),
+                    Env = #wx_env{ref=Ref,sv=Pid},
+		    wx:set_env(Env),
 		    Env;
 		{error, {Reason, _Stack}} ->
 		    erlang:error(Reason)
@@ -96,13 +99,13 @@ init([SilentStart]) ->
 
 %% Register process
 handle_call(register_me, {From,_}, State=#state{users=Users}) ->
-    erlang:monitor(process, From),
     case gb_trees:is_defined(From, Users) of
 	true ->
 	    {reply, ok, State};
-	false ->
-	    New = gb_trees:insert(From, #user{}, Users),
-	    {reply, ok, State#state{users=New}}
+        false ->
+            erlang:monitor(process, From),
+            New = gb_trees:insert(From, #user{}, Users),
+            {reply, ok, State#state{users=New}}
     end;
 %% Port request
 handle_call(get_env, _, State=#state{env=Env}) ->
@@ -210,7 +213,7 @@ code_change(_OldVsn, State, _Extra) ->
 %%--------------------------------------------------------------------
 
 log(Mod,Line,Str,Args) ->
-    error_logger:format("~p:~p: " ++ Str, [Mod,Line|Args]).
+    logger:log(error, Str, Args, #{domain => [wx], file=>Mod, line=>Line}).
 
 handle_connect(Object, #evh{handler=undefined, cb=Callback} = EvData0, 
 	       From, State0) ->
@@ -269,10 +272,10 @@ invoke_callback(Env, Fun, Args, IsEvent) ->
 	  end),
     ok.
 
-invoke_callback_obj(Env, Pid, Ev, Ref) ->
+invoke_callback_obj(#wx_env{ref=EnvRef}=Env, Pid, Ev, Ref) ->
     CB = fun() ->
 		 wx:set_env(Env),
-                 wxe_util:queue_cmd(Env, ?WXE_CB_START),
+                 wxe_util:queue_cmd(EnvRef, ?WXE_CB_START),
 		 try
 		     case get_wx_object_state(Pid, 5) of
 			 ignore ->
@@ -290,7 +293,7 @@ invoke_callback_obj(Env, Pid, Ev, Ref) ->
 			 ?log("Callback fun crashed with {'EXIT, ~p, ~p}~n",
 			      [Reason, Stacktrace])
 		 end,
-                 wxe_util:queue_cmd(ok, Env, ?WXE_CB_RETURN)
+                 wxe_util:queue_cmd(ok, EnvRef, ?WXE_CB_RETURN)
 	 end,
     spawn(CB),
     ok.
@@ -358,12 +361,16 @@ cleanup_evt_listener(U=#user{events=Evs0}, EvtListener, Object) ->
 	     end,
     U#user{events=lists:filter(Filter, Evs0)}.
 
-handle_disconnect(Object, Evh = #evh{cb=Fun}, From, 
+handle_disconnect(Object, Evh = #evh{cb=Fun}, From,
 		  State0 = #state{users=Users0, cb=Callbacks}) ->
-    #user{events=Evs0} = gb_trees:get(From, Users0),
-    FunId = gb_trees:lookup(Fun, Callbacks),
-    Handlers = find_handler(Evs0, Object, Evh#evh{cb=FunId}),
-    {reply, {try_in_order, Handlers}, State0}.
+    case gb_trees:lookup(From, Users0) of
+        {value, #user{events=Evs0}} ->
+            FunId = gb_trees:lookup(Fun, Callbacks),
+            Handlers = find_handler(Evs0, Object, Evh#evh{cb=FunId}),
+            {reply, {try_in_order, Handlers}, State0};
+        none ->
+            {reply, {try_in_order, []}, State0}
+    end.
 
 find_handler([{Object,Evh}|Evs], Object, Match) ->
     case match_handler(Match, Evh) of

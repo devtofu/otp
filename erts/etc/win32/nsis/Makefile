@@ -1,7 +1,9 @@
 # 
 # %CopyrightBegin%
+#
+# SPDX-License-Identifier: Apache-2.0
 # 
-# Copyright Ericsson AB 2003-2016. All Rights Reserved.
+# Copyright Ericsson AB 2003-2025. All Rights Reserved.
 # 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -54,6 +56,9 @@ WTARGET_DIR=$(shell (w32_path.sh -d "$(TARGET_DIR)"))
 ifeq ($(CONFIG_SUBTYPE),win64)
   WINTYPE=win64
   REDIST_TARGET=vcredist_x64.exe
+else ifneq ($(filter $(CONFIG_SUBTYPE),arm64 x64_arm64),)
+  WINTYPE=arm64
+  REDIST_TARGET=vcredist_arm64.exe
 else
   WINTYPE=win32
   REDIST_TARGET=vcredist_x86.exe
@@ -68,18 +73,27 @@ REDIST_DLL_NAME=$(shell (sh ./dll_version_helper.sh -n "$(NICEREDISTFILE)" || ec
 # $(info $$REDIST_DLL_NAME = [${REDIST_DLL_NAME}])
 # $(info $$REDIST_FILE = [${REDIST_FILE}])
 
+VERSION_TICKETS_FILE=$(shell (w32_path.sh -m "$(ERL_TOP)/make/otp_version_tickets" 2>/dev/null || echo "NOTFOUND"))
+# NSIS really want the product version number to be at least 4 digits long
+OTP_VERSION_LONG=$(shell $(ERL_TOP)/bootstrap/bin/escript.exe vsn_number.escript $(OTP_VERSION) $(VERSION_TICKETS_FILE))
+YEAR=$(shell date +%Y)
+
 release_spec:
 	@NSIS_VER=`makensis.exe -version`; \
 	case $$NSIS_VER in \
-	v2.0b*) \
-	  echo "Unsupported NSIS version: $$NSIS_VER";;\
-	v2.* | v3.*) \
-	  echo '!define OTP_VERSION "$(SYSTEM_VSN)"' > $(VERSION_HEADER);\
-	  echo '!define OTP_RELEASE_VERSION "$(OTP_VERSION)"' >> $(VERSION_HEADER);\
+	v2.* | v3.0 | v3.01) \
+	  echo "Unsupported NSIS version: $$NSIS_VER";\
+		exit -1;\
+	  ;;\
+	v3.*) \
+	  echo '!define OTP_RELEASE "$(SYSTEM_VSN)"' > $(VERSION_HEADER);\
+	  echo '!define OTP_VERSION "$(OTP_VERSION)"' >> $(VERSION_HEADER);\
+	  echo '!define OTP_VERSION_LONG "$(OTP_VERSION_LONG)"' >> $(VERSION_HEADER);\
 	  echo '!define ERTS_VERSION "$(VSN)"' >> $(VERSION_HEADER);\
 	  echo '!define TESTROOT "$(WTESTROOT)"' >> $(VERSION_HEADER);\
 	  echo '!define OUTFILEDIR "$(WTARGET_DIR)"' >> $(VERSION_HEADER);\
 	  echo '!define WINTYPE "$(WINTYPE)"' >> $(VERSION_HEADER);\
+	  echo '!define YEAR "$(YEAR)"' >> $(VERSION_HEADER);\
 	  if [ -f $(CUSTOM_MODERN) ];\
 	  then \
 		echo '!define HAVE_CUSTOM_MODERN 1' >> $(VERSION_HEADER); \
@@ -96,10 +110,14 @@ release_spec:
 	  then \
 		echo '!define HAVE_DOCS 1' >> $(VERSION_HEADER); \
 	  fi;\
+	  echo "OTP_VERSION = [${OTP_VERSION}]"; \
+	  echo "OTP_VERSION_LONG = [${OTP_VERSION_LONG}]"; \
 	  echo "Running $(MAKENSIS) $(MAKENSISFLAGS) erlang20.nsi";\
 	  $(MAKENSIS) $(MAKENSISFLAGS) erlang20.nsi;;\
 	*) \
-	  echo "Unsupported NSIS version: $$NSIS_VER";;\
+	  echo "Unsupported NSIS version: $$NSIS_VER";\
+	  exit -1;\
+	  ;;\
 	esac	
 
 release_docs release_docs_spec docs:

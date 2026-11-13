@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2007-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2007-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,6 +25,7 @@
 %%----------------------------------------------------------------------
 
 -module(ssl_pkix_db).
+-moduledoc false.
 
 -include("ssl_internal.hrl").
 -include_lib("public_key/include/public_key.hrl").
@@ -31,19 +34,19 @@
 
 -export([create/1, create_pem_cache/1, 
 	 add_crls/3, remove_crls/2, remove/1, add_trusted_certs/3, 
-         refresh_trusted_certs/1,
          refresh_trusted_certs/2,
+         refresh_trusted_certs/3,
 	 extract_trusted_certs/1,
 	 remove_trusted_certs/2, insert/3, remove/2, clear/1, db_size/1,
-	 ref_count/3, lookup_trusted_cert/4, foldl/3, select_cert_by_issuer/2,
-	 decode_pem_file/1, lookup/2]).
+	 ref_count/3, lookup_trusted_cert/4, foldl/3, select_certentries_by_ref/2,
+	 select_certs_by_ref/2, decode_pem_file/1, lookup/2]).
 
 %%====================================================================
 %% Internal application API
 %%====================================================================
 
 %%--------------------------------------------------------------------
--spec create(atom()) -> [db_handle(),...].
+-spec create(atom()) -> [ssl_manager:db_handle(),...].
 %% 
 %% Description: Creates a new certificate db.
 %% Note: lookup_trusted_cert/4 may be called from any process but only
@@ -53,7 +56,7 @@ create(PEMCacheName) ->
     [%% Let connection process delete trusted certs
      %% that can only belong to one connection. (Supplied directly
      %% on DER format to ssl:connect/listen.)
-     ets:new(ssl_otp_cacertificate_db, [set, public]),
+     ets:new(ssl_otp_cacertificate_db, [set, public, {read_concurrency, true}]),
      %% Let connection processes call ref_count/3 directly
      {ets:new(ssl_otp_ca_file_ref, [set, public]),
       ets:new(ssl_otp_ca_ref_file_mapping, [set, protected])
@@ -69,7 +72,7 @@ create_pem_cache(Name) ->
     ets:new(Name, [named_table, set, protected]).
 
 %%--------------------------------------------------------------------
--spec remove([db_handle()]) -> ok. 
+-spec remove([ssl_manager:db_handle()]) -> ok.
 %%
 %% Description: Removes database db  
 %%--------------------------------------------------------------------
@@ -95,11 +98,12 @@ remove(Dbs) ->
 		  end, Dbs).
 
 %%--------------------------------------------------------------------
--spec lookup_trusted_cert(db_handle(), certdb_ref(), serialnumber(), issuer()) ->
-				 undefined | {ok, #cert{}}.
+-spec lookup_trusted_cert(ssl_manager:db_handle(), ssl_manager:certdb_ref(),
+                          SerialNumber::pos_integer(), public_key:issuer_name()) ->
+				 undefined | {ok, public_key:combined_cert()}.
 
 %%
-%% Description: Retrives the trusted certificate identified by 
+%% Description: Retrieves the trusted certificate identified by 
 %% <SerialNumber, Issuer>. Ref is used as it is specified  
 %% for each connection which certificates are trusted.
 %%--------------------------------------------------------------------
@@ -117,13 +121,13 @@ lookup_trusted_cert(_DbHandle, {extracted,Certs}, SerialNumber, Issuer) ->
 	    CertSerial =:= SerialNumber, CertIssuer =:= Issuer],
 	undefined
     catch
-	Cert ->
+	throw:Cert ->
 	    {ok, Cert}
     end.
 
 %%--------------------------------------------------------------------
 -spec add_trusted_certs(pid(), {erlang:timestamp(), string()} |
-			{der, list()}, [db_handle()]) -> {ok, [db_handle()]}.
+			{der, list()}, [ssl_manager:db_handle()]) -> {ok, [ssl_manager:db_handle()]}.
 %%
 %% Description: Adds the trusted certificates from file <File> to the
 %% runtime database. Returns Ref that should be handed to lookup_trusted_cert
@@ -132,12 +136,12 @@ lookup_trusted_cert(_DbHandle, {extracted,Certs}, SerialNumber, Issuer) ->
 add_trusted_certs(_Pid, {extracted, _} = Certs, _) ->
     {ok, Certs};
 
-add_trusted_certs(_Pid, {der, DerList}, [CertDb, _,_ | _]) ->
+add_trusted_certs(_Pid, {der, DerList}, [CertDb, _, _ | _]) ->
     NewRef = make_ref(),
     add_certs_from_der(DerList, NewRef, CertDb),
     {ok, NewRef};
 
-add_trusted_certs(_Pid, File, [ _, {RefDb, FileMapDb} | _] = Db) ->
+add_trusted_certs(_Pid, File, [_, {RefDb, FileMapDb} | _] = Db) ->
     case lookup(File, FileMapDb) of
 	[Ref] ->
 	    ref_count(Ref, RefDb, 1),
@@ -146,18 +150,18 @@ add_trusted_certs(_Pid, File, [ _, {RefDb, FileMapDb} | _] = Db) ->
 	    new_trusted_cert_entry(File, Db)
     end.
 
-refresh_trusted_certs(File, [CertsDb, {_, FileMapDb} | _]) ->
+refresh_trusted_certs(File, [CertsDb, {_, FileMapDb} | _], PemCache) ->
     case lookup(File, FileMapDb) of
         [Ref] ->
-            {ok, Content} = decode_pem_file(File),
-            remove_trusted_certs(Ref, CertsDb),
-            add_certs_from_pem(Content, Ref, CertsDb);
+            Certs = ssl_certificate:file_to_certificats(File, PemCache),
+            KeyList = select_certentries_by_ref(Ref,CertsDb),
+            update_certs(Ref, Certs, KeyList, CertsDb);
         undefined ->
             ok
     end.
-refresh_trusted_certs([_, {_, FileMapDb} | _] = Db) ->
+refresh_trusted_certs([_, {_, FileMapDb} | _] = Db, PemCache) ->
     Refresh = fun({File, _}, Acc) ->
-                      refresh_trusted_certs(File, Db),
+                      refresh_trusted_certs(File, Db, PemCache),
                       Acc
               end,
     foldl(Refresh, refresh, FileMapDb).
@@ -191,15 +195,15 @@ decode_pem_file(File) ->
     end.
 
 %%--------------------------------------------------------------------
--spec remove_trusted_certs(reference(), db_handle()) -> ok.
+-spec remove_trusted_certs(reference(), ssl_manager:db_handle()) -> ok.
 %%
-%% Description: Removes all trusted certificates refernced by <Ref>.
+%% Description: Removes all trusted certificates referenced by <Ref>.
 %%--------------------------------------------------------------------
 remove_trusted_certs(Ref, CertsDb) ->
     remove_certs(Ref, CertsDb).
 
 %%--------------------------------------------------------------------
--spec remove(term(), db_handle()) -> ok.
+-spec remove(term(), ssl_manager:db_handle()) -> ok.
 %%
 %% Description: Removes an element in a <Db>.
 %%--------------------------------------------------------------------
@@ -208,7 +212,7 @@ remove(Key, Db) ->
     ok.
 
 %%--------------------------------------------------------------------
--spec remove(term(), term(), db_handle()) -> ok.
+-spec remove(term(), term(), ssl_manager:db_handle()) -> ok.
 %%
 %% Description: Removes an element in a <Db>.
 %%--------------------------------------------------------------------
@@ -217,7 +221,7 @@ remove(Key, Data, Db) ->
     ok.
 
 %%--------------------------------------------------------------------
--spec lookup(term(), db_handle()) -> [term()] | undefined.
+-spec lookup(term(), ssl_manager:db_handle()) -> [term()] | undefined.
 %%
 %% Description: Looks up an element in a <Db>.
 %%--------------------------------------------------------------------
@@ -232,7 +236,7 @@ lookup(Key, Db) ->
 	    [Pick(Data) || Data <- Contents]
     end.
 %%--------------------------------------------------------------------
--spec foldl(fun((_,_) -> term()), term(), db_handle()) -> term().
+-spec foldl(fun((_,_) -> term()), term(), ssl_manager:db_handle()) -> term().
 %%
 %% Description: Calls Fun(Elem, AccIn) on successive elements of the
 %% cache, starting with AccIn == Acc0. Fun/2 must return a new
@@ -243,12 +247,24 @@ lookup(Key, Db) ->
 foldl(Fun, Acc0, Cache) ->
     ets:foldl(Fun, Acc0, Cache).
 
-
-select_cert_by_issuer(Cache, Issuer) ->    
-    ets:select(Cache, [{{{'_','_', Issuer},{'_', '$1'}},[],['$$']}]).
+%%--------------------------------------------------------------------
+-spec select_certentries_by_ref(reference(), ssl_manager:db_handle()) -> term().
+%%
+%% Description: Select certs entries originating from same source
+%%--------------------------------------------------------------------
+select_certentries_by_ref(Ref, Cache) ->
+    ets:select(Cache, [{{{Ref,'_', '_'}, '_'},[],['$_']}]).
 
 %%--------------------------------------------------------------------
--spec ref_count(term(), db_handle(), integer()) -> integer().
+-spec select_certs_by_ref(reference(), ssl_manager:db_handle()) -> term().
+%%
+%% Description: Select certs originating from same source
+%%--------------------------------------------------------------------
+select_certs_by_ref(Ref, Cache) ->
+    ets:select(Cache, [{{{Ref,'_','_'},'$1'},[],['$1']}]).
+
+%%--------------------------------------------------------------------
+-spec ref_count(term(), ssl_manager:db_handle(), integer()) -> integer().
 %%
 %% Description: Updates a reference counter in a <Db>.
 %%--------------------------------------------------------------------
@@ -260,7 +276,7 @@ ref_count(Key, Db, N) ->
     ets:update_counter(Db,Key,N).
 
 %%--------------------------------------------------------------------
--spec clear(db_handle()) -> ok.
+-spec clear(ssl_manager:db_handle()) -> ok.
 %%
 %% Description: Clears the cache
 %%--------------------------------------------------------------------
@@ -269,7 +285,7 @@ clear(Db) ->
     ok.
 
 %%--------------------------------------------------------------------
--spec db_size(db_handle()) -> integer().
+-spec db_size(ssl_manager:db_handle()) -> integer().
 %%
 %% Description: Returns the size of the db
 %%--------------------------------------------------------------------
@@ -277,7 +293,7 @@ db_size(Db) ->
     ets:info(Db, size).
 
 %%--------------------------------------------------------------------
--spec insert(Key::term(), Data::term(), Db::db_handle()) -> ok.
+-spec insert(Key::term(), Data::term(), Db::ssl_manager:db_handle()) -> ok.
 %%
 %% Description: Inserts data into <Db>
 %%--------------------------------------------------------------------
@@ -297,40 +313,40 @@ remove_certs(Ref, CertsDb) ->
     ok.
 
 add_certs_from_der(DerList, Ref, CertsDb) ->
-    Add = fun(Cert) -> add_certs(Cert, Ref, CertsDb) end,
+    Add = fun(Cert) -> add_cert(Cert, Ref, CertsDb) end,
     [Add(Cert) || Cert <- DerList],
     ok.
 
 certs_from_der(DerList) ->
     Ref = make_ref(),
     [Decoded || Cert <- DerList,
-		Decoded <- [decode_certs(Ref, Cert)],
+		Decoded <- [decode_cert(Ref, Cert)],
 		Decoded =/= undefined].
 
 add_certs_from_pem(PemEntries, Ref, CertsDb) ->
-    Add = fun(Cert) -> add_certs(Cert, Ref, CertsDb) end,
+    Add = fun(Cert) -> add_cert(Cert, Ref, CertsDb) end,
     [Add(Cert) || {'Certificate', Cert, not_encrypted} <- PemEntries],
     ok.
 
-add_certs(Cert, Ref, CertsDb) ->
+add_cert(Cert, Ref, CertsDb) ->
     try
-	 {decoded, {Key, Val}} = decode_certs(Ref, Cert),
+	 {decoded, {Key, Val}} = decode_cert(Ref, Cert),
 	 insert(Key, Val, CertsDb)
     catch
 	error:_ ->
 	    ok
     end.
 
-decode_certs(Ref, #cert{otp=ErlCert} = Cert) ->
+decode_cert(Ref, #cert{otp=ErlCert} = Cert) ->
     TBSCertificate = ErlCert#'OTPCertificate'.tbsCertificate,
     SerialNumber = TBSCertificate#'OTPTBSCertificate'.serialNumber,
     Issuer = public_key:pkix_normalize_name(
                TBSCertificate#'OTPTBSCertificate'.issuer),
     {decoded, {{Ref, SerialNumber, Issuer}, Cert}};
-decode_certs(Ref, Der) ->
+decode_cert(Ref, Der) ->
     try public_key:pkix_decode_cert(Der, otp) of
         ErlCert ->
-            decode_certs(Ref, #cert{der=Der, otp=ErlCert})
+            decode_cert(Ref, #cert{der=Der, otp=ErlCert})
     catch error:_ ->
 	    ?LOG_NOTICE("SSL WARNING: Ignoring a CA cert as "
                         "it could not be correctly decoded.~n"),
@@ -352,11 +368,16 @@ new_trusted_cert_entry(File, [CertsDb, RefsDb, _ | _]) ->
 add_crls([_,_,_, {_, Mapping} | _], ?NO_DIST_POINT, CRLs) ->
     [add_crls(CRL, Mapping) || CRL <- CRLs];
 add_crls([_,_,_, {Cache, Mapping} | _], Path, CRLs) ->
-    insert(Path, CRLs, Cache), 
+    insert(Path, CRLs, Cache),
     [add_crls(CRL, Mapping) || CRL <- CRLs].
 
 add_crls(CRL, Mapping) ->
-    insert(crl_issuer(CRL), CRL, Mapping).
+    case crl_issuer(CRL) of
+        bad_crl ->
+            ok;
+        Issuer ->
+            insert(Issuer, CRL, Mapping)
+    end.
 
 remove_crls([_,_,_, {_, Mapping} | _], {?NO_DIST_POINT, CRLs}) ->
     [rm_crls(CRL, Mapping) || CRL <- CRLs];
@@ -365,16 +386,49 @@ remove_crls([_,_,_, {Cache, Mapping} | _], Path) ->
     case lookup(Path, Cache) of
 	undefined ->
 	    ok;
-	CRLs ->
+	[CRLs] ->
 	    remove(Path, Cache),
 	    [rm_crls(CRL, Mapping) || CRL <- CRLs]
     end.
 
 rm_crls(CRL, Mapping) ->
-   remove(crl_issuer(CRL), CRL, Mapping). 
+     case crl_issuer(CRL) of
+         bad_crl ->
+             ok;
+         Issuer ->
+             remove(Issuer, CRL, Mapping)
+     end.
 
 crl_issuer(DerCRL) ->
-    CRL = public_key:der_decode('CertificateList', DerCRL),
-    TBSCRL = CRL#'CertificateList'.tbsCertList,
-    TBSCRL#'TBSCertList'.issuer.
+    try public_key:der_decode('CertificateList', DerCRL) of
+        CRL ->
+            TBSCRL = CRL#'CertificateList'.tbsCertList,
+            TBSCRL#'TBSCertList'.issuer
+    catch _:_ ->
+            bad_crl
+    end.
 
+update_certs(Ref, CertList, KeyList, CertsDb) ->
+    {Insert, Delete} = insert_delete_lists(Ref, CertList, CertsDb, [], KeyList),
+    insert_cert_entries(Insert, CertsDb),
+    remove_cert_entries(Delete, CertsDb).
+
+insert_delete_lists(_, [], _, Insert, Delete) ->
+    {Insert, Delete};
+insert_delete_lists(Ref, [Cert | Rest], CertsDb, Insert, Delete) ->
+    case decode_cert(Ref, Cert) of
+        {decoded, {Key, Value} = Entry}  ->
+            case lookup(Key, CertsDb) of
+                [Value] -> %% Entry already exists and is unchanged
+                    insert_delete_lists(Ref, Rest, CertsDb, Insert, lists:keydelete(Key, 1, Delete));
+                _ ->
+                    insert_delete_lists(Ref, Rest, CertsDb, [Entry | Insert], lists:keydelete(Key, 1, Delete))
+            end;
+        undefined ->
+            insert_delete_lists(Ref, Rest, CertsDb, Insert, Delete)
+    end.
+
+insert_cert_entries(EntryList, CertsDb) ->
+    ets:insert(CertsDb, EntryList).
+remove_cert_entries(EntryList, CertsDb) ->
+    lists:foreach(fun({Key, Value}) -> remove(Key, Value, CertsDb) end, EntryList).

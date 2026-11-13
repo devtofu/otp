@@ -2,7 +2,9 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 2002-2016. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 2002-2025. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,6 +20,14 @@
 #
 # %CopyrightEnd%
 #
+if [ "$CONFIG_SUBTYPE" = "arm64" -o "$CONFIG_SUBTYPE" = "x64_arm64" ]; then
+    MACHINE="ARM64"
+elif [ "$CONFIG_SUBTYPE" = "win64" ]; then
+    MACHINE="X64"
+else
+    MACHINE="X86"
+fi
+
 CMD=""
 while test -n "$1" ; do
     x="$1"
@@ -45,4 +55,4 @@ while test -n "$1" ; do
     shift
 done
 
-eval lib.exe /nologo $CMD
+eval lib.exe /nologo /machine:$MACHINE $CMD

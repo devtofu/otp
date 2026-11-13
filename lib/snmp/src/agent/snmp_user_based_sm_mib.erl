@@ -1,8 +1,10 @@
 %% 
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1999-2019. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1999-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,10 +16,21 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %% 
 -module(snmp_user_based_sm_mib).
+-moduledoc """
+Instrumentation Functions for SNMP-USER-BASED-SM-MIB
+
+The module `snmp_user_based_sm_mib` implements the instrumentation functions for
+the SNMP-USER-BASED-SM-MIB, and functions for configuring the database.
+
+Note that authentication has been extended according to RFC 7860
+(SNMP-USM-HMAC-SHA2-MIB).
+
+The configuration files are described in the SNMP User's Manual.
+""".
 
 %% Avoid warning for local function error/1 clashing with autoimported BIF.
 -compile({no_auto_import,[error/1]}).
@@ -35,14 +48,28 @@
 	 usmStatsDecryptionErrors/1]).
 -export([add_user/1, add_user/13, delete_user/1]).
 
+-export_type([
+              name/0,
+              clone_from/0,
+              auth_protocol/0,
+              key_change/0,
+              priv_protocol/0,
+              public/0,
+              auth_key/0,
+              priv_key/0,
+              usm_entry/0
+             ]).
+
 %% Internal
 -export([check_usm/1]).
 
 -include("SNMP-USER-BASED-SM-MIB.hrl").
+-include("SNMP-USM-HMAC-SHA2-MIB.hrl").
 -include("SNMP-USM-AES-MIB.hrl").
 -include("SNMPv2-TC.hrl").
 -include("snmpa_internal.hrl").
 -include("snmp_types.hrl").
+-include("snmp_usm.hrl").
 
 -define(VMODULE,"USM_MIB").
 -include("snmp_verbosity.hrl").
@@ -55,7 +82,131 @@
 %% Columns not accessible via SNMP
 -define(usmUserAuthKey, 14).
 -define(usmUserPrivKey, 15).
--define(is_cloning, 16).
+-define(is_cloning,     16).
+
+
+%% *** name ***
+-doc """
+> #### Note {: .info }
+>
+> "A human readable string representing the name of the user. This is the
+> (User-based Security) Model dependent security ID."
+
+`SnmpAdminString (SIZE(1..32))`
+""".
+-type name()             :: snmp_framework_mib:admin_string().
+
+%% *** clone_from ***
+-doc """
+> #### Note {: .info }
+>
+> "A pointer to another conceptual row in this usmUserTable. The user in this
+> other conceptual row is called the clone-from user."
+
+`RowPointer`
+""".
+-type clone_from()       :: zeroDotZero | snmp:row_pointer().
+
+%% *** auth_protocol ***
+-doc """
+> #### Note {: .info }
+>
+> "An indication of whether messages sent on behalf of this user to/from the
+> SNMP engine identified by usmUserEngineID, can be authenticated, and if so,
+> the type of authentication protocol which is used."
+
+> #### Note {: .info }
+>
+> Some of the entries of this type are actually defined by the
+> SNMP-USM-HMAC-SHA2-MIB mib.
+
+`AutonomousType`
+""".
+-type auth_protocol()    :: usmNoAuthProtocol             |
+                            usmHMACMD5AuthProtocol        |
+                            usmHMACSHAAuthProtocol        |
+                            usmHMAC128SHA224AuthProtocol  |
+                            usmHMAC192SH256AuthProtocol   |
+                            usmHMAC256SHA384AuthProtocol  |
+                            usmHMAC384SHA512AuthProtocol.
+
+%% *** key_change ***
+-doc """
+> #### Note {: .info }
+>
+> "Every definition of an object with this syntax must identify a protocol P, a
+> secret key K, and a hash algorithm H that produces output of L octets."
+
+`OCTET STRING`
+""".
+-type key_change()       :: snmp:octet_string().
+
+%% *** priv_protocol ***
+-doc """
+> #### Note {: .info }
+>
+> "An indication of whether messages sent on behalf of this user to/from the
+> SNMP engine identified by usmUserEngineID, can be protected from disclosure,
+> and if so, the type of privacy protocol which is used."
+
+> #### Note {: .info }
+>
+> Some of the entries of this tyype are actually defined by the SNMP-USM-AES-MIB
+> mib.
+
+`AutonomousType`
+""".
+-type priv_protocol()    :: usmNoPrivProtocol    |
+                            usmDESPrivProtocol   |
+                            usmAesCfb128Protocol.
+
+%% *** public ***
+-doc "`OCTET STRING (SIZE(0..32))`".
+-type public()           :: string().
+
+%% *** auth_key ***
+-doc """
+The size/length of the list depends on auth protocol:
+
+```text
+               Size any for usmNoAuthProtocol
+               Size 16  for usmHMACMD5AuthProtocol
+               Size 20  for usmHMACSHAAuthProtocol
+               Size 28  for usmHMAC128SHA224AuthProtocol
+               Size 32  for usmHMAC192SHA256AuthProtocol
+               Size 48  for usmHMAC256SHA384AuthProtocol
+	       Size 64  for usmHMAC384SHA512AuthProtocol
+```
+""".
+-type auth_key()         :: snmp:octet_string().
+
+%% *** priv_key ***
+-doc """
+The size/length of the list depends on priv protocol:
+
+```text
+	       Size any for usmNoPrivProtocol
+               Size 16  for usmDESPrivProtocol
+               Size 16  for usmAesCfb128Protocol
+```
+""".
+-type priv_key()         :: snmp:octet_string().
+
+-type usm_entry() :: {
+                      EngineID    :: snmp_framework_mib:engine_id(),
+                      UserName    :: name(),
+                      SecName     :: snmp_framework_mib:admin_string(),
+                      Clone       :: clone_from(),
+                      AuthP       :: auth_protocol(),
+                      AuthKeyC    :: key_change(),
+                      OwnAuthKeyC :: key_change(),
+                      PrivP       :: priv_protocol(),
+                      PrivKeyC    :: key_change(),
+                      OwnPrivKeyC :: key_change(),
+                      Public      :: public(),
+                      AuthKey     :: auth_key(),
+                      PrivKey     :: priv_key()
+                     }.
 
 
 %%%-----------------------------------------------------------------
@@ -78,7 +229,29 @@
 %% Returns: ok
 %% Fails: exit(configuration_error)
 %%-----------------------------------------------------------------
-configure(Dir) ->
+
+-doc """
+This function is called from the supervisor at system start-up.
+
+Inserts all data in the configuration files into the database and destroys all
+old rows with StorageType `volatile`. The rows created from the configuration
+file will have StorageType `nonVolatile`.
+
+All `snmp` counters are set to zero.
+
+If an error is found in the configuration file, it is reported using the
+function `config_err/2` of the error report module, and the function fails with
+the reason `configuration_error`.
+
+`ConfDir` is a string which points to the directory where the configuration
+files are found.
+
+The configuration file read is: `usm.conf`.
+""".
+-spec configure(ConfDir) -> snmp:void() when
+      ConfDir :: string().
+
+configure(ConfDir) ->
     set_sname(),
     case db(usmUserTable) of
         {_, mnesia} ->
@@ -93,7 +266,7 @@ configure(Dir) ->
 		    gc_tabs();
 		false ->
 		    ?vdebug("usm user table does not exist: reconfigure",[]),
-		    reconfigure(Dir)
+		    reconfigure(ConfDir)
 	    end
     end.
 
@@ -109,9 +282,32 @@ configure(Dir) ->
 %% Fails: exit(configuration_error) |
 %%        exit({unsupported_crypto, Function})
 %%-----------------------------------------------------------------
-reconfigure(Dir) ->
+
+-doc """
+Inserts all data in the configuration files into the database and destroys all
+old data, including the rows with StorageType `nonVolatile`. The rows created
+from the configuration file will have StorageType `nonVolatile`.
+
+Thus, the data in the SNMP-USER-BASED-SM-MIB, after this function has been
+called, is the data from the configuration files.
+
+All `snmp` counters are set to zero.
+
+If an error is found in the configuration file, it is reported using the
+function `config_err/2` of the error report module, and the function fails with
+the reason `configuration_error`.
+
+`ConfDir` is a string which points to the directory where the configuration
+files are found.
+
+The configuration file read is: `usm.conf`.
+""".
+-spec reconfigure(ConfDir) -> snmp:void() when
+      ConfDir :: string().
+
+reconfigure(ConfDir) ->
     set_sname(),
-    case (catch do_reconfigure(Dir)) of
+    case (catch do_reconfigure(ConfDir)) of
 	ok ->
 	    ok;
 	{error, Reason} ->
@@ -154,6 +350,7 @@ generate_usm(Dir, _Reason) ->
     [].
 
 
+-doc false.
 check_usm({EngineID, Name, SecName, Clone, AuthP, AuthKeyC, OwnAuthKeyC,
            PrivP, PrivKeyC, OwnPrivKeyC, Public, AuthKey, PrivKey}) ->
     snmp_conf:check_string(EngineID),
@@ -167,9 +364,13 @@ check_usm({EngineID, Name, SecName, Clone, AuthP, AuthKeyC, OwnAuthKeyC,
 	    {ok, X} ->
                 X
         end,
-    AuthProtoAlt = [{usmNoAuthProtocol,      ?usmNoAuthProtocol},
-		    {usmHMACSHAAuthProtocol, ?usmHMACSHAAuthProtocol},
-		    {usmHMACMD5AuthProtocol, ?usmHMACMD5AuthProtocol}],
+    AuthProtoAlt = [{usmNoAuthProtocol,            ?usmNoAuthProtocol},
+		    {usmHMACMD5AuthProtocol,       ?usmHMACMD5AuthProtocol},
+		    {usmHMACSHAAuthProtocol,       ?usmHMACSHAAuthProtocol},
+		    {usmHMAC128SHA224AuthProtocol, ?usmHMAC128SHA224AuthProtocol},
+		    {usmHMAC192SHA256AuthProtocol, ?usmHMAC192SHA256AuthProtocol},
+		    {usmHMAC256SHA384AuthProtocol, ?usmHMAC256SHA384AuthProtocol},
+		    {usmHMAC384SHA512AuthProtocol, ?usmHMAC384SHA512AuthProtocol}],
     {ok, AuthProto} = snmp_conf:check_atom(AuthP, AuthProtoAlt),
     snmp_conf:check_string(AuthKeyC),
     snmp_conf:check_string(OwnAuthKeyC),
@@ -191,12 +392,16 @@ check_usm({EngineID, Name, SecName, Clone, AuthP, AuthKeyC, OwnAuthKeyC,
 check_usm(X) ->
     error({invalid_user, X}).
 
-alen(usmNoAuthProtocol) -> any;
-alen(usmHMACMD5AuthProtocol) -> 16;
-alen(usmHMACSHAAuthProtocol) -> 20.
+alen(usmNoAuthProtocol)            -> any;
+alen(usmHMACMD5AuthProtocol)       -> 16;
+alen(usmHMACSHAAuthProtocol)       -> 20;
+alen(usmHMAC128SHA224AuthProtocol) -> ?usmHMAC128SHA224AuthProtocol_secret_key_length;
+alen(usmHMAC192SHA256AuthProtocol) -> ?usmHMAC192SHA256AuthProtocol_secret_key_length;
+alen(usmHMAC256SHA384AuthProtocol) -> ?usmHMAC256SHA384AuthProtocol_secret_key_length;
+alen(usmHMAC384SHA512AuthProtocol) -> ?usmHMAC384SHA512AuthProtocol_secret_key_length.
 
-plen(usmNoPrivProtocol) -> any;
-plen(usmDESPrivProtocol) -> 16;
+plen(usmNoPrivProtocol)    -> any;
+plen(usmDESPrivProtocol)   -> 16;
 plen(usmAesCfb128Protocol) -> 16.
 
 
@@ -225,6 +430,26 @@ check_user(User) ->
 	    case is_crypto_supported(sha) of
 		true -> ok;
 		false -> exit({unsupported_crypto, sha_mac_96})
+	    end;
+	?usmHMAC128SHA224AuthProtocol ->
+	    case is_crypto_supported(sha224) of
+		true -> ok;
+		false -> exit({unsupported_crypto, sha224_hmac_sha_2})
+	    end;
+	?usmHMAC192SHA256AuthProtocol ->
+	    case is_crypto_supported(sha256) of
+		true -> ok;
+		false -> exit({unsupported_crypto, sha256_hmac_sha_2})
+	    end;
+	?usmHMAC256SHA384AuthProtocol ->
+	    case is_crypto_supported(sha384) of
+		true -> ok;
+		false -> exit({unsupported_crypto, sha384_hmac_sha_2})
+	    end;
+	?usmHMAC384SHA512AuthProtocol ->
+	    case is_crypto_supported(sha512) of
+		true -> ok;
+		false -> exit({unsupported_crypto, sha512_hmac_sha_2})
 	    end
     end,
     case element(?usmUserPrivProtocol, User) of
@@ -266,14 +491,43 @@ table_del_row(Tab, Key) ->
     snmpa_mib_lib:table_del_row(db(Tab), Key).
 
 
+-doc """
+Adds a USM security data (user) to the agent config. Equivalent to one line in
+the `usm.conf` file.
+""".
+-spec add_user(EngineID, Name, SecName, Clone, AuthP, AuthKeyC, OwnAuthKeyC,
+               PrivP, PrivKeyC, OwnPrivKeyC, Public, AuthKey, PrivKey) ->
+          {ok, Key} | {error, Reason} when
+      EngineID    :: snmp_framework_mib:engine_id(),
+      Name        :: name(),
+      SecName     :: snmp_framework_mib:admin_string(),
+      Clone       :: clone_from(),
+      AuthP       :: auth_protocol(),
+      AuthKeyC    :: key_change(),
+      OwnAuthKeyC :: key_change(),
+      PrivP       :: priv_protocol(),
+      PrivKeyC    :: key_change(),
+      OwnPrivKeyC :: key_change(),
+      Public      :: public(),
+      AuthKey     :: auth_key(),
+      PrivKey     :: priv_key(),
+      Key         :: term(),
+      Reason      :: term().
+
 add_user(EngineID, Name, SecName, Clone, AuthP, AuthKeyC, OwnAuthKeyC,
 	 PrivP, PrivKeyC, OwnPrivKeyC, Public, AuthKey, PrivKey) ->
     User = {EngineID, Name, SecName, Clone, AuthP, AuthKeyC, OwnAuthKeyC,
 	    PrivP, PrivKeyC, OwnPrivKeyC, Public, AuthKey, PrivKey},
     add_user(User).
 
-add_user(User) ->
-    case (catch check_usm(User)) of
+-doc false.
+-spec add_user(UsmEntry) -> {ok, Key} | {error, Reason} when
+      UsmEntry :: usm_entry(),
+      Key      :: term(),
+      Reason   :: term().
+      
+add_user(UsmEntry) ->
+    case (catch check_usm(UsmEntry)) of
 	{ok, Row} ->
 	    case (catch check_user(Row)) of
 		{'EXIT', Reason} ->
@@ -292,6 +546,12 @@ add_user(User) ->
 	Error ->
 	    {error, Error}
     end.
+
+
+-doc "Delete a USM security data (user) from the agent config.".
+-spec delete_user(Key) -> ok | {error, Reason} when
+      Key    :: term(),
+      Reason :: term().
 
 delete_user(Key) ->
     case table_del_row(usmUserTable, Key) of
@@ -314,6 +574,7 @@ gc_tabs() ->
 %% Counter functions
 %%-----------------------------------------------------------------
 
+-doc false.
 usmStatsUnsupportedSecLevels(print) ->
     VarAndValue = [{usmStatsUnsupportedSecLevels, 
 		    usmStatsUnsupportedSecLevels(get)}],
@@ -321,30 +582,35 @@ usmStatsUnsupportedSecLevels(print) ->
 usmStatsUnsupportedSecLevels(get) ->
     get_counter(usmStatsUnsupportedSecLevels).
 
+-doc false.
 usmStatsNotInTimeWindows(print) ->
     VarAndValue = [{usmStatsNotInTimeWindows, usmStatsNotInTimeWindows(get)}],
     snmpa_mib_lib:print_variables(VarAndValue);
 usmStatsNotInTimeWindows(get) ->
     get_counter(usmStatsNotInTimeWindows).
 
+-doc false.
 usmStatsUnknownUserNames(print) ->
     VarAndValue = [{usmStatsUnknownUserNames, usmStatsUnknownUserNames(get)}],
     snmpa_mib_lib:print_variables(VarAndValue);
 usmStatsUnknownUserNames(get) ->
     get_counter(usmStatsUnknownUserNames).
 
+-doc false.
 usmStatsUnknownEngineIDs(print) ->
     VarAndValue = [{usmStatsUnknownEngineIDs, usmStatsUnknownEngineIDs(get)}],
     snmpa_mib_lib:print_variables(VarAndValue);
 usmStatsUnknownEngineIDs(get) ->
     get_counter(usmStatsUnknownEngineIDs).
 
+-doc false.
 usmStatsWrongDigests(print) ->
     VarAndValue = [{usmStatsWrongDigests, usmStatsWrongDigests(get)}],
     snmpa_mib_lib:print_variables(VarAndValue);
 usmStatsWrongDigests(get) ->
     get_counter(usmStatsWrongDigests).
 
+-doc false.
 usmStatsDecryptionErrors(print) ->
     VarAndValue = [{usmStatsDecryptionErrors, usmStatsDecryptionErrors(get)}],
     snmpa_mib_lib:print_variables(VarAndValue);
@@ -385,6 +651,7 @@ vars() ->
 %%-----------------------------------------------------------------
 %% API functions
 %%-----------------------------------------------------------------
+-doc false.
 is_engine_id_known(EngineID) ->
     EngineKey = [length(EngineID) | EngineID],
     ?vtrace("is_engine_id_known -> EngineKey: ~w", [EngineKey]),
@@ -395,10 +662,12 @@ is_engine_id_known(EngineID) ->
 	    lists:prefix(EngineKey, Key)
     end.
 
+-doc false.
 get_user(EngineID, UserName) ->
     Key = [length(EngineID) | EngineID] ++ [length(UserName) | UserName],
     snmp_generic:table_get_row(db(usmUserTable), Key, foi(usmUserTable)).
 
+-doc false.
 get_user_from_security_name(EngineID, SecName) ->
     %% Since the normal mapping between UserName and SecName is the
     %% identityfunction, we first try to use the SecName as UserName,
@@ -434,6 +703,7 @@ get_user_from_security_name(EngineID, SecName) ->
 %% Instrumentation Functions
 %%-----------------------------------------------------------------
 
+-doc false.
 usmUserSpinLock(print) ->
     VarAndValue = [{usmUserSpinLock, usmUserSpinLock(get)}],
     snmpa_mib_lib:print_variables(VarAndValue);
@@ -454,6 +724,7 @@ usmUserSpinLock(delete) ->
 usmUserSpinLock(get) ->
     snmp_generic:variable_func(get, {usmUserSpinLock, volatile}).
 
+-doc false.
 usmUserSpinLock(is_set_ok, NewVal) ->
     case snmp_generic:variable_func(get, {usmUserSpinLock, volatile}) of
 	{value, NewVal} -> noError;
@@ -465,6 +736,7 @@ usmUserSpinLock(set, NewVal) ->
 
 
 %% Op = print - Used for debugging purposes
+-doc false.
 usmUserTable(print) ->
     Table = usmUserTable, 
     DB    = db(Table),
@@ -492,11 +764,19 @@ usmUserTable(print) ->
 				 Prefix, element(?usmUserCloneFrom, Row),
 				 Prefix, element(?usmUserAuthProtocol, Row),
 				 case element(?usmUserAuthProtocol, Row) of
-				     ?usmNoAuthProtocol      -> none;
-				     ?usmHMACMD5AuthProtocol -> md5;
-				     ?usmHMACSHAAuthProtocol -> sha;
-				     md5 -> md5;
-				     sha -> sha;
+				     ?usmNoAuthProtocol            -> none;
+				     ?usmHMACMD5AuthProtocol       -> md5;
+				     ?usmHMACSHAAuthProtocol       -> sha;
+				     ?usmHMAC128SHA224AuthProtocol -> sha224;
+				     ?usmHMAC192SHA256AuthProtocol -> sha256;
+				     ?usmHMAC256SHA384AuthProtocol -> sha384;
+				     ?usmHMAC384SHA512AuthProtocol -> sha512;
+				     md5    -> md5;
+				     sha    -> sha;
+				     sha224 -> sha224;
+				     sha256 -> sha256;
+				     sha384 -> sha384;
+				     sha512 -> sha512;
 				     _ -> undefined
 				 end,
 				 Prefix, element(?usmUserAuthKeyChange, Row),
@@ -539,6 +819,7 @@ usmUserTable(Op) ->
     snmp_generic:table_func(Op, db(usmUserTable)).
 
 %% Op == get | is_set_ok | set | get_next
+-doc false.
 usmUserTable(get, RowIndex, Cols) ->
     get_patch(Cols, get(usmUserTable, RowIndex, Cols));
 usmUserTable(get_next, RowIndex, Cols) ->
@@ -637,12 +918,20 @@ verify_usmUserTable_col(?usmUserCloneFrom, Clone) ->
     end;
 verify_usmUserTable_col(?usmUserAuthProtocol, AuthP) ->
     case AuthP of
-	usmNoAuthProtocol       -> ?usmNoAuthProtocol;
-	usmHMACSHAAuthProtocol  -> ?usmHMACSHAAuthProtocol;
-	usmHMACMD5AuthProtocol  -> ?usmHMACMD5AuthProtocol;
-	?usmNoAuthProtocol      -> ?usmNoAuthProtocol;
-	?usmHMACSHAAuthProtocol -> ?usmHMACSHAAuthProtocol;
-	?usmHMACMD5AuthProtocol -> ?usmHMACMD5AuthProtocol;
+	usmNoAuthProtocol             -> ?usmNoAuthProtocol;
+	usmHMACSHAAuthProtocol        -> ?usmHMACSHAAuthProtocol;
+	usmHMACMD5AuthProtocol        -> ?usmHMACMD5AuthProtocol;
+        usmHMAC128SHA224AuthProtocol  -> ?usmHMAC128SHA224AuthProtocol;
+        usmHMAC192SHA256AuthProtocol  -> ?usmHMAC192SHA256AuthProtocol;
+        usmHMAC256SHA384AuthProtocol  -> ?usmHMAC256SHA384AuthProtocol;
+        usmHMAC384SHA512AuthProtocol  -> ?usmHMAC384SHA512AuthProtocol;
+	?usmNoAuthProtocol            -> ?usmNoAuthProtocol;
+	?usmHMACSHAAuthProtocol       -> ?usmHMACSHAAuthProtocol;
+	?usmHMACMD5AuthProtocol       -> ?usmHMACMD5AuthProtocol;
+	?usmHMAC128SHA224AuthProtocol -> ?usmHMAC128SHA224AuthProtocol;
+	?usmHMAC192SHA256AuthProtocol -> ?usmHMAC192SHA256AuthProtocol;
+	?usmHMAC256SHA384AuthProtocol -> ?usmHMAC256SHA384AuthProtocol;
+	?usmHMAC384SHA512AuthProtocol -> ?usmHMAC384SHA512AuthProtocol;
 	_ ->
 	    wrongValue(?usmUserAuthProtocol)
     end;
@@ -784,7 +1073,7 @@ validate_set(Error, _RowIndex, _Cols) ->
 %%-----------------------------------------------------------------
 %% Here's the alg: If this is the first time the CloneFrom is written,
 %% we must check that the CloneFrom row exists, so we can invoke the
-%% clone process in the set phase.  Otherwise, the set succed, with
+%% clone process in the set phase.  Otherwise, the set succeed, with
 %% no further checks.
 %%-----------------------------------------------------------------
 validate_clone_from(RowIndex, Cols) ->
@@ -856,7 +1145,7 @@ validate_auth_protocol(RowIndex, Cols) ->
             %% now; set is ok if new protocol is usmNoAuthProtocol
 		    case AuthProtocol of
 			?usmNoAuthProtocol ->
-			    %% Check that the Priv protocl is noPriv
+			    %% Check that the Priv protocol is noPriv
 			    case get_priv_proto(RowIndex, Cols) of
 				?usmNoPrivProtocol -> ok;
 				_ -> inconsistentValue(?usmUserAuthProtocol)
@@ -864,6 +1153,14 @@ validate_auth_protocol(RowIndex, Cols) ->
 			?usmHMACMD5AuthProtocol ->
 			    inconsistentValue(?usmUserAuthProtocol);
 			?usmHMACSHAAuthProtocol ->
+			    inconsistentValue(?usmUserAuthProtocol);
+			?usmHMAC128SHA224AuthProtocol ->
+			    inconsistentValue(?usmUserAuthProtocol);
+			?usmHMAC192SHA256AuthProtocol ->
+			    inconsistentValue(?usmUserAuthProtocol);
+			?usmHMAC256SHA384AuthProtocol ->
+			    inconsistentValue(?usmUserAuthProtocol);
+			?usmHMAC384SHA512AuthProtocol ->
 			    inconsistentValue(?usmUserAuthProtocol);
 			_ ->
 			    wrongValue(?usmUserAuthProtocol)
@@ -874,7 +1171,7 @@ validate_auth_protocol(RowIndex, Cols) ->
 		    %% hash function.
 		    case AuthProtocol of
 			?usmNoAuthProtocol ->
-			    %% Check that the Priv protocl is noPriv
+			    %% Check that the Priv protocol is noPriv
 			    case get_priv_proto(RowIndex, Cols) of
 				?usmNoPrivProtocol -> ok;
 				_ -> inconsistentValue(?usmUserAuthProtocol)
@@ -887,6 +1184,30 @@ validate_auth_protocol(RowIndex, Cols) ->
 			    end;
 			?usmHMACSHAAuthProtocol ->
 			    case is_crypto_supported(sha) of
+				true -> ok;
+				false ->
+				    wrongValue(?usmUserAuthProtocol)
+			    end;
+			?usmHMAC128SHA224AuthProtocol ->
+			    case is_crypto_supported(sha224) of
+				true -> ok;
+				false ->
+				    wrongValue(?usmUserAuthProtocol)
+			    end;
+			?usmHMAC192SHA256AuthProtocol ->
+			    case is_crypto_supported(sha256) of
+				true -> ok;
+				false ->
+				    wrongValue(?usmUserAuthProtocol)
+			    end;
+			?usmHMAC256SHA384AuthProtocol ->
+			    case is_crypto_supported(sha384) of
+				true -> ok;
+				false ->
+				    wrongValue(?usmUserAuthProtocol)
+			    end;
+			?usmHMAC384SHA512AuthProtocol ->
+			    case is_crypto_supported(sha512) of
 				true -> ok;
 				false ->
 				    wrongValue(?usmUserAuthProtocol)
@@ -966,8 +1287,14 @@ validate_key_change(RowIndex, Cols, KeyChangeCol, Type) ->
 		auth ->
 		    case get_auth_proto(RowIndex, Cols) of
 			?usmNoAuthProtocol -> ok;
-			?usmHMACMD5AuthProtocol when Len =:= 32 -> ok;
-			?usmHMACSHAAuthProtocol when Len =:= 40 -> ok;
+			?usmHMACMD5AuthProtocol       when Len =:= 32 -> ok;
+			?usmHMACSHAAuthProtocol       when Len =:= 40 -> ok;
+
+			?usmHMAC128SHA224AuthProtocol when Len =:= (2*?usmHMAC128SHA224AuthProtocol_secret_key_length) -> ok;
+			?usmHMAC192SHA256AuthProtocol when Len =:= (2*?usmHMAC192SHA256AuthProtocol_secret_key_length) -> ok;
+			?usmHMAC256SHA384AuthProtocol when Len =:= (2*?usmHMAC256SHA384AuthProtocol_secret_key_length) -> ok;
+			?usmHMAC384SHA512AuthProtocol when Len =:= (2*?usmHMAC384SHA512AuthProtocol_secret_key_length) -> ok;
+
 			_ -> wrongValue(KeyChangeCol)
 		    end;
 		priv ->
@@ -1141,6 +1468,7 @@ next(Name, RowIndex, Cols) ->
     snmp_generic:handle_table_next(db(Name), RowIndex, Cols,
                                    fa(Name), foi(Name), noc(Name)).
 
+-doc false.
 table_next(Name, RestOid) ->
     snmp_generic:table_next(db(Name), RestOid).
 
@@ -1155,19 +1483,29 @@ get(Name, RowIndex, Cols) ->
 %% both have fixed length requirements on the length of the key;
 %% thus the implementation can be (and is) simplified.
 %%-----------------------------------------------------------------
+-doc false.
 mk_key_change(Hash, OldKey, NewKey) ->
     KeyLen = length(NewKey),
     Alg = case Hash of
-	      ?usmHMACMD5AuthProtocol -> md5;
-	      ?usmHMACSHAAuthProtocol -> sha;
-	      md5 -> md5;
-	      sha -> sha
+	      ?usmHMACMD5AuthProtocol       -> md5;
+	      ?usmHMACSHAAuthProtocol       -> sha;
+	      ?usmHMAC128SHA224AuthProtocol -> sha224;
+	      ?usmHMAC192SHA256AuthProtocol -> sha256;
+	      ?usmHMAC256SHA384AuthProtocol -> sha384;
+	      ?usmHMAC384SHA512AuthProtocol -> sha512;
+	      md5    -> md5;
+	      sha    -> sha;
+	      sha224 -> sha224;
+	      sha256 -> sha256;
+	      sha384 -> sha384;
+	      sha512 -> sha512
 	  end,
     Random = mk_random(KeyLen),
     mk_key_change(Alg, OldKey, NewKey, KeyLen, Random).
 
 %% This function is only exported for test purposes.  There is a test
 %% case in the standard where Random is pre-defined.
+-doc false.
 mk_key_change(Alg, OldKey, NewKey, KeyLen, Random) ->
     %% OldKey and Random is of length KeyLen...
     Digest = lists:sublist(binary_to_list(crypto:hash(Alg, OldKey++Random)), KeyLen),
@@ -1176,15 +1514,24 @@ mk_key_change(Alg, OldKey, NewKey, KeyLen, Random) ->
     Random ++ Delta.
 
 %% Extracts a new Key from a KeyChange value, sent by a manager.
+-doc false.
 extract_new_key(?usmNoAuthProtocol, OldKey, _KeyChange) ->
     OldKey;
 extract_new_key(Hash, OldKey, KeyChange) ->
     KeyLen = length(OldKey),
     Alg = case Hash of
-	      ?usmHMACMD5AuthProtocol -> md5;
-	      ?usmHMACSHAAuthProtocol -> sha;
-	      md5 -> md5;
-	      sha -> sha
+	      ?usmHMACMD5AuthProtocol       -> md5;
+	      ?usmHMACSHAAuthProtocol       -> sha;
+	      ?usmHMAC128SHA224AuthProtocol -> sha224;
+	      ?usmHMAC192SHA256AuthProtocol -> sha256;
+	      ?usmHMAC256SHA384AuthProtocol -> sha384;
+	      ?usmHMAC384SHA512AuthProtocol -> sha512;
+	      md5    -> md5;
+	      sha    -> sha;
+	      sha224 -> sha224;
+	      sha256 -> sha256;
+	      sha384 -> sha384;
+	      sha512 -> sha512
 	  end,
     {Random, Delta} = split(KeyLen, KeyChange, []),
     Digest = lists:sublist(binary_to_list(crypto:hash(Alg, OldKey++Random)), KeyLen),
@@ -1194,6 +1541,7 @@ extract_new_key(Hash, OldKey, KeyChange) ->
 -define(i16(Int), (Int bsr 8) band 255, Int band 255).
 -define(i8(Int), Int band 255).
 
+-doc false.
 mk_random(Len) when Len =< 20 ->
     binary_to_list(crypto:strong_rand_bytes(Len)).
     

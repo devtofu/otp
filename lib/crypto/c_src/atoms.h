@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2010-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2010-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,6 +30,8 @@ extern ERL_NIF_TERM atom_true;
 extern ERL_NIF_TERM atom_false;
 extern ERL_NIF_TERM atom_sha;
 extern ERL_NIF_TERM atom_error;
+extern ERL_NIF_TERM atom_encrypt;
+extern ERL_NIF_TERM atom_padding;
 extern ERL_NIF_TERM atom_pkcs_padding;
 extern ERL_NIF_TERM atom_zero;
 extern ERL_NIF_TERM atom_random;
@@ -40,18 +44,18 @@ extern ERL_NIF_TERM atom_undefined;
 extern ERL_NIF_TERM atom_hmac;
 extern ERL_NIF_TERM atom_cmac;
 extern ERL_NIF_TERM atom_poly1305;
+extern ERL_NIF_TERM atom_siphash;
+extern ERL_NIF_TERM atom_c_rounds;
+extern ERL_NIF_TERM atom_d_rounds;
 
 extern ERL_NIF_TERM atom_ok;
 extern ERL_NIF_TERM atom_none;
 extern ERL_NIF_TERM atom_notsup;
 extern ERL_NIF_TERM atom_badarg;
 extern ERL_NIF_TERM atom_digest;
-#ifdef FIPS_SUPPORT
 extern ERL_NIF_TERM atom_enabled;
 extern ERL_NIF_TERM atom_not_enabled;
-#else
 extern ERL_NIF_TERM atom_not_supported;
-#endif
 
 extern ERL_NIF_TERM atom_type;
 extern ERL_NIF_TERM atom_size;
@@ -99,18 +103,23 @@ extern ERL_NIF_TERM atom_rsa;
 extern ERL_NIF_TERM atom_dss;
 extern ERL_NIF_TERM atom_ecdsa;
 
-#ifdef HAVE_EDDH
+#ifdef HAVE_X25519
 extern ERL_NIF_TERM atom_x25519;
-extern ERL_NIF_TERM atom_x448;
+#endif
+
+#ifdef HAVE_ED25519
 extern ERL_NIF_TERM atom_ed25519;
+#endif
+
+#ifdef HAVE_X448
+extern ERL_NIF_TERM atom_x448;
+#endif
+
+#ifdef HAVE_ED448
 extern ERL_NIF_TERM atom_ed448;
 #endif
 
 extern ERL_NIF_TERM atom_eddsa;
-#ifdef HAVE_EDDSA
-extern ERL_NIF_TERM atom_ed25519;
-extern ERL_NIF_TERM atom_ed448;
-#endif
 
 extern ERL_NIF_TERM atom_rsa_mgf1_md;
 extern ERL_NIF_TERM atom_rsa_oaep_label;
@@ -144,6 +153,37 @@ extern ERL_NIF_TERM atom_key_id;
 extern ERL_NIF_TERM atom_password;
 #endif
 
-int init_atoms(ErlNifEnv *env, const ERL_NIF_TERM fips_mode, const ERL_NIF_TERM load_info);
+extern ERL_NIF_TERM atom_seed;
+extern ERL_NIF_TERM atom_expandedkey;
+#ifdef HAVE_ML_KEM
+extern ERL_NIF_TERM atom_mlkem512;
+extern ERL_NIF_TERM atom_mlkem768;
+extern ERL_NIF_TERM atom_mlkem1024;
+#endif
+
+#ifdef HAVE_KDF
+extern ERL_NIF_TERM atom_salt;
+extern ERL_NIF_TERM atom_info;
+extern ERL_NIF_TERM atom_iterations;
+extern ERL_NIF_TERM atom_n;
+extern ERL_NIF_TERM atom_r;
+extern ERL_NIF_TERM atom_p;
+extern ERL_NIF_TERM atom_maxmem;
+extern ERL_NIF_TERM atom_mac;
+extern ERL_NIF_TERM atom_extract_and_expand;
+extern ERL_NIF_TERM atom_extract_only;
+extern ERL_NIF_TERM atom_expand_only;
+#endif
+
+#ifdef HAVE_ARGON2
+extern ERL_NIF_TERM atom_memory;
+extern ERL_NIF_TERM atom_parallelism;
+extern ERL_NIF_TERM atom_secret;
+extern ERL_NIF_TERM atom_ad;
+#endif
+
+extern ERL_NIF_TERM atom_context_string;
+
+int init_atoms(ErlNifEnv *env);
 
 #endif /* E_ATOMS_H__ */

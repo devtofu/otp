@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2011-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2011-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -271,7 +273,8 @@ filter_date(Config) ->
     %% Insert some reports in the error log and start rb
     init_error_logs(),
     Between1 = calendar:local_time(),
-    timer:sleep(1000),
+    ct:sleep(1000),
+    error_logger:info_report([{rb_SUITE,rb_progress_info_replace}]),
     Between2 = calendar:local_time(),
     ok = start_rb(OutFile),
 
@@ -288,7 +291,7 @@ filter_date(Config) ->
     [] = rb_filter([],{After,from},OutFile),
     All = rb_filter([],{Before,After},OutFile),
 
-    %%?t:format("~p~n",[All]),
+    %%test_server:format("~p~n",[All]),
     AllButLast = [{N-1,R} || {N,R} <- tl(All)],
     AllButLast = rb_filter([],{Before,Between1},OutFile),
 
@@ -305,28 +308,24 @@ filter_filter_and_date(Config) ->
     %% Insert some reports in the error log and start rb
     init_error_logs(),
     Between1 = calendar:local_time(),
-    timer:sleep(1000),
+    ct:sleep(1000),
     Between2 = calendar:local_time(),
     error_logger:error_report([{rb_SUITE,rb_test_filter}]),
     ok = start_rb(OutFile),
+    error_logger:info_report([{rb_SUITE,rb_progress_info_replace}]),
 
     Before = calendar:gregorian_seconds_to_datetime(
 	       calendar:datetime_to_gregorian_seconds(calendar:local_time()) - 10),
     After = calendar:gregorian_seconds_to_datetime(
 	      calendar:datetime_to_gregorian_seconds(calendar:local_time()) + 1),
 
-    All = check_report(fun() -> rb:show() end,OutFile),
-    Last = hd(All),
-
     [_,_,_] = rb_filter([{rb_SUITE,"rb_test",re}],{Before,After},OutFile),
     [_,_] = rb_filter([{rb_SUITE,"rb_test",re}],{Before,Between1},OutFile),
     [_] = rb_filter([{rb_SUITE,"rb_test",re}],{Between2,After},OutFile),
     [_] = rb_filter([{rb_SUITE,rb_test_filter}],{Before,After},OutFile),
     [] = rb_filter([{rb_SUITE,rb_test_filter}],{Before,Between1},OutFile),
-    [Last] = rb_filter([{rb_SUITE,rb_test_filter,no}],{Between2,After},OutFile),
-    {_,Str} = Last,
+    [{_, Str}] = rb_filter([{rb_SUITE,rb_test_filter,no}],{Between2,After},OutFile),
     false = contains(Str,"rb_test_filter"),
-
     ok.
 
 
@@ -454,7 +453,7 @@ empty_error_logs(Config) ->
 wait_for_sasl() ->
     wait_for_sasl(50).
 wait_for_sasl(0) ->
-    ?t:fail("sasl application did not start within 5 seconds");
+    ct:fail("sasl application did not start within 5 seconds");
 wait_for_sasl(N) ->
     case lists:keymember(sasl,1,application:which_applications()) of
 	true ->
@@ -506,8 +505,8 @@ init_error_logs() ->
     gen_server:cast(?MODULE,crash),
     receive {'DOWN',Ref,process,_,{rb_SUITE,rb_test_crash}} -> ok
     after 2000 ->
-	    ?t:format("Got: ~p~n",[process_info(self(),messages)]),
-	    ?t:fail("rb_SUITE server never died")
+	    test_server:format("Got: ~p~n",[process_info(self(),messages)]),
+	    ct:fail("rb_SUITE server never died")
     end,
     erlang:demonitor(Ref),
     wait_for_server(),
@@ -523,11 +522,11 @@ wait_for_server() ->
     end.
 
 capture(Fun) ->
-    ?t:capture_start(),
+    test_server:capture_start(),
     ok = Fun(),
     timer:sleep(1000),
-    ?t:capture_stop(),
-    string:tokens(lists:append(?t:capture_get()),"\n").
+    test_server:capture_stop(),
+    string:tokens(lists:append(test_server:capture_get()),"\n").
 
 
 rb_filter(Filter,OutFile) ->

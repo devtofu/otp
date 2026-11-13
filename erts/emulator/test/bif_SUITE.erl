@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2005-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2005-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -22,26 +24,32 @@
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("kernel/include/file.hrl").
+-include_lib("stdlib/include/assert.hrl").
+-include("erts_test_utils.hrl").
 
 -export([all/0, suite/0, init_per_testcase/2, end_per_testcase/2]).
 
 -export([display/1, display_huge/0, display_string/1,
 	 erl_bif_types/1,guard_bifs_in_erl_bif_types/1,
 	 shadow_comments/1,list_to_utf8_atom/1,
-	 specs/1,improper_bif_stubs/1,auto_imports/1,
+	 specs/1,improper_bif_stubs/1,
 	 t_list_to_existing_atom/1,os_env/1,otp_7526/1,
 	 t_binary_to_atom/1,t_binary_to_existing_atom/1,
 	 t_atom_to_binary/1,min_max/1, erlang_halt/1,
-         erl_crash_dump_bytes/1,
+         halt_flush_timeout/1, erl_crash_dump_bytes/1,
 	 is_builtin/1, error_stacktrace/1,
 	 error_stacktrace_during_call_trace/1,
          group_leader_prio/1, group_leader_prio_dirty/1,
          is_process_alive/1,
+         is_process_alive_signal_from/1,
          process_info_blast/1,
          os_env_case_sensitivity/1,
+         verify_middle_queue_save/1,
          test_length/1,
          fixed_apply_badarg/1,
-         external_fun_apply3/1]).
+         apply_system_limit/1,
+         external_fun_apply3/1,
+         node_1/1,doctests/1,is_integer_3_test/1]).
 
 suite() ->
     [{ct_hooks,[ts_install_cth]},
@@ -49,15 +57,17 @@ suite() ->
 
 all() -> 
     [erl_bif_types, guard_bifs_in_erl_bif_types, shadow_comments,
-     specs, improper_bif_stubs, auto_imports,
+     specs, improper_bif_stubs,
      t_list_to_existing_atom, os_env, otp_7526,
      display, display_string, list_to_utf8_atom,
      t_atom_to_binary, t_binary_to_atom, t_binary_to_existing_atom,
-     erl_crash_dump_bytes, min_max, erlang_halt, is_builtin,
-     error_stacktrace, error_stacktrace_during_call_trace,
+     erl_crash_dump_bytes, min_max, erlang_halt, halt_flush_timeout,
+     is_builtin, error_stacktrace, error_stacktrace_during_call_trace,
      group_leader_prio, group_leader_prio_dirty,
-     is_process_alive, process_info_blast, os_env_case_sensitivity,
-     test_length,fixed_apply_badarg,external_fun_apply3].
+     is_process_alive, is_process_alive_signal_from,
+     process_info_blast, os_env_case_sensitivity,
+     verify_middle_queue_save, test_length,fixed_apply_badarg,
+     apply_system_limit, external_fun_apply3, node_1, doctests, is_integer_3_test].
 
 init_per_testcase(guard_bifs_in_erl_bif_types, Config) when is_list(Config) ->
     skip_missing_erl_bif_types(Config);
@@ -68,8 +78,8 @@ init_per_testcase(shadow_comments, Config) when is_list(Config) ->
 init_per_testcase(Func, Config) when is_atom(Func), is_list(Config) ->
     Config.
 
-end_per_testcase(_Func, _Config) ->
-    ok.
+end_per_testcase(_Func, Config) ->
+    erts_test_utils:ept_check_leaked_nodes(Config).
 
 %% erl_bif_types comes from dialyzer which some test runs skip building, so
 %% we'll skip the tests that use it as the result shouldn't vary based on
@@ -83,11 +93,9 @@ skip_missing_erl_bif_types(Config) ->
 
 %% Uses erlang:display to test that erts_printf does not do deep recursion
 display(Config) when is_list(Config) ->
-    Pa = filename:dirname(code:which(?MODULE)),
-    {ok, Node} = test_server:start_node(display_huge_term,peer,
-					[{args, "-pa \""++Pa++"\""}]),
+    {ok, Peer, Node} = ?CT_PEER(),
     true = rpc:call(Node,?MODULE,display_huge,[]),
-    test_server:stop_node(Node),
+    peer:stop(Peer),
     ok.
 
 display_huge() ->
@@ -196,18 +204,17 @@ shadow_comments(_Config) ->
     List1 = [MFA || {M,_,_}=MFA <- List0, M =/= erlang],
     List = List1 ++ ErlangList,
     HasTypes = [MFA || {M,F,A}=MFA <- List,
-		       erl_bif_types:is_known(M, F, A)],
-    Path = get_code_path(),
-    BifRel = sofs:relation(HasTypes, [{m,f,a}]),
-    BifModules = sofs:to_external(sofs:projection(1, BifRel)),
-    AbstrByModule = [extract_abstract(Mod, Path) || Mod <- BifModules],
+                       erl_bif_types:is_known(M, F, A)],
+    BifModules = bif_modules(HasTypes),
+    AbstrByModule = [extract_abstract(Mod) || Mod <- BifModules],
     Specs0 = [extract_specs(Mod, Abstr) ||
 		 {Mod,Abstr} <- AbstrByModule],
     Specs = lists:append(Specs0),
     SpecFuns0 = [F || {F,_} <- Specs],
     SpecFuns = sofs:relation(SpecFuns0, [{m,f,a}]),
+    BifRel = sofs:relation(HasTypes, [{m,f,a}]),
     HasTypesAndSpecs = sofs:intersection(BifRel, SpecFuns),
-    Commented0 = lists:append([extract_comments(Mod, Path) ||
+    Commented0 = lists:append([extract_comments(Mod) ||
 				  Mod <- BifModules]),
     Commented = sofs:relation(Commented0, [{m,f,a}]),
     {NoComments0,_,NoBifSpecs0} =
@@ -243,9 +250,18 @@ shadow_comments(_Config) ->
 	    ct:fail(erl_bif_types)
     end.
 
-extract_comments(Mod, Path) ->
-    Beam = which(Mod, Path),
-    SrcDir = filename:join(filename:dirname(filename:dirname(Beam)), "src"),
+extract_comments(Mod) ->
+    Beam = which(Mod),
+    AppDir = filename:dirname(filename:dirname(Beam)),
+    SrcDir = case code:root_dir() =:= filename:dirname(AppDir) of
+                 true ->
+                     %% Running in an uninstalled system.
+                     filename:join(AppDir, "preloaded/src");
+                 false ->
+                     %% Running in an installed system.
+                     filename:join(AppDir, "src")
+             end,
+    io:format("~p\n", [SrcDir]),
     Src = filename:join(SrcDir, atom_to_list(Mod) ++ ".erl"),
     {ok,Bin} = file:read_file(Src),
     Lines0 = binary:split(Bin, <<"\n">>, [global]),
@@ -264,13 +280,12 @@ specs(_) ->
     List0 = erlang:system_info(snifs),
 
     %% Ignore all operators.
-    List = [MFA || MFA <- List0, not is_operator(MFA)],
+    List1 = [MFA || MFA <- List0, not is_operator(MFA)],
 
     %% Extract specs from the abstract code for all BIFs.
-    Path = get_code_path(),
-    BifRel = sofs:relation(List, [{m,f,a}]),
-    BifModules = sofs:to_external(sofs:projection(1, BifRel)),
-    AbstrByModule = [extract_abstract(Mod, Path) || Mod <- BifModules],
+    BifModules = bif_modules(List1),
+    List = [MFA || {M,_,_}=MFA <- List1, lists:member(M, BifModules)],
+    AbstrByModule = [extract_abstract(Mod) || Mod <- BifModules],
     Specs0 = [extract_specs(Mod, Abstr) ||
 		 {Mod,Abstr} <- AbstrByModule],
     Specs = lists:append(Specs0),
@@ -309,10 +324,8 @@ make_mfa(M, {M,_,_}=MFA) -> MFA.
 
 improper_bif_stubs(_) ->
     Bifs = erlang:system_info(snifs),
-    Path = get_code_path(),
-    BifRel = sofs:relation(Bifs, [{m,f,a}]),
-    BifModules = sofs:to_external(sofs:projection(1, BifRel)),
-    AbstrByModule = [extract_abstract(Mod, Path) || Mod <- BifModules],
+    BifModules = bif_modules(Bifs),
+    AbstrByModule = [extract_abstract(Mod) || Mod <- BifModules],
     Funcs0 = [extract_functions(Mod, Abstr) ||
 		 {Mod,Abstr} <- AbstrByModule],
     Funcs = lists:append(Funcs0),
@@ -322,38 +335,14 @@ improper_bif_stubs(_) ->
     [check_stub(MFA, Body) || {MFA,Body} <- sofs:to_external(FuncRel)],
     ok.
 
-auto_imports(_Config) ->
-    Path = get_code_path(),
-    {erlang,Abstr} = extract_abstract(erlang, Path),
-    SpecFuns = [Name || {attribute,_,spec,{Name,_}} <- Abstr],
-    auto_imports(SpecFuns, 0).
-
-auto_imports([{F,A}|T], Errors) ->
-    case erl_internal:bif(F, A) of
-	false ->
-	    io:format("~p/~p: not auto-imported, but spec claims it "
-		      "is auto-imported", [F,A]),
-	    auto_imports(T, Errors+1);
-	true ->
-	    auto_imports(T, Errors)
-    end;
-auto_imports([{erlang,F,A}|T], Errors) ->
-    case erl_internal:bif(F, A) of
-	false ->
-	    auto_imports(T, Errors);
-	true ->
-	    io:format("~p/~p: auto-imported, but "
-		      "spec claims it is *not* auto-imported", [F,A]),
-	    auto_imports(T, Errors+1)
-    end;
-auto_imports([], 0) ->
-    ok;
-auto_imports([], Errors) ->
-    ct:fail({Errors,inconsistencies}).
-
 extract_functions(M, Abstr) ->
     [{{M,F,A},Body} || {function,_,F,A,Body} <- Abstr].
 
+check_stub({_,F,2}, _B) when F =:= min; F =:= max ->
+    %% In Erlang/OTP 26, min/2 and max/2 are guard BIFs. For backward
+    %% compatibility with code compiled with an earlier version, the
+    %% Erlang implementation of them is kept.
+    ok;
 check_stub({_,F,A}, B) ->
     try
 	[{clause,_,Args,[],Body}] = B,
@@ -388,6 +377,9 @@ list_to_utf8_atom(Config) when is_list(Config) ->
     _ = atom_roundtrip([16#1000]),
     _ = atom_roundtrip([16#10FFFF]),
     atom_badarg([16#110000]),
+
+    atom_badarg([-1]),
+    [atom_badarg([(-1 bsl N) + $A]) || N <- lists:seq(8,16)],
     ok.
 
 atom_roundtrip(String) ->
@@ -397,8 +389,8 @@ atom_roundtrip(String) ->
     Atom.
 
 atom_badarg(String) ->
-    {'EXIT',{badarg,_}} = (catch list_to_atom(String)),
-    {'EXIT',{badarg,_}} = (catch list_to_existing_atom(String)),
+    ?assertError(badarg, list_to_atom(String)),
+    ?assertError(badarg, list_to_existing_atom(String)),
     ok.
 
 t_list_to_existing_atom(Config) when is_list(Config) ->
@@ -492,8 +484,8 @@ test_7526(N) ->
 	    {error,N,Other}
     end.
 
--define(BADARG(E), {'EXIT',{badarg,_}} = (catch E)).
--define(SYS_LIMIT(E), {'EXIT',{system_limit,_}} = (catch E)).
+-define(BADARG(E), ?assertError(badarg, E)).
+-define(SYS_LIMIT(E), ?assertError(system_limit, E)).
 
 t_binary_to_atom(Config) when is_list(Config) ->
     HalfLong = lists:seq(0, 127),
@@ -649,7 +641,7 @@ t_binary_to_existing_atom(Config) when is_list(Config) ->
                      196, 133, 196, 133, 196, 133, 196, 133, 196, 133,
                      196, 133, 196, 133, 196, 133, 196, 133, 196, 133,
                      196, 133, 196, 133, 196, 133, 196, 133, 196, 133>>,
-    {'EXIT', _} = (catch binary_to_existing_atom(OverflowAtom, latin1)),
+    ?assertError(_, binary_to_existing_atom(OverflowAtom, latin1)),
 
     ok.
 
@@ -675,6 +667,12 @@ t_atom_to_binary(Config) when is_list(Config) ->
     <<>> = atom_to_binary('', unicode),
     <<127>> = atom_to_binary('\177', utf8),
     <<"abcdef">> = atom_to_binary(abcdef, utf8),
+    <<"qwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwe">> = 
+        atom_to_binary(qwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwe, utf8),
+    <<"qwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwer">> = 
+        atom_to_binary(qwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwer, utf8),
+    <<"qwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerq">> = 
+        atom_to_binary(qwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerqwerq, utf8),
     HalfLongBin = atom_to_binary(HalfLongAtom, utf8),
     HalfLongBin = atom_to_binary(HalfLongAtom),
     LongAtomBin = atom_to_binary(LongAtom, utf8),
@@ -719,33 +717,147 @@ fail_atom_to_binary(Term) ->
     end.
 
 
-min_max(Config) when is_list(Config) ->	
-    a = erlang:min(id(a), a),
-    a = erlang:min(id(a), b),
-    a = erlang:min(id(b), a),
-    b = erlang:min(id(b), b),
-    a = erlang:max(id(a), a),
-    b = erlang:max(id(a), b),
-    b = erlang:max(id(b), a),
-    b = erlang:max(id(b), b),
-
-    42.0 = erlang:min(42.0, 42),
-    42.0 = erlang:max(42.0, 42),
-    %% And now (R14) they are also autoimported!
+min_max(Config) when is_list(Config) ->
+    Self = self(),
+    Port = hd(erlang:ports()),
+    Ref = make_ref(),
     a = min(id(a), a),
     a = min(id(a), b),
     a = min(id(b), a),
     b = min(id(b), b),
+    Ref = min(id(Self), id(Ref)),
+
+    -3 = min(id(5), -3),
+    -3 = min(-3, id(5)),
+    -3 = min(0, id(-3)),
+    -3 = min(id(-3), 0),
+    0 = min(0, id(17)),
+
     a = max(id(a), a),
     b = max(id(a), b),
     b = max(id(b), a),
     b = max(id(b), b),
+    Self = max(id(Self), id(Ref)),
 
-    42.0 = min(42.0, 42),
-    42.0 = max(42.0, 42),
+    5 = max(id(5), -3),
+    5 = max(-3, id(5)),
+    0 = max(0, id(-3)),
+    0 = max(id(-3), 0),
+    17 = max(0, id(17)),
+
+    %% Return the first argument when arguments are equal.
+    42.0 = min(id(42.0), 42),
+    42.0 = max(id(42.0), 42),
+
+    Min = id(min),
+    Max = id(max),
+
+    "abc" = erlang:Min("abc", "def"),
+    <<"def">> = erlang:Max(<<"abc">>, <<"def">>),
+
+    %% Make sure that the JIT doesn't do any unsafe optimizations.
+    {0, 0} = min_max_zero(0),
+    {-7, 0} = min_max_zero(-7),
+    {0, 555} = min_max_zero(555),
+    {0, 1 bsl 64} = min_max_zero(1 bsl 64),
+    {-1 bsl 64, 0} = min_max_zero(-1 bsl 64),
+
+    {-99, 23} = do_min_max(-99, 23),
+    {-10, 0} = do_min_max(0, -10),
+    {0, 77} = do_min_max(77, 0),
+    {1, 2} = do_min_max(1, 2),
+    {42, 99} = do_min_max(99, 42),
+    {100, 1 bsl 64} = do_min_max(100, 1 bsl 64),
+    {-1 bsl 64, 77} = do_min_max(77, -1 bsl 64),
+    {-1 bsl 64, 1 bsl 64} = do_min_max(1 bsl 64, -1 bsl 64),
+    {42.0, 43} = do_min_max(42.0, 43),
+    {42.0, 50.0} = do_min_max(42.0, 50.0),
+    {42.0, 42.0} = do_min_max(42.0, id(40.0 + 2.0)),
+    {{1,2}, {a,b}} = do_min_max({id(a), id(b)}, {id(1), id(2)}),
+    {{a,b}, [a,b]} = do_min_max({a,id(b)}, [a,id(b)]),
+    {{1.0,b}, {1.0,b}} = do_min_max({id(1.0), id(b)}, {id(1), id(b)}),
+    {{7,b}, {7,b}} = do_min_max({id(7), id(b)}, {id(7.0), id(b)}),
+
+    {42,Self} = do_min_max(42, Self),
+    {42,Self} = do_min_max(Self, 42),
+    {42,Port} = do_min_max(42, Port),
+    {42,Port} = do_min_max(Port, 42),
+
     ok.
 
+min_max_zero(A0) ->
+    Result = {min(A0, 0), max(A0, 0)},
+    Result = {min(0, A0), max(0, A0)},
+    A = id(A0),
+    Result = {min(A, 0), max(A, 0)},
+    Result = {min(0, A), max(0, A)}.
 
+do_min_max(A0, B0) ->
+    Result = {min(A0, B0), max(A0, B0)},
+
+    A0 = min(id(A0), A0),
+    A0 = max(id(A0), A0),
+    B0 = min(id(B0), B0),
+    B0 = max(id(B0), B0),
+
+    A = id(A0),
+    B = id(B0),
+    Result = {min(A, B), max(A, B)},
+
+    if
+        is_integer(A), is_atom(node(B)) orelse is_integer(B) ->
+            _ = id(0),
+            Result = {min(A, B),max(A, B)};
+        is_atom(node(A)) orelse is_integer(A), is_integer(B) ->
+            _ = id(0),
+            Result = {min(A, B),max(A, B)};
+        true ->
+            ok
+    end,
+
+    if
+        is_integer(A), 0 =< A, A =< 1000, is_atom(node(B)) orelse is_integer(B) ->
+            _ = id(0),
+            Result = {min(A, B),max(A, B)};
+        is_atom(node(A)) orelse is_integer(A), is_integer(B), 0 =< B, B =< 1000 ->
+            _ = id(0),
+            Result = {min(A, B),max(A, B)};
+        true ->
+            ok
+    end,
+
+    Result = do_min_max_1(1, 2, 3, 4, 5, A, B).
+
+do_min_max_1(_, _, _, _, _, A, B) ->
+    if
+        is_integer(A), 0 =< A, A < 16#1_0000,
+        is_integer(B), 0 =< B, B < 16#1_0000 ->
+            Result = {min(A, B),max(A, B)},
+            Result = {min(B, A),max(B, A)},
+            _ = id(0),
+            Result = {min(A, B),max(A, B)},
+            Result = {min(B, A),max(B, A)};
+        is_integer(A), is_integer(B) ->
+            Result = {min(A, B),max(A, B)},
+            Result = {min(B, A),max(B, A)},
+            _ = id(0),
+            Result = {min(A, B),max(A, B)},
+            Result = {min(B, A),max(B, A)};
+        is_float(A), is_float(B) ->
+            Result = {min(A, B),max(A, B)},
+            Result = {min(B, A),max(B, A)},
+            _ = id(0),
+            Result = {min(A, B),max(A, B)},
+            Result = {min(B, A),max(B, A)};
+        is_number(A), is_number(B) ->
+            Result = {min(A, B),max(A, B)},
+            _ = id(0),
+            Result = {min(A, B),max(A, B)};
+        true ->
+            Result = {min(A, B),max(A, B)},
+            _ = id(0),
+            Result = {min(A, B),max(A, B)}
+    end.
 
 erlang_halt(Config) when is_list(Config) ->
     try erlang:halt(undefined) of
@@ -775,33 +887,32 @@ erlang_halt(Config) when is_list(Config) ->
     try halt(0, [{flush,true,undefined}]) of
 	_-> ct:fail({halt,{0,[{flush,true,undefined}]}})
     catch error:badarg -> ok end,
-    H = hostname(),
-    {ok,N1} = slave:start(H, halt_node1),
+    {ok, _, N1} = ?CT_PEER(),
     {badrpc,nodedown} = rpc:call(N1, erlang, halt, []),
-    {ok,N2} = slave:start(H, halt_node2),
+    {ok, _, N2} = ?CT_PEER(),
     {badrpc,nodedown} = rpc:call(N2, erlang, halt, [0]),
-    {ok,N3} = slave:start(H, halt_node3),
+    {ok, _, N3} = ?CT_PEER(),
     {badrpc,nodedown} = rpc:call(N3, erlang, halt, [0,[]]),
-    {ok,N4} = slave:start(H, halt_node4),
+    {ok, _, N4} = ?CT_PEER(),
     {badrpc,nodedown} = rpc:call(N4, erlang, halt, [lists:duplicate(300,$x)]),
     %% Test unicode slogan
-    {ok,N4} = slave:start(H, halt_node4),
-    {badrpc,nodedown} = rpc:call(N4, erlang, halt, [[339,338,254,230,198,295,167,223,32,12507,12531,12480]]),
+    {ok, _, N5} = ?CT_PEER(),
+    {badrpc,nodedown} = rpc:call(N5, erlang, halt, [[339,338,254,230,198,295,167,223,32,12507,12531,12480]]),
 
     % This test triggers a segfault when dumping a crash dump
     % to make sure that we can handle it properly.
 
     %% Prevent address sanitizer from catching SEGV in slave node
     AsanOpts = add_asan_opt("handle_segv=0"),
-    {ok,N4} = slave:start(H, halt_node4),
+    {ok, _, N6} = ?CT_PEER(),
     reset_asan_opts(AsanOpts),
 
     CrashDump = filename:join(proplists:get_value(priv_dir,Config),
                               "segfault_erl_crash.dump"),
-    true = rpc:call(N4, os, putenv, ["ERL_CRASH_DUMP",CrashDump]),
-    false = rpc:call(N4, erts_debug, set_internal_state,
+    true = rpc:call(N6, os, putenv, ["ERL_CRASH_DUMP",CrashDump]),
+    false = rpc:call(N6, erts_debug, set_internal_state,
                      [available_internal_state, true]),
-    {badrpc,nodedown} = rpc:call(N4, erts_debug, set_internal_state,
+    {badrpc,nodedown} = rpc:call(N6, erts_debug, set_internal_state,
                                  [broken_halt, "Validate correct crash dump"]),
     {ok,_} = wait_until_stable_size(CrashDump,-1),
     {ok, Bin} = file:read_file(CrashDump),
@@ -811,6 +922,167 @@ erlang_halt(Config) when is_list(Config) ->
             ct:fail("Could not find end marker in crash dump");
         {_,_} ->
             ok
+    end.
+
+
+halt_flush_timeout(Config) when is_list(Config) ->
+    ct:timetrap({minutes, 5}),
+    halt_flush_timeout_test(false, true),
+    halt_flush_timeout_test(true, true),
+    halt_flush_timeout_test(true, false).
+
+halt_flush_timeout_test(HaltCmd, HaltOpt) ->
+    halt_flush_timeout_test_try(HaltCmd, HaltOpt, 1).
+
+halt_flush_timeout_test_try(HaltCmd, HaltOpt, N) ->
+    case {HaltCmd, HaltOpt} of
+        {false, true} ->
+            ct:log("Test no ~p with flush_timeout option and "
+                   "default command line~n", [N]);
+        {true, true} ->
+            ct:log("Test no ~p with flush_timeout option and "
+                   "command line arg~n", [N]);
+        {true, false} ->
+            ct:log("Test no ~p with command line arg~n", [N])
+    end,
+    {ok, Peer, Node} = ?CT_PEER(),
+    try
+        ok = halt_flush_timeout_test_run(Node, HaltCmd, HaltOpt),
+        peer:stop(Peer),
+        ok
+    catch
+        Class:Reason:Stack ->
+            ct:log("Failed with ~p reason: ~p~n"
+                   "at ~p~n", [Class, Reason, Stack]),
+            peer:stop(Peer),
+            if N == 5 ->
+                    erlang:raise(Class, Reason, Stack);
+               true ->
+                    halt_flush_timeout_test_try(HaltCmd, HaltOpt, N+1)
+            end
+    end.
+
+halt_flush_timeout_test_run(BNode, HaltCmd, HaltOpt) ->
+    {ok, HNodePort, HNode} = start_halting_node(if HaltCmd == true -> "+zhft 1500";
+                                                   true -> ""
+                                                end),
+    ok = erpc:call(BNode,
+                   fun () ->
+                           pong = net_adm:ping(HNode),
+                           erts_debug:set_internal_state(available_internal_state, true),
+                           ok
+                   end),
+    erpc:cast(BNode,
+              fun () ->
+                      erts_debug:set_internal_state(block, 60*1000)
+              end),
+    wait_until(fun () ->
+                       try
+                           BNode = erpc:call(BNode, erlang, node, [], 1000),
+                           false
+                       catch
+                           error:{erpc,timeout} ->
+                               true
+                       end
+               end),
+    Data = lists:seq(1,1000),
+    SendData = fun SendData() ->
+                       {net_kernel, BNode} ! Data,
+                       SendData()
+               end,
+    Pid1 = spawn(HNode, SendData),
+    Pid2 = spawn(HNode, SendData),
+    IsBlocked = fun (Pid) ->
+                        fun () ->
+                                case erpc:call(node(Pid), erlang, process_info, [Pid, status]) of
+                                    {status, suspended} -> true;
+                                    _Val -> false
+                                end
+                        end
+                end,
+    wait_until(IsBlocked(Pid1)),
+    wait_until(IsBlocked(Pid2)),
+    Start = erlang:monotonic_time(),
+    try
+        erpc:call(HNode,
+                  fun () ->
+                          if HaltOpt == true -> halt(0, [{flush, true},{flush_timeout, 1000}]);
+                             true -> halt()
+                          end
+                  end),
+        error(unexpected_return)
+    catch
+        error:{erpc,noconnection} ->
+            ok
+    end,
+    ExitStatus = await_halting_node_exit(HNodePort),
+    End = erlang:monotonic_time(),
+    ct:log("ExitStatus=~p~n", [ExitStatus]),
+    case erlang:convert_time_unit(End - Start, native, millisecond) of
+        HaltTime when HaltOpt == true, 1000 =< HaltTime, HaltTime < 1500 ->
+            ok;
+        HaltTime when HaltOpt /= true, 1500 =< HaltTime, HaltTime < 2000 ->
+            ok;
+        HaltTime ->
+            error({unexpected_halt_time, HaltTime})
+    end,
+    ExitStatus = 255, %% Exit status when timing out...
+    ok.
+
+start_halting_node(Args) ->
+    Name = "halting_node-"
+        ++ integer_to_list(erlang:system_time(second)) ++ "-"
+        ++ integer_to_list(erlang:unique_integer([positive])),
+    HostSuffix = lists:dropwhile(fun ($@) -> false; (_) -> true end,
+				 atom_to_list(node())),
+    Node = list_to_atom(Name ++ HostSuffix),
+    Pa = filename:dirname(code:which(?MODULE)),
+    Prog = case ?Catch(init:get_argument(progname)) of
+	       {ok,[[P]]} -> P;
+	       _ -> exit(no_progname_argument_found)
+	   end,
+    NameSw = case net_kernel:longnames() of
+		 false -> "-sname ";
+		 true -> "-name ";
+		 _ -> exit(not_distributed_node)
+	     end,
+    {ok, Pwd} = file:get_cwd(),
+    CmdLine =
+        Prog ++ " -noinput -noshell " ++ Args
+	++ " " ++ NameSw ++ " " ++ Name ++ " "
+	++ "-pa " ++ Pa ++ " "
+	++ "-env ERL_CRASH_DUMP " ++ Pwd ++ "/erl_crash_dump." ++ Name ++ " "
+	++ "-setcookie " ++ atom_to_list(erlang:get_cookie()),
+    ct:log("Starting node ~p: ~s~n", [Node, CmdLine]),
+    case open_port({spawn, CmdLine}, [exit_status]) of
+	Port when is_port(Port) ->
+            PingNode = fun PingNode(_PNode, 0) ->
+                               pang;
+                           PingNode(PNode, N) ->
+                               case net_adm:ping(PNode) of
+                                   pong ->
+                                       pong;
+                                   _ ->
+                                       receive after 100 -> ok end,
+                                       PingNode(PNode, N-1)
+                               end
+                       end,
+            case PingNode(Node, 50) of
+		pong ->
+                    {ok, Port, Node};
+		Other ->
+                    error({failed_to_start_node, Node, Other})
+	    end;
+	Error ->
+            error({failed_to_start_node, Node, Error})
+    end.
+
+await_halting_node_exit(Port) ->
+    receive
+        {Port, {data, _}} ->
+            await_halting_node_exit(Port);
+        {Port, {exit_status, ExitStatus}} ->
+            ExitStatus
     end.
 
 add_asan_opt(Opt) ->
@@ -848,18 +1120,25 @@ wait_until_stable_size(File,PrevSz) ->
 
 % Test erlang:halt with ERL_CRASH_DUMP_BYTES
 erl_crash_dump_bytes(Config) when is_list(Config) ->
-    Bytes = 1000,
+    %% When encryption is enabled, a crash dump will not be produced at all if
+    %% the limit is smaller than the encryption header size. Bump the size a
+    %% bit to account for that.
+    Bytes = case os:getenv("ERL_CRASH_DUMP_PUBLIC_KEY") of
+                [_|_] -> 4000;
+                false -> 1000
+            end,
+
     CrashDump = do_limited_crash_dump(Config, Bytes),
     {ok,ActualBytes} = wait_until_stable_size(CrashDump,-1),
     true = ActualBytes < (Bytes + 100),
 
     NoDump = do_limited_crash_dump(Config,0),
     {error,enoent} = wait_until_stable_size(NoDump,-8),
+
     ok.
 
 do_limited_crash_dump(Config, Bytes) ->
-    H = hostname(),
-    {ok,N} = slave:start(H, halt_node),
+    {ok, _, N} = ?CT_PEER(),
     BytesStr = integer_to_list(Bytes),
     CrashDump = filename:join(proplists:get_value(priv_dir,Config),
                               "erl_crash." ++ BytesStr ++ ".dump"),
@@ -1026,7 +1305,6 @@ do_error_2(call_const) ->
 do_error_2(call) ->
     erlang:error(id(oops), id([call])).
 
-
 do_error_1(apply_const_only) ->
     apply(erlang, error, [oops]);
 do_error_1(apply_only) ->
@@ -1108,7 +1386,7 @@ group_leader_prio_test(Dirty) ->
                    end,
                    100};
               true ->
-                  %% These processes wont handle incoming signals by
+                  %% These processes won't handle incoming signals by
                   %% them selves since they are stuck on dirty schedulers
                   %% when we try to change group leader. A dirty process
                   %% signal handler process (system process) will be notified
@@ -1207,6 +1485,51 @@ is_process_alive(Config) when is_list(Config) ->
                   Ps),
     ok.
 
+is_process_alive_signal_from(Config) when is_list(Config) ->
+    process_flag(priority, high),
+    process_flag(scheduler, 1),
+    Schdlr = case erlang:system_info(schedulers_online) of
+                 1 -> 1;
+                 _ -> 2
+             end,
+    X = is_process_alive_signal_from_test(100000, 0, Schdlr),
+    erlang:display({exits_detected, X}),
+    {comment, integer_to_list(X) ++ " exited processes detected"}.
+
+is_process_alive_signal_from_test(0, X, _Schdlr) ->
+    X;
+is_process_alive_signal_from_test(N, X, Schdlr) ->
+    Tester = self(),
+    {Testee, TMon} = spawn_opt(fun () ->
+                                       Mon = erlang:monitor(process, Tester),
+                                       Tester ! {self(), ready},
+                                       busy_wait_go(),
+                                       _ = erlang:demonitor(Mon),
+                                       exit(normal)
+                               end,
+                               [link,
+                                monitor,
+                                {priority, high},
+                                {scheduler, Schdlr}]),
+    receive {Testee, ready} -> ok end,
+    {monitored_by, MBList1} = process_info(self(), monitored_by),
+    true = lists:member(Testee, MBList1),
+    erlang:yield(),
+    Testee ! {go, ok},
+    erlang:yield(),
+    NewX = case erlang:is_process_alive(Testee) of
+               true ->
+                   X;
+               false ->
+                   %% Demonitor signal should have reached us before the
+                   %% is-process-alive reply...
+                   {monitored_by, MBList2} = process_info(self(), monitored_by),
+                   false = lists:member(Testee, MBList2),
+                   X+1
+           end,
+    receive {'DOWN', TMon, process, Testee, normal} -> ok end,
+    is_process_alive_signal_from_test(N-1, NewX, Schdlr).
+
 process_info_blast(Config) when is_list(Config) ->
     Tester = self(),
     NoAttackers = 1000,
@@ -1277,6 +1600,52 @@ consume_msgs() ->
               ok
     end.
 
+
+%% Test that process_info(Pid, [message_queue_len]) works correctly when
+%%  fetching part of the middle signal queue into inner queue.
+verify_middle_queue_save(Config) when is_list(Config) ->
+    Control = self(),
+    ProcessToHang = spawn_link(
+        fun () ->
+            Single = self(),
+            put(count, 0),
+            Doubles = [spawn_link(fun () -> message_queue_len_retrievers(Single, 0) end) || _ <- lists:seq(1, 2)],
+            Control ! {doubles, Doubles},
+            process_that_hangs(Control, 0, Doubles)
+        end),
+    ensure_not_hanging(ProcessToHang, [], 50000).
+
+process_that_hangs(Control, Total, Doubles) ->
+    put(count, Total),
+    %% fetch something innocent, like 'priority' of the process
+    [process_info(Pid, [priority]) || Pid <- Doubles],
+    Control ! alive,
+    process_that_hangs(Control, Total + 1, Doubles).
+
+message_queue_len_retrievers(Control, PrevCount) ->
+    %% need to fetch dictionary for test reasons, but actual trigger is 'message_queue_len',
+    %%  or 'memory', or 'total_heap_size' - anything that needs to fetch external message queue
+    %%  via ERTS_PI_FLAG_NEED_MSGQ_LEN internal flag to process_info
+    [_, {dictionary, [{count, Count}]}] = erlang:process_info(Control, [message_queue_len, dictionary]),
+    Count > PrevCount andalso begin Control ! count end,
+    message_queue_len_retrievers(Control, Count).
+
+ensure_not_hanging(Proc, _Doubles, 0) ->
+    unlink(Proc),
+    exit(Proc, kill);
+ensure_not_hanging(Proc, Doubles, Remaining) ->
+    receive
+        alive ->
+            ensure_not_hanging(Proc, Doubles, Remaining - 1);
+        {doubles, NewDoubles} ->
+            ensure_not_hanging(Proc, NewDoubles, Remaining)
+    after 1000 ->
+        Reason = {Proc, "hung", erlang:process_info(Proc, backtrace)},
+        unlink(Proc),
+        exit(Proc, kill),
+        ct:fail(Reason)
+    end.
+
 %% Test that length/1 returns the correct result after trapping, and
 %% also that the argument is correct in the stacktrace for a badarg
 %% exception.
@@ -1315,8 +1684,8 @@ test_length(I, N, Inc, Good, Bad) when I < N ->
             ok
     end,
 
-    {'EXIT',{badarg,[{erlang,length,[[I|_]],_}|_]}} = (catch length(Bad)),
-    {'EXIT',{badarg,[{erlang,length,[[I|_]],_}|_]}} = (catch erlang:Length(Bad)),
+    ?AssertErrorStack(badarg, [{erlang,length,[[I|_]],_}|_], length(Bad)),
+    ?AssertErrorStack(badarg, [{erlang,length,[[I|_]],_}|_], erlang:Length(Bad)),
     IncSeq = lists:seq(I + 1, I + Inc),
     test_length(I+Inc, N, Inc,
                 lists:reverse(IncSeq, Good),
@@ -1328,15 +1697,27 @@ test_length(_, _, _, _, _) -> ok.
 fixed_apply_badarg(Config) when is_list(Config) ->
     Bad = id({}),
 
-    {'EXIT',{badarg, [{erlang,apply,[{},baz,[a,b]],[{error_info,_}]} | _]}} =
-        (catch Bad:baz(a,b)),
-    {'EXIT',{badarg, [{erlang,apply,[baz,{},[c,d]],[{error_info,_}]} | _]}} =
-        (catch baz:Bad(c,d)),
+    ?AssertErrorStack(badarg, [{erlang,apply,[{},baz,[a,b]],[{error_info,_}]} | _],
+        Bad:baz(a,b)),
+    ?AssertErrorStack(badarg, [{erlang,apply,[baz,{},[c,d]],[{error_info,_}]} | _],
+        baz:Bad(c,d)),
 
-    {'EXIT',{badarg, [{erlang,apply,[{},baz,[e,f]],[{error_info,_}]} | _]}} =
-        (catch apply(Bad,baz,[e,f])),
-    {'EXIT',{badarg, [{erlang,apply,[baz,{},[g,h]],[{error_info,_}]} | _]}} =
-        (catch apply(baz,Bad,[g,h])),
+    ?AssertErrorStack(badarg, [{erlang,apply,[{},baz,[e,f]],[{error_info,_}]} | _],
+        apply(Bad,baz,[e,f])),
+    ?AssertErrorStack(badarg, [{erlang,apply,[baz,{},[g,h]],[{error_info,_}]} | _],
+        apply(baz,Bad,[g,h])),
+
+    ok.
+
+apply_system_limit(_Config) ->
+
+    %% Test that apply/3 triggers a system_limit error when too many arguments are provided.
+    try apply(erlang, error, lists:duplicate(256, x))
+    catch error:system_limit -> ok end,
+
+    %% Test that apply/3 triggers a undef for just below the theashold
+    try apply(erlang, error, lists:duplicate(255, x))
+    catch error:undef -> ok end,
 
     ok.
 
@@ -1347,50 +1728,352 @@ external_fun_apply3(_Config) ->
     Self = Apply(erlang, self, []),
     true = is_pid(Self),
 
-    {'EXIT',{undef,_}} = (catch Apply(does, 'not', [exist])),
+    ?assertError(undef, Apply(does, 'not', [exist])),
 
     ok.
 
+node_1(_Config) ->
+    {ok, Peer, Node} = ?CT_PEER(),
+
+    local_node(self()),
+    LocalPort = lists:last(erlang:ports()),
+    local_node(LocalPort),
+    local_node(make_ref()),
+
+    external_node(erpc:call(Node, erlang, self, []), Node),
+    ExtPort = hd(erpc:call(Node, erlang, ports, [])),
+    external_node(ExtPort, Node),
+    external_node(erpc:call(Node, erlang, make_ref, []), Node),
+
+    node_error(a),
+    node_error(42),
+    node_error({a,b,c}),
+    node_error({tag,self()}),
+    node_error([self()]),
+    node_error(1 bsl 133),
+    node_error(#{}),
+    node_error(#{id(a) => b}),
+    node_error(<<"binary">>),
+
+    peer:stop(Peer),
+    ok.
+
+local_node(E) ->
+    test_node(E, node()).
+
+external_node(E, Node) ->
+    test_node(E, Node).
+
+test_node(E0, Node) ->
+    true = node(id(E0)) =:= Node,
+    E = id(E0),
+    if
+        node(E) =:= Node ->
+            ok
+    end,
+    test_node_2(id(E), Node).
+
+test_node_2(E, Node) when is_pid(E); is_port(E); is_reference(E) ->
+    true = node(E) =:= Node,
+    if
+        node(E) =:= Node ->
+            ok
+    end,
+    test_node_3(id(E), Node),
+    ok.
+
+test_node_3(E, Node) when is_pid(E) ->
+    true = node(E) =:= Node;
+test_node_3(E, Node) when is_port(E) ->
+    true = node(E) =:= Node;
+test_node_3(E, Node) when is_reference(E) ->
+    true = node(E) =:= Node.
+
+node_error(E0) ->
+    E = id(E0),
+    ?AssertErrorStack(badarg,[{erlang,node,[E],_}|_], node(E)),
+    if
+        node(E) ->
+            ct:fail(should_fail);
+        true ->
+            ok
+    end.
+
+doctests(_Config) ->
+    Dict = erase(),
+    try
+        ct_doctest:module(erlang, [],
+                          [{skipped_blocks, 6},
+                           {missing_tests,
+                            [{alias, 1},
+                             {apply, 2},
+                             {bump_reductions, 1},
+                             {cancel_timer, 2},
+                             {check_old_code, 1},
+                             {check_process_code, 3},
+                             {convert_time_unit, 3},
+                             {date, 0},
+                             {delete_module, 1},
+                             {demonitor, 1},
+                             {demonitor, 2},
+                             {disconnect_node, 1},
+                             {display, 1},
+                             {dist_ctrl_get_data, 1},
+                             {dist_ctrl_get_data_notification, 1},
+                             {dist_ctrl_get_opt, 2},
+                             {dist_ctrl_input_handler, 2},
+                             {dist_ctrl_put_data, 2},
+                             {dist_ctrl_set_opt, 3},
+                             {error, 3},
+                             {exit, 2},
+                             {exit_signal, 2},
+                             {exit, 3},
+                             {exit_signal, 3},
+                             {fun_info, 1},
+                             {function_exported, 3},
+                             {garbage_collect, 0},
+                             {garbage_collect, 2},
+                             {get_cookie, 0},
+                             {get_cookie, 1},
+                             {group_leader, 0},
+                             {group_leader, 2},
+                             {halt, 0},
+                             {halt, 1},
+                             {halt, 2},
+                             {hibernate, 0},
+                             {hibernate, 3},
+                             {is_alive, 0},
+                             {is_record, 2},
+                             {is_record, 3},
+                             {link, 1},
+                             {link, 2},
+                             {load_module, 2},
+                             {load_nif, 2},
+                             {loaded, 0},
+                             {localtime, 0},
+                             {localtime_to_universaltime, 1},
+                             {localtime_to_universaltime, 2},
+                             {md5, 1},
+                             {md5_final, 1},
+                             {md5_init, 0},
+                             {md5_update, 2},
+                             {memory, 0},
+                             {memory, 1},
+                             {module_loaded, 1},
+                             {monitor, 2},
+                             {monitor, 3},
+                             {monitor_node, 2},
+                             {monitor_node, 3},
+                             {monotonic_time, 0},
+                             {monotonic_time, 1},
+                             {nif_error, 1},
+                             {nif_error, 2},
+                             {node, 0},
+                             {nodes, 0},
+                             {nodes, 1},
+                             {nodes, 2},
+                             {now, 0},
+                             {open_port, 2},
+                             {phash, 2},
+                             {port_call, 3},
+                             {port_close, 1},
+                             {port_command, 2},
+                             {port_command, 3},
+                             {port_connect, 2},
+                             {port_control, 3},
+                             {port_info, 1},
+                             {port_info, 2},
+                             {ports, 0},
+                             {pre_loaded, 0},
+                             {process_display, 2},
+                             {process_flag, 2},
+                             {process_flag, 3},
+                             {process_info, 1},
+                             {process_info, 2},
+                             {processes, 0},
+                             {processes_iterator, 0},
+                             {processes_next, 1},
+                             {purge_module, 1},
+                             {raise, 3},
+                             {read_timer, 2},
+                             {registered, 0},
+                             {resume_process, 1},
+                             {self, 0},
+                             {send, 2},
+                             {send, 3},
+                             {send_after, 4},
+                             {send_nosuspend, 2},
+                             {send_nosuspend, 3},
+                             {set_cookie, 1},
+                             {set_cookie, 2},
+                             {spawn, 1},
+                             {spawn, 2},
+                             {spawn, 3},
+                             {spawn, 4},
+                             {spawn_link, 1},
+                             {spawn_link, 2},
+                             {spawn_link, 3},
+                             {spawn_link, 4},
+                             {spawn_monitor, 1},
+                             {spawn_monitor, 2},
+                             {spawn_monitor, 3},
+                             {spawn_monitor, 4},
+                             {spawn_opt, 2},
+                             {spawn_opt, 3},
+                             {spawn_opt, 4},
+                             {spawn_opt, 5},
+                             {spawn_request, 1},
+                             {spawn_request, 2},
+                             {spawn_request, 3},
+                             {spawn_request, 4},
+                             {spawn_request, 5},
+                             {spawn_request_abandon, 1},
+                             {start_timer, 4},
+                             {statistics, 1},
+                             {suspend_process, 1},
+                             {suspend_process, 2},
+                             {system_flag, 2},
+                             {system_info, 1},
+                             {system_monitor, 0},
+                             {system_monitor, 1},
+                             {system_monitor, 2},
+                             {system_profile, 0},
+                             {system_time, 0},
+                             {system_time, 1},
+                             {system_profile, 2},
+                             {time, 0},
+                             {time_offset, 0},
+                             {time_offset, 1},
+                             {timestamp, 0},
+                             {trace, 3},
+                             {trace_delivered, 1},
+                             {trace_info, 2},
+                             {trace_pattern, 2},
+                             {trace_pattern, 3},
+                             {unalias, 1},
+                             {unique_integer, 0},
+                             {unique_integer, 1},
+                             {universaltime, 0},
+                             {universaltime_to_localtime, 1},
+                             {unlink, 1},
+                             {unregister, 1},
+                             {whereis, 1},
+                             {yield, 0}]}])
+    after
+        code:purge(test),
+        code:delete(test),
+        code:purge(test),
+        [put(Key, Val) || {Key, Val} <- Dict]
+    end.
+
+is_integer_3_test(_Config) ->
+    _ = [is_between_ten(X) || X <- lists:seq(-2, 12)],
+
+    false = is_between_ten(0),
+    true = is_between_ten(1),
+    true = is_between_ten(10),
+    false = is_between_ten(11),
+
+    false = is_between_ten(a),
+    false = is_between_ten(5.0),
+    false = is_between_ten(-7.0),
+    false = is_between_ten([1]),
+
+    _ = [begin
+             is_between_negative(X),
+             false = is_between_negative(-X)
+         end || X <- lists:seq(-100, -70)],
+
+    _ = [is_between_mixed(X) || X <- lists:seq(-10, 10)],
+
+    _ = [begin
+             is_between_bignum(X),
+             false = is_between_bignum(-X),
+             false = is_between_bignum(X - (1 bsl 64))
+         end || X <- lists:seq((1 bsl 64) - 3, (1 bsl 64) + 10)],
+
+    is_between_badarg(2, 1.5, 10.0),
+    is_between_badarg(2, 10.0, 1.5),
+    is_between_badarg(2, 1.5, 10),
+    is_between_badarg(2, 1, 10.0),
+    is_between_badarg(2, lower, upper),
+
+    ok.
+
+-define(IS_BETWEEN_TEST(Name, LB, UB),
+Name(X0) ->
+    F = id(is_integer),
+    Lower0 = LB,
+    Upper0 = UB,
+    Lower = id(Lower0),
+    Upper = id(Upper0),
+
+    X1 = id(X0),
+    Result = is_integer(X1, Lower0, Upper0),
+    Result = is_integer(X1, Lower, Upper),
+    Result = apply(erlang, F, id([X1, Lower, Upper])),
+    Result = erlang:F(X1, Lower, Upper),
+
+    false = is_integer(id(X1), Upper, Lower),
+
+    X = id(X1),
+    Result = is_integer(X) andalso Lower =< X andalso X =< Upper,
+    Result).
+
+?IS_BETWEEN_TEST(is_between_ten, 1, 10).
+?IS_BETWEEN_TEST(is_between_negative, -89, -77).
+?IS_BETWEEN_TEST(is_between_mixed, -7, 7).
+?IS_BETWEEN_TEST(is_between_bignum, 1 bsl 64, (1 bsl 64) + 7).
+
+is_between_badarg(X, A, B) ->
+    F = id(is_integer),
+
+    ?assertError(badarg, is_integer(id(X), id(A), id(B))),
+    ?assertError(badarg, erlang:F(X, A, B)),
+    ?assertError(badarg, apply(erlang, F, id([X, A, B]))).
+
 %% helpers
-    
+
+wait_until(Fun) ->
+    case Fun() of
+        true ->
+            ok;
+        _ ->
+            receive after 100 -> ok end,
+            wait_until(Fun)
+    end.
+
+busy_wait_go() ->
+    receive
+        {go, Info} ->
+            Info
+    after
+        0 ->
+            busy_wait_go()
+    end.
+
 id(I) -> I.
 
-%% Get code path, including the path for the erts application.
-get_code_path() ->
-    Erts = filename:join([code:root_dir(),"erts","preloaded","ebin"]),
-    case filelib:is_dir(Erts) of
-	true->
-	    [Erts|code:get_path()];
-	_ ->
-	    code:get_path()
-    end.
+bif_modules(MFAs) ->
+    BifRel = sofs:relation(MFAs, [{m,f,a}]),
+    sofs:to_external(sofs:projection(1, BifRel)).
 
-which(Mod, Path) ->
-    which_1(atom_to_list(Mod) ++ ".beam", Path).
-
-which_1(Base, [D|Ds]) ->
-    Path = filename:join(D, Base),
-    case filelib:is_regular(Path) of
-	true -> Path;
-	false -> which_1(Base, Ds)
-    end.
 print_mfa({M,F,A}) ->
     io:format("~p:~p/~p", [M,F,A]).
 
-extract_abstract(Mod, Path) ->
-    Beam = which(Mod, Path),
+which(Mod) ->
+    case code:which(Mod) of
+        preloaded ->
+            filename:join([code:lib_dir(erts), "ebin", atom_to_list(Mod) ++ ".beam"]);
+        Beam when is_list(Beam) ->
+            Beam
+    end.
+
+extract_abstract(Mod) ->
+    Beam = which(Mod),
     {ok,{Mod,[{abstract_code,{raw_abstract_v1,Abstr}}]}} =
 	beam_lib:chunks(Beam, [abstract_code]),
     {Mod,Abstr}.
-
-
-hostname() ->
-    hostname(atom_to_list(node())).
-
-hostname([$@ | Hostname]) ->
-    list_to_atom(Hostname);
-hostname([_C | Cs]) ->
-    hostname(Cs).
 
 tok_loop() ->
     tok_loop(hej).

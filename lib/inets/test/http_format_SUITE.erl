@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2004-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2004-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -291,14 +293,14 @@ chunk_max_bodysize(Config) when is_list(Config) ->
 			  ?HTTP_MAX_BODY_SIZE, ?HTTP_MAX_HEADER_SIZE),
     
     %% Too long body
-    {error,{body_too_big, {max, 10}}} = 
+    {error,{body_too_long, {max, 10}}} =
 	 (catch http_chunk:decode(list_to_binary(ChunkedBody),
 				  10, ?HTTP_MAX_HEADER_SIZE)).
 
 %%-------------------------------------------------------------------------
 http_response() ->
     [{doc, "Test httpc_response:parse*. This test case will simulate that the "
-     "message will be recived a little at the time on a socket and the "
+     "message will be received a little at the time on a socket and the "
      "package may be broken up into smaller parts at arbitrary point."}].
 http_response(Config) when is_list(Config) ->
 
@@ -369,7 +371,7 @@ http_response(Config) when is_list(Config) ->
 %%-------------------------------------------------------------------------
 http_request() ->
     [{doc, "Test httpd_request:parse* This test case will simulate that the " 
-     "message will be recived a little at the time on a socket and the " 
+     "message will be received a little at the time on a socket and the " 
       "package may be broken up into smaller parts at arbitrary point."}].
 http_request(Config) when is_list(Config) ->
 
@@ -450,51 +452,83 @@ http_request(Config) when is_list(Config) ->
 validate_request_line() ->
     [{doc, "Test httpd_request:validate/3. Makes sure you cannot get past"
      " the server_root and that the request is recognized by the server"
-     " and protcol version."}].
+     " and protocol version."}].
 validate_request_line(Config) when is_list(Config) ->
 
-    %% HTTP/0.9 not supported
-    {error, {bad_version, "HTTP/0.9"}} = 
-	httpd_request:validate("GET", "http://www.erlang/org", "HTTP/0.9"),
-    {error, {bad_version, "HTTP/0.9"}} =
-	httpd_request:validate("HEAD", "http://www.erlang/org", "HTTP/0.9"),
-    {error, {bad_version, "HTTP/0.9"}} =
-	httpd_request:validate("TRACE", "http://www.erlang/org", "HTTP/0.9"),
-    {error, {bad_version, "HTTP/0.9"}} =
-	httpd_request:validate("POST", "http://www.erlang/org", "HTTP/0.9"),
+    Uri = "http://www.erlang/org",
 
-    %% HTTP/1.* 
-    {ok, "http://www.erlang/org"} = httpd_request:validate("HEAD", "http://www.erlang/org", 
-			       "HTTP/1.1"),
-    {ok, "http://www.erlang/org"} = httpd_request:validate("GET", "http://www.erlang/org", 
-			       "HTTP/1.1"),  
-    {ok, "http://www.erlang/org"} = httpd_request:validate("POST","http://www.erlang/org", 
-			       "HTTP/1.1"),
-    {ok, "http://www.erlang/org"} = httpd_request:validate("TRACE","http://www.erlang/org",
-                                                           "HTTP/1.1"),
-    {error, {not_supported, 
-	     {"FOOBAR", "http://www.erlang/org", "HTTP/1.1"}}} =
-	httpd_request:validate("FOOBAR", "http://www.erlang/org", 
-			       "HTTP/1.1"),
+    %% HTTP/0.9 not supported for any method
+    {error, {bad_version, "HTTP/0.9"}} =
+        httpd_request:validate("GET", Uri, "HTTP/0.9"),
+    {error, {bad_version, "HTTP/0.9"}} =
+        httpd_request:validate("HEAD", Uri, "HTTP/0.9"),
+    {error, {bad_version, "HTTP/0.9"}} =
+        httpd_request:validate("POST", Uri, "HTTP/0.9"),
+    {error, {bad_version, "HTTP/0.9"}} =
+        httpd_request:validate("PUT", Uri, "HTTP/0.9"),
+    {error, {bad_version, "HTTP/0.9"}} =
+        httpd_request:validate("DELETE", Uri, "HTTP/0.9"),
+    {error, {bad_version, "HTTP/0.9"}} =
+        httpd_request:validate("PATCH", Uri, "HTTP/0.9"),
+    {error, {bad_version, "HTTP/0.9"}} =
+        httpd_request:validate("OPTIONS", Uri, "HTTP/0.9"),
+    {error, {bad_version, "HTTP/0.9"}} =
+        httpd_request:validate("TRACE", Uri, "HTTP/0.9"),
+
+    %% All standard methods accepted on HTTP/1.1
+    {ok, Uri} = httpd_request:validate("HEAD", Uri, "HTTP/1.1"),
+    {ok, Uri} = httpd_request:validate("GET", Uri, "HTTP/1.1"),
+    {ok, Uri} = httpd_request:validate("POST", Uri, "HTTP/1.1"),
+    {ok, Uri} = httpd_request:validate("PUT", Uri, "HTTP/1.1"),
+    {ok, Uri} = httpd_request:validate("DELETE", Uri, "HTTP/1.1"),
+    {ok, Uri} = httpd_request:validate("PATCH", Uri, "HTTP/1.1"),
+    {ok, Uri} = httpd_request:validate("OPTIONS", Uri, "HTTP/1.1"),
+    {ok, Uri} = httpd_request:validate("TRACE", Uri, "HTTP/1.1"),
+
+    %% All standard methods (except TRACE) accepted on HTTP/1.0
+    {ok, Uri} = httpd_request:validate("HEAD", Uri, "HTTP/1.0"),
+    {ok, Uri} = httpd_request:validate("GET", Uri, "HTTP/1.0"),
+    {ok, Uri} = httpd_request:validate("POST", Uri, "HTTP/1.0"),
+    {ok, Uri} = httpd_request:validate("PUT", Uri, "HTTP/1.0"),
+    {ok, Uri} = httpd_request:validate("DELETE", Uri, "HTTP/1.0"),
+    {ok, Uri} = httpd_request:validate("PATCH", Uri, "HTTP/1.0"),
+    {ok, Uri} = httpd_request:validate("OPTIONS", Uri, "HTTP/1.0"),
+    %% TRACE requires HTTP/1.1+
+    {error, {not_supported, {"TRACE", Uri, "HTTP/1.0"}}} =
+        httpd_request:validate("TRACE", Uri, "HTTP/1.0"),
+
+    %% OPTIONS with asterisk-form URI (RFC 9110 Section 7.1)
+    {ok, "*"} = httpd_request:validate("OPTIONS", "*", "HTTP/1.1"),
+
+    %% Unknown method rejected
+    {error, {not_supported,
+             {"FOOBAR", Uri, "HTTP/1.1"}}} =
+        httpd_request:validate("FOOBAR", Uri, "HTTP/1.1"),
+
     %%% Will work after normalization
-    Uri = "http://127.0.0.1:8888/../../../../../etc/passwd",
-    {ok, "http://127.0.0.1:8888/etc/passwd"} = httpd_request:validate("GET", Uri, "HTTP/1.1"),
+    TraversalUri = "http://127.0.0.1:8888/../../../../../etc/passwd",
+    {ok, "http://127.0.0.1:8888/etc/passwd"} =
+        httpd_request:validate("GET", TraversalUri, "HTTP/1.1"),
 
-    Uri2 = 
-	"http://127.0.0.1:8888/././././././../../../../../etc/passwd",
-    {ok, "http://127.0.0.1:8888/etc/passwd"} = httpd_request:validate("GET", Uri2, "HTTP/1.1"),
+    TraversalUri2 =
+        "http://127.0.0.1:8888/././././././../../../../../etc/passwd",
+    {ok, "http://127.0.0.1:8888/etc/passwd"} =
+        httpd_request:validate("GET", TraversalUri2, "HTTP/1.1"),
 
-    HexUri = "http://127.0.0.1:8888/%2e%2e/%2e%2e/%2e%2e/" 
-	"home/foobar/test.html",
-    {ok, "http://127.0.0.1:8888/home/foobar/test.html"}  = httpd_request:validate("GET", HexUri, "HTTP/1.1"),
+    HexUri = "http://127.0.0.1:8888/%2e%2e/%2e%2e/%2e%2e/"
+        "home/foobar/test.html",
+    {ok, "http://127.0.0.1:8888/home/foobar/test.html"} =
+        httpd_request:validate("GET", HexUri, "HTTP/1.1"),
 
-    NewUri = 
-	"http://127.0.0.1:8888/foobar/../../../home/foobar/test.html",
-    {ok,"http://127.0.0.1:8888/home/foobar/test.html"} = httpd_request:validate("GET", NewUri, "HTTP/1.1"),
-    
-    Uri1 = 
-	"http://127.0.0.1:8888/../home/foobar/test.html",
-    {ok,"http://127.0.0.1:8888/home/foobar/test.html"}  = httpd_request:validate("GET", Uri1, "HTTP/1.1").
+    NewUri =
+        "http://127.0.0.1:8888/foobar/../../../home/foobar/test.html",
+    {ok, "http://127.0.0.1:8888/home/foobar/test.html"} =
+        httpd_request:validate("GET", NewUri, "HTTP/1.1"),
+
+    Uri1 =
+        "http://127.0.0.1:8888/../home/foobar/test.html",
+    {ok, "http://127.0.0.1:8888/home/foobar/test.html"} =
+        httpd_request:validate("GET", Uri1, "HTTP/1.1").
 
 %%-------------------------------------------------------------------------
 check_content_length_encoding() ->
@@ -548,7 +582,7 @@ esi_parse_headers(Config) when is_list(Config) ->
 %%--------------------------------------------------------------------
 cgi_parse_headers() ->
     [{doc, "Test httpd_cgi:*. This test case will simulate that the "
-     "message will be recived a little at the time on a socket and the "
+     "message will be received a little at the time on a socket and the "
      "package may be broken up into smaller parts at arbitrary point."}].
 
 cgi_parse_headers(Config) when is_list(Config) ->

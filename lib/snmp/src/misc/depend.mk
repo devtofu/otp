@@ -1,9 +1,11 @@
 #-*-makefile-*-   ; force emacs to enter makefile-mode
 
 # %CopyrightBegin%
-# 
-# Copyright Ericsson AB 2004-2016. All Rights Reserved.
-# 
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 2004-2025. All Rights Reserved.
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -15,7 +17,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# 
+#
 # %CopyrightEnd%
 
 $(EBIN)/snmp_conf.$(EMULATOR): \
@@ -25,6 +27,7 @@ $(EBIN)/snmp_conf.$(EMULATOR): \
 
 $(EBIN)/snmp_config.$(EMULATOR): \
 	snmp_config.erl \
+	snmp_usm.hrl \
 	../../include/snmp_types.hrl
 
 $(EBIN)/snmp_log.$(EMULATOR): \
@@ -50,10 +53,22 @@ $(EBIN)/snmp_pdu.$(EMULATOR): \
 
 $(EBIN)/snmp_usm.$(EMULATOR): \
 	snmp_usm.erl \
+	snmp_usm.hrl \
 	snmp_verbosity.hrl \
 	../../include/snmp_types.hrl
 
 $(EBIN)/snmp_verbosity.$(EMULATOR): \
 	snmp_verbosity.erl
 
+# Rules for generated "stuff"
+
+$(EBIN)/snmp_pdus_basic.$(EMULATOR): \
+	snmp_pdus_basic.erl
+
+# ASN1_OPTS += +abs
+snmp_pdus_basic.erl: \
+	snmp_pdus_basic.set.asn \
+	snmp_pdus_basic.asn
+	$(V_colon)@echo "snmp_pdus_basec:"
+	$(asn_verbose)$(ERLC) -bber +noobj $(ASN1_OPTS) snmp_pdus_basic.set.asn
 

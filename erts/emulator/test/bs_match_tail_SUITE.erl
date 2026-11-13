@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1999-2016. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1999-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -22,14 +24,15 @@
 
 -author('bjorn@erix.ericsson.se').
 -export([all/0, suite/0,
-	 aligned/1,unaligned/1,zero_tail/1]).
+	 aligned/1,unaligned/1,zero_tail/1,huge_tail/1]).
 
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
 suite() -> [{ct_hooks,[ts_install_cth]}].
 
 all() -> 
-    [aligned, unaligned, zero_tail].
+    [aligned, unaligned, zero_tail, huge_tail].
 
 
 %% Test aligned tails.
@@ -57,10 +60,10 @@ al_get_tail_unused(<<A:16,_/binary>>) -> A.
 
 %% Test that an non-aligned tail cannot be matched out.
 unaligned(Config) when is_list(Config) ->
-    {'EXIT',{function_clause,_}} = (catch get_tail_used(mkbin([42]))),
-    {'EXIT',{{badmatch,_},_}} = (catch get_dyn_tail_used(mkbin([137]), 3)),
-    {'EXIT',{function_clause,_}} = (catch get_tail_unused(mkbin([42,33]))),
-    {'EXIT',{{badmatch,_},_}} = (catch get_dyn_tail_unused(mkbin([44]), 7)),
+    ?assertError(function_clause, get_tail_used(mkbin([42]))),
+    ?assertError({badmatch,_}, get_dyn_tail_used(mkbin([137]), 3)),
+    ?assertError(function_clause, get_tail_unused(mkbin([42,33]))),
+    ?assertError({badmatch,_}, get_dyn_tail_unused(mkbin([44]), 7)),
     ok.
 
 get_tail_used(<<A:1,T/binary>>) -> {A,T}.
@@ -77,13 +80,48 @@ get_dyn_tail_unused(Bin, Sz) ->
 
 %% Test that zero tails are tested correctly.
 zero_tail(Config) when is_list(Config) ->
-    7 = (catch test_zero_tail(mkbin([7]))),
-    {'EXIT',{function_clause,_}} = (catch test_zero_tail(mkbin([1,2]))),
-    {'EXIT',{function_clause,_}} = (catch test_zero_tail2(mkbin([1,2,3]))),
+    7 = test_zero_tail(mkbin([7])),
+    ?assertError(function_clause, test_zero_tail(mkbin([1,2]))),
+    ?assertError(function_clause, test_zero_tail2(mkbin([1,2,3]))),
     ok.
 
 test_zero_tail(<<A:8>>) -> A.
 
 test_zero_tail2(<<_A:4,_B:4>>) -> ok.
 
-mkbin(L) when is_list(L) -> list_to_binary(L).
+huge_tail(_Config) ->
+    42 = huge_tail_1(id(<<42,0:16#1001>>)),
+    ?assertError(function_clause, huge_tail_1(id(<<0:8,0:10>>))),
+
+    ?assertError(function_clause, huge_tail_2(id(<<0:8,0:100>>))),
+
+    ?assertError(function_clause, huge_tail_3(id(<<0:8,0:200>>))),
+
+    %% The following code is commented out by default because it
+    %% constructs a 2Gb binary.
+
+    %% try huge_tail_2(id(<<100, 0:16#8000_0000>>)) of
+    %%     100 ->
+    %%         ok
+    %% catch
+    %%     error:function_clause ->
+    %%         ct:fail(not_supposed_to_fail)
+    %% end,
+
+    ok.
+
+%% On AArch64, the immediate for the `cmp` instruction is 12 bits (unsigned).
+huge_tail_1(<<B:8,_:16#1001>>) -> B.
+
+%% On x86_64, the immediate for the `cmp` instruction is 32 bits (signed).
+huge_tail_2(<<B:8, _:16#8000_0000>>) -> B.
+
+%% Matching will fail on all platforms.
+huge_tail_3(<<B:8, _:16#1_0000_0000_0000_0000>>) -> B.
+
+%%%
+%%% Common utilities.
+%%%
+mkbin(L) when is_list(L) -> list_to_binary(id(L)).
+
+id(I) -> I.

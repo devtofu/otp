@@ -2,7 +2,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2000-2017. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2000-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,6 +22,9 @@
 %%
 %%
 -module(asn1ct_parser2).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
 
 -export([parse/2,format_error/1]).
 -include("asn1_records.hrl").
@@ -283,7 +288,7 @@ parse_Assignment([{typereference,_,_},{'{',_}|_]=Tokens) ->
     %% 2) ValueSet{...} Type ::= ...
     %%    ObjectSet{...} CLASS-NAME ::= CLASS {...}
     %% 3) CLASS-NAME{...} ::= CLASS {...}
-    %% A parameterized value set and and a parameterized object set
+    %% A parameterized value set and a parameterized object set
     %% cannot be distinguished from each other without type information.
     Flist = [fun parse_ParameterizedTypeAssignment/1,
 	     fun parse_ParameterizedValueSetTypeAssignment/1,
@@ -1106,7 +1111,7 @@ parse_ObjectAssignment([#identifier{pos=L1,val=ObjName}|Rest]) ->
 %% Ret       = {object,_} | {object, _, _}
 parse_Object(Tokens) ->
     %% The ObjectFromObject production is not included here,
-    %% since it will have been catched by the ValueFromObject
+    %% since it will have been caught by the ValueFromObject
     %% before we reach this point.
     Flist = [fun parse_ObjectDefn/1,
 	     fun parse_DefinedObject/1],

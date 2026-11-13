@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -22,6 +24,7 @@
 
 -module(ssh_basic_SUITE).
 
+-include_lib("public_key/include/public_key.hrl").
 -include_lib("common_test/include/ct.hrl").
 -include_lib("kernel/include/inet.hrl").
 -include_lib("kernel/include/file.hrl").
@@ -40,12 +43,13 @@
         ]).
 
 -export([
-         always_ok/1,
+         always_ok/0,
          app_test/1,
          appup_test/1,
          basic_test/1,
          check_error/1,
          cli/1,
+         cli_exec_disabled/1,
          cli_exit_normal/1,
          cli_exit_status/1,
          close/1,
@@ -55,6 +59,7 @@
          double_close/1,
          exec/1,
          exec_compressed/1,
+         exec_compressed_post_auth_compression/1,
          exec_with_io_in/1,
          exec_with_io_out/1,
          host_equal/2,
@@ -73,6 +78,7 @@
          login_bad_pwd_no_retry3/1,
          login_bad_pwd_no_retry4/1,
          login_bad_pwd_no_retry5/1,
+         max_initial_idle_time/1,
          misc_ssh_options/1,
          multi_daemon_opt_fd/1,
          openssh_zlib_basic_test/1,
@@ -80,9 +86,12 @@
          pass_phrase/1,
          peername_sockname/1,
          send/1,
+         parallel_login/1,
          setopts_getopts/1,
          shell/1,
+         shell_disabled/1,
          shell_exit_status/1,
+         shell_latin1_exception/1,
          shell_no_unicode/1,
          shell_socket/1,
          shell_ssh_conn/1,
@@ -104,14 +113,15 @@
 %%--------------------------------------------------------------------
 
 suite() ->
-    [{ct_hooks,[ts_install_cth]},
+    [{ct_hooks,[ts_install_cth,
+                {cth_events,
+                 [{verify_fun, fun verify_events/2}]}]},
      {timetrap,{seconds,90}}].
 
 all() -> 
     [{group, all_tests}
     ].
 
-%%%-define(PARALLEL, ).
 -define(PARALLEL, parallel).
 
 groups() ->
@@ -119,9 +129,7 @@ groups() ->
                                {group, p_basic},
                                {group, internal_error},
                                {group, login_bad_pwd_no_retry},
-                               {group, key_cb}
-                              ]},
-
+                               {group, key_cb}]},
      {sequential, [], [app_test,
                        appup_test,
                        daemon_already_started,
@@ -136,30 +144,26 @@ groups() ->
                        known_hosts,
                        ssh_file_is_host_key,
                        ssh_file_is_host_key_misc,
-                       ssh_file_is_auth_key
-                      ]},
-
+                       ssh_file_is_auth_key]},
      {key_cb, [?PARALLEL], [key_callback, key_callback_options]},
-
      {internal_error, [?PARALLEL], [internal_error]},
-
      {login_bad_pwd_no_retry, [?PARALLEL], [login_bad_pwd_no_retry1,
                                             login_bad_pwd_no_retry2,
                                             login_bad_pwd_no_retry3,
                                             login_bad_pwd_no_retry4,
-                                            login_bad_pwd_no_retry5
-                                           ]},
-     
-     {p_basic, [?PARALLEL], [send, peername_sockname,
-                             exec, exec_compressed, 
+                                            login_bad_pwd_no_retry5]},
+     {p_basic, [?PARALLEL], [send, parallel_login, peername_sockname,
+                             exec, exec_compressed, exec_compressed_post_auth_compression,
                              exec_with_io_out, exec_with_io_in,
-                             cli, cli_exit_normal, cli_exit_status,
-                             idle_time_client, idle_time_server, openssh_zlib_basic_test, 
+                             cli, cli_exec_disabled, cli_exit_normal, cli_exit_status,
+                             idle_time_client, idle_time_server,
+                             max_initial_idle_time,
+                             openssh_zlib_basic_test,
                              misc_ssh_options, inet_option, inet6_option,
-                             shell, shell_socket, shell_ssh_conn, shell_no_unicode, shell_unicode_string,
-                             close
-                            ]}
-    ].
+                             shell, shell_disabled, shell_socket, shell_ssh_conn,
+                             shell_no_unicode, shell_unicode_string,
+                             shell_latin1_exception,
+                             close]}].
 
 %%--------------------------------------------------------------------
 init_per_suite(Config) ->
@@ -170,7 +174,8 @@ init_per_suite(Config) ->
                       Config
                   end).
 
-end_per_suite(_Config) ->
+end_per_suite(Config) ->
+    ssh_test_lib:clean_all_user_host_keys(Config),
     ssh:stop().
 
 %%--------------------------------------------------------------------
@@ -193,15 +198,18 @@ init_per_group(_, Config) ->
 end_per_group(_, Config) ->
     Config.
 %%--------------------------------------------------------------------
-init_per_testcase(TC, Config) when TC==shell_no_unicode ; 
-				   TC==shell_unicode_string ->
+init_per_testcase(TestCase, Config)
+  when TestCase==shell_no_unicode;
+       TestCase==shell_unicode_string;
+       TestCase==shell_latin1_exception ->
     PrivDir = proplists:get_value(priv_dir, Config),
     UserDir = proplists:get_value(priv_dir, Config),
     SysDir =  proplists:get_value(data_dir, Config),
-    Sftpd = {_Pid, _Host, Port} =       
-	ssh_test_lib:daemon([{system_dir, SysDir},
-			     {user_dir, PrivDir},
-			     {user_passwords, [{"foo", "bar"}]}]),
+    Sftpd = {_Pid, _Host, Port} =
+        ssh_test_lib:daemon([{shell, {shell, start, []}},
+                             {system_dir, SysDir},
+                             {user_dir, PrivDir},
+                             {user_passwords, [{"foo", "bar"}]}]),
     ct:sleep(500),
     IO = ssh_test_lib:start_io_server(),
     Shell = ssh_test_lib:start_shell(Port, IO, [{user_dir,UserDir},
@@ -211,7 +219,6 @@ init_per_testcase(TC, Config) when TC==shell_no_unicode ;
     ct:log("file:native_name_encoding() = ~p,~nio:getopts() = ~p",
 	   [file:native_name_encoding(),io:getopts()]),
     wait_for_erlang_first_line([{io,IO}, {shell,Shell}, {sftpd, Sftpd}  | Config]);
-
 init_per_testcase(inet6_option, Config) ->
     case ssh_test_lib:has_inet6_address() of
 	true ->
@@ -219,39 +226,47 @@ init_per_testcase(inet6_option, Config) ->
 	false ->
 	    {skip,"No ipv6 interface address"}
     end;
-init_per_testcase(_TestCase, Config) ->
-    Config.
+init_per_testcase(TestCase, Config) ->
+    ssh_test_lib:add_log_handler(TestCase, Config).
 
-end_per_testcase(TC, Config) when TC==shell_no_unicode ; 
-				  TC==shell_unicode_string ->
+end_per_testcase(TestCase, Config)
+  when TestCase==shell_no_unicode;
+       TestCase==shell_unicode_string;
+       TestCase==shell_latin1_exception ->
     case proplists:get_value(sftpd, Config) of
 	{Pid, _, _} ->
-	    catch ssh:stop_daemon(Pid);
+            try ssh:stop_daemon(Pid) catch _:_ -> ok end,
+            ok;
 	_ ->
 	    ok
-    end,
-    end_per_testcase(Config);
-end_per_testcase(_TestCase, Config) ->
-    end_per_testcase(Config).
-
-end_per_testcase(_Config) ->
+    end;
+end_per_testcase(_TestCase, _Config) ->
     ok.
+
+verify_events(_TestCase, 0) ->
+    ok;
+verify_events(multi_daemon_opt_fd, 6) -> ok;
+verify_events(internal_error, 3) -> ok;
+verify_events(_TestCase, EventNumber) when EventNumber > 0->
+    {fail, lists:flatten(
+             io_lib:format("unexpected event cnt: ~s",
+                           [integer_to_list(EventNumber)]))}.
 
 %%--------------------------------------------------------------------
 %% Test Cases --------------------------------------------------------
 %%--------------------------------------------------------------------
 %%% Application consistency test.
 app_test(Config) when is_list(Config) ->
-    ?t:app_test(ssh),
+    test_server:app_test(ssh),
     ok.
 %%--------------------------------------------------------------------
 %%% Appup file consistency test.
 appup_test(Config) when is_list(Config) ->
-    ok = ?t:appup_test(ssh).
+    ok = test_server:appup_test(ssh).
 %%--------------------------------------------------------------------
 %%% Test that we can set some misc options not tested elsewhere
 %%% some options not yet present are not decided if we should support or
-%%% if they need thier own test case.
+%%% if they need their own test case.
 misc_ssh_options(Config) when is_list(Config) ->  
     SystemDir = filename:join(proplists:get_value(priv_dir, Config), system),
     UserDir = proplists:get_value(priv_dir, Config),
@@ -282,7 +297,7 @@ inet_option(Config) when is_list(Config) ->
 
 %%--------------------------------------------------------------------
 %%% Test configuring IPv6
-inet6_option() -> [{timetrap,{seconds,30}}].
+inet6_option() -> [{timetrap,{seconds,30 * ssh_test_lib:timetrap_scale()}}].
 inet6_option(Config) when is_list(Config) ->   
     SystemDir = filename:join(proplists:get_value(priv_dir, Config), system),
     UserDir = proplists:get_value(priv_dir, Config),
@@ -304,9 +319,10 @@ exec(Config) when is_list(Config) ->
     SystemDir = filename:join(proplists:get_value(priv_dir, Config), system),
     UserDir = proplists:get_value(priv_dir, Config),
     
-    {Pid, Host, Port} = ssh_test_lib:daemon([{system_dir, SystemDir},
-					     {user_dir, UserDir},
-					     {failfun, fun ssh_test_lib:failfun/2}]),
+    {Pid, Host, Port} = ssh_test_lib:daemon([{exec, erlang_eval},
+                                             {system_dir, SystemDir},
+                                             {user_dir, UserDir},
+                                             {failfun, fun ssh_test_lib:failfun/2}]),
     ConnectionRef =
 	ssh_test_lib:connect(Host, Port, [{silently_accept_hosts, true},
 					  {user_dir, UserDir},
@@ -347,9 +363,10 @@ exec_with_io_out(Config) when is_list(Config) ->
     SystemDir = filename:join(proplists:get_value(priv_dir, Config), system),
     UserDir = proplists:get_value(priv_dir, Config),
     
-    {Pid, Host, Port} = ssh_test_lib:daemon([{system_dir, SystemDir},
-					     {user_dir, UserDir},
-					     {failfun, fun ssh_test_lib:failfun/2}]),
+    {Pid, Host, Port} = ssh_test_lib:daemon([{exec, erlang_eval},
+                                             {system_dir, SystemDir},
+                                             {user_dir, UserDir},
+                                             {failfun, fun ssh_test_lib:failfun/2}]),
     ConnectionRef =
 	ssh_test_lib:connect(Host, Port, [{silently_accept_hosts, true},
 					  {user_dir, UserDir},
@@ -377,9 +394,10 @@ exec_with_io_in(Config) when is_list(Config) ->
     SystemDir = filename:join(proplists:get_value(priv_dir, Config), system),
     UserDir = proplists:get_value(priv_dir, Config),
     
-    {Pid, Host, Port} = ssh_test_lib:daemon([{system_dir, SystemDir},
-					     {user_dir, UserDir},
-					     {failfun, fun ssh_test_lib:failfun/2}]),
+    {Pid, Host, Port} = ssh_test_lib:daemon([{exec, erlang_eval},
+                                             {system_dir, SystemDir},
+                                             {user_dir, UserDir},
+                                             {failfun, fun ssh_test_lib:failfun/2}]),
     C = ssh_test_lib:connect(Host, Port, [{silently_accept_hosts, true},
 					  {user_dir, UserDir},
 					  {user_interaction, false}]),
@@ -397,37 +415,43 @@ exec_with_io_in(Config) when is_list(Config) ->
 %%--------------------------------------------------------------------
 %%% Test that compression option works
 exec_compressed(Config) when is_list(Config) ->
-    case ssh_test_lib:ssh_supports(zlib, compression) of
-	false ->
-	    {skip, "zlib compression is not supported"};
+    exec_compressed_helper(Config, 'zlib').
 
-	true ->
-	    process_flag(trap_exit, true),
-	    SystemDir = filename:join(proplists:get_value(priv_dir, Config), system),
-	    UserDir = proplists:get_value(priv_dir, Config), 
+%%--------------------------------------------------------------------
+%%% Test that post authentication compression option works
+exec_compressed_post_auth_compression(Config) when is_list(Config) ->
+    exec_compressed_helper(Config, 'zlib@openssh.com').
 
-	    {Pid, Host, Port} = ssh_test_lib:daemon([{system_dir, SystemDir},{user_dir, UserDir},
-						     {preferred_algorithms,[{compression, [zlib]}]},
-						     {failfun, fun ssh_test_lib:failfun/2}]),
-    
-	    ConnectionRef =
-		ssh_test_lib:connect(Host, Port, [{silently_accept_hosts, true},
-						  {user_dir, UserDir},
-						  {user_interaction, false}]),
-	    {ok, ChannelId} = ssh_connection:session_channel(ConnectionRef, infinity),
-	    success = ssh_connection:exec(ConnectionRef, ChannelId,
-					  "1+1.", infinity),
-	    Data = {ssh_cm, ConnectionRef, {data, ChannelId, 0, <<"2">>}},
-	    case ssh_test_lib:receive_exec_result(Data) of
-		expected ->
-		    ok;
-		Other ->
-		    ct:fail(Other)
-	    end,
-	    ssh_test_lib:receive_exec_end(ConnectionRef, ChannelId),
-	    ssh:close(ConnectionRef),
-	    ssh:stop_daemon(Pid)
-    end.
+%%--------------------------------------------------------------------
+%%% Exec compressed helper
+exec_compressed_helper(Config, CompressAlgorithm) ->
+    process_flag(trap_exit, true),
+    SystemDir = filename:join(proplists:get_value(priv_dir, Config), system),
+    UserDir = proplists:get_value(priv_dir, Config),
+
+    {Pid, Host, Port} = ssh_test_lib:daemon([{exec, erlang_eval},
+                                             {system_dir, SystemDir},{user_dir, UserDir},
+                                             {preferred_algorithms,[{compression, [CompressAlgorithm]}]},
+                                             {failfun, fun ssh_test_lib:failfun/2}]),
+
+    ConnectionRef =
+        ssh_test_lib:connect(Host, Port, [{silently_accept_hosts, true},
+                                          {user_dir, UserDir},
+                                          {user_interaction, false},
+                                          {preferred_algorithms,[{compression, [CompressAlgorithm]}]}]),
+    {ok, ChannelId} = ssh_connection:session_channel(ConnectionRef, infinity),
+    success = ssh_connection:exec(ConnectionRef, ChannelId,
+                                  "1+1.", infinity),
+    Data = {ssh_cm, ConnectionRef, {data, ChannelId, 0, <<"2">>}},
+    case ssh_test_lib:receive_exec_result(Data) of
+        expected ->
+            ok;
+        Other ->
+            ct:fail(Other)
+    end,
+    ssh_test_lib:receive_exec_end(ConnectionRef, ChannelId),
+    ssh:close(ConnectionRef),
+    ssh:stop_daemon(Pid).
 
 %%--------------------------------------------------------------------
 %%% Idle timeout test
@@ -440,7 +464,9 @@ idle_time_common(DaemonExtraOpts, ClientExtraOpts, Config) ->
     SystemDir = filename:join(proplists:get_value(priv_dir, Config), system),
     UserDir = proplists:get_value(priv_dir, Config),
 
-    {Pid, Host, Port} = ssh_test_lib:daemon([{system_dir, SystemDir},
+    {Pid, Host, Port} = ssh_test_lib:daemon([{exec, erlang_eval},
+                                             {subsystems, [ssh_sftpd:subsystem_spec([])]},
+                                             {system_dir, SystemDir},
 					     {user_dir, UserDir},
 					     {failfun, fun ssh_test_lib:failfun/2}
                                              | DaemonExtraOpts
@@ -471,29 +497,75 @@ idle_time_common(DaemonExtraOpts, ClientExtraOpts, Config) ->
     ssh:stop_daemon(Pid).
 
 %%--------------------------------------------------------------------
+max_initial_idle_time(Config) ->
+    SystemDir = filename:join(proplists:get_value(priv_dir, Config), system),
+    UserDir = proplists:get_value(priv_dir, Config),
+
+    {Pid, Host, Port} = ssh_test_lib:daemon([{system_dir, SystemDir},
+					     {user_dir, UserDir},
+					     {failfun, fun ssh_test_lib:failfun/2},
+                                             {max_initial_idle_time, 2000}
+                                            ]),
+    ConnectionRef =
+	ssh_test_lib:connect(Host, Port, [{silently_accept_hosts, true},
+					  {user_dir, UserDir},
+					  {user_interaction, false}
+                                         ]),
+    timer:sleep(8000),
+    {error, closed} = ssh_connection:session_channel(ConnectionRef, 1000),
+    ssh:stop_daemon(Pid).
+
+%%--------------------------------------------------------------------
 %%% Test that ssh:shell/2 works
 shell(Config) when is_list(Config) ->
     process_flag(trap_exit, true),
     SystemDir = filename:join(proplists:get_value(priv_dir, Config), system),
     UserDir = proplists:get_value(priv_dir, Config),
-   
-    {_Pid, _Host, Port} = ssh_test_lib:daemon([{system_dir, SystemDir},{user_dir, UserDir},
-					       {failfun, fun ssh_test_lib:failfun/2}]),
+    {_Pid, _Host, Port} = ssh_test_lib:daemon([{shell, {shell, start, []}},
+                                               {system_dir, SystemDir},{user_dir, UserDir},
+                                               {failfun, fun ssh_test_lib:failfun/2}]),
     ct:sleep(500),
-
     IO = ssh_test_lib:start_io_server(),
     Shell = ssh_test_lib:start_shell(Port, IO, [{user_dir,UserDir}]),
     receive
 	{'EXIT', _, _} = Exit ->
             ct:log("~p:~p ~p", [?MODULE,?LINE,Exit]),
-	    ct:fail(no_ssh_connection);  
+            ct:fail(no_ssh_connection);
 	ErlShellStart ->
 	    ct:log("Erlang shell start: ~p~n", [ErlShellStart]),
 	    do_shell(IO, Shell)
-    after 
+    after
 	30000 -> ct:fail("timeout ~p:~p",[?MODULE,?LINE])
     end.
-    
+
+shell_disabled(Config) when is_list(Config) ->
+    process_flag(trap_exit, true),
+    SystemDir = filename:join(proplists:get_value(priv_dir, Config), system),
+    UserDir = proplists:get_value(priv_dir, Config),
+    {_Pid, _Host, Port} = ssh_test_lib:daemon([{shell, disabled},
+                                               {system_dir, SystemDir},{user_dir, UserDir},
+                                               {failfun, fun ssh_test_lib:failfun/2}]),
+    ct:sleep(500),
+    IO = ssh_test_lib:start_io_server(),
+    Shell = ssh_test_lib:start_shell(Port, IO, [{user_dir,UserDir}]),
+    ?CT_LOG("Shell = ~p", [Shell]),
+    ExpectedMessages =
+        [<<"Prohibited.">>,
+         <<"Connection closed by peer">>,
+         <<"Status: 255">>,
+         {'EXIT', Shell, normal}],
+    [receive
+         Msg ->
+             ?CT_LOG("Received msg = ~p", [Msg]),
+             ok
+     after
+         3000 ->
+             ?CT_LOG("Missing msg = ~p", [Msg]),
+             ?CT_LOG("Message queue of ~p:~n~p",
+                     [self(), erlang:process_info(self(), messages)]),
+             ct:fail("timeout ~p:~p",[?MODULE,?LINE])
+     end || Msg <- ExpectedMessages].
+
 %%--------------------------------------------------------------------
 %%% Test that ssh:shell/2 works when attaching to a open TCP-connection
 shell_socket(Config) when is_list(Config) ->
@@ -501,8 +573,9 @@ shell_socket(Config) when is_list(Config) ->
     SystemDir = filename:join(proplists:get_value(priv_dir, Config), system),
     UserDir = proplists:get_value(priv_dir, Config),
 
-    {_Pid, Host0, Port} = ssh_test_lib:daemon([{system_dir, SystemDir},{user_dir, UserDir},
-					       {failfun, fun ssh_test_lib:failfun/2}]),
+    {_Pid, Host0, Port} = ssh_test_lib:daemon([{shell, {shell, start, []}},
+                                               {system_dir, SystemDir},{user_dir, UserDir},
+                                               {failfun, fun ssh_test_lib:failfun/2}]),
     Host = ssh_test_lib:mangle_connect_address(Host0),
     ct:sleep(500),
 
@@ -520,7 +593,7 @@ shell_socket(Config) when is_list(Config) ->
     ct:log("~p:~p udp socket failed ok", [?MODULE,?LINE]),
     gen_udp:close(BadSock),
 
-    %% And finaly test with passive mode (which should work):
+    %% And finally test with passive mode (which should work):
     IO = ssh_test_lib:start_io_server(),
     {ok,Sock} = gen_tcp:connect(Host, Port, [{active,false}]),
     Shell = ssh_test_lib:start_shell(Sock, IO, [{user_dir,UserDir}]),
@@ -545,8 +618,9 @@ shell_ssh_conn(Config) when is_list(Config) ->
     SystemDir = filename:join(proplists:get_value(priv_dir, Config), system),
     UserDir = proplists:get_value(priv_dir, Config),
 
-    {_Pid, Host, Port} = ssh_test_lib:daemon([{system_dir, SystemDir},{user_dir, UserDir},
-					       {failfun, fun ssh_test_lib:failfun/2}]),
+    {_Pid, Host, Port} = ssh_test_lib:daemon([{shell, {shell, start, []}},
+                                              {system_dir, SystemDir},{user_dir, UserDir},
+                                              {failfun, fun ssh_test_lib:failfun/2}]),
     ct:sleep(500),
 
     IO = ssh_test_lib:start_io_server(),
@@ -567,42 +641,54 @@ shell_ssh_conn(Config) when is_list(Config) ->
 
 %%--------------------------------------------------------------------
 cli(Config) when is_list(Config) ->
+    cli_helper(Config, [{exec, erlang_eval}]).
+
+%%--------------------------------------------------------------------
+%% Verify custom ssh_cli callback works with default exec=disabled
+cli_exec_disabled(Config) when is_list(Config) ->
+    cli_helper(Config, []).
+
+cli_helper(Config, ExtraOpts) ->
     process_flag(trap_exit, true),
     SystemDir = filename:join(proplists:get_value(priv_dir, Config), system),
     UserDir = proplists:get_value(priv_dir, Config),
-    
+
     TmpDir = filename:join(proplists:get_value(priv_dir,Config), "tmp"),
     ok = ssh_test_lib:del_dirs(TmpDir),
-    ok = file:make_dir(TmpDir),
+    case file:make_dir(TmpDir) of
+        ok -> ok;
+        {error, eexist} -> ok
+    end,
 
-    {_Pid, Host, Port} = ssh_test_lib:daemon([{system_dir, SystemDir},{user_dir, UserDir},
-					       {password, "morot"},
-					       {ssh_cli, {ssh_test_cli, [cli,TmpDir]}}, 
-					       {subsystems, []},
-					       {failfun, fun ssh_test_lib:failfun/2}]),
+    {_Pid, Host, Port} = ssh_test_lib:daemon(ExtraOpts ++
+                                              [{system_dir, SystemDir},{user_dir, UserDir},
+                                              {password, "morot"},
+                                              {ssh_cli, {ssh_test_cli, [cli,TmpDir]}},
+                                              {subsystems, []},
+                                              {failfun, fun ssh_test_lib:failfun/2}]),
     ct:sleep(500),
-    
+
     ConnectionRef = ssh_test_lib:connect(Host, Port, [{silently_accept_hosts, true},
 						      {user, "foo"},
 						      {password, "morot"},
 						      {user_interaction, false},
 						      {user_dir, UserDir}]),
-    
+
     {ok, ChannelId} = ssh_connection:session_channel(ConnectionRef, infinity),
     ssh_connection:shell(ConnectionRef, ChannelId),
     ssh_connection:send(ConnectionRef, ChannelId, <<"q">>),
-    receive 
+    receive
 	{ssh_cm, ConnectionRef,
 	 {data,0,0, <<"\r\nYou are accessing a dummy, type \"q\" to exit\r\n\n">>}} ->
 	    ssh_connection:send(ConnectionRef, ChannelId, <<"q">>)
-    after 
+    after
 	30000 -> ct:fail("timeout ~p:~p",[?MODULE,?LINE])
     end,
-    
-    receive 
+
+    receive
      	{ssh_cm, ConnectionRef,{closed, ChannelId}} ->
      	    ok
-    after 
+    after
 	30000 -> ct:fail("timeout ~p:~p",[?MODULE,?LINE])
     end.
 
@@ -659,7 +745,7 @@ cli_exit_status(Config) when is_list(Config) ->
 
 %%--------------------------------------------------------------------
 %%% Test that get correct error message if you try to start a daemon
-%%% on an adress that already runs a daemon see also seq10667
+%%% on an address that already runs a daemon see also seq10667
 daemon_already_started(Config) when is_list(Config) ->
     SystemDir = proplists:get_value(data_dir, Config),
     UserDir = proplists:get_value(priv_dir, Config),
@@ -783,12 +869,14 @@ ssh_file_is_host_key(Config) ->
     ct:log("Dir = ~p", [Dir]),
     KnownHosts = filename:join(Dir, "known_hosts"),
 
-    Key1 = {ed_pub,ed25519,<<73,72,235,162,96,101,154,59,217,114,123,192,96,105,250,29,
-                             214,76,60,63,167,21,221,118,246,168,152,2,7,172,137,125>>},
-    Key2 = {ed_pub,ed448,<<95,215,68,155,89,180,97,253,44,231,135,236,97,106,212,106,29,
-                           161,52,36,133,167,14,31,138,14,167,93,128,233,103,120,237,241,
-                           36,118,155,70,199,6,27,214,120,61,241,229,15,108,209,250,26,
-                           190,175,232,37,97,128>>},
+    Key1 = {#'ECPoint'{point = <<73,72,235,162,96,101,154,59,217,114,123,192,96,105,250,29,
+                                 214,76,60,63,167,21,221,118,246,168,152,2,7,172,137,125>>},
+            {namedCurve,?'id-Ed25519'}},
+    Key2 = {#'ECPoint'{point = <<95,215,68,155,89,180,97,253,44,231,135,236,97,106,212,106,29,
+                                 161,52,36,133,167,14,31,138,14,167,93,128,233,103,120,237,241,
+                                 36,118,155,70,199,6,27,214,120,61,241,229,15,108,209,250,26,
+                                 190,175,232,37,97,128>>},
+            {namedCurve,?'id-Ed448'}},
     Key3 = {'RSAPublicKey',26565213557098441060571713941539431805641814292761836797158846333985276408616038302348064841541244792430014595960643885863857366044141899534486816837416587694213836843799730043696945690516841209754307951050689906601353687467659852190777927968674989320642319504162787468947018505175948989102544757855693228490011564030927714896252701919941617689227585365348356580525802093985552564228730275431222515673065363441446158870936027338182083252824862151536327733046243804704721201548991176621134884093279416695997338124856506800535228380202243308550318880784741179703553922258881924287662178348044420509921666661119986374777,
             65537},
 
@@ -831,13 +919,14 @@ ssh_file_is_host_key_misc(Config) ->
     ct:log("Dir = ~p", [Dir]),
     KnownHosts = filename:join(Dir, "known_hosts"),
 
-    Key1 = {ed_pub,ed25519,<<73,72,235,162,96,101,154,59,217,114,123,192,96,105,250,29,
-                             214,76,60,63,167,21,221,118,246,168,152,2,7,172,137,125>>},
-    Key2 = {ed_pub,ed448,<<95,215,68,155,89,180,97,253,44,231,135,236,97,106,212,106,29,
-                           161,52,36,133,167,14,31,138,14,167,93,128,233,103,120,237,241,
-                           36,118,155,70,199,6,27,214,120,61,241,229,15,108,209,250,26,
-                           190,175,232,37,97,128>>},
-
+    Key1 = {#'ECPoint'{point = <<73,72,235,162,96,101,154,59,217,114,123,192,96,105,250,29,
+                                 214,76,60,63,167,21,221,118,246,168,152,2,7,172,137,125>>},
+            {namedCurve,?'id-Ed25519'}},
+    Key2 = {#'ECPoint'{point = <<95,215,68,155,89,180,97,253,44,231,135,236,97,106,212,106,29,
+                                 161,52,36,133,167,14,31,138,14,167,93,128,233,103,120,237,241,
+                                 36,118,155,70,199,6,27,214,120,61,241,229,15,108,209,250,26,
+                                 190,175,232,37,97,128>>},
+            {namedCurve,?'id-Ed448'}},
     FileContents = <<"h11,h12,!h12 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIElI66JgZZo72XJ7wGBp+h3WTDw/pxXddvaomAIHrIl9\n",
                      %% Key revoked later in file:
                      "h22 ssh-ed448 AAAACXNzaC1lZDQ0OAAAADlf10SbWbRh/Sznh+xhatRqHaE0JIWnDh"
@@ -871,13 +960,14 @@ ssh_file_is_auth_key(Config) ->
     ct:log("Dir = ~p", [Dir]),
     AuthKeys = filename:join(Dir, "authorized_keys"),
 
-    Key1 = {ed_pub,ed25519,<<73,72,235,162,96,101,154,59,217,114,123,192,96,105,250,29,
-                             214,76,60,63,167,21,221,118,246,168,152,2,7,172,137,125>>},
-    Key2 = {ed_pub,ed448,<<95,215,68,155,89,180,97,253,44,231,135,236,97,106,212,106,29,
-                           161,52,36,133,167,14,31,138,14,167,93,128,233,103,120,237,241,
-                           36,118,155,70,199,6,27,214,120,61,241,229,15,108,209,250,26,
-                           190,175,232,37,97,128>>},
-
+    Key1 = {#'ECPoint'{point = <<73,72,235,162,96,101,154,59,217,114,123,192,96,105,250,29,
+                                 214,76,60,63,167,21,221,118,246,168,152,2,7,172,137,125>>},
+            {namedCurve,?'id-Ed25519'}},
+    Key2 = {#'ECPoint'{point = <<95,215,68,155,89,180,97,253,44,231,135,236,97,106,212,106,29,
+                                 161,52,36,133,167,14,31,138,14,167,93,128,233,103,120,237,241,
+                                 36,118,155,70,199,6,27,214,120,61,241,229,15,108,209,250,26,
+                                 190,175,232,37,97,128>>},
+            {namedCurve,?'id-Ed448'}},
     FileContents = <<" \n",
                      "# A test file\n",
                      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIElI66JgZZo72XJ7wGBp+h3WTDw/pxXddvaomAIHrIl9 foo@example.com\n",
@@ -1011,6 +1101,29 @@ send(Config) when is_list(Config) ->
     ok = ssh_connection:send(ConnectionRef, ChannelId, << >>),
     ssh:stop_daemon(Pid).
 
+%%--------------------------------------------------------------------
+%%% Test parallel_login
+parallel_login(Config) when is_list(Config) ->
+    process_flag(trap_exit, true),
+    SystemDir = filename:join(proplists:get_value(priv_dir, Config), system),
+    UserDir = proplists:get_value(priv_dir, Config),
+    {Pid, Host, Port} = ssh_test_lib:daemon([{system_dir, SystemDir},
+                                             {preferred_algorithms, ssh_transport:supported_algorithms()},
+					     {user_dir, UserDir},
+                                             {parallel_login, true},
+					     {failfun, fun ssh_test_lib:failfun/2}]),
+    ConnectionRef =
+	ssh_test_lib:connect(Host, Port, [{preferred_algorithms, ssh_transport:supported_algorithms()},
+                                          {silently_accept_hosts, true},
+					  {user_dir, UserDir},
+					  {user_interaction, false}]),
+    {ok, ChannelId} = ssh_connection:session_channel(ConnectionRef, infinity),
+    ok = ssh_connection:send(ConnectionRef, ChannelId, <<"Data">>),
+    ok = ssh_connection:send(ConnectionRef, ChannelId, << >>),
+    ssh_info:print(fun(Fmt, Args) -> io:fwrite(user, Fmt, Args) end),
+    {_Parents, _Conns, _Handshakers} =
+        ssh_test_lib:find_handshake_parent(Port),
+    ssh:stop_daemon(Pid).
 
 %%--------------------------------------------------------------------
 %%% Test ssh:connection_info([peername, sockname])
@@ -1019,12 +1132,11 @@ peername_sockname(Config) when is_list(Config) ->
     SystemDir = filename:join(proplists:get_value(priv_dir, Config), system),
     UserDir = proplists:get_value(priv_dir, Config),
 
-    {_Pid, Host, Port} = ssh_test_lib:daemon([{system_dir, SystemDir},
-					     {user_dir, UserDir},
-					     {subsystems, [{"peername_sockname",
-							    {ssh_peername_sockname_server, []}}
-							  ]}
-					    ]),
+    {_Pid, Host, Port} = ssh_test_lib:daemon([{exec, erlang_eval},
+                                              {system_dir, SystemDir},
+                                              {user_dir, UserDir},
+                                              {subsystems, [{"peername_sockname",
+                                                             {ssh_peername_sockname_server, []}}]}]),
     ConnectionRef =
 	ssh_test_lib:connect(Host, Port, [{silently_accept_hosts, true},
 					  {user_dir, UserDir},
@@ -1104,7 +1216,7 @@ double_close(Config) when is_list(Config) ->
 					    {password, "morot"},
 					    {user_interaction, false}]),
     
-    exit(CM, {shutdown, normal}),
+    exit_signal(CM, {shutdown, normal}),
     ok = ssh:close(CM).
 
 %%--------------------------------------------------------------------
@@ -1131,7 +1243,7 @@ daemon_opt_fd(Config) ->
 					  {user, "vego"},
 					  {password, "morot"},
 					  {user_interaction, false}]),
-    exit(C1, {shutdown, normal}),
+    exit_signal(C1, {shutdown, normal}),
     ssh:stop_daemon(Pid1),
     gen_tcp:close(S1).
 
@@ -1169,7 +1281,7 @@ multi_daemon_opt_fd(Config) ->
     [begin 
 	 gen_tcp:close(S),
 	 ssh:stop_daemon(Pid),
-	 exit(C, {shutdown, normal})
+         exit_signal(C, {shutdown, normal})
      end || {S,Pid,C} <- Tests].
 
 %%--------------------------------------------------------------------
@@ -1204,7 +1316,7 @@ packet_size(Config) ->
 
 rec(Server, Conn, Ch, MaxSz) ->
     receive
-        {ssh_cm,Conn,{data,Ch,_,M}} when size(M) =< MaxSz ->
+        {ssh_cm,Conn,{data,Ch,_,M}} when byte_size(M) =< MaxSz ->
             ct:log("~p: ~p",[MaxSz,M]),
             rec(Server, Conn, Ch, MaxSz);
         {ssh_cm,Conn,{data,Ch,_,_}} = M ->
@@ -1239,6 +1351,17 @@ shell_unicode_string(Config) ->
 		  new_prompt,
 		  {type,"exit()."}
 		 ]).
+
+%%--------------------------------------------------------------------
+shell_latin1_exception(Config) ->
+    new_do_shell(proplists:get_value(io,Config),
+                 [new_prompt,
+                  {type,"1/0."},
+                  {expect,"**"},
+                  {expect,"exception error"},
+                  new_prompt,
+                  {type,"exit()."}
+                 ]).
 
 %%--------------------------------------------------------------------
 %%% Test basic connection with openssh_zlib
@@ -1393,7 +1516,7 @@ login_bad_pwd_no_retry(Config, AuthMethods) ->
 		{ok,Conn} ->
 		    ssh:close(Conn),
 		    ssh:stop_daemon(DaemonRef),
-		    {fail, "Connect erroneosly succeded"}
+		    {fail, "Connect erroneosly succeeded"}
 	    end
     end.
 
@@ -1422,7 +1545,7 @@ shell_exit_status(Config) when is_list(Config) ->
     ssh_test_lib:receive_exec_end(ConnectionRef, ChannelId),
     ssh:stop_daemon(Pid).
 
-always_ok(_) -> ok.
+always_ok() -> spawn(fun() -> exit(ok) end).
     
 %%----------------------------------------------------------------------------
 setopts_getopts(Config) ->
@@ -1465,7 +1588,7 @@ setopts_getopts(Config) ->
 %% Internal functions ------------------------------------------------
 %%--------------------------------------------------------------------
 %% Due to timing the error message may or may not be delivered to
-%% the "tcp-application" before the socket closed message is recived
+%% the "tcp-application" before the socket closed message is received
 check_error("Invalid state") -> ok;
 check_error("Connection closed") -> ok;
 check_error("Selection of key exchange algorithm failed"++_) -> ok;
@@ -1475,7 +1598,6 @@ check_error(Error) -> ct:fail(Error).
 basic_test(Config) ->
     ClientOpts = proplists:get_value(client_opts, Config),
     ServerOpts = proplists:get_value(server_opts, Config),
-    
     {Pid, Host, Port} = ssh_test_lib:daemon(ServerOpts),
     CM = ssh_test_lib:connect(Host, Port, ClientOpts),
     ok = ssh:close(CM),
@@ -1497,7 +1619,7 @@ wait_for_erlang_first_line(Config) ->
 	    {fail,no_ssh_connection};
 	<<"Eshell ",_/binary>> = _ErlShellStart ->
 	    ct:log("Erlang shell start: ~p~n", [_ErlShellStart]),
-	    Config;
+            Config;
 	Other ->
 	    ct:log("Unexpected answer from ssh server: ~p",[Other]),
 	    {fail,unexpected_answer}
@@ -1515,7 +1637,7 @@ new_do_shell(IO, N, [new_prompt|More]) ->
 
 new_do_shell(IO, N, Ops=[{Order,Arg}|More]) ->
     Pfx = prompt_prefix(),
-    PfxSize = size(Pfx),
+    PfxSize = byte_size(Pfx),
     receive
 	_X = <<"\r\n">> ->
 	    ct:log("Skip newline ~p",[_X]),
@@ -1557,7 +1679,8 @@ new_do_shell(IO, N, Ops=[{Order,Arg}|More]) ->
 		    ct:log("Matched echo ~ts",[RecStr]),
 		    new_do_shell(IO, N, More);
 		false ->
-		    ct:fail("*** Expected ~p, but got ~p",[string:strip(ExpStr),RecStr])
+		    ct:log("*** Expected ~p, but got ~p",[string:strip(ExpStr),RecStr]),
+            new_do_shell(IO, N, Ops)
 	    end
     after 30000 ->
 	    ct:log("Message queue of ~p:~n~p",
@@ -1582,7 +1705,7 @@ prompt_prefix() ->
 new_do_shell_prompt(IO, N, type, Str, More) ->
     ct:log("Matched prompt ~p to trigger sending of next line to server",[N]),
     IO ! {input, self(), Str++"\r\n"},
-    ct:log("Promt '~p> ', Sent ~ts",[N,Str++"\r\n"]),
+    ct:log("Prompt '~p> ', Sent ~ts",[N,Str++"\r\n"]),
     new_do_shell(IO, N, More);
 new_do_shell_prompt(IO, N, Op, Str, More) ->
     ct:log("Matched prompt ~p",[N]),

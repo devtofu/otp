@@ -1,7 +1,16 @@
 %% =====================================================================
-%% Licensed under the Apache License, Version 2.0 (the "License"); you may
-%% not use this file except in compliance with the License. You may obtain
-%% a copy of the License at <http://www.apache.org/licenses/LICENSE-2.0>
+%% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0 OR LGPL-2.1-or-later
+%%
+%% Copyright 2001-2003 Richard Carlsson
+%% Copyright Ericsson AB 2009-2025. All Rights Reserved.
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
 %%
 %% Unless required by applicable law or agreed to in writing, software
 %% distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,8 +28,9 @@
 %% above, a recipient may use your version of this file under the terms of
 %% either the Apache License or the LGPL.
 %%
+%% %CopyrightEnd%
+%%
 %% @private
-%% @copyright 2001-2003 Richard Carlsson
 %% @author Richard Carlsson <carlsson.richard@gmail.com>
 %% @see edoc
 %% @end
@@ -31,7 +41,7 @@
 -module(edoc_types).
 
 -export([is_predefined/2, is_new_predefined/2,
-         to_ref/1, to_xml/2, to_label/1, arg_names/1, set_arg_names/2,
+         to_ref/1, to_xml/3, to_label/1, arg_names/1, set_arg_names/2,
          arg_descs/1, range_desc/1]).
 
 %% @headerfile "edoc_types.hrl"
@@ -39,9 +49,9 @@
 -include("edoc_types.hrl").
 -include_lib("xmerl/include/xmerl.hrl").
 
-%-type t_spec() :: #t_spec{name :: t_name(),
-%                          type :: t_type(),
-%                          defs :: [t_def()]}.
+-type t_spec() :: #t_spec{name :: t_name(),
+                          type :: t_fun(),
+                          defs :: [t_def()]}.
 %% Function specification.
 
 -type type() :: t_atom() | t_binary() | t_float() | t_fun() | t_integer()
@@ -49,18 +59,18 @@
 	      | t_record() | t_tuple() | t_type() | t_union() | t_var()
 	      | t_paren().
 
-%-type t_typedef() :: #t_typedef{name :: t_name(),
-%                                args :: [type()],
-%                                type :: type() | undefined,
-%                                defs :: [t_def()]}.
+-type t_typedef() :: #t_typedef{name :: t_name(),
+                               args :: [type()],
+                               type :: type() | undefined,
+                               defs :: [t_def()]}.
 %% Type declaration/definition.
 
-%-type t_throws() :: #t_throws{type :: type(),
-%                              defs :: [t_def()]}.
+-type t_throws() :: #t_throws{type :: type(),
+                             defs :: [t_def()]}.
 %% Exception declaration.
 
-%-type t_def() :: #t_def{name :: t_type() | t_var(),
-%            type :: type()}.
+-type t_def() :: #t_def{name :: t_type() | t_var(),
+           type :: type()}.
 %% Local definition `name = type'.
 
 -type t_name() :: #t_name{app :: [] | atom(),
@@ -139,6 +149,7 @@ is_predefined(F, A) -> erl_internal:is_type(F, A).
 
 is_new_predefined(_, _) -> false.
 
+-spec to_ref(t_typedef() | t_def() | t_type() | t_name()) -> edoc_refs:t().
 to_ref(#t_typedef{name = N}) ->
     to_ref(N);
 to_ref(#t_def{name = N}) ->
@@ -159,6 +170,10 @@ get_uri(Name, Env) ->
     NewName = infer_module_app(Name),
     edoc_refs:get_uri(to_ref(NewName), Env).
 
+get_docgen_uri(Name, _Env) ->
+    NewName = infer_module_app(Name),
+    edoc_refs:get_docgen_link(to_ref(NewName)).
+
 infer_module_app(#t_name{app = [], module = M} = TName) when is_atom(M) ->
     case edoc_lib:infer_module_app(M) of
 	no_app ->
@@ -169,18 +184,20 @@ infer_module_app(#t_name{app = [], module = M} = TName) when is_atom(M) ->
 infer_module_app(Other) ->
     Other.
 
-to_xml(#t_var{name = N}, _Env) ->
+-spec to_xml(type() | t_spec() | t_typedef() | t_def() | t_throws(),
+             term(), Opts :: proplists:proplist()) -> term().
+to_xml(#t_var{name = N}, _Env, _Opts) ->
     {typevar, [{name, atom_to_list(N)}], []};
-to_xml(#t_name{module = [], name = N}, _Env) ->
+to_xml(#t_name{module = [], name = N}, _Env, _Opts) ->
     {erlangName, [{name, atom_to_list(N)}], []};
-to_xml(#t_name{app = [], module = M, name = N}, _Env) ->
+to_xml(#t_name{app = [], module = M, name = N}, _Env, _Opts) ->
     {erlangName, [{module, atom_to_list(M)},
 		  {name, atom_to_list(N)}], []};
-to_xml(#t_name{app = A, module = M, name = N}, _Env) ->
+to_xml(#t_name{app = A, module = M, name = N}, _Env, _Opts) ->
     {erlangName, [{app, atom_to_list(A)},
 		  {module, atom_to_list(M)},
 		  {name, atom_to_list(N)}], []};
-to_xml(#t_type{name = N, args = As}, Env) ->
+to_xml(#t_type{name = N, args = As}, Env, Opts) ->
     Predef = case N of
 		 #t_name{module = [], name = T} ->
                      NArgs = length(As),
@@ -188,86 +205,95 @@ to_xml(#t_type{name = N, args = As}, Env) ->
 		 _ ->
 		     false
 	     end,
-    HRef = case Predef of
-	       true -> [];
-	       false -> [{href, get_uri(N, Env)}]
+    HRef = case {Predef, proplists:get_value(link_predefined_types, Opts, false)} of
+	       {true, false} -> [];
+	       {true, true} ->
+                   {DocgenRel, DocgenURI} = get_docgen_uri(N#t_name{ module = erlang }, Env),
+                   [{'docgen-rel',DocgenRel},
+                    {'docgen-href',DocgenURI},
+                    {href, get_uri(N#t_name{ module = erlang }, Env)}];
+	       {false, _} ->
+                   {DocgenRel, DocgenURI} = get_docgen_uri(N, Env),
+                   [{'docgen-rel',DocgenRel},
+                    {'docgen-href',DocgenURI},
+                    {href, get_uri(N, Env)}]
 	   end,
-    {abstype, HRef, [to_xml(N, Env) | map(fun wrap_utype/2, As, Env)]};
-to_xml(#t_fun{args = As, range = T}, Env) ->
-    {'fun', [{argtypes, map(fun wrap_utype/2, As, Env)},
-	     wrap_utype(T, Env)]};
-to_xml(#t_map{ types = Ts}, Env) ->
-    {map, map(fun to_xml/2, Ts, Env)};
-to_xml(#t_map_field{assoc_type = AT, k_type=K, v_type=V}, Env) ->
-    {map_field, [{assoc_type, AT}], [wrap_utype(K,Env), wrap_utype(V, Env)]};
-to_xml(#t_tuple{types = Ts}, Env) ->
-    {tuple, map(fun wrap_utype/2, Ts, Env)};
-to_xml(#t_list{type = T}, Env) ->
-    {list, [wrap_utype(T, Env)]};
-to_xml(#t_nil{}, _Env) ->
+    {abstype, HRef, [to_xml(N, Env, Opts) | map(fun wrap_utype/3, As, Env, Opts)]};
+to_xml(#t_fun{args = As, range = T}, Env, Opts) ->
+    {'fun', [{argtypes, map(fun wrap_utype/3, As, Env, Opts)},
+	     wrap_utype(T, Env, Opts)]};
+to_xml(#t_map{ types = Ts}, Env, Opts) ->
+    {map, map(fun to_xml/3, Ts, Env, Opts)};
+to_xml(#t_map_field{assoc_type = AT, k_type=K, v_type=V}, Env, Opts) ->
+    {map_field, [{assoc_type, AT}], [wrap_utype(K,Env, Opts), wrap_utype(V, Env, Opts)]};
+to_xml(#t_tuple{types = Ts}, Env, Opts) ->
+    {tuple, map(fun wrap_utype/3, Ts, Env, Opts)};
+to_xml(#t_list{type = T}, Env, Opts) ->
+    {list, [wrap_utype(T, Env, Opts)]};
+to_xml(#t_nil{}, _Env, _Opts) ->
     nil;
-to_xml(#t_paren{type = T}, Env) ->
-    {paren, [wrap_utype(T, Env)]};
-to_xml(#t_nonempty_list{type = T}, Env) ->
-    {nonempty_list, [wrap_utype(T, Env)]};
-to_xml(#t_atom{val = V}, _Env) ->
+to_xml(#t_paren{type = T}, Env, Opts) ->
+    {paren, [wrap_utype(T, Env, Opts)]};
+to_xml(#t_nonempty_list{type = T}, Env, Opts) ->
+    {nonempty_list, [wrap_utype(T, Env, Opts)]};
+to_xml(#t_atom{val = V}, _Env, _Opts) ->
     {atom, [{value, atom_to_list(V)}], []};
-to_xml(#t_integer{val = V}, _Env) ->
+to_xml(#t_integer{val = V}, _Env, _Opts) ->
     {integer, [{value, integer_to_list(V)}], []};
-to_xml(#t_integer_range{from = From, to = To}, _Env) ->
+to_xml(#t_integer_range{from = From, to = To}, _Env, _Opts) ->
     {range, [{value, integer_to_list(From)++".."++integer_to_list(To)}], []};
-to_xml(#t_binary{base_size = 0, unit_size = 0}, _Ens) ->
+to_xml(#t_binary{base_size = 0, unit_size = 0}, _Env, _Opts) ->
     {binary, [{value, "<<>>"}], []};
-to_xml(#t_binary{base_size = B, unit_size = 0}, _Ens) ->
+to_xml(#t_binary{base_size = B, unit_size = 0}, _Env, _Opts) ->
     {binary, [{value, io_lib:fwrite("<<_:~w>>", [B])}], []};
-%to_xml(#t_binary{base_size = 0, unit_size = 8}, _Ens) ->
+%to_xml(#t_binary{base_size = 0, unit_size = 8}, _Env, _Opts) ->
 %    {binary, [{value, "binary()"}], []};
-to_xml(#t_binary{base_size = 0, unit_size = U}, _Ens) ->
+to_xml(#t_binary{base_size = 0, unit_size = U}, _Env, _Opts) ->
     {binary, [{value, io_lib:fwrite("<<_:_*~w>>", [U])}], []};
-to_xml(#t_binary{base_size = B, unit_size = U}, _Ens) ->
+to_xml(#t_binary{base_size = B, unit_size = U}, _Env, _Opts) ->
     {binary, [{value, io_lib:fwrite("<<_:~w, _:_*~w>>", [B, U])}], []};
-to_xml(#t_float{val = V}, _Env) ->
+to_xml(#t_float{val = V}, _Env, _Opts) ->
     {float, [{value, io_lib:write(V)}], []};
-to_xml(#t_union{types = Ts}, Env) ->
-    {union, map(fun wrap_utype/2, Ts, Env)};
-to_xml(#t_record{name = N = #t_atom{}, fields = Fs}, Env) ->
-    {record, [to_xml(N, Env) | map(fun to_xml/2, Fs, Env)]};
-to_xml(#t_field{name = N = #t_atom{}, type = T}, Env) ->
-    {field, [to_xml(N, Env), wrap_type(T, Env)]};
-to_xml(#t_def{name = N = #t_var{}, type = T}, Env) ->
-    {localdef, [to_xml(N, Env), wrap_type(T, Env)]};
-to_xml(#t_def{name = N, type = T}, Env) ->
+to_xml(#t_union{types = Ts}, Env, Opts) ->
+    {union, map(fun wrap_utype/3, Ts, Env, Opts)};
+to_xml(#t_record{name = N = #t_atom{}, fields = Fs}, Env, Opts) ->
+    {record, [to_xml(N, Env, Opts) | map(fun to_xml/3, Fs, Env, Opts)]};
+to_xml(#t_field{name = N = #t_atom{}, type = T}, Env, Opts) ->
+    {field, [to_xml(N, Env, Opts), wrap_type(T, Env, Opts)]};
+to_xml(#t_def{name = N = #t_var{}, type = T}, Env, Opts) ->
+    {localdef, [to_xml(N, Env, Opts), wrap_type(T, Env, Opts)]};
+to_xml(#t_def{name = N, type = T}, Env, Opts) ->
     {localdef, [{label, to_label(N)}],
-     [to_xml(N, Env), wrap_type(T, Env)]};
-to_xml(#t_spec{name = N, type = T, defs = Ds}, Env) ->
-    {typespec, [to_xml(N, Env), wrap_utype(T, Env)
-		| map(fun to_xml/2, Ds, Env)]};
+     [to_xml(N, Env, Opts), wrap_type(T, Env, Opts)]};
+to_xml(#t_spec{name = N, type = T, defs = Ds}, Env, Opts) ->
+    {typespec, [to_xml(N, Env, Opts), wrap_utype(T, Env, Opts)
+		| map(fun to_xml/3, Ds, Env, Opts)]};
 to_xml(#t_typedef{name = N, args = As, type = undefined, defs = Ds},
-	 Env) ->
-    {typedef, [to_xml(N, Env),
-	       {argtypes, map(fun wrap_utype/2, As, Env)}
-	       | map(fun to_xml/2, Ds, Env)]};
-to_xml(#t_typedef{name = N, args = As, type = T, defs = Ds}, Env) ->
-    {typedef, [to_xml(N, Env),
-	       {argtypes, map(fun wrap_utype/2, As, Env)},
-	       wrap_type(T, Env)
-	       | map(fun to_xml/2, Ds, Env)]};
-to_xml(#t_throws{type = T, defs = Ds}, Env) ->
-    {throws, [wrap_type(T, Env)
-	      | map(fun to_xml/2, Ds, Env)]}.
+	 Env, Opts) ->
+    {typedef, [to_xml(N, Env, Opts),
+	       {argtypes, map(fun wrap_utype/3, As, Env, Opts)}
+	       | map(fun to_xml/3, Ds, Env, Opts)]};
+to_xml(#t_typedef{name = N, args = As, type = T, defs = Ds}, Env, Opts) ->
+    {typedef, [to_xml(N, Env, Opts),
+	       {argtypes, map(fun wrap_utype/3, As, Env, Opts)},
+	       wrap_type(T, Env, Opts)
+	       | map(fun to_xml/3, Ds, Env, Opts)]};
+to_xml(#t_throws{type = T, defs = Ds}, Env, Opts) ->
+    {throws, [wrap_type(T, Env, Opts)
+	      | map(fun to_xml/3, Ds, Env, Opts)]}.
 
-wrap_type(T, Env) ->
-    {type, [to_xml(T, Env)]}.
+wrap_type(T, Env, Opts) ->
+    {type, [to_xml(T, Env, Opts)]}.
 
-wrap_utype(T, Env) ->
-    E = to_xml(T, Env),
+wrap_utype(T, Env, Opts) ->
+    E = to_xml(T, Env, Opts),
     case arg_name(T) of
 	'_' -> {type, [E]};
 	A -> {type, [{name, atom_to_list(A)}], [E]}
     end.
 
-map(F, Xs, Env) ->
-    [F(X, Env) || X <- Xs].
+map(F, Xs, Env, Opts) ->
+    [F(X, Env, Opts) || X <- Xs].
 
 is_name(A) when is_atom(A) -> true;
 is_name(_) -> false.

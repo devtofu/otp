@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2000-2016. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2000-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -38,7 +40,7 @@ import java.io.IOException;
  *
  * <p>
  * If an exception occurs in any of the methods in this class, the connection
- * will be closed and must be explicitely reopened in order to resume
+ * will be closed and must be explicitly reopened in order to resume
  * communication with the peer.
  *
  * <p>
@@ -317,7 +319,7 @@ public class OtpConnection extends AbstractConnection {
     }
 
     /**
-     * Receive a messge complete with sender and recipient information.
+     * Receive a message complete with sender and recipient information.
      *
      * @return an {@link OtpMsg OtpMsg} containing the header information about
      *         the sender and recipient, as well as the actual message contents.
@@ -352,7 +354,7 @@ public class OtpConnection extends AbstractConnection {
     }
 
     /**
-     * Receive a messge complete with sender and recipient information. This
+     * Receive a message complete with sender and recipient information. This
      * method blocks at most for the specified time.
      *
      * @param timeout

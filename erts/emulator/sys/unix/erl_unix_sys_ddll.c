@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 2006-2016. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2006-2025. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,7 +16,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * %CopyrightEnd%
  */
 
@@ -128,7 +130,7 @@ int erts_sys_ddll_open_noext(char *dlname, void **handle, ErtsSysDdllError* err)
     int ret = ERL_DE_NO_ERROR;
     char *str;
     dlerror();
-    if ((*handle = dlopen(dlname, RTLD_NOW)) == NULL) {
+    if ((*handle = dlopen(dlname, RTLD_NOW | RTLD_LOCAL)) == NULL) {
 	str = dlerror();
 
 	if (err == NULL) {
@@ -167,6 +169,31 @@ int erts_sys_ddll_sym2(void *handle, const char *func_name, void **function,
     int ret;
     dlerror();
     sym = dlsym(handle, func_name);
+    if ((e = dlerror()) != NULL) {
+	ret = ERL_DE_DYNAMIC_ERROR_OFFSET - find_errcode(e, err);
+        ASSERT(ret != ERL_DE_NO_ERROR);
+    } else {
+	*function = sym;
+	ret = ERL_DE_NO_ERROR;
+    }
+    return ret;
+#else
+    return ERL_DE_ERROR_NO_DDLL_FUNCTIONALITY;
+#endif
+}
+
+/* 
+ * Find a symbol in the shared object
+ */
+int erts_sys_ddll_vsym2(void *handle, const char *func_name, const char *vers,
+		       void **function, ErtsSysDdllError* err)
+{
+#if defined(HAVE_DLVSYM)
+    void *sym;
+    char *e;
+    int ret;
+    dlerror();
+    sym = dlvsym(handle, func_name, vers);
     if ((e = dlerror()) != NULL) {
 	ret = ERL_DE_DYNAMIC_ERROR_OFFSET - find_errcode(e, err);
         ASSERT(ret != ERL_DE_NO_ERROR);

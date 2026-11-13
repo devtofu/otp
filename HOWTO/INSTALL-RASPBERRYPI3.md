@@ -1,5 +1,27 @@
-# Cross Compiling Erlang/OTP - Raspberry Pi 3
+<!--
+%%
+%% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2018-2025. All Rights Reserved.
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%
+%% %CopyrightEnd%
+-->
 
+# Cross Compiling Erlang/OTP - Raspberry Pi 3
 
 ## Introduction
 
@@ -241,7 +263,7 @@ Uncheck option:
 
     $ cat > test.c
     $ int main() { printf("Hello, world!\n"); return 0; }
-    <CTRL+D>
+    <Ctrl+D>
     $ armv8-rpi3-linux-gnueabihf-gcc -o test test.c
 
 
@@ -257,9 +279,9 @@ Uncheck option:
 
   (20)
 
-    $ wget http://zlib.net/zlib-1.2.11.tar.gz
-    $ tar xf zlib-1.2.11.tar.gz
-    $ pushd zlib-1.2.11
+    $ wget http://zlib.net/zlib-1.2.13.tar.gz
+    $ tar xf zlib-1.2.13.tar.gz
+    $ pushd zlib-1.2.13
     $ CHOST=armv8-rpi3-linux-gnueabihf ./configure --prefix=/Volumes/xtools-build-env/local
     $ make
     $ make install

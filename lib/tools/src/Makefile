@@ -1,7 +1,9 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 1996-2018. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 1996-2026. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -37,11 +39,12 @@ RELSYSDIR = $(RELEASE_PATH)/lib/tools-$(VSN)
 
 MODULES= \
 	cover                \
+	crashdump            \
 	eprof                \
+	tprof                \
 	fprof                \
 	cprof                \
 	lcnt                 \
-	instrument           \
 	make		     \
 	tags		     \
 	xref		     \
@@ -78,13 +81,17 @@ CSS = $(PRIVDIR)/styles.css
 # ----------------------------------------------------
 # FLAGS
 # ----------------------------------------------------
-ERL_COMPILE_FLAGS += -Werror
+ERL_COMPILE_FLAGS += -Werror +nowarn_deprecated_catch
+
+ifeq ($(ERL_DETERMINISTIC),yes)
+	DEP_SKIP_FILES = xref_parser.erl
+endif
 
 # ----------------------------------------------------
 # Targets
 # ----------------------------------------------------
 
-debug opt: $(TARGET_FILES) $(APP_TARGET) $(APPUP_TARGET)
+$(TYPES): $(TARGET_FILES) $(APP_TARGET) $(APPUP_TARGET)
 
 clean:
 	rm -f $(TARGET_FILES) $(APP_TARGET) $(APPUP_TARGET)
@@ -117,3 +124,8 @@ release_spec: opt
 	$(INSTALL_DATA) $(CSS) "$(RELSYSDIR)/priv"
 
 release_docs_spec:
+
+# ----------------------------------------------------
+# Dependencies
+# ----------------------------------------------------
+include $(ERL_TOP)/make/dep.mk

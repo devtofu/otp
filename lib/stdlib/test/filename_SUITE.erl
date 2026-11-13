@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1997-2017. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(filename_SUITE).
@@ -29,9 +31,9 @@
 	 dirname_bin/1, extension_bin/1, join_bin/1, t_nativename_bin/1]).
 -export([pathtype_bin/1,rootname_bin/1,split_bin/1]).
 -export([t_basedir_api/1, t_basedir_xdg/1, t_basedir_windows/1]).
--export([safe_relative_path/1]).
 
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
 suite() ->
     [{ct_hooks,[ts_install_cth]},
@@ -41,8 +43,7 @@ all() ->
     [absname, absname_2,
      absname_bin, absname_bin_2,
      {group,p},
-     t_basedir_xdg, t_basedir_windows,
-     safe_relative_path].
+     t_basedir_xdg, t_basedir_windows].
 
 groups() -> 
     [{p, [parallel],
@@ -239,6 +240,7 @@ basename_2(Config) when is_list(Config) ->
     "foo" = filename:basename("foo.erl", ".erl"),
     "foo" = filename:basename('foo.erl', ".erl"),
     "foo" = filename:basename("foo.erl", '.erl'),
+    "foo" = filename:basename('foo.erl', '.erl'),
     "foo" = filename:basename(["/usr","/","f","oo"], ".erl"),
     "foo.erl" = filename:basename("/usr/foo.erl", ".hrl"),
     "foo.erl" = filename:basename("/usr.hrl/foo.erl", ".hrl"),
@@ -445,19 +447,19 @@ pathtype(Config) when is_list(Config) ->
     end.
 
 rootname(Config) when is_list(Config) ->
-    "/jam.src/kalle" = filename:rootname("/jam.src/kalle"),
-    "/jam.src/foo" = filename:rootname("/jam.src/foo.erl"),
-    "/jam.src/.gitignore" = filename:rootname("/jam.src/.gitignore"),
-    "/jam.src/.git" = filename:rootname("/jam.src/.git.ignore"),
-    "/jam.src/." = filename:rootname("/jam.src/..gitignore"),
-    "/jam.src/foo" = filename:rootname(["/ja",'m.sr',"c/foo.erl"]),
-    "/jam.src/foo" = filename:rootname("/jam.src/foo.erl", ".erl"),
-    "/jam.src/.gitignore" = filename:rootname("/jam.src/.gitignore", ".gitignore"),
-    "/jam.src/.git" = filename:rootname("/jam.src/.git.ignore", ".ignore"),
-    "/jam.src/." = filename:rootname("/jam.src/..gitignore", ".gitignore"),
-    "/jam.src/foo.jam" = filename:rootname("/jam.src/foo.jam", ".erl"),
-    "/jam.src/foo.jam" = filename:rootname(["/jam.sr",'c/foo.j',"am"],".erl"),
-    "/jam.src/foo.jam" = filename:rootname(["/jam.sr",'c/foo.j'|am],".erl"),
+    "/bork.src/kalle" = filename:rootname("/bork.src/kalle"),
+    "/bork.src/foo" = filename:rootname("/bork.src/foo.erl"),
+    "/bork.src/.gitignore" = filename:rootname("/bork.src/.gitignore"),
+    "/bork.src/.git" = filename:rootname("/bork.src/.git.ignore"),
+    "/bork.src/." = filename:rootname("/bork.src/..gitignore"),
+    "/bork.src/foo" = filename:rootname(["/bo",'rk.sr',"c/foo.erl"]),
+    "/bork.src/foo" = filename:rootname("/bork.src/foo.erl", ".erl"),
+    "/bork.src/.gitignore" = filename:rootname("/bork.src/.gitignore", ".gitignore"),
+    "/bork.src/.git" = filename:rootname("/bork.src/.git.ignore", ".ignore"),
+    "/bork.src/." = filename:rootname("/bork.src/..gitignore", ".gitignore"),
+    "/bork.src/foo.beam" = filename:rootname("/bork.src/foo.beam", ".erl"),
+    "/bork.src/foo.beam" = filename:rootname(["/bork.sr",'c/foo.b',"eam"],".erl"),
+    "/bork.src/foo.beam" = filename:rootname(["/bork.sr",'c/foo.b'|eam],".erl"),
     ok.
 
 split(Config) when is_list(Config) ->
@@ -632,11 +634,21 @@ basename_bin_1(Config) when is_list(Config) ->
 basename_bin_2(Config) when is_list(Config) ->
     <<".">> = filename:basename(<<".">>, <<".erl">>),
     <<"foo">> = filename:basename(<<"foo.erl">>, <<".erl">>),
+    <<"foo">> = filename:basename('foo.erl', <<".erl">>),
+    <<"foo">> = filename:basename(<<"foo.erl">>, '.erl'),
+    <<"foo">> = filename:basename("foo.erl", <<".erl">>),
+    <<"foo">> = filename:basename(<<"foo.erl">>, ".erl"),
     <<"foo.erl">> = filename:basename(<<"/usr/foo.erl">>, <<".hrl">>),
+    <<"foo.erl">> = filename:basename('/usr/foo.erl', <<".hrl">>),
+    <<"foo.erl">> = filename:basename(<<"/usr/foo.erl">>, '.hrl'),
+    <<"foo.erl">> = filename:basename("/usr/foo.erl", <<".hrl">>),
+    <<"foo.erl">> = filename:basename(<<"/usr/foo.erl">>, ".hrl"),
     <<"foo.erl">> = filename:basename(<<"/usr.hrl/foo.erl">>, <<".hrl">>),
     <<"foo">> = filename:basename(<<"/usr.hrl/foo">>, <<".hrl">>),
     <<"foo">> = filename:basename(<<"usr/foo/">>, <<".erl">>),
     <<"foo.erl">> = filename:basename(<<"usr/foo.erl/">>, <<".erl">>),
+    <<"foo.erl">> = filename:basename('usr/foo.erl/', <<".erl">>),
+    <<"foo.erl">> = filename:basename(<<"usr/foo.erl/">>, '.erl'),
     case os:type() of
         {win32, _} ->
             <<"foo">> = filename:basename(<<"A:foo">>, <<".erl">>),
@@ -824,12 +836,12 @@ pathtype_bin(Config) when is_list(Config) ->
     end.
 
 rootname_bin(Config) when is_list(Config) ->
-    <<"/jam.src/kalle">> = filename:rootname(<<"/jam.src/kalle">>),
-    <<"/jam.src/foo">> = filename:rootname(<<"/jam.src/foo.erl">>),
-    <<"/jam.src/foo">> = filename:rootname(<<"/jam.src/foo.erl">>, <<".erl">>),
-    <<"/jam.src/foo.jam">> = filename:rootname(<<"/jam.src/foo.jam">>, <<".erl">>),
-    <<"/jam.src/foo.jam">> = filename:rootname(["/jam.sr",'c/foo.j',"am"],<<".erl">>),
-    <<"/jam.src/foo.jam">> = filename:rootname(["/jam.sr",'c/foo.j'|am],<<".erl">>),
+    <<"/bork.src/kalle">> = filename:rootname(<<"/bork.src/kalle">>),
+    <<"/bork.src/foo">> = filename:rootname(<<"/bork.src/foo.erl">>),
+    <<"/bork.src/foo">> = filename:rootname(<<"/bork.src/foo.erl">>, <<".erl">>),
+    <<"/bork.src/foo.beam">> = filename:rootname(<<"/bork.src/foo.beam">>, <<".erl">>),
+    <<"/bork.src/foo.beam">> = filename:rootname(["/bork.sr",'c/foo.b',"eam"],<<".erl">>),
+    <<"/bork.src/foo.beam">> = filename:rootname(["/bork.sr",'c/foo.b'|eam],<<".erl">>),
     ok.
 
 split_bin(Config) when is_list(Config) ->
@@ -874,71 +886,6 @@ t_nativename_bin(Config) when is_list(Config) ->
         _ ->
             <<"/usr/tmp/arne">> =
                 filename:nativename(<<"/usr/tmp//arne/">>)
-    end.
-
-safe_relative_path(Config) ->
-    PrivDir = proplists:get_value(priv_dir, Config),
-    Root = filename:join(PrivDir, "filename_SUITE_safe_relative_path"),
-    ok = file:make_dir(Root),
-    ok = file:set_cwd(Root),
-
-    ok = file:make_dir("a"),
-    ok = file:set_cwd("a"),
-    ok = file:make_dir("b"),
-    ok = file:set_cwd("b"),
-    ok = file:make_dir("c"),
-
-    ok = file:set_cwd(Root),
-
-    "a" = test_srp("a"),
-    "a/b" = test_srp("a/b"),
-    "a/b" = test_srp("a/./b"),
-    "a/b" = test_srp("a/./b/."),
-
-    "" = test_srp("a/.."),
-    "" = test_srp("a/./.."),
-    "" = test_srp("a/../."),
-    "a" = test_srp("a/b/.."),
-    "a" = test_srp("a/../a"),
-    "a" = test_srp("a/../a/../a"),
-    "a/b/c" = test_srp("a/../a/b/c"),
-
-    unsafe = test_srp("a/../.."),
-    unsafe = test_srp("a/../../.."),
-    unsafe = test_srp("a/./../.."),
-    unsafe = test_srp("a/././../../.."),
-    unsafe = test_srp("a/b/././../../.."),
-
-    unsafe = test_srp(PrivDir),                 %Absolute path.
-
-    ok.
-
-test_srp(RelPath) ->
-    Res = do_test_srp(RelPath),
-    Res = case do_test_srp(list_to_binary(RelPath)) of
-              Bin when is_binary(Bin) ->
-                  binary_to_list(Bin);
-              Other ->
-                  Other
-          end.
-
-do_test_srp(RelPath) ->
-    {ok,Root} = file:get_cwd(),
-    ok = file:set_cwd(RelPath),
-    {ok,Cwd} = file:get_cwd(),
-    ok = file:set_cwd(Root),
-    case filename:safe_relative_path(RelPath) of
-        unsafe ->
-            true = length(Cwd) < length(Root),
-            unsafe;
-        "" ->
-            "";
-        SafeRelPath ->
-            ok = file:set_cwd(SafeRelPath),
-            {ok,Cwd} = file:get_cwd(),
-            true = length(Cwd) >= length(Root),
-            ok = file:set_cwd(Root),
-            SafeRelPath
     end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -1000,10 +947,10 @@ t_basedir_api(Config) when is_list(Config) ->
         _ -> os:unsetenv("APPDATA")
     end,
 
-    {'EXIT', _} = (catch filename:basedir(wrong_config, "My App")),
-    {'EXIT', _} = (catch filename:basedir(user_cache, {bad,name})),
-    {'EXIT', _} = (catch filename:basedir(user_cache, "My App", badopts)),
-    {'EXIT', _} = (catch filename:basedir(user_cache, "My App", [])),
+    ?assertError(_, filename:basedir(wrong_config, "My App")),
+    ?assertError(_, filename:basedir(user_cache, {bad,name})),
+    ?assertError(_, filename:basedir(user_cache, "My App", badopts)),
+    ?assertError(_, filename:basedir(user_cache, "My App", [])),
     ok.
 
 t_basedir_windows(Config) when is_list(Config) ->

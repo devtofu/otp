@@ -1,3 +1,21 @@
+-- %CopyrightBegin%
+--
+-- SPDX-License-Identifier: LicenseRef-IETF-MIB
+--
+-- Copyright (C) The Internet Society (1991).  All Rights Reserved.
+-- Copyright Ericsson AB 2009-2025. All Rights Reserved.
+--
+-- MIB modules published in IETF RFCs prior to the adoption of BCP 78 (such as
+-- RFC 1158) are considered to be freely copyable and usable for implementation
+-- and interoperability purposes. No explicit license was provided, but the IETF
+-- intended for MIB code to be reusable and modifiable as necessary.
+--
+-- This interpretation is based on historical practice and later IETF
+-- clarification that such material was meant to be in the public domain or
+-- under permissive terms.
+--
+-- %CopyrightEnd%
+
           RFC1213-MIB DEFINITIONS ::= BEGIN
  
           IMPORTS
@@ -684,7 +702,7 @@
                       Setting this object to a null string (one of zero
                       length) has the effect of invaliding the
                       corresponding entry in the atTable object.  That
-                      is, it effectively dissasociates the interface
+                      is, it effectively disassociates the interface
                       identified with said entry from the mapping
                       identified with said entry.  It is an
                       implementation-specific matter as to whether the
@@ -1256,7 +1274,7 @@
                       Setting this object to the value invalid(2) has
                       the effect of invalidating the corresponding entry
                       in the ipRouteTable object.  That is, it
-                      effectively dissasociates the destination
+                      effectively disassociates the destination
                       identified with said entry from the route
                       identified with said entry.  It is an
                       implementation-specific matter as to whether the
@@ -1475,7 +1493,7 @@
                       Setting this object to the value invalid(2) has
                       the effect of invalidating the corresponding entry
                       in the ipNetToMediaTable.  That is, it effectively
-                      dissasociates the interface identified with said
+                      disassociates the interface identified with said
                       entry from the mapping identified with said entry.
                       It is an implementation-specific matter as to
                       whether the agent removes an invalidated entry

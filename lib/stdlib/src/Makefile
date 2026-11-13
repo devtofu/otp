@@ -1,7 +1,9 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 1996-2020. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 1996-2026. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -42,6 +44,7 @@ RELSYSDIR = $(RELEASE_PATH)/lib/stdlib-$(VSN)
 # ----------------------------------------------------
 MODULES= \
 	array \
+	argparse \
 	base64 \
 	beam_lib \
 	binary \
@@ -53,10 +56,14 @@ MODULES= \
 	dets_utils \
 	dets_v9 \
 	dict \
+	graph \
 	digraph \
 	digraph_utils \
 	edlin \
+	edlin_key \
+	edlin_context \
 	edlin_expand \
+	edlin_type_suggestion \
 	epp \
 	erl_abstract_code \
 	erl_anno \
@@ -65,6 +72,7 @@ MODULES= \
 	erl_error \
 	erl_eval \
 	erl_expand_records \
+	erl_features \
 	erl_internal \
 	erl_lint \
 	erl_parse \
@@ -89,13 +97,15 @@ MODULES= \
 	gen_server \
 	gen_statem \
 	io \
+	io_ansi \
 	io_lib \
 	io_lib_format \
-	io_lib_format_ryu_table \
 	io_lib_fread \
 	io_lib_pretty \
+	json \
 	lists \
 	log_mf_h \
+	man_docs \
 	maps \
 	math \
 	ms_transform \
@@ -103,6 +113,8 @@ MODULES= \
 	orddict \
 	ordsets \
 	re \
+	records \
+	peer \
 	pool \
 	proc_lib \
 	proplists \
@@ -115,6 +127,7 @@ MODULES= \
 	shell \
 	shell_default \
 	shell_docs \
+	shell_docs_markdown \
 	slave \
 	sofs \
 	string \
@@ -126,7 +139,8 @@ MODULES= \
 	unicode_util \
 	uri_string \
 	win32reg \
-	zip
+	zip \
+	zstd
 
 HRL_FILES= \
 	../include/assert.hrl \
@@ -136,11 +150,13 @@ HRL_FILES= \
 	../include/qlc.hrl \
 	../include/zip.hrl
 
-INTERNAL_HRL_FILES= dets.hrl erl_tar.hrl otp_internal.hrl
+INTERNAL_HRL_FILES= dets.hrl erl_tar.hrl otp_internal.hrl json.hrl swar_ascii.hrl
 
 ERL_FILES= $(MODULES:%=%.erl)
 
 TARGET_FILES= $(MODULES:%=$(EBIN)/%.$(EMULATOR)) $(APP_TARGET) $(APPUP_TARGET)
+
+ERL_ID_TRANS=../examples/erl_id_trans.erl
 
 APP_FILE= stdlib.app
 
@@ -162,14 +178,21 @@ endif
 # FLAGS
 # ----------------------------------------------------
 
-ERL_COMPILE_FLAGS += -Werror
+ERL_COMPILE_FLAGS += -Werror  +warn_deprecated_catch +warn_obsolete_bool_op
 ERL_COMPILE_FLAGS += -I../include -I../../kernel/include
+
+ifeq ($(ERL_DETERMINISTIC),yes)
+	DETERMINISM_FLAG = +deterministic
+	DEP_SKIP_FILES = erl_parse.erl
+else
+	DETERMINISM_FLAG =
+endif
 
 # ----------------------------------------------------
 # Targets
 # ----------------------------------------------------
 
-debug opt: $(TARGET_FILES) 
+$(TYPES): $(TARGET_FILES)
 
 clean:
 	rm -f $(TARGET_FILES)
@@ -184,22 +207,30 @@ primary_bootstrap_compiler: \
   $(BOOTSTRAP_COMPILER)/ebin/epp.beam \
   $(BOOTSTRAP_COMPILER)/ebin/erl_anno.beam \
   $(BOOTSTRAP_COMPILER)/ebin/erl_error.beam \
+  $(BOOTSTRAP_COMPILER)/ebin/erl_features.beam \
   $(BOOTSTRAP_COMPILER)/ebin/erl_scan.beam \
   $(BOOTSTRAP_COMPILER)/ebin/erl_parse.beam \
   $(BOOTSTRAP_COMPILER)/ebin/erl_lint.beam \
+  $(BOOTSTRAP_COMPILER)/ebin/graph.beam \
   $(BOOTSTRAP_COMPILER)/ebin/io.beam \
-  $(BOOTSTRAP_COMPILER)/ebin/otp_internal.beam
+  $(BOOTSTRAP_COMPILER)/ebin/otp_internal.beam \
+  $(BOOTSTRAP_COMPILER)/ebin/erl_internal.beam
+
+opt: $(EBIN)/erl_id_trans.beam
 
 $(BOOTSTRAP_COMPILER)/ebin/erl_parse.beam: erl_parse.yrl
 	$(gen_verbose)
-	$(V_at)$(ERLC) -o $(BOOTSTRAP_COMPILER)/egen erl_parse.yrl
-	$(V_at)$(ERLC) -o $(BOOTSTRAP_COMPILER)/ebin $(BOOTSTRAP_COMPILER)/egen/erl_parse.erl
+	$(V_at)$(ERLC) -o $(BOOTSTRAP_COMPILER)/egen $(DETERMINISM_FLAG) erl_parse.yrl
+	$(V_at)$(ERLC) -o $(BOOTSTRAP_COMPILER)/ebin $(DETERMINISM_FLAG) $(BOOTSTRAP_COMPILER)/egen/erl_parse.erl
 
 $(BOOTSTRAP_TOP)/lib/stdlib/egen/erl_parse.erl: erl_parse.yrl
 	$(yecc_verbose)$(ERLC) $(YRL_FLAGS) -o$(BOOTSTRAP_TOP)/lib/stdlib/egen erl_parse.yrl
 
 $(BOOTSTRAP_COMPILER)/ebin/%.beam: %.erl
-	$(V_ERLC) -o $(BOOTSTRAP_COMPILER)/ebin $<
+	$(V_ERLC) -o $(BOOTSTRAP_COMPILER)/ebin $(DETERMINISM_FLAG) $<
+
+$(EBIN)/erl_id_trans.beam: ../examples/erl_id_trans.erl
+	$(V_ERLC) $(ERL_COMPILE_FLAGS) -o $(EBIN) $<
 
 # ----------------------------------------------------
 # Special Build Targets
@@ -216,7 +247,7 @@ unicode_util.erl: ../uc_spec/*
 
 # ----------------------------------------------------
 # Release Target
-# ---------------------------------------------------- 
+# ----------------------------------------------------
 include $(ERL_TOP)/make/otp_release_targets.mk
 
 release_spec: opt
@@ -231,28 +262,6 @@ release_spec: opt
 release_docs_spec:
 
 # ----------------------------------------------------
-# Dependencies -- alphabetically, please
-# ---------------------------------------------------- 
-
-$(EBIN)/beam_lib.beam: ../include/erl_compile.hrl ../../kernel/include/file.hrl
-$(EBIN)/dets.beam: dets.hrl ../../kernel/include/file.hrl
-$(EBIN)/dets_server.beam: dets.hrl
-$(EBIN)/dets_utils.beam: dets.hrl
-$(EBIN)/dets_v9.beam: dets.hrl
-$(EBIN)/erl_bits.beam: ../include/erl_bits.hrl
-$(EBIN)/erl_compile.beam: ../include/erl_compile.hrl ../../kernel/include/file.hrl
-$(EBIN)/erl_lint.beam: ../include/erl_bits.hrl
-$(EBIN)/erl_tar.beam: ../../kernel/include/file.hrl erl_tar.hrl
-$(EBIN)/file_sorter.beam: ../../kernel/include/file.hrl
-$(EBIN)/filelib.beam: ../../kernel/include/file.hrl
-$(EBIN)/filename.beam: ../../kernel/include/file.hrl
-$(EBIN)/gen_event.beam: ../../kernel/include/logger.hrl
-$(EBIN)/gen_fsm.beam: ../../kernel/include/logger.hrl
-$(EBIN)/gen_server.beam: ../../kernel/include/logger.hrl
-$(EBIN)/gen_statem.beam: ../../kernel/include/logger.hrl
-$(EBIN)/proc_lib.beam: ../../kernel/include/logger.hrl
-$(EBIN)/qlc_pt.beam: ../include/ms_transform.hrl
-$(EBIN)/shell.beam: ../../kernel/include/file.hrl
-$(EBIN)/supervisor.beam: ../../kernel/include/logger.hrl
-$(EBIN)/supervisor_bridge.beam: ../../kernel/include/logger.hrl
-$(EBIN)/zip.beam: ../include/zip.hrl ../../kernel/include/file.hrl
+# Dependencies
+# ----------------------------------------------------
+include $(ERL_TOP)/make/dep.mk

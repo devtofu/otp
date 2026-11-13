@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1997-2018. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(tuple_SUITE).
@@ -26,8 +28,12 @@
 	 t_make_tuple_2/1, t_make_upper_boundry_tuple_2/1, t_make_tuple_3/1,
 	 t_append_element/1, t_append_element_upper_boundry/1,
          build_and_match/1, tuple_with_case/1, tuple_in_guard/1,
-         get_two_tuple_elements/1]).
+         get_two_tuple_elements/1,
+         record_update/1,
+         bad_tuple_match/1,
+         many_constants/1]).
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
 %% Tests tuples and the BIFs:
 %%
@@ -49,12 +55,16 @@ all() ->
      t_append_element, t_append_element_upper_boundry,
      t_insert_element, t_delete_element,
      tuple_with_case, tuple_in_guard,
-     get_two_tuple_elements].
+     get_two_tuple_elements,
+     record_update,
+     bad_tuple_match,
+     many_constants].
 
 groups() -> 
     [].
 
 init_per_suite(Config) ->
+    id(Config),
     A0 = case application:start(sasl) of
 	     ok -> [sasl];
 	     _ -> []
@@ -108,8 +118,8 @@ t_tuple_size(Config) when is_list(Config) ->
     3 = tuple_size(id({1,2,3})),
 
     %% Error cases.
-    {'EXIT',{badarg,_}} = (catch tuple_size([])),
-    {'EXIT',{badarg,_}} = (catch tuple_size(<<1,2,3>>)),
+    ?assertError(badarg, tuple_size([])),
+    ?assertError(badarg, tuple_size(<<1,2,3>>)),
     error = ludicrous_tuple_size({a,b,c}),
     error = ludicrous_tuple_size([a,b,c]),
     ok.
@@ -136,21 +146,44 @@ t_element(Config) when is_list(Config) ->
      2047,2048, 4095,4096, 8191,8192, 16383, 16384} =
         get_literal_tuple_element_pairs(Tuple),
 
-    {'EXIT', {badarg, _}} = (catch element(0, id({a,b}))),
-    {'EXIT', {badarg, _}} = (catch element(3, id({a,b}))),
-    {'EXIT', {badarg, _}} = (catch element(1, id({}))),
-    {'EXIT', {badarg, _}} = (catch element(1, id([a,b]))),
-    {'EXIT', {badarg, _}} = (catch element(1, id(42))),
-    {'EXIT', {badarg, _}} = (catch element(id(1.5), id({a,b}))),
+    ?assertError(badarg, element(0, id({a,b}))),
+    ?assertError(badarg, element(3, id({a,b}))),
+    ?assertError(badarg, element(1, id({}))),
+    ?assertError(badarg, element(1, id([a,b]))),
+    ?assertError(badarg, element(1, id(42))),
+    ?assertError(badarg, element(false, id({a,b}))),
+    ?assertError(badarg, element(id(1.5), id({a,b}))),
 
     %% Make sure that the loader does not reject the module when
     %% huge literal index values are used.
-    {'EXIT', {badarg, _}} = (catch element((1 bsl 24)-1, id({a,b,c}))),
-    {'EXIT', {badarg, _}} = (catch element(1 bsl 24, id({a,b,c}))),
-    {'EXIT', {badarg, _}} = (catch element(1 bsl 32, id({a,b,c}))),
-    {'EXIT', {badarg, _}} = (catch element(1 bsl 64, id({a,b,c}))),
+    ?assertError(badarg, element((1 bsl 24)-1, id({a,b,c}))),
+    ?assertError(badarg, element(1 bsl 24, id({a,b,c}))),
+    ?assertError(badarg, element(1 bsl 32, id({a,b,c}))),
+    ?assertError(badarg, element(1 bsl 64, id({a,b,c}))),
+
+    %% Test known tuple and unknown position.
+    true = is_tuple(Tuple),
+    ?assertError(badarg, element(id(false), Tuple)),
+    ?assertError(badarg, element(id(-1), Tuple)),
+    ?assertError(badarg, element(id(0), Tuple)),
+    ?assertError(badarg, element(id(1 bsl 64), Tuple)),
+
+    %% Test a known tuple and position that is a known integer.
+    ?assertError(badarg, element(known_integer(-1), Tuple)),
+    ?assertError(badarg, element(known_integer(0), Tuple)),
+    ?assertError(badarg, element(known_integer(1 bsl 64), Tuple)),
+    ?assertError(badarg, element(known_integer(tuple_size(Tuple)+1), Tuple)),
+
+    %% Test unknown tuple and unknown position.
+    ?assertError(badarg, element(id(false), id(Tuple))),
+    ?assertError(badarg, element(id(-1), id(Tuple))),
+    ?assertError(badarg, element(id(0), id(Tuple))),
+    ?assertError(badarg, element(id(1 bsl 64), id(Tuple))),
 
     ok.
+
+known_integer(I) when is_integer(I) ->
+    I.
 
 get_elements([Element|Rest], Tuple, Pos) ->
     Element = element(Pos, Tuple),
@@ -272,11 +305,11 @@ t_setelement(Config) when is_list(Config) ->
     NewTuple = set_all_elements(Tuple, 1),
     NewTuple = list_to_tuple(lists:seq(1+7, 16385+7)),
 
-    {'EXIT', {badarg, _}} = (catch setelement(0, {a, b}, x)),
-    {'EXIT', {badarg, _}} = (catch setelement(3, {a, b}, x)),
-    {'EXIT', {badarg, _}} = (catch setelement(1, {}, x)),
-    {'EXIT', {badarg, _}} = (catch setelement(1, [a, b], x)),
-    {'EXIT', {badarg, _}} = (catch setelement(1.5, {a, b}, x)),
+    ?assertError(badarg, setelement(0, {a, b}, x)),
+    ?assertError(badarg, setelement(3, {a, b}, x)),
+    ?assertError(badarg, setelement(1, {}, x)),
+    ?assertError(badarg, setelement(1, [a, b], x)),
+    ?assertError(badarg, setelement(1.5, {a, b}, x)),
 
     %% Nested setelement with literals.
     AnotherTuple = id({0,0,a,b,c}),
@@ -373,17 +406,17 @@ t_list_to_tuple(Config) when is_list(Config) ->
     Tuple = list_to_tuple(lists:seq(1, Size)),
     Size  = size(Tuple),
 
-    {'EXIT', {badarg, _}} = (catch list_to_tuple(id({a,b}))),
-    {'EXIT', {badarg, _}} = (catch list_to_tuple(id([a|b]))),
-    {'EXIT', {badarg, _}} = (catch list_to_tuple(id([a|b]))),
+    ?assertError(badarg, list_to_tuple(id({a,b}))),
+    ?assertError(badarg, list_to_tuple(id([a|b]))),
+    ?assertError(badarg, list_to_tuple(id([a|b]))),
 
-    {'EXIT', {badarg,_}} = (catch list_to_tuple(lists:seq(1, 1 bsl 24))),
+    ?assertError(badarg, list_to_tuple(lists:seq(1, 1 bsl 24))),
     ok.
 
 t_list_to_upper_boundry_tuple(Config) when is_list(Config) ->
     sys_mem_cond_run(2048,
 		    fun () ->
-			    %% test upper boundry, 16777215 elements
+			    %% test upper boundary, 16777215 elements
 			    MaxSize  = 1 bsl 24 - 1,
 			    MaxTuple = list_to_tuple(lists:seq(1, MaxSize)),
 			    MaxSize  = size(MaxTuple),
@@ -406,8 +439,8 @@ t_tuple_to_list(Config) when is_list(Config) ->
     Size = size(Tuple),
     List = tuple_to_list(Tuple),
 
-    {'EXIT', {badarg,_}} = (catch tuple_to_list(id(a))),
-    {'EXIT', {badarg,_}} = (catch tuple_to_list(id(42))),
+    ?assertError(badarg, tuple_to_list(id(a))),
+    ?assertError(badarg, tuple_to_list(id(42))),
 
     ok.
 
@@ -420,19 +453,19 @@ t_make_tuple_2(Config) when is_list(Config) ->
     t_make_tuple1({a}),
     t_make_tuple1(erlang:make_tuple(400, [])),
 
-    {'EXIT', {badarg,_}} = (catch erlang:make_tuple(1 bsl 24, a)),
+    ?assertError(badarg, erlang:make_tuple(1 bsl 24, a)),
 
-    {'EXIT', {badarg,_}} = (catch erlang:make_tuple(-1, a)),
+    ?assertError(badarg, erlang:make_tuple(-1, a)),
     % 26 bits is the total header arity room (for now)
-    {'EXIT', {badarg,_}} = (catch erlang:make_tuple(1 bsl 26 + 3, a)),
+    ?assertError(badarg, erlang:make_tuple(1 bsl 26 + 3, a)),
     % bignum
-    {'EXIT', {badarg,_}} = (catch erlang:make_tuple(1 bsl 65 + 3, a)),
+    ?assertError(badarg, erlang:make_tuple(1 bsl 65 + 3, a)),
     ok.
 
 t_make_upper_boundry_tuple_2(Config) when is_list(Config) ->
     sys_mem_cond_run(2048,
 		     fun () ->
-			     %% test upper boundry, 16777215 elements
+			     %% test upper boundary, 16777215 elements
 			     t_make_tuple(1 bsl 24 - 1, a)
 		     end).
 
@@ -462,16 +495,16 @@ t_make_tuple_3(Config) when is_list(Config) ->
     MaxSize  = size(MaxTuple),
 
     %% Error cases.
-    {'EXIT',{badarg,_}} = (catch erlang:make_tuple(0, def, [{1,a}])),
-    {'EXIT',{badarg,_}} = (catch erlang:make_tuple(5, def, [{-1,a}])),
-    {'EXIT',{badarg,_}} = (catch erlang:make_tuple(5, def, [{0,a}])),
-    {'EXIT',{badarg,_}} = (catch erlang:make_tuple(5, def, [{6,z}])),
-    {'EXIT',{badarg,_}} = (catch erlang:make_tuple(a, def, [{6,z}])),
-    {'EXIT',{badarg,_}} = (catch erlang:make_tuple(5, def, [{1,a}|b])),
-    {'EXIT',{badarg,_}} = (catch erlang:make_tuple(5, def, [42])),
-    {'EXIT',{badarg,_}} = (catch erlang:make_tuple(5, def, [[a,b,c]])),
-    {'EXIT',{badarg,_}} = (catch erlang:make_tuple(5, def, non_list)),
-    {'EXIT',{badarg,_}} = (catch erlang:make_tuple(1 bsl 24, def, [{5,e},{1,a},{3,c}])),
+    ?assertError(badarg, erlang:make_tuple(0, def, [{1,a}])),
+    ?assertError(badarg, erlang:make_tuple(5, def, [{-1,a}])),
+    ?assertError(badarg, erlang:make_tuple(5, def, [{0,a}])),
+    ?assertError(badarg, erlang:make_tuple(5, def, [{6,z}])),
+    ?assertError(badarg, erlang:make_tuple(a, def, [{6,z}])),
+    ?assertError(badarg, erlang:make_tuple(5, def, [{1,a}|b])),
+    ?assertError(badarg, erlang:make_tuple(5, def, [42])),
+    ?assertError(badarg, erlang:make_tuple(5, def, [[a,b,c]])),
+    ?assertError(badarg, erlang:make_tuple(5, def, non_list)),
+    ?assertError(badarg, erlang:make_tuple(1 bsl 24, def, [{5,e},{1,a},{3,c}])),
 
     ok.
 
@@ -486,14 +519,14 @@ t_insert_element(Config) when is_list(Config) ->
     [b,def|_] = lists:reverse(tuple_to_list(erlang:insert_element((1 bsl 20) + 1, erlang:make_tuple(1 bsl 20, def), b))),
 
     %% Error cases.
-    {'EXIT',{badarg,_}} = (catch erlang:insert_element(1, [], a)),
-    {'EXIT',{badarg,_}} = (catch erlang:insert_element(1, a, a)),
-    {'EXIT',{badarg,_}} = (catch erlang:insert_element(0, {}, a)),
-    {'EXIT',{badarg,_}} = (catch erlang:insert_element(0, {b,b,b,b,b}, a)),
-    {'EXIT',{badarg,_}} = (catch erlang:insert_element(-1, {}, a)),
-    {'EXIT',{badarg,_}} = (catch erlang:insert_element(2, {}, a)),
-    {'EXIT',{badarg,_}} = (catch erlang:insert_element(6, {b,b,b,b}, a)),
-    {'EXIT',{badarg,_}} = (catch erlang:insert_element(1 bsl 20, {b,b,b,b}, a)),
+    ?assertError(badarg, erlang:insert_element(1, [], a)),
+    ?assertError(badarg, erlang:insert_element(1, a, a)),
+    ?assertError(badarg, erlang:insert_element(0, {}, a)),
+    ?assertError(badarg, erlang:insert_element(0, {b,b,b,b,b}, a)),
+    ?assertError(badarg, erlang:insert_element(-1, {}, a)),
+    ?assertError(badarg, erlang:insert_element(2, {}, a)),
+    ?assertError(badarg, erlang:insert_element(6, {b,b,b,b}, a)),
+    ?assertError(badarg, erlang:insert_element(1 bsl 20, {b,b,b,b}, a)),
     ok.
 
 %% Tests the erlang:delete_element/3 BIF.
@@ -507,14 +540,14 @@ t_delete_element(Config) when is_list(Config) ->
     [(1 bsl 20), (1 bsl 20) - 2 |_] = lists:reverse(tuple_to_list(erlang:delete_element((1 bsl 20) - 1, list_to_tuple(lists:seq(1, 1 bsl 20))))),
 
     %% Error cases.
-    {'EXIT',{badarg,_}} = (catch erlang:delete_element(1, [])),
-    {'EXIT',{badarg,_}} = (catch erlang:delete_element(1, a)),
-    {'EXIT',{badarg,_}} = (catch erlang:delete_element(0, {})),
-    {'EXIT',{badarg,_}} = (catch erlang:delete_element(-1, {})),
-    {'EXIT',{badarg,_}} = (catch erlang:delete_element(1, {})),
-    {'EXIT',{badarg,_}} = (catch erlang:delete_element(0, {b,b,b,b,b})),
-    {'EXIT',{badarg,_}} = (catch erlang:delete_element(5, {b,b,b,b})),
-    {'EXIT',{badarg,_}} = (catch erlang:delete_element(1 bsl 20, {b,c,b,b,b})),
+    ?assertError(badarg, erlang:delete_element(1, [])),
+    ?assertError(badarg, erlang:delete_element(1, a)),
+    ?assertError(badarg, erlang:delete_element(0, {})),
+    ?assertError(badarg, erlang:delete_element(-1, {})),
+    ?assertError(badarg, erlang:delete_element(1, {})),
+    ?assertError(badarg, erlang:delete_element(0, {b,b,b,b,b})),
+    ?assertError(badarg, erlang:delete_element(5, {b,b,b,b})),
+    ?assertError(badarg, erlang:delete_element(1 bsl 20, {b,c,b,b,b})),
     ok.
 
 
@@ -525,10 +558,11 @@ t_append_element(Config) when is_list(Config) ->
 t_append_element_upper_boundry(Config) when is_list(Config) ->
     sys_mem_cond_run(2048,
 		     fun () ->
-			     %% test upper boundry, 16777215 elements
+			     %% test upper boundary, 16777215 elements
 			     MaxSize  = 1 bsl 24 - 1,
 			     MaxTuple = list_to_tuple(lists:seq(1, MaxSize)),
-			     {'EXIT',{badarg,_}} = (catch erlang:append_element(MaxTuple, a)),
+                             ?assertError(badarg,
+                                          erlang:append_element(MaxTuple, a)),
 			     ok
 		     end).
 
@@ -597,7 +631,7 @@ get_two_tuple_elements(Config) ->
     true = code:delete(GTTEMod),
     code:purge(GTTEMod),
 
-    %% Compile from the pre-generated BEAM assmebly code file. (In case that the
+    %% Compile from the pre-generated BEAM assembly code file. (In case that the
     %% compiler's code generation has changed.)
     {ok,GTTEMod,Code2} = compile:file(GTTETestsFile, [from_asm,binary,report,time]),
     {module,GTTEMod} = code:load_binary(GTTEMod, GTTEMod, Code2),
@@ -607,9 +641,119 @@ get_two_tuple_elements(Config) ->
 
     ok.
 
+
+%% Do some basic tests of the destructive tuple update added in
+%% Erlang/OTP 27 (commit 8d4df9ae9fc9d1289b3c5a37e5bc6d73abb73297).
+
+-record(rec, {a,b,c,d,e}).
+record_update(_Config) ->
+    N = id(100_000),
+    First = id(1 bsl 64),
+    Last = id(First + N),
+
+    #rec{a=Last} = record_update_1(First, Last, #rec{b=id(42)}),
+    #rec{a=N} = record_update_1(id(0), N, #rec{b=id(42)}),
+
+    #rec{a=Last} = record_update_2(First, Last, #rec{b=id(42)}),
+
+    #rec{a=List} = record_update_3(id([]), N, #rec{b=id(42)}),
+    N = length(List),
+    true = lists:all(fun(a) -> true end, List),
+
+    ok.
+
+record_update_1(I, N, R) when is_integer(I) ->
+    do_record_update_1(I, N, R).
+
+do_record_update_1(I, Last, R0) ->
+    %% An incorrect test for an immediate would allow a boxed term
+    %% (such as a bignum) to be written into an existing tuple without
+    %% testing whether the tuple were in the safe part of the heap.
+    R = R0#rec{a=I},
+
+    %% Force a minor collection here to force the tuple over to the
+    %% unsafe part of the new heap (below the high-water mark).
+    erlang:garbage_collect(self(), [{type,minor}]),
+    if
+        I < Last ->
+            do_record_update_1(I + 1, Last, R);
+        true ->
+            R
+    end.
+
+record_update_2(I, Last, R0) ->
+    R = R0#rec{a=I},
+
+    %% Force a minor collection here to force the tuple over to the
+    %% unsafe part of the new heap (below the high-water mark).
+    erlang:garbage_collect(self(), [{type,minor}]),
+    if
+        I < Last ->
+            record_update_2(I + 1, Last, R);
+        true ->
+            R
+    end.
+
+record_update_3(L, N, R) when is_list(L); is_integer(L) ->
+    do_record_update_3(L, N, R).
+
+do_record_update_3(L, N, R0) ->
+    %% Test that the basic test for the tuple being in the
+    %% safe part of the new heap is correct.
+    R = R0#rec{a=L},
+
+    if
+        N > 0 ->
+            do_record_update_3(id([a|L]), N-1, R);
+        true ->
+            R
+    end.
+
+%% GH-8875
+bad_tuple_match(_Config) ->
+    ContentName = id(~"content-name"),
+    Content = id(#{ContentName => value}),
+
+    Find = case maps:find(ContentName, Content) of
+               {ok, _} -> {ok1, aa};
+               error -> ok
+           end,
+
+    Details = try id(good) of
+                  good ->
+                      {ok2, bb, cc}
+              catch
+                  _:_ ->
+                      {error, some_reason}
+              end,
+
+    %% Compiler optimizations will turn the following two lines into:
+    %%
+    %%    {test,is_tuple,Fail1,[{y,0}]}
+    %%    {test,test_arity,Fail2,[{x,0},3]}.
+    %%
+    %% The JIT would rewrite that to:
+    %%
+    %%    {i_is_tuple_of_arity_ff,Fail1,Fail2,{y,0},3}
+    %%
+    %% That is unsafe because the source tuples are distinct.
+    {ok1, _} = Find,
+    {ok2, _, _} = Details,
+
+    ok.
+
+many_constants(_Config) ->
+    A = id(42),
+    T = id(list_to_tuple([A|lists:seq(1, 32)])),
+
+    %% Ensure that filling the cache of immediates (AArch64) doesn't
+    %% cause any obvious problems.
+    T = id({A,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,
+            21,22,23,24,25,26,27,28,29,30,31,32}),
+    ok.
+
 %% Use this function to avoid compile-time evaluation of an expression.
 id(I) -> I.
-
 
 sys_mem_cond_run(ReqSizeMB, TestFun) when is_integer(ReqSizeMB) ->
     case total_memory() of
@@ -623,17 +767,16 @@ sys_mem_cond_run(ReqSizeMB, TestFun) when is_integer(ReqSizeMB) ->
 
 
 total_memory() ->
-    %% Totat memory in MB.
+    %% Total memory in MB.
     try
-	MemoryData = memsup:get_system_memory_data(),
-	case lists:keysearch(total_memory, 1, MemoryData) of
-	    {value, {total_memory, TM}} ->
-		TM div (1024*1024);
-	    false ->
-		{value, {system_total_memory, STM}} =
-		    lists:keysearch(system_total_memory, 1, MemoryData),
-		STM div (1024*1024)
-	end
+	SMD = memsup:get_system_memory_data(),
+        TM = proplists:get_value(
+               available_memory, SMD,
+               proplists:get_value(
+                 total_memory, SMD,
+                 proplists:get_value(
+                   system_total_memory, SMD))),
+        TM div (1024*1024)
     catch
 	_ : _ ->
 	    undefined

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2004-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2004-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,6 +21,7 @@
 %%
 
 -module(httpc_request).
+-moduledoc false.
 
 -include_lib("inets/src/http_lib/http_internal.hrl").
 -include("httpc_internal.hrl").
@@ -54,31 +57,33 @@ send(SendAddr, #session{socket = Socket, socket_type = SocketType},
 send(SendAddr, #session{socket = Socket, socket_type = SocketType}, Request) ->
     send(SendAddr, Socket, SocketType, Request).
     
-send(SendAddr, Socket, SocketType, 
-     #request{method        = Method, 
-	      path          = Path, 
-	      pquery        = Query, 
-	      headers       = Headers,
-	      content       = Content, 
-	      address       = Address, 
-	      abs_uri       = AbsUri, 
-	      headers_as_is = HeadersAsIs,
-	      settings      = HttpOptions, 
-	      userinfo      = UserInfo}) -> 
-    
-    ?hcrt("send", 
-	  [{send_addr,     SendAddr}, 
-	   {socket,        Socket}, 
-	   {method,        Method}, 
-	   {path,          Path}, 
-	   {pquery,        Query}, 
-	   {headers,       Headers},
-	   {content,       Content}, 
-	   {address,       Address}, 
-	   {abs_uri,       AbsUri}, 
-	   {headers_as_is, HeadersAsIs},
-	   {settings,      HttpOptions}, 
-	   {userinfo,      UserInfo}]),
+send(SendAddr, Socket, SocketType,
+     #request{method          = Method,
+              path            = Path,
+              pquery          = Query,
+              headers         = Headers,
+              content         = Content,
+              address         = Address,
+              abs_uri         = AbsUri,
+              headers_as_is   = HeadersAsIs,
+              settings        = HttpOptions,
+              userinfo        = UserInfo,
+              request_options = Options}) ->
+
+    ?hcrt("send",
+          [{send_addr,       SendAddr},
+           {socket,          Socket},
+           {method,          Method},
+           {path,            Path},
+           {pquery,          Query},
+           {headers,         Headers},
+           {content,         Content},
+           {address,         Address},
+           {abs_uri,         AbsUri},
+           {headers_as_is,   HeadersAsIs},
+           {settings,        HttpOptions},
+           {userinfo,        UserInfo},
+           {request_options, Options}]),
 
     TmpHdrs = handle_user_info(UserInfo, Headers),
 
@@ -95,17 +100,23 @@ send(SendAddr, Socket, SocketType,
 		{TmpHdrs2, Path ++ Query}	
 	end,
     
-    FinalHeaders = 
-	case NewHeaders of
-	    HeaderList when is_list(HeaderList) ->
-		http_headers(HeaderList, []);
-	    _  ->
-		http_request:http_headers(NewHeaders)
-	end,
-    Version = HttpOptions#http_options.version,
-
-    do_send_body(SocketType, Socket, Method, Uri, Version, FinalHeaders, Body).
-
+    FinalHeaders = try
+                       case NewHeaders of
+                           HeaderList when is_list(HeaderList) ->
+                               http_headers(HeaderList, []);
+                           _  ->
+                               http_request:http_headers(NewHeaders)
+                       end
+                   catch throw:{invalid_header, _} = Bad ->
+                           {error, Bad}
+                   end,
+    case FinalHeaders of
+        {error,_} = InvalidHeaders ->
+            InvalidHeaders;
+        _ ->
+            Version = HttpOptions#http_options.version,
+            do_send_body(SocketType, Socket, Method, Uri, Version, FinalHeaders, Body)
+    end.
 
 do_send_body(SocketType, Socket, Method, Uri, Version, Headers, 
 	     {ProcessBody, Acc}) when is_function(ProcessBody, 1) ->
@@ -178,15 +189,26 @@ is_idempotent(_) ->
 %%-------------------------------------------------------------------------
 is_client_closing(Headers) ->
     case Headers#http_request_h.connection of
-	"close" ->
-	    true;
-	 _ ->
-	    false
+	undefined ->
+	    false;
+	Connection ->
+	    lists:member("close", http_util:connection_tokens(Connection))
     end.
 
 %%%========================================================================
 %%% Internal functions
 %%%========================================================================
+post_data(Method, Headers, {[], []}, [])
+  when Method =:= get;
+       Method =:= head;
+       Method =:= options;
+       Method =:= trace;
+       Method =:= delete ->
+    %% RFC 9110: A user agent SHOULD NOT send a Content-Length header field
+    %% when the request message does not contain content and the method
+    %% semantics do not anticipate such data.
+    {Headers#http_request_h{'content-length' = undefined}, ""};
+
 post_data(Method, Headers, {ContentType, Body}, HeadersAsIs)
     when (Method =:= post)
          orelse (Method =:= put)
@@ -241,10 +263,10 @@ handle_transfer_encoding(Headers) ->
     Headers#http_request_h{'content-length' = undefined}.
 
 body_length(Body) when is_binary(Body) ->
-   integer_to_list(size(Body));
+   integer_to_list(byte_size(Body));
 
 body_length(Body) when is_list(Body) ->
-  integer_to_list(length(Body)).
+  integer_to_list(iolist_size(Body)).
 
 %% Set 'Content-Type' when it is explicitly set.
 handle_content_type(Headers, "") ->
@@ -278,10 +300,12 @@ handle_user_info([], Headers) ->
 handle_user_info(UserInfo, Headers) ->
     case string:tokens(UserInfo, ":") of
 	[User, Passwd] ->
-	    UserPasswd = base64:encode_to_string(User ++ ":" ++ Passwd),
+	    UserPasswd = base64:encode_to_string(
+	        uri_string:percent_decode(User) ++ ":" ++ uri_string:percent_decode(Passwd)
+	    ),
 	    Headers#http_request_h{authorization = "Basic " ++ UserPasswd};
 	[User] ->
-	    UserPasswd = base64:encode_to_string(User ++ ":"),
+	    UserPasswd = base64:encode_to_string(uri_string:percent_decode(User) ++ ":"),
 	    Headers#http_request_h{authorization = "Basic " ++ UserPasswd}; 
 	_ ->
 	    Headers

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,13 +20,41 @@
 %% %CopyrightEnd%
 %%
 -module(erl_pp).
+-moduledoc """
+The Erlang pretty printer.
+
+The functions in this module are used to generate aesthetically attractive
+representations of abstract forms, which are suitable for printing. All
+functions return (possibly deep) lists of characters and generate an error if
+the form is wrong.
+
+Most functions can have an optional argument, which specifies a hook that is
+called if an attempt is made to print an unknown form.
+
+Note that if the functions in this module are used to convert abstract code back
+to Erlang source code, the enclosing function should first be processed by
+`legalize_vars/1` in order to ensure that the output is semantically equivalent
+to the abstract code.
+
+## Known Limitations
+
+It is not possible to have hook functions for unknown forms at other places than
+expressions.
+
+### See Also
+
+`m:erl_eval`, `m:erl_parse`, `m:io`
+""".
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
 
 %%% Pretty printer for Erlang code in the same format as returned from
 %%% the parser. It does not always produce pretty code.
 
 -export([form/1,form/2,
          attribute/1,attribute/2,function/1,function/2,
-         guard/1,guard/2,exprs/1,exprs/2,exprs/3,expr/1,expr/2,expr/3,expr/4]).
+         guard/1,guard/2,exprs/1,exprs/2,exprs/3,expr/1,expr/2,expr/3,expr/4,
+         legalize_vars/1]).
 
 -import(lists, [append/1,foldr/3,map/2,mapfoldl/3,reverse/1,reverse/2]).
 -import(io_lib, [write/1,format/2]).
@@ -34,6 +64,18 @@
 -define(DEFAULT_LINEWIDTH, 72).
 -define(DEFAULT_INDENT, 4).
 
+-doc """
+Optional argument `HookFunction`, shown in the functions
+described in this module, defines a function that is called when an unknown form
+occurs where there is to be a valid expression. If `HookFunction` is equal to
+`none`, there is no hook function.
+
+The called hook function is to return a (possibly deep) list of characters.
+Function `expr/4` is useful in a hook.
+
+If `CurrentIndentation` is negative, there are no line breaks and only a space
+is used as a separator.
+""".
 -type(hook_function() :: none
                        | fun((Expr :: erl_parse:abstract_expr(),
                               CurrentIndentation :: integer(),
@@ -41,6 +83,16 @@
                               Options :: options()) ->
                                    io_lib:chars())).
 
+-doc """
+The option `quote_singleton_atom_types` is used to add quotes to all singleton
+atom types.
+
+The option `linewidth` controls the maximum line width for formatted lines
+(defaults to 72 characters).
+
+The option `indent` controls the indention for formatted lines (defaults to 4
+spaces).
+""".
 -type(option() :: {hook, hook_function()}
                 | {encoding, latin1 | unicode | utf8}
                 | {quote_singleton_atom_types, boolean()}
@@ -85,12 +137,17 @@
 %%% Exported functions
 %%%
 
+-doc(#{equiv => form(Form, none)}).
 -spec(form(Form) -> io_lib:chars() when
       Form :: erl_parse:abstract_form() | erl_parse:form_info()).
 
 form(Thing) ->
     form(Thing, none).
 
+-doc """
+Pretty prints a `Form`, which is an abstract form of a type that is returned by
+`erl_parse:parse_form/1`.
+""".
 -spec(form(Form, Options) -> io_lib:chars() when
       Form :: erl_parse:abstract_form() | erl_parse:form_info(),
       Options :: options()).
@@ -100,12 +157,14 @@ form(Thing, Options) ->
     State = state(Options),
     frmt(lform(Thing, options(Options)), State).
 
+-doc(#{equiv => attribute(Attribute, none)}).
 -spec(attribute(Attribute) -> io_lib:chars() when
       Attribute :: erl_parse:abstract_form()).
 
 attribute(Thing) ->
     attribute(Thing, none).
 
+-doc "Same as [`form/1,2`](`form/1`), but only for attribute `Attribute`.".
 -spec(attribute(Attribute, Options) -> io_lib:chars() when
       Attribute :: erl_parse:abstract_form(),
       Options :: options()).
@@ -115,12 +174,14 @@ attribute(Thing, Options) ->
     State = state(Options),
     frmt(lattribute(Thing, options(Options)), State).
 
+-doc(#{equiv => function(Function, none)}).
 -spec(function(Function) -> io_lib:chars() when
       Function :: erl_parse:abstract_form()).
 
 function(F) ->
     function(F, none).
 
+-doc "Same as [`form/1,2`](`form/1`), but only for function `Function`.".
 -spec(function(Function, Options) -> io_lib:chars() when
       Function :: erl_parse:abstract_form(),
       Options :: options()).
@@ -129,12 +190,14 @@ function(F, Options) ->
     ?TEST(F),
     frmt(lfunction(F, options(Options)), state(Options)).
 
+-doc(#{equiv => guard(Guard, none)}).
 -spec(guard(Guard) -> io_lib:chars() when
       Guard :: [erl_parse:abstract_expr()]).
 
 guard(Gs) ->
     guard(Gs, none).
 
+-doc "Same as [`form/1,2`](`form/1`), but only for the guard test `Guard`.".
 -spec(guard(Guard, Options) -> io_lib:chars() when
       Guard :: [erl_parse:abstract_expr()],
       Options :: options()).
@@ -143,12 +206,14 @@ guard(Gs, Options) ->
     ?EXPRS_TEST(Gs),
     frmt(lguard(Gs, options(Options)), state(Options)).
 
+-doc(#{equiv => exprs(Expressions, none)}).
 -spec(exprs(Expressions) -> io_lib:chars() when
       Expressions :: [erl_parse:abstract_expr()]).
 
 exprs(Es) ->
     exprs(Es, 0, none).
 
+-doc(#{equiv => exprs(Expressions, 0, Options)}).
 -spec(exprs(Expressions, Options) -> io_lib:chars() when
       Expressions :: [erl_parse:abstract_expr()],
       Options :: options()).
@@ -156,6 +221,10 @@ exprs(Es) ->
 exprs(Es, Options) ->
     exprs(Es, 0, Options).
 
+-doc """
+Same as [`form/1,2`](`form/1`), but only for the sequence of expressions in
+`Expressions`.
+""".
 -spec(exprs(Expressions, Indent, Options) -> io_lib:chars() when
       Expressions :: [erl_parse:abstract_expr()],
       Indent :: integer(),
@@ -165,6 +234,7 @@ exprs(Es, I, Options) ->
     ?EXPRS_TEST(Es),
     frmt({seq,[],[],[$,],lexprs(Es, options(Options))}, I, state(Options)).
 
+-doc(#{equiv => expr(Expression, none)}).
 -spec(expr(Expression) -> io_lib:chars() when
       Expression :: erl_parse:abstract_expr()).
 
@@ -172,6 +242,7 @@ expr(E) ->
     ?TEST(E),
     frmt(lexpr(E, 0, options(none)), state(none)).
 
+-doc(#{equiv => expr(Expression, 0, Options)}).
 -spec(expr(Expression, Options) -> io_lib:chars() when
       Expression :: erl_parse:abstract_expr(),
       Options :: options()).
@@ -180,6 +251,7 @@ expr(E, Options) ->
     ?TEST(E),
     frmt(lexpr(E, 0, options(Options)), state(Options)).
 
+-doc(#{equiv => expr(Expression, Indent, 0, Options)}).
 -spec(expr(Expression, Indent, Options) -> io_lib:chars() when
       Expression :: erl_parse:abstract_expr(),
       Indent :: integer(),
@@ -189,6 +261,12 @@ expr(E, I, Options) ->
     ?TEST(E),
     frmt(lexpr(E, 0, options(Options)), I, state(Options)).
 
+-doc """
+Prints one expression.
+
+It is useful for implementing hooks (see section
+[Known Limitations](`m:erl_pp#module-known-limitations`)).
+""".
 -spec(expr(Expression, Indent, Precedence, Options) -> io_lib:chars() when
       Expression :: erl_parse:abstract_expr(),
       Indent :: integer(),
@@ -198,6 +276,49 @@ expr(E, I, Options) ->
 expr(E, I, P, Options) ->
     ?TEST(E),
     frmt(lexpr(E, P, options(Options)), I, state(Options)).
+
+-doc """
+The Erlang compiler will, when expanding records to tuples, introduce new
+variables in the abstract representation. As the expansion is done on the
+abstract representation, the compiler can safely name the new variables with
+names that are not syntactically valid in Erlang source code (the name starts
+with a lowercase letter), thus ensuring the uniqueness of the new names.
+
+The above strategy leads to problems if a user wants to convert the abstract
+representation, using the functions of this module back to Erlang source code.
+Typically, pattern variables are output as atoms thus changing the sematics of
+the program. To solve this problem [`legalize_vars/1`](`legalize_vars/1`), when
+run on the abstract representation of a function, will return an equivalent
+function where all variables will have syntactically valid names.
+""".
+-doc(#{since => <<"OTP 25.0">>}).
+-spec(legalize_vars(Function) -> erl_parse:abstract_form() when
+      Function :: erl_parse:abstract_form()).
+
+legalize_vars({function,ANNO,Name0,Arity,Clauses0}) ->
+    ?TEST(F),
+    %% Collect all used variables in this function and classify them
+    %% as either syntactically valid or not.
+    F = fun({var,_Anno,Name}, {Valid, Invalid}) ->
+                Str = [First|_] = atom_to_list(Name),
+                case First of
+                    X when X >= $a, X =< $z ->
+                        {Valid,Invalid#{Name => Str}};
+                    _ ->
+                        {Valid#{Name => Name},Invalid}
+                end
+        end,
+    {Valid, Invalid} = fold_vars(F, {#{}, #{}}, Clauses0),
+    %% Make up an unique variable name for each key in Invalid, then
+    %% replace all invalid names.
+    Mapping = maps:fold(fun legalize_name/3, Valid, Invalid),
+    Subs = fun({var,Anno,Name}) ->
+                   {var,Anno,map_get(Name, Mapping)}
+           end,
+    Clauses = map_vars(Subs, Clauses0),
+    {function,ANNO,Name0,Arity,Clauses};
+legalize_vars(Form) ->
+    erlang:error(badarg, [Form]).
 
 %%%
 %%% Local functions
@@ -285,6 +406,8 @@ lattribute({attribute,_Anno,type,Type}, Opts) ->
     [typeattr(type, Type, Opts),leaf(".\n")];
 lattribute({attribute,_Anno,opaque,Type}, Opts) ->
     [typeattr(opaque, Type, Opts),leaf(".\n")];
+lattribute({attribute,_Anno,nominal,Type}, Opts) ->
+    [typeattr(nominal, Type, Opts),leaf(".\n")];
 lattribute({attribute,_Anno,spec,Arg}, _Opts) ->
     [specattr(spec, Arg),leaf(".\n")];
 lattribute({attribute,_Anno,callback,Arg}, _Opts) ->
@@ -316,6 +439,9 @@ lattribute(file, {Name,Anno}, _Opts) ->
 lattribute(record, {Name,Is}, Opts) ->
     Nl = [leaf("-record("),{atom,Name},$,],
     [{first,Nl,record_fields(Is, Opts)},$)];
+lattribute(native_record, {Name,Is}, Opts) ->
+    Nl = [leaf("-record #"),{atom,Name}],
+    [{first,Nl,record_fields(Is, Opts)}];
 lattribute(Name, Arg, Options) ->
     attr(Name, [abstract(Arg, Options)]).
 
@@ -551,12 +677,13 @@ lexpr({cons,_,H,T}, _, Opts) ->
 lexpr({lc,_,E,Qs}, _Prec, Opts) ->
     Lcl = {list,[{step,[lexpr(E, Opts),leaf(" ||")],lc_quals(Qs, Opts)}]},
     {list,[{seq,$[,[],[[]],[{force_nl,leaf(" "),[Lcl]}]},$]]};
-    %% {list,[{step,$[,Lcl},$]]};
 lexpr({bc,_,E,Qs}, _Prec, Opts) ->
     P = max_prec(),
     Lcl = {list,[{step,[lexpr(E, P, Opts),leaf(" ||")],lc_quals(Qs, Opts)}]},
     {list,[{seq,'<<',[],[[]],[{force_nl,leaf(" "),[Lcl]}]},'>>']};
-    %% {list,[{step,'<<',Lcl},'>>']};
+lexpr({mc,_,E,Qs}, _Prec, Opts) ->
+    Lcl = {list,[{step,[map_field(E, Opts),leaf(" ||")],lc_quals(Qs, Opts)}]},
+    {list,[{seq,'#{',[],[[]],[{force_nl,leaf(" "),[Lcl]}]},$}]};
 lexpr({tuple,_,Elts}, _, Opts) ->
     tuple(Elts, Opts);
 lexpr({record_index, _, Name, F}, Prec, Opts) ->
@@ -569,11 +696,12 @@ lexpr({record, _, Name, Fs}, Prec, Opts) ->
     Nl = record_name(Name),
     El = {first,Nl,record_fields(Fs, Opts)},
     maybe_paren(P, Prec, El);
-lexpr({record_field, _, Rec, Name, F}, Prec, Opts) ->
+lexpr({record_field, _, Rec, Name0, F}, Prec, Opts) ->
     {L,P,R} = inop_prec('#'),
     Rl = lexpr(Rec, L, Opts),
     Sep = hash_after_integer(Rec, [$#]),
-    Nl = [Sep,{atom,Name},$.],
+    [$#|Name] = record_name(Name0),
+    Nl = [Sep,Name,$.],
     El = [Rl,Nl,lexpr(F, R, Opts)],
     maybe_paren(P, Prec, El);
 lexpr({record, _, Rec, Name, Fs}, Prec, Opts) ->
@@ -675,11 +803,25 @@ lexpr({'catch',_,Expr}, Prec, Opts) ->
     {P,R} = preop_prec('catch'),
     El = {list,[{step,'catch',lexpr(Expr, R, Opts)}]},
     maybe_paren(P, Prec, El);
+lexpr({'maybe',_,Es}, _, Opts) ->
+    {list,[{step,'maybe',body(Es, Opts)},{reserved,'end'}]};
+lexpr({'maybe',_,Es,{'else',_,Cs}}, _, Opts) ->
+    {list,[{step,'maybe',body(Es, Opts)},{step,'else',cr_clauses(Cs, Opts)},{reserved,'end'}]};
+lexpr({maybe_match,_,Lhs,Rhs}, _, Opts) ->
+    Pl = lexpr(Lhs, 0, Opts),
+    Rl = lexpr(Rhs, 0, Opts),
+    {list,[{cstep,[Pl,leaf(" ?=")],Rl}]};
 lexpr({match,_,Lhs,Rhs}, Prec, Opts) ->
     {L,P,R} = inop_prec('='),
     Pl = lexpr(Lhs, L, Opts),
     Rl = lexpr(Rhs, R, Opts),
     El = {list,[{cstep,[Pl,' ='],Rl}]},
+    maybe_paren(P, Prec, El);
+lexpr({op,_,Op,Arg}, Prec, Opts) when Op =:= '+';
+                                      Op =:= '-' ->
+    {P,R} = preop_prec(Op),
+    Ol = {reserved, leaf(atom_to_list(Op))},
+    El = [Ol,lexpr(Arg, R, Opts)],
     maybe_paren(P, Prec, El);
 lexpr({op,_,Op,Arg}, Prec, Opts) ->
     {P,R} = preop_prec(Op),
@@ -711,6 +853,10 @@ lexpr({remote,_,M,F}, Prec, Opts) ->
 %% BIT SYNTAX:
 lexpr({bin,_,Fs}, _, Opts) ->
     bit_grp(Fs, Opts);
+lexpr({debug_line,Line,Index}, _Prec, _Opts) ->
+    leaf(format("beam_instruction:debug_line(~p, ~p)", [Line,Index]));
+lexpr({executable_line,Line,Index}, _Prec, _Opts) ->
+    leaf(format("beam_instruction:executable_line(~p, ~p)", [Line,Index]));
 %% Special case for straight values.
 lexpr({value,_,Val}, _,_) ->
     {value,Val};
@@ -782,8 +928,12 @@ bit_elem_type(T) ->
 
 %% end of BITS
 
-record_name(Name) ->
-    [$#,{atom,Name}].
+record_name({M, N}) when is_atom(M), is_atom(N) ->
+    [$#,{atom,M},$:,{atom,N}];
+record_name([]) ->
+    [$#, $_];
+record_name(M) when is_atom(M) ->
+    [$#,{atom,M}].
 
 record_fields(Fs, Opts) ->
     tuple(Fs, fun record_field/2, Opts).
@@ -913,12 +1063,26 @@ clauses(Type, Opts, Cs) ->
 lc_quals(Qs, Opts) ->
     {prefer_nl,[$,],lexprs(Qs, fun lc_qual/2, Opts)}.
 
+lc_qual({zip,_,Qs}, Opts) ->
+    {prefer_nl,["&&"],lexprs(Qs, fun lc_qual/2, Opts)};
+lc_qual({m_generate,_,Pat,E}, Opts) ->
+    Pl = map_field(Pat, Opts),
+    {list,[{step,[Pl,leaf(" <-")],lexpr(E, 0, Opts)}]};
+lc_qual({m_generate_strict,_,Pat,E}, Opts) ->
+    Pl = map_field(Pat, Opts),
+    {list,[{step,[Pl,leaf(" <:-")],lexpr(E, 0, Opts)}]};
 lc_qual({b_generate,_,Pat,E}, Opts) ->
     Pl = lexpr(Pat, 0, Opts),
     {list,[{step,[Pl,leaf(" <=")],lexpr(E, 0, Opts)}]};
+lc_qual({b_generate_strict,_,Pat,E}, Opts) ->
+    Pl = lexpr(Pat, 0, Opts),
+    {list,[{step,[Pl,leaf(" <:=")],lexpr(E, 0, Opts)}]};
 lc_qual({generate,_,Pat,E}, Opts) ->
     Pl = lexpr(Pat, 0, Opts),
     {list,[{step,[Pl,leaf(" <-")],lexpr(E, 0, Opts)}]};
+lc_qual({generate_strict,_,Pat,E}, Opts) ->
+    Pl = lexpr(Pat, 0, Opts),
+    {list,[{step,[Pl,leaf(" <:-")],lexpr(E, 0, Opts)}]};
 lc_qual(Q, Opts) ->
     lexpr(Q, 0, Opts).
 
@@ -1274,7 +1438,7 @@ write_a_string([], _N, _Len, _PP) ->
 write_a_string(S, N, Len, PP) ->
     SS = string:slice(S, 0, N),
     Sl = write_string(SS, PP),
-    case (string:length(Sl) > Len) and (N > ?MIN_SUBSTRING) of
+    case string:length(Sl) > Len andalso N > ?MIN_SUBSTRING of
         true ->
             write_a_string(S, N-1, Len, PP);
         false ->
@@ -1324,7 +1488,7 @@ wordtable() ->
     L = [begin {leaf,Sz,S} = leaf(W), {S,Sz} end ||
             W <- [" ->"," =","<<",">>","[]","after","begin","case","catch",
                   "end","fun","if","of","receive","try","when"," ::","..",
-                  " |"]],
+                  " |","maybe","else","#{"]],
     list_to_tuple(L).
 
 word(' ->', WT) -> element(1, WT);
@@ -1345,4 +1509,40 @@ word('try', WT) -> element(15, WT);
 word('when', WT) -> element(16, WT);
 word(' ::', WT) -> element(17, WT);
 word('..', WT) -> element(18, WT);
-word(' |', WT) -> element(19, WT).
+word(' |', WT) -> element(19, WT);
+word('maybe', WT) -> element(20, WT);
+word('else', WT) -> element(21, WT);
+word('#{', WT) -> element(22, WT).
+
+%% Make up an unique variable name for Name that won't clash with any
+%% name in Used. We first try by converting the name to uppercase and
+%% if that fails we start prepending 'X'es until we find an unused
+%% name.
+legalize_name(InvalidName, StringName, Used) ->
+    Upper = string:to_upper(StringName),
+    NewName = list_to_atom(Upper),
+    case Used of
+        #{ NewName := _ } ->
+            legalize_name(InvalidName, [$X|StringName], Used);
+        #{} ->
+            Used#{ InvalidName => NewName }
+    end.
+
+fold_vars(F, Acc0, Forms) when is_list(Forms) ->
+    lists:foldl(fun(Elem, Acc) -> fold_vars(F, Acc, Elem) end, Acc0, Forms);
+fold_vars(F, Acc0, V={var,_,_}) ->
+    F(V, Acc0);
+fold_vars(F, Acc0, Form) when is_tuple(Form) ->
+    lists:foldl(fun(Elem, Acc) -> fold_vars(F, Acc, Elem) end,
+                Acc0, tuple_to_list(Form));
+fold_vars(_, Acc, _) ->
+    Acc.
+
+map_vars(F, Forms) when is_list(Forms) ->
+    [map_vars(F, Form) || Form <- Forms];
+map_vars(F, V={var,_,_}) ->
+    F(V);
+map_vars(F, Form) when is_tuple(Form) ->
+    list_to_tuple([map_vars(F, Elem) || Elem <- tuple_to_list(Form)]);
+map_vars(_, Form) ->
+    Form.

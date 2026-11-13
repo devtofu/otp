@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2004-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2004-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -24,6 +26,9 @@
 %%% called from the test_server.
 
 -module(ct_framework).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
 
 -export([init_tc/3, end_tc/3, end_tc/4, get_suite/2, get_all_cases/1]).
 -export([report/2, warn/1, error_notification/4]).
@@ -408,8 +413,8 @@ add_defaults1(Mod,Func, GroupPath, SuiteInfo) ->
 		    %% find and save require terms found in suite info
 		    SuiteReqs = 
 			[SDDef || SDDef <- SuiteInfo,
-				  ((require == element(1,SDDef))
-				   or (default_config == element(1,SDDef)))],
+				  require == element(1,SDDef)
+				  orelse default_config == element(1,SDDef)],
 		    case check_for_clashes(TestCaseInfo, GroupPathInfo,
 					   SuiteReqs) of
 			[] ->
@@ -443,7 +448,7 @@ get_suite_name(Mod, _) ->
 %% Check that alias names are not already in use
 check_for_clashes(TCInfo, [CurrGrInfo|Path], SuiteInfo) ->
     ReqNames = fun(Info) -> [element(2,R) || R <- Info,
-					     size(R) == 3,
+                                             tuple_size(R) == 3,
 					     require == element(1,R)]
 	       end,
     ExistingNames = lists:flatten([ReqNames(L)  || L <- [SuiteInfo|Path]]),
@@ -460,13 +465,12 @@ remove_info_in_prev(Terms, [[] | Rest]) ->
     [[] | remove_info_in_prev(Terms, Rest)];
 remove_info_in_prev(Terms, [Info | Rest]) ->
     UniqueInInfo = [U || U <- Info,
-			  ((timetrap == element(1,U)) and
-			   (not lists:keymember(timetrap,1,Terms))) or 
-			  ((require == element(1,U)) and
-			   (not lists:member(U,Terms))) or
-			  ((default_config == element(1,U)) and
-                           (not keysmember([default_config,1,
-					    element(2,U),2], Terms)))],
+			  timetrap == element(1, U) andalso
+			  not lists:keymember(timetrap, 1, Terms) orelse
+			  require == element(1, U) andalso
+			  not lists:member(U,Terms) orelse
+			  default_config == element(1,U) andalso
+                          not keysmember([default_config, 1, element(2, U), 2], Terms)],
     OtherTermsInInfo = [T || T <- Info,
 			     timetrap /= element(1,T),
 			     require /= element(1,T),
@@ -606,6 +610,8 @@ configure([{timetrap,Time}|Rest],Info,SuiteInfo,Scope,PostInitHook,Config) ->
     configure(Rest,Info,SuiteInfo,Scope,PostInitHook1,Config);
 configure([{ct_hooks,Hook}|Rest],Info,SuiteInfo,Scope,PostInitHook,Config) ->
     configure(Rest,Info,SuiteInfo,Scope,PostInitHook,[{ct_hooks,Hook}|Config]);
+configure([{ct_hooks_order,Order}|Rest],Info,SuiteInfo,Scope,PostInitHook,Config) ->
+    configure(Rest,Info,SuiteInfo,Scope,PostInitHook,[{ct_hooks_order,Order}|Config]);
 configure([_|Rest],Info,SuiteInfo,Scope,PostInitHook,Config) ->
     configure(Rest,Info,SuiteInfo,Scope,PostInitHook,Config);
 configure([],_,_,_,PostInitHook,Config) ->
@@ -663,6 +669,10 @@ end_tc(Mod, Fun, Args) ->
     %% Have to keep end_tc/3 for backwards compatibility issues
     end_tc(Mod, Fun, Args, '$end_tc_dummy').
 end_tc(?MODULE,error_in_suite,{Result,[Args]},Return) ->
+    case proplists:get_value(force_failed, Args) of
+		undefined -> ok;
+		_ -> add_to_stats(failed)
+    end,
     %% this clause gets called if CT has encountered a suite that
     %% can't be executed
     FinalNotify =
@@ -735,7 +745,7 @@ end_tc(Mod,Func00,TCPid,Result,Args,Return) ->
 	    %% clean up any saved comments
 	    ct_util:match_delete_testdata({comment,'_'});
        true ->
-	    %% attemp to delete any saved comment for this TC
+	    %% attempt to delete any saved comment for this TC
 	    case process_info(TCPid, group_leader) of
 		{group_leader,TCGL} ->
 		    ct_util:delete_testdata({comment,TCGL});
@@ -932,7 +942,7 @@ error_notification(Mod,Func,_Args,{Error,Loc}) ->
 	      end,
     ErrorStr = case ErrorSpec of
 		 {badmatch,Descr} ->
-                     Descr1 = io_lib:format("~tP",[Descr,10]),
+                     Descr1 = io_lib:format("~0tP",[Descr,10]),
                      DescrLength = string:length(Descr1),
                      if DescrLength > 50 ->
 			     Descr2 = string:slice(Descr1,0,50),
@@ -940,10 +950,19 @@ error_notification(Mod,Func,_Args,{Error,Loc}) ->
 			true ->
 			     io_lib:format("{badmatch,~ts}",[Descr1])
 		     end;
+		 {'EXIT',Descr} ->
+                     Descr1 = io_lib:format("~0tP",[Descr,10]),
+                     DescrLength = string:length(Descr1),
+                     if DescrLength > 50 ->
+			     Descr2 = string:slice(Descr1,0,50),
+			     io_lib:format("{'EXIT',~ts...}",[Descr2]);
+			true ->
+			     io_lib:format("{'EXIT',~ts}",[Descr1])
+		     end;
 		 {test_case_failed,Reason} ->
 		     case (catch io_lib:format("{test_case_failed,~ts}", [Reason])) of
 			 {'EXIT',_} ->
-			     io_lib:format("{test_case_failed,~tp}", [Reason]);
+			     io_lib:format("{test_case_failed,~tkp}", [Reason]);
 			 Result -> Result
 		     end;
 		 Other ->
@@ -1004,17 +1023,21 @@ error_notification(Mod,Func,_Args,{Error,Loc}) ->
 	%% if a function specified by all/0 does not exist, we
 	%% pick up undef here
 	[{LastMod,LastFunc}|_] when ErrorStr == "undef" ->
-	    PrintError("~w:~tw could not be executed~nReason: ~ts",
-		     [LastMod,LastFunc,ErrorStr]);
+	    LastSource = error_notification_source_info(LastMod),
+	    PrintError("~w:~tw at ~ts could not be executed~nReason: ~ts",
+		     [LastMod,LastFunc,LastSource,ErrorStr]);
 
 	[{LastMod,LastFunc}|_] ->
-	    PrintError("~w:~tw failed~nReason: ~ts", [LastMod,LastFunc,ErrorStr]);
+	    LastSource = error_notification_source_info(LastMod),
+	    PrintError("~w:~tw at ~ts failed~nReason: ~ts",
+		     [LastMod,LastFunc,LastSource,ErrorStr]);
 	    
 	[{LastMod,LastFunc,LastLine}|_] ->
 	    %% print error to console, we are only
 	    %% interested in the last executed expression
-	    PrintError("~w:~tw failed on line ~w~nReason: ~ts",
-		     [LastMod,LastFunc,LastLine,ErrorStr]),
+	    LastSource = error_notification_source_info(LastMod),
+	    PrintError("~w:~tw at ~ts:~w failed~nReason: ~ts",
+		     [LastMod,LastFunc,LastSource,LastLine,ErrorStr]),
 	    
 	    case ct_util:read_suite_data({seq,Mod,Func}) of
 		undefined ->
@@ -1025,6 +1048,16 @@ error_notification(Mod,Func,_Args,{Error,Loc}) ->
 	    end	    
     end,
     ok.
+
+error_notification_source_info(Mod) ->
+    maybe
+	{Mod, Beam, _} ?= code:get_object_code(Mod),
+	{ok, {Mod, [{abstract_code, {_, Forms}}]}} ?= beam_lib:chunks(Beam, [abstract_code]),
+	[{attribute, _, file, {File, _}}|_] ?= Forms,
+	File
+    else
+	_ -> atom_to_list(Mod) ++ ".erl"
+    end.
 
 %% cases in seq that have already run
 mark_as_failed(Seq,Mod,Func,[Func|TCs]) ->
@@ -1219,9 +1252,9 @@ get_all(Mod, ConfTests) ->
                     expand_tests(Mod, Tests)
             catch
                 throw:{error,Error} ->
-                    [{?MODULE,error_in_suite,[[{error,Error}]]}];
+                    [{?MODULE,error_in_suite,[[{error,Error},{force_failed,true}]]}];
                 _:Error:S ->
-                    [{?MODULE,error_in_suite,[[{error,{Error,S}}]]}]
+                    [{?MODULE,error_in_suite,[[{error,{Error,S}},{force_failed,true}]]}]
             end;
         Skip = {skip,_Reason} ->
 	    Skip;
@@ -1412,11 +1445,11 @@ end_per_group(GroupName, _) ->
 report(What,Data) ->
     case What of
 	loginfo ->
-	    %% logfiles and direcories have been created for a test and the
+	    %% logfiles and directories have been created for a test and the
 	    %% top level test index page needs to be refreshed
 	    TestName = filename:basename(?val(topdir, Data), ".logs"),
 	    RunDir = ?val(rundir, Data),
-	    _ = ct_logs:make_all_suites_index({TestName,RunDir}),
+	    _ = ct_logs:make_all_suites_index({TestName,RunDir},unknown),
 	    ok;
 	tests_start ->
 	    ok;

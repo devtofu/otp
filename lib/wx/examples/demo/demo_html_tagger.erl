@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2009-2015. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2009-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,11 +21,13 @@
 
 -module(demo_html_tagger).
 
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
+
 %% You will notice that this program has very few type declarations
 %% That's because this program uses some pretty dodgy techniques to
 %% get at the data it requires.
 
-%% I use epp_dodger to parse the file and the new imporved erl_scan
+%% I use epp_dodger to parse the file and the new improved erl_scan
 %% find the exact values of the tokens
 
 %% epp_dodger returns an objects of type erl_syntax which are pretty

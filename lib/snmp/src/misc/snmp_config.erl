@@ -1,7 +1,9 @@
 %% 
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,15 +21,19 @@
 %% 
 
 -module(snmp_config).
+-moduledoc false.
 
 -include_lib("kernel/include/file.hrl").
 -include("snmp_types.hrl").
+-include("snmp_usm.hrl").
+-include("snmp_internal.hrl").
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}},
+          {nowarn_unsafe_function, {os, cmd, 1}}]).
 
 %% Avoid warning for local function error/1 clashing with autoimported BIF.
 -compile({no_auto_import,[error/1]}).
 -export([config/0]).
-
-%%-export([write_config_file/4, append_config_file/4, read_config_file/4]).
 
 -export([write_config_file/6, append_config_file/6, read_config_file/4]).
 
@@ -505,7 +511,7 @@ config_agent_transports(ID) ->
     config_agent_transports(ID, []).
 
 config_agent_transports(ID, []) ->
-    i(ID ++ ". Configure atleast one transport: "),
+    i(ID ++ ". Configure at least one transport: "),
     T = config_agent_transport(ID),
     config_agent_transports(ID, [T]);
 config_agent_transports(ID, Acc) ->
@@ -581,7 +587,7 @@ config_agent_snmp(Dir, Vsns) ->
 		     "minimum", 
 		    fun verify_sec_type/1),
     Passwd = 
-	case lists:member(v3, Vsns) and (SecType /= none) of
+	case lists:member(v3, Vsns) andalso (SecType /= none) of
 	    true ->
 		ensure_crypto_started(),
 		ask("8b. Give a password of at least length 8. It is used to "
@@ -635,7 +641,7 @@ config_agent_snmp(Dir, Vsns) ->
 	     "read/write~n"
 	     "         access to the \"internet\" subtree."),
 	   i("      3. Standard traps are sent to the manager."),
-	   case lists:member(v1, Vsns) or lists:member(v2, Vsns) of
+	   case lists:member(v1, Vsns) orelse lists:member(v2, Vsns) of
 	       true ->
 		   i("      4. Community \"public\" is mapped to security name"
 		     " \"initial\"."),
@@ -946,7 +952,8 @@ config_manager_snmp_usm() ->
     UserName = ask("7b. User name?", mandatory, fun verify_usm_name/1),
     SecName  = ask("7c. Security name?", UserName,
 		   fun verify_usm_sec_name/1),
-    AuthP    = ask("7d. Authentication protocol (no/sha/md5)?", "no",
+    AuthP    = ask("7d. Authentication protocol "
+                     "(no/md5/sha/sha224/sha256/sha384/sha512)?", "no",
 		   fun verify_usm_auth_protocol/1),
     AuthKey  = ask_auth_key("7e", AuthP), 
     PrivP    = ask("7e. Priv protocol (no/des/aes)?", "no",
@@ -1010,7 +1017,7 @@ default_dir(Component, DefDir) ->
 	    IsManagerDir = is_members(ManagerConfs, Files),
 	    Warning = 
 		if
-		    IsAgentDir and IsManagerDir ->
+		    IsAgentDir, IsManagerDir ->
 			"Note that the default directory contains both agent and manager config files";
 		    IsAgentDir ->
 			"Note that the default directory contains agent config files";
@@ -1027,12 +1034,36 @@ default_dir(Component, DefDir) ->
 
 ask_auth_key(_Prefix, usmNoAuthProtocol) ->
     "";
+ask_auth_key(Prefix, usmHMACMD5AuthProtocol) ->
+    ask(Prefix ++ "  Authentication [md5] key (length 0 or 16)?", "\"\"",
+	fun verify_usm_auth_md5_key/1);
 ask_auth_key(Prefix, usmHMACSHAAuthProtocol) ->
     ask(Prefix ++ "  Authentication [sha] key (length 0 or 20)?", "\"\"",
 	fun verify_usm_auth_sha_key/1);
-ask_auth_key(Prefix, usmHMACMD5AuthProtocol) ->
-    ask(Prefix ++ "  Authentication [md5] key (length 0 or 16)?", "\"\"",
-	fun verify_usm_auth_md5_key/1).
+ask_auth_key(Prefix, usmHMAC128SHA224AuthProtocol) ->
+    ask(Prefix ++ 
+            f("  Authentication [~w] key (length 0 or ~w)?",
+              [sha224, ?usmHMAC128SHA224AuthProtocol_secret_key_length]),
+        "\"\"",
+	fun verify_usm_auth_sha224_key/1);
+ask_auth_key(Prefix, usmHMAC192SHA256AuthProtocol) ->
+    ask(Prefix ++ 
+            f("  Authentication [~w] key (length 0 or ~w)?",
+              [sha256, ?usmHMAC192SHA256AuthProtocol_secret_key_length]),
+        "\"\"",
+	fun verify_usm_auth_sha256_key/1);
+ask_auth_key(Prefix, usmHMAC256SHA384AuthProtocol) ->
+    ask(Prefix ++ 
+            f("  Authentication [~w] key (length 0 or ~w)?",
+              [sha384, ?usmHMAC256SHA384AuthProtocol_secret_key_length]),
+        "\"\"",
+	fun verify_usm_auth_sha384_key/1);
+ask_auth_key(Prefix, usmHMAC384SHA512AuthProtocol) ->
+    ask(Prefix ++ 
+            f("  Authentication [~w] key (length 0 or ~w)?",
+              [sha512, ?usmHMAC384SHA512AuthProtocol_secret_key_length]),
+        "\"\"",
+	fun verify_usm_auth_sha512_key/1).
 
 ask_priv_key(_Prefix, usmNoPrivProtocol) ->
     "";
@@ -1079,7 +1110,7 @@ verify_max_message_size(MMS) ->
 	I when is_integer(I) andalso (I >= 484) ->
 	    {ok, I};
 	I when is_integer(I) ->
-	    {error, "invalid max message size (must be atleast 484): " ++ MMS};
+	    {error, "invalid max message size (must be at least 484): " ++ MMS};
 	_ ->
 	    {error, "invalid max message size: " ++ MMS}
     end.
@@ -1143,7 +1174,7 @@ verify_db_init_error(R) ->
 
 verify_notif_type("trap")   -> {ok, trap};
 verify_notif_type("inform") -> {ok, inform};
-verify_notif_type(NT)       -> {error, "invalid notifcation type: " ++ NT}.
+verify_notif_type(NT)       -> {error, "invalid notification type: " ++ NT}.
 
 
 verify_sec_type("none")     -> {ok, none};
@@ -1545,18 +1576,38 @@ verify_usm_sec_name(Name) ->
 
 verify_usm_auth_protocol("no") ->
     {ok, usmNoAuthProtocol};
-verify_usm_auth_protocol("sha") ->
-    {ok, usmHMACSHAAuthProtocol};
 verify_usm_auth_protocol("md5") ->
     {ok, usmHMACMD5AuthProtocol};
+verify_usm_auth_protocol("sha") ->
+    {ok, usmHMACSHAAuthProtocol};
+verify_usm_auth_protocol("sha224") ->
+    {ok, usmHMAC128SHA224AuthProtocol};
+verify_usm_auth_protocol("sha256") ->
+    {ok, usmHMAC192SHA256AuthProtocol};
+verify_usm_auth_protocol("sha384") ->
+    {ok, usmHMAC256SHA384AuthProtocol};
+verify_usm_auth_protocol("sha512") ->
+    {ok, usmHMAC384SHA512AuthProtocol};
 verify_usm_auth_protocol(AuthP) ->
     {error, "invalid auth protocol: " ++ AuthP}.
+
+verify_usm_auth_md5_key(Key) ->
+    verify_usm_key("auth md5", Key, 16).
 
 verify_usm_auth_sha_key(Key) ->
     verify_usm_key("auth sha", Key, 20).
 
-verify_usm_auth_md5_key(Key) ->
-    verify_usm_key("auth md5", Key, 16).
+verify_usm_auth_sha224_key(Key) ->
+    verify_usm_key("auth sha224", Key, ?usmHMAC128SHA224AuthProtocol_secret_key_length).
+
+verify_usm_auth_sha256_key(Key) ->
+    verify_usm_key("auth sha256", Key, ?usmHMAC192SHA256AuthProtocol_secret_key_length).
+
+verify_usm_auth_sha384_key(Key) ->
+    verify_usm_key("auth sha384", Key, ?usmHMAC256SHA384AuthProtocol_secret_key_length).
+
+verify_usm_auth_sha512_key(Key) ->
+    verify_usm_key("auth sha512", Key, ?usmHMAC384SHA512AuthProtocol_secret_key_length).
 
 verify_usm_priv_protocol("no") ->
     {ok, usmNoPrivProtocol};
@@ -1630,7 +1681,7 @@ print_q(Q, Default) when is_list(Default) ->
 %% Defval = string() | mandatory
 ask(Q, Default, Verify) when is_list(Q) andalso is_function(Verify) ->
     print_q(Q, Default),
-    PrelAnsw = io:get_line(''),
+    PrelAnsw = conv_bin_to_list(io:get_line('')),
     Answer = 
 	case remove_newline(PrelAnsw) of
 	    "" when Default =/= mandatory -> Default;
@@ -1693,7 +1744,12 @@ guess_engine_name() ->
 % 	{_,_} -> "user_id"
 %     end.
 
-    
+% This is neccessary as in Elixir io:get_line returns a binary
+conv_bin_to_list(Bin) when is_binary(Bin) ->
+	binary:bin_to_list(Bin);
+conv_bin_to_list(Str) ->
+	Str.
+
 remove_newline(Str) -> 
     lists:delete($\n, Str).
 
@@ -1759,8 +1815,8 @@ write_agent_snmp_files(
       NotifyType         :: trap | inform,
       SecType            :: none | minimum | {semi, des | aes},
       Passwd             :: list(),
-      EngineID           :: snmp:engine_id(),
-      MMS                :: snmp:mms();
+      EngineID           :: snmp_framework_mib:engine_id(),
+      MMS                :: snmp_framework_mib:max_message_size();
 
                             (Dir, Vsns,
                              TransportDomain, ManagerAddr, AgentAddr,
@@ -1776,8 +1832,8 @@ write_agent_snmp_files(
       NotifyType         :: trap | inform,
       SecType            :: none | minimum | {semi, des | aes},
       Passwd             :: list(),
-      EngineID           :: snmp:engine_id(),
-      MMS                :: snmp:mms().
+      EngineID           :: snmp_framework_mib:engine_id(),
+      MMS                :: snmp_framework_mib:max_message_size().
 
 write_agent_snmp_files(
   Dir, Vsns, TransportDomain, ManagerAddr, AgentPreTransports, SysName,
@@ -1883,28 +1939,50 @@ write_agent_snmp_files(
 
 write_agent_snmp_conf(Dir, Transports, EngineID, MMS) ->
     Conf =
-	[{intAgentTransports,       Transports},
-	 {snmpEngineID,             EngineID},
-	 {snmpEngineMaxMessageSize, MMS}],
+	[snmpa_conf:agent_entry(intAgentTransports,       Transports),
+	 snmpa_conf:agent_entry(snmpEngineID,             EngineID),
+	 snmpa_conf:agent_entry(snmpEngineMaxMessageSize, MMS)],
     do_write_agent_snmp_conf(Dir, Conf).
 
 write_agent_snmp_conf(Dir, Domain, AgentAddr, EngineID, MMS)
   when is_atom(Domain) ->
-    {AgentIP, AgentUDP} = AgentAddr,
+    Transport =
+        case Domain of
+            snmpUDPDomain ->
+                {transportDomainUdpIpv4, AgentAddr};
+            _ ->
+                {Domain, AgentAddr}
+        end,
     Conf =
-	[{intAgentTransportDomain,  Domain},
-	 {intAgentUDPPort,          AgentUDP},
-	 {intAgentIpAddress,        AgentIP},
-	 {snmpEngineID,             EngineID},
-	 {snmpEngineMaxMessageSize, MMS}],
+	[snmpa_conf:agent_entry(intAgentTransports,       [Transport]),
+	 snmpa_conf:agent_entry(snmpEngineID,             EngineID),
+	 snmpa_conf:agent_entry(snmpEngineMaxMessageSize, MMS)],
     do_write_agent_snmp_conf(Dir, Conf);
 write_agent_snmp_conf(Dir, AgentIP, AgentUDP, EngineID, MMS)
   when is_integer(AgentUDP) ->
+    AgentAddr = {AgentIP, AgentUDP},
+    Domain =
+        if
+            is_tuple(AgentIP) ->
+                case tuple_size(AgentIP) of
+                    4 ->
+                        transportDomainUdpIpv4;
+                    8 ->
+                        transportDomainUdpIpv6
+                end;
+            is_list(AgentIP) ->
+                case length(AgentIP) of
+                    4 ->
+                        transportDomainUdpIpv4;
+                    8 ->
+                        transportDomainUdpIpv6
+                end
+        end,
+    Transport = {Domain, AgentAddr},
     Conf =
-	[{intAgentUDPPort,          AgentUDP},
-	 {intAgentIpAddress,        AgentIP},
-	 {snmpEngineID,             EngineID},
-	 {snmpEngineMaxMessageSize, MMS}],
+	[snmpa_conf:agent_entry(intAgentTransports,       [Transport]),
+	 snmpa_conf:agent_entry(snmpEngineID,             EngineID),
+	 snmpa_conf:agent_entry(snmpEngineMaxMessageSize, MMS)],
     do_write_agent_snmp_conf(Dir, Conf);
 write_agent_snmp_conf(_Dir, Domain, AgentAddr, _EngineID, _MMS) ->
     error({bad_address, {Domain, AgentAddr}}).
@@ -1952,7 +2030,7 @@ write_agent_snmp_context_conf(Dir) ->
 "%% \"bridge2\".\n"
 "%%\n\n",
     Hdr = header() ++ Comment,
-    Conf = [""],
+    Conf = [snmpa_conf:context_entry("")],
     write_agent_context_config(Dir, Hdr, Conf).
 
 write_agent_context_config(Dir, Hdr, Conf) ->
@@ -1979,9 +2057,12 @@ write_agent_snmp_community_conf(Dir) ->
 "%% {\"3\", \"bridge1\", \"initial\", \"bridge1\", \"\"}.\n"
 "%%\n\n",
     Hdr = header() ++ Comment,
-    Conf = [{"public", "public", "initial", "", ""}, 
-	    {"all-rights", "all-rights", "all-rights", "", ""}, 
-	    {"standard trap", "standard trap", "initial", "", ""}], 
+    Conf = [snmpa_conf:community_entry("public",
+                                       "public", "initial", "", ""),
+	    snmpa_conf:community_entry("all-rights",
+                                       "all-rights", "all-rights", "", ""), 
+	    snmpa_conf:community_entry("standard trap",
+                                       "standard trap", "initial", "", "")], 
     write_agent_community_config(Dir, Hdr, Conf).
 
 write_agent_community_config(Dir, Hdr, Conf) ->
@@ -2010,13 +2091,22 @@ write_agent_snmp_standard_conf(Dir, SysName) ->
 "%% {snmpEnableAuthenTraps, enabled}.\n"
 "%%\n\n",
     Hdr = header() ++ Comment,
-    Conf = [{sysDescr,              "Erlang SNMP agent"},
-	    {sysObjectID,           [1,2,3]},
-	    {sysContact,            "{mbj,eklas}@erlang.ericsson.se"},
-	    {sysLocation,           "erlang"}, 
-	    {sysServices,           72}, 
-	    {snmpEnableAuthenTraps, enabled},
-	    {sysName,               SysName}],
+    Conf =
+        [
+         snmpa_conf:standard_entry(
+           sysDescr,              "Erlang SNMP agent"),
+         snmpa_conf:standard_entry(
+           sysObjectID,           [1,2,3]),
+         snmpa_conf:standard_entry(
+           sysContact,            "{mbj,eklas}@erlang.ericsson.se"),
+         snmpa_conf:standard_entry(
+           sysLocation,           "erlang"),
+         snmpa_conf:standard_entry(
+           sysServices,           72),
+         snmpa_conf:standard_entry(
+           snmpEnableAuthenTraps, enabled),
+         snmpa_conf:standard_entry(
+           sysName,               SysName)],
     write_agent_standard_config(Dir, Hdr, Conf).
 
 write_agent_standard_config(Dir, Hdr, Conf) ->
@@ -2061,45 +2151,81 @@ write_agent_snmp_target_addr_conf(
 "%%  [127,0,0,0],  2048}.\n"
 "%%\n\n",
     Hdr = header() ++ Comment,
-    Conf =
-	lists:foldl(
-	  fun ({Domain_or_Ip, Addr_or_Port} = Address, OuterAcc) ->
-		  lists:foldl(
-		    fun(v1 = Vsn, Acc) ->
-			    [{mk_name(Address, Vsn),
-			      Domain_or_Ip, Addr_or_Port,
-			      Timeout, RetryCount,
-			      "std_trap", mk_param(Vsn), "",
-			      [], 2048}| Acc];
-		       (v2 = Vsn, Acc) ->
-			    [{mk_name(Address, Vsn),
-			      Domain_or_Ip, Addr_or_Port,
-			      Timeout, RetryCount,
-			      "std_trap", mk_param(Vsn), "",
-			      [], 2048},
-			       {lists:flatten(
-				  io_lib:format(
-				    "~s.2", [mk_name(Address, Vsn)])),
-				Domain_or_Ip, Addr_or_Port,
-				Timeout, RetryCount,
-				"std_inform", mk_param(Vsn), "",
-				[], 2048}| Acc];
-		       (v3 = Vsn, Acc) ->
-			    [{mk_name(Address, Vsn),
-			      Domain_or_Ip, Addr_or_Port,
-			      Timeout, RetryCount,
-			      "std_trap", mk_param(Vsn), "",
-			      [], 2048},
-			     {lists:flatten(
-				io_lib:format(
-				  "~s.3", [mk_name(Address, Vsn)])),
-			      Domain_or_Ip, Addr_or_Port,
-			      Timeout, RetryCount,
-			      "std_inform", mk_param(Vsn), "mgrEngine",
-			      [], 2048} | Acc]
-		    end, OuterAcc, Vsns)
-	  end, [], Addresses),
+    Conf = process_ata_addresses(Addresses, Timeout, RetryCount, Vsns),
     write_agent_target_addr_config(Dir, Hdr, Conf).
+
+process_ata_addresses(Addresses, Timeout, RetryCount, Vsns) ->
+    process_ata_addresses(Addresses, Timeout, RetryCount, Vsns, []).
+
+process_ata_addresses([], _Timeout, _RetryCount, _Vsns, Acc) ->
+    lists:reverse(lists:flatten(Acc));
+process_ata_addresses([Address|Addresses], Timeout, RetryCount, Vsns, Acc) ->
+    VAddrs = process_ata_vsns(Address, Timeout, RetryCount, Vsns),
+    process_ata_addresses(Addresses, Timeout, RetryCount, Vsns, [VAddrs | Acc]).
+
+process_ata_vsns(Address, Timeout, RetryCount, Vsns) ->
+    process_ata_vsns(Address, Timeout, RetryCount, Vsns, []).
+
+process_ata_vsns(_Address, _Timeout, _RetryCount, [], Acc) ->
+    lists:reverse(Acc);
+process_ata_vsns(Address, Timeout, RetryCount, [v1 = Vsn|Vsns], Acc) ->
+    {Domain, Addr} = process_ata_address(Address),
+    Name           = mk_name(Address, Vsn),
+    ParamsName     = mk_param(Vsn),
+    process_ata_vsns(
+      Address, Timeout, RetryCount, Vsns,
+      [snmpa_conf:target_addr_entry(Name,
+                                    Domain, Addr,
+                                    Timeout, RetryCount,
+                                    "std_trap", ParamsName, "",
+                                    [], 2048) | Acc]);
+process_ata_vsns(Address, Timeout, RetryCount, [v2 = Vsn|Vsns], Acc) ->
+    {Domain, Addr} = process_ata_address(Address),
+    Name           = mk_name(Address, Vsn),
+    ParamsName     = mk_param(Vsn),
+    process_ata_vsns(
+      Address, Timeout, RetryCount, Vsns,
+      [snmpa_conf:target_addr_entry(Name,
+                                    Domain, Addr,
+                                    Timeout, RetryCount,
+                                    "std_trap", ParamsName, "",
+                                    [], 2048),
+       snmpa_conf:target_addr_entry(f("~s.2", [Name]),
+                                    Domain, Addr,
+                                    Timeout, RetryCount,
+                                    "std_inform", ParamsName, "",
+                                    [], 2048) | Acc]);
+process_ata_vsns(Address, Timeout, RetryCount, [v3 = Vsn|Vsns], Acc) ->
+    {Domain, Addr} = process_ata_address(Address),
+    Name           = mk_name(Address, Vsn),
+    ParamsName     = mk_param(Vsn),
+    process_ata_vsns(
+      Address, Timeout, RetryCount, Vsns,
+      [snmpa_conf:target_addr_entry(Name,
+                                    Domain, Addr,
+                                    Timeout, RetryCount,
+                                    "std_trap", ParamsName, "",
+                                    [], 2048),
+       snmpa_conf:target_addr_entry(f("~s.3", [Name]),
+                                    Domain, Addr,
+                                    Timeout, RetryCount,
+                                    "std_inform", ParamsName, "mgrEngine",
+                                    [], 2048) | Acc]).
+
+process_ata_address(Address) ->
+    case Address of
+        {D, _} when is_atom(D) ->
+            Address;
+        {A, P} when ?ip4(A) andalso ?port(P) ->
+            {transportDomainUdpIpv4, Address};
+        {A, P} when ?ip6(A) andalso ?port(P) ->
+            {transportDomainUdpIpv6, Address};
+        _ when ?ip4(Address) ->
+            {transportDomainUdpIpv4, Address};
+        _ when ?ip6(Address) ->
+            {transportDomainUdpIpv6, Address}
+    end.
+    
 
 write_agent_snmp_target_addr_conf(
   Dir, Domain_or_Ip, Addr_or_Port, Timeout, RetryCount, Vsns) ->
@@ -2148,7 +2274,8 @@ write_agent_snmp_target_params_conf(Dir, Vsns) ->
 			 end,
 		    Name = lists:flatten(
 			     io_lib:format("target_~w", [V])),
-		    {Name, MP, SM, "initial", noAuthNoPriv}
+		    snmpa_conf:target_params_entry(Name, MP, SM,
+                                                   "initial", noAuthNoPriv)
 	    end(Vsn) || Vsn <- Vsns],
     write_agent_target_params_config(Dir, Hdr, Conf).
 
@@ -2176,7 +2303,7 @@ write_agent_snmp_notify_conf(Dir, NotifyType) ->
 "%% {\"standard inform\", \"std_inform\", inform}.\n"
 "%%\n\n",
     Hdr = header() ++ Comment, 
-    Conf = [{"standard trap", "std_trap", NotifyType}],
+    Conf = [snmpa_conf:notify_entry("standard trap", "std_trap", NotifyType)],
     write_agent_notify_config(Dir, Hdr, Conf).
 
 write_agent_notify_config(Dir, Hdr, Conf) ->
@@ -2215,10 +2342,10 @@ write_agent_snmp_usm_conf(Dir, EngineID, SecType, Passwd) ->
     write_agent_usm_config(Dir, Hdr, Conf).
 
 write_agent_snmp_usm_conf2(EngineID, none, _Passwd) ->
-    [{EngineID, "initial", "initial", zeroDotZero, 
-      usmNoAuthProtocol, "", "", 
-      usmNoPrivProtocol, "", "", 
-      "", "", ""}];
+    [snmpa_conf:usm_entry(EngineID, "initial", "initial", zeroDotZero,
+                          usmNoAuthProtocol, "", "", 
+                          usmNoPrivProtocol, "", "", 
+                          "", "", "")];
 write_agent_snmp_usm_conf2(EngineID, SecType, Passwd) ->
     Secret16 = agent_snmp_mk_secret(md5, Passwd, EngineID),
     Secret20 = agent_snmp_mk_secret(sha, Passwd, EngineID),
@@ -2231,20 +2358,20 @@ write_agent_snmp_usm_conf2(EngineID, SecType, Passwd) ->
 	    {semi, aes} ->
 		{usmAesCfb128Protocol, Secret16}
 	end,
-    [{EngineID, "initial", "initial", zeroDotZero, 
-      usmHMACMD5AuthProtocol, "", "", 
-      PrivProt, "", "", 
-      "", Secret16, PrivSecret},
+    [snmpa_conf:usm_entry(EngineID, "initial", "initial", zeroDotZero, 
+                          usmHMACMD5AuthProtocol, "", "", 
+                          PrivProt, "", "", 
+                          "", Secret16, PrivSecret),
      
-     {EngineID, "templateMD5", "templateMD5", zeroDotZero, 
-      usmHMACMD5AuthProtocol, "", "", 
-      PrivProt, "", "", 
-      "", Secret16, PrivSecret}, 
+     snmpa_conf:usm_entry(EngineID, "templateMD5", "templateMD5", zeroDotZero, 
+                          usmHMACMD5AuthProtocol, "", "", 
+                          PrivProt, "", "", 
+                          "", Secret16, PrivSecret), 
 
-     {EngineID, "templateSHA", "templateSHA", zeroDotZero, 
-      usmHMACSHAAuthProtocol, "", "", 
-      PrivProt, "", "", 
-      "", Secret20, PrivSecret}].
+     snmpa_conf:usm_entry(EngineID, "templateSHA", "templateSHA", zeroDotZero, 
+                          usmHMACSHAAuthProtocol, "", "", 
+                          PrivProt, "", "", 
+                          "", Secret20, PrivSecret)].
 
 write_agent_usm_config(Dir, Hdr, Conf) ->
     snmpa_conf:write_usm_config(Dir, Hdr, Conf).
@@ -2278,45 +2405,42 @@ write_agent_snmp_vacm_conf(Dir, Vsns, SecType) ->
 "%% {vacmViewTreeFamily, \"internet\", [1,3,6,1], included, null}.\n"
 "%%\n\n",
     Hdr = lists:flatten(header()) ++ Comment,
+    S2GF = fun(SM, SN, GN) -> snmpa_conf:vacm_s2g_entry(SM, SN, GN) end,
+    ACCF = fun(GN, P, SM, SL, M, RV, WV, NV) ->
+                   snmpa_conf:vacm_acc_entry(GN, P, SM, SL, M, RV, WV, NV)
+           end,
+    VTFF = fun(VN, VS, VT, VM) ->
+                   snmpa_conf:vacm_vtf_entry(VN, VS, VT, VM)
+           end,
     Groups = 
 	lists:foldl(
 	  fun(V, Acc) ->
-		  [{vacmSecurityToGroup, vacm_ver(V), 
-		    "initial",    "initial"},
-		   {vacmSecurityToGroup, vacm_ver(V), 
-		    "all-rights", "all-rights"}|
-		   Acc]
+		  [S2GF(vacm_ver(V), "initial",    "initial"),
+		   S2GF(vacm_ver(V), "all-rights", "all-rights") | Acc]
 	  end, [], Vsns),
     Acc = 
-	[{vacmAccess, "initial", "", any, noAuthNoPriv, exact, 
-	  "restricted", "", "restricted"}, 
-	 {vacmAccess, "initial", "", usm, authNoPriv, exact, 
-	  "internet", "internet", "internet"}, 
-	 {vacmAccess, "initial", "", usm, authPriv, exact, 
-	  "internet", "internet", "internet"}, 
-	 {vacmAccess, "all-rights", "", any, noAuthNoPriv, exact, 
-	  "internet", "internet", "internet"}],
+	[ACCF("initial", "", any, noAuthNoPriv, exact,
+              "restricted", "", "restricted"),
+	 ACCF("initial", "", usm, authNoPriv, exact,
+              "internet", "internet", "internet"),
+	 ACCF("initial", "", usm, authPriv, exact,
+              "internet", "internet", "internet"),
+	 ACCF("all-rights", "", any, noAuthNoPriv, exact, 
+              "internet", "internet", "internet")],
     VTF0 = 
 	case SecType of
 	    none ->
-		[{vacmViewTreeFamily, 
-		  "restricted", [1,3,6,1], included, null}];
+		[VTFF("restricted", [1,3,6,1], included, null)];
 	    minimum ->
-		[{vacmViewTreeFamily, 
-		  "restricted", [1,3,6,1], included, null}];
+		[VTFF("restricted", [1,3,6,1], included, null)];
 	    {semi, _} ->
-		[{vacmViewTreeFamily, 
-		  "restricted", [1,3,6,1,2,1,1], included, null},
-		 {vacmViewTreeFamily, 
-		  "restricted", [1,3,6,1,2,1,11], included, null},
-		 {vacmViewTreeFamily, 
-		  "restricted", [1,3,6,1,6,3,10,2,1], included, null},
-		 {vacmViewTreeFamily, 
-		  "restricted", [1,3,6,1,6,3,11,2,1], included, null},
-		 {vacmViewTreeFamily, 
-		  "restricted", [1,3,6,1,6,3,15,1,1], included, null}]
+		[VTFF("restricted", [1,3,6,1,2,1,1],      included, null),
+		 VTFF("restricted", [1,3,6,1,2,1,11],     included, null),
+		 VTFF("restricted", [1,3,6,1,6,3,10,2,1], included, null),
+		 VTFF("restricted", [1,3,6,1,6,3,11,2,1], included, null),
+		 VTFF("restricted", [1,3,6,1,6,3,15,1,1], included, null)]
 	end,
-    VTF = VTF0 ++ [{vacmViewTreeFamily,"internet",[1,3,6,1],included,null}],
+    VTF = VTF0 ++ [VTFF("internet",[1,3,6,1],included,null)],
     write_agent_vacm_config(Dir, Hdr, Groups ++ Acc ++ VTF).
 
 vacm_ver(v1) -> v1;
@@ -2375,12 +2499,20 @@ write_manager_snmp_conf(Dir, Transports, MMS, EngineID) ->
 "%%\n\n",
     Hdr = header() ++ Comment,
     Conf =
-	[{transports,       Transports},
-	 {engine_id,        EngineID},
-	 {max_message_size, MMS}],
+	[snmpm_conf:manager_entry(transports,       Transports),
+	 snmpm_conf:manager_entry(engine_id,        EngineID),
+	 snmpm_conf:manager_entry(max_message_size, MMS)],
     write_manager_config(Dir, Hdr, Conf).
 
-write_manager_snmp_conf(Dir, Domain_or_IP, Addr_or_Port, MMS, EngineID) ->
+write_manager_snmp_conf(Dir, TDomain, {_IP, Port} = TAddr, MMS, EngineID)
+  when is_atom(TDomain) andalso is_integer(Port) ->
+    Transports = [{TDomain, TAddr}],
+    write_manager_snmp_conf(Dir, Transports, MMS, EngineID);
+%% Backward compatibility
+write_manager_snmp_conf(Dir, IP, Port, MMS, EngineID) when is_integer(Port) ->
+
+    %% IP :: inet:ip_address() | [non_neg_integer()]
+
     Comment = 
 "%% This file defines the Manager local configuration info\n"
 "%% Each row is a 2-tuple:\n"
@@ -2393,19 +2525,10 @@ write_manager_snmp_conf(Dir, Domain_or_IP, Addr_or_Port, MMS, EngineID) ->
 "%%\n\n",
     Hdr = header() ++ Comment,
     Conf =
-	case Addr_or_Port of
-	    {IP, Port} when is_integer(Port), is_atom(Domain_or_IP) ->
-		[{domain,  Domain_or_IP},
-		 {port,    Port},
-		 {address, IP}];
-	    _ when is_integer(Addr_or_Port) ->
-		[{port,    Addr_or_Port},
-		 {address, Domain_or_IP}];
-	    _ ->
-		error({bad_address, {Domain_or_IP, Addr_or_Port}})
-	end ++
-	[{engine_id,        EngineID},
-	 {max_message_size, MMS}],
+        [snmpm_conf:manager_entry(port,             Port),
+         snmpm_conf:manager_entry(address,          IP),
+         snmpm_conf:manager_entry(engine_id,        EngineID),
+         snmpm_conf:manager_entry(max_message_size, MMS)],
     write_manager_config(Dir, Hdr, Conf).
 
 write_manager_config(Dir, Hdr, Conf) ->
@@ -2604,7 +2727,7 @@ write_sys_config_file_agent_config_opt(Fid, {verbosity, Verb}) ->
     ok = io:format(Fid, "{verbosity, ~w}", [Verb]).
 
 
-%% This is only present if there is atleast one option
+%% This is only present if there is at least one option
 write_sys_config_file_agent_atl_opts(Fid, [Opt]) ->
     write_sys_config_file_agent_atl_opt(Fid, Opt),
     ok = io:format(Fid, "]", []),
@@ -2626,7 +2749,7 @@ write_sys_config_file_agent_atl_opt(Fid, {seqno, SeqNo}) ->
     ok = io:format(Fid, "{seqno, ~w}", [SeqNo]).
 
 
-%% These options are allways there
+%% These options are always there
 write_sys_config_file_agent_disco_opts(Fid, [Opt]) ->
     write_sys_config_file_agent_disco_opt(Fid, Opt),
     ok = io:format(Fid, "]", []),
@@ -2732,7 +2855,7 @@ write_sys_config_file_manager_config_opt(Fid, {verbosity, Verb}) ->
     ok = io:format(Fid, "{verbosity, ~w}", [Verb]).
 
 
-%% This is only present if there is atleast one option
+%% This is only present if there is at least one option
 write_sys_config_file_manager_atl_opts(Fid, [Opt]) ->
     write_sys_config_file_manager_atl_opt(Fid, Opt),
     ok = io:format(Fid, "]", []),
@@ -2763,7 +2886,7 @@ header() ->
 		  [?MODULE, ?version, Y, Mo, D, H, Mi, S]).
 
 
-%% *If* these functions are successfull, they successfully return
+%% *If* these functions are successful, they successfully return
 %% (value is ignored), but they fail preferably with
 %% throw({error, Reason}).  Other exceptions are also handled.
 
@@ -2818,7 +2941,7 @@ write_config_file(Dir, FileName, Order, Check, Write, Entries)
 	    end
     catch
 	throw:E:S ->
-	    d("File write of ~s throwed: "
+	    d("File write of ~s thrown: "
               "~n   ~p"
               "~n   ~p"
               "~n", [FileName, E, S]),
@@ -2837,7 +2960,7 @@ write_config_file(Dir, FileName, Write, Entries, Fd) ->
 	    close_config_file(Dir, FileName, Fd)
     catch
 	throw:E:S ->
-	    d("File write of ~s throwed: "
+	    d("File write of ~s thrown: "
               "~n   ~p"
               "~n   ~p"
               "~n", [FileName, E, S]),
@@ -2910,7 +3033,7 @@ append_config_file(Dir, FileName, Order, Check, Write, Entries, Fd) ->
 	    close_config_file(Dir, FileName, Fd)
     catch
 	throw:E:S ->
-	    d("File append of ~s throwed: "
+	    d("File append of ~s thrown: "
               "~n   ~p"
               "~n   ~p"
               "~n", [FileName, E, S]),
@@ -2953,7 +3076,7 @@ read_config_file(Dir, FileName, Order, Check)
 		{ok, verify_lines(SortedLines, Check, undefined, [])}
 	    catch
 		throw:E:S ->
-		    d("File read of ~s throwed: "
+		    d("File read of ~s thrown: "
                       "~n   ~p"
                       "~n   ~p"
                       "~n", [FileName, E, S]),
@@ -3040,6 +3163,9 @@ ensure_started(App) ->
 
 
 %% -------------------------------------------------------------------------
+
+f(F, A) ->
+    lists:flatten(io_lib:format(F, A)).
 
 d(F, A) ->
     i("DBG: " ++ F, A).

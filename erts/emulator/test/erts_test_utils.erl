@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2002-2020. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2002-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,12 +16,13 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
 -module(erts_test_utils).
--compile(r20).
+
+-compile(r27).
 
 %%
 %% THIS MODULE IS ALSO USED BY *OTHER* APPLICATIONS TEST CODE
@@ -28,9 +31,10 @@
 -export([mk_ext_pid/3,
          mk_ext_port/2,
          mk_ext_ref/2,
+         assert_error_stack/3,
          available_internal_state/1,
-         check_node_dist/0, check_node_dist/1, check_node_dist/3]).
-
+         check_node_dist/0, check_node_dist/1, check_node_dist/3,
+         ept_check_leaked_nodes/1]).
 
 
 -define(VERSION_MAGIC,       131).
@@ -46,6 +50,8 @@
 -define(V4_PORT_EXT,         $x).
 
 -define(OLD_MAX_PIDS_PORTS, ((1 bsl 28) - 1)).
+-define(OLD_MAX_PID_NUM, ((1 bsl 15) - 1)).
+-define(OLD_MAX_PID_SER, ((1 bsl 13) - 1)).
 
 uint64_be(Uint) when is_integer(Uint), 0 =< Uint, Uint < 1 bsl 64 ->
     [(Uint bsr 56) band 16#ff,
@@ -78,31 +84,59 @@ uint8(Uint) when is_integer(Uint), 0 =< Uint, Uint < 1 bsl 8 ->
 uint8(Uint) ->
     exit({badarg, uint8, [Uint]}).
 
-pid_tag(bad_creation) -> ?PID_EXT;
-pid_tag(Creation) when Creation =< 3 -> ?PID_EXT;
-pid_tag(_Creation) -> ?NEW_PID_EXT.
+pid_tag(_, _, bad_creation) ->
+    ?PID_EXT;
+pid_tag(Num, Ser, Creation) when Num =< ?OLD_MAX_PID_NUM,
+                                 Ser =< ?OLD_MAX_PID_SER,
+                                 Creation =< 3 ->
+    ?PID_EXT;
+pid_tag(_Num, _Ser, _Creation) ->
+    ?NEW_PID_EXT.
 
-enc_creation(bad_creation) -> uint8(4);
-enc_creation(Creation) when Creation =< 3 -> uint8(Creation);
-enc_creation(Creation) -> uint32_be(Creation).
+enc_creation(_, bad_creation) ->
+    uint8(4);
+enc_creation(Num, Creation) when is_integer(Num),
+                                 Num =< ?OLD_MAX_PIDS_PORTS,
+                                 Creation =< 3 ->
+    uint8(Creation);
+enc_creation(Nums, Creation) when is_list(Nums),
+                                  length(Nums) =< 3,
+                                  Creation =< 3 ->
+    uint8(Creation);
+enc_creation(_Num, Creation) ->
+    uint32_be(Creation).
+
+enc_creation(_, _, bad_creation) ->
+    uint8(4);
+enc_creation(Num, Ser, Creation) when Num =< ?OLD_MAX_PID_NUM,
+                                      Ser =< ?OLD_MAX_PID_SER,
+                                      Creation =< 3 ->
+    uint8(Creation);
+enc_creation(_Num, _Ser, Creation) ->
+    uint32_be(Creation).
 
 mk_ext_pid({NodeName, Creation}, Number, Serial) when is_atom(NodeName) ->
     mk_ext_pid({atom_to_list(NodeName), Creation}, Number, Serial);
 mk_ext_pid({NodeName, Creation}, Number, Serial) ->
-    case catch binary_to_term(list_to_binary([?VERSION_MAGIC,
-					      pid_tag(Creation),
-					      ?ATOM_EXT,
-					      uint16_be(length(NodeName)),
-					      NodeName,
-					      uint32_be(Number),
-					      uint32_be(Serial),
-					      enc_creation(Creation)])) of
-	Pid when is_pid(Pid) ->
-	    Pid;
-	{'EXIT', {badarg, _}} ->
-	    exit({badarg, mk_pid, [{NodeName, Creation}, Number, Serial]});
-	Other ->
-	    exit({unexpected_binary_to_term_result, Other})
+    try
+        binary_to_term(list_to_binary([?VERSION_MAGIC,
+                                       pid_tag(Number, Serial, Creation),
+                                       ?ATOM_EXT,
+                                       uint16_be(length(NodeName)),
+                                       NodeName,
+                                       uint32_be(Number),
+                                       uint32_be(Serial),
+                                       enc_creation(Number, Serial, Creation)]))
+    of
+        Pid when is_pid(Pid) ->
+            Pid;
+        Other ->
+            exit({unexpected_binary_to_term_result, Other})
+    catch
+        exit:{badarg, uint32_be, _} ->
+            exit({badarg, mk_pid, [{NodeName, Creation}, Number, Serial]});
+        error:badarg ->
+            exit({badarg, mk_pid, [{NodeName, Creation}, Number, Serial]})
     end.
 
 port_tag(_Num, bad_creation) ->
@@ -117,85 +151,126 @@ port_tag(_Num, _Creation) ->
 mk_ext_port({NodeName, Creation}, Number) when is_atom(NodeName) ->
     mk_ext_port({atom_to_list(NodeName), Creation}, Number);
 mk_ext_port({NodeName, Creation}, Number) ->
-    case catch binary_to_term(list_to_binary([?VERSION_MAGIC,
-					      port_tag(Number, Creation),
-					      ?ATOM_EXT,
-					      uint16_be(length(NodeName)),
-					      NodeName,
-					      case Number > ?OLD_MAX_PIDS_PORTS of
-						  true -> uint64_be(Number);
-						  false -> uint32_be(Number)
-					      end,
-					      enc_creation(Creation)])) of
+    try
+        binary_to_term(list_to_binary([?VERSION_MAGIC,
+                                       port_tag(Number, Creation),
+                                       ?ATOM_EXT,
+                                       uint16_be(length(NodeName)),
+                                       NodeName,
+                                       case Number > ?OLD_MAX_PIDS_PORTS of
+                                           true -> uint64_be(Number);
+                                           false -> uint32_be(Number)
+                                       end,
+                                       enc_creation(Number, Creation)]))
+    of
 	Port when is_port(Port) ->
 	    Port;
-	{'EXIT', {badarg, _}} ->
-	    exit({badarg, mk_port, [{NodeName, Creation}, Number]});
 	Other ->
 	    exit({unexpected_binary_to_term_result, Other})
+    catch
+        exit:{badarg, uint64_be, _} ->
+            exit({badarg, mk_port, [{NodeName, Creation}, Number]});
+        exit:{badarg, uint32_be, _} ->
+            exit({badarg, mk_port, [{NodeName, Creation}, Number]});
+        error:badarg ->
+            exit({badarg, mk_port, [{NodeName, Creation}, Number]})
     end.
 
-ref_tag(bad_creation) -> ?NEW_REFERENCE_EXT;
-ref_tag(Creation) when Creation =< 3 -> ?NEW_REFERENCE_EXT;
-ref_tag(_Creation) -> ?NEWER_REFERENCE_EXT.
+ref_tag(_Nums, bad_creation) -> ?NEW_REFERENCE_EXT;
+ref_tag(Nums, Creation) when length(Nums) =< 3, Creation =< 3 -> ?NEW_REFERENCE_EXT;
+ref_tag(_Nums, _Creation) -> ?NEWER_REFERENCE_EXT.
 
 mk_ext_ref({NodeName, Creation}, Numbers) when is_atom(NodeName),
-					   is_list(Numbers) ->
+                                               is_list(Numbers) ->
     mk_ext_ref({atom_to_list(NodeName), Creation}, Numbers);
 mk_ext_ref({NodeName, Creation}, [Number]) when is_list(NodeName),
                                                 Creation =< 3,
                                                 is_integer(Number) ->
-    case catch binary_to_term(list_to_binary([?VERSION_MAGIC,
-                                              ?REFERENCE_EXT,
-                                              ?ATOM_EXT,
-                                              uint16_be(length(NodeName)),
-                                              NodeName,
-                                              uint32_be(Number),
-                                              uint8(Creation)])) of
+    try
+        binary_to_term(list_to_binary([?VERSION_MAGIC,
+                                       ?REFERENCE_EXT,
+                                       ?ATOM_EXT,
+                                       uint16_be(length(NodeName)),
+                                       NodeName,
+                                       uint32_be(Number),
+                                       uint8(Creation)]))
+    of
         Ref when is_reference(Ref) ->
             Ref;
-        {'EXIT', {badarg, _}} ->
-            exit({badarg, mk_ref, [{NodeName, Creation}, [Number]]});
         Other ->
             exit({unexpected_binary_to_term_result, Other})
+    catch
+        error:badarg ->
+            exit({badarg, mk_ref, [{NodeName, Creation}, [Number]]})
     end;
 mk_ext_ref({NodeName, Creation}, Numbers) when is_list(NodeName),
                                                is_list(Numbers) ->
-    case catch binary_to_term(list_to_binary([?VERSION_MAGIC,
-					      ref_tag(Creation),
-					      uint16_be(length(Numbers)),
-					      ?ATOM_EXT,
-					      uint16_be(length(NodeName)),
-					      NodeName,
-					      enc_creation(Creation),
-					      lists:map(fun (N) ->
-								uint32_be(N)
-							end,
-							Numbers)])) of
+    try
+        binary_to_term(list_to_binary([?VERSION_MAGIC,
+                                       ref_tag(Numbers, Creation),
+                                       uint16_be(length(Numbers)),
+                                       ?ATOM_EXT,
+                                       uint16_be(length(NodeName)),
+                                       NodeName,
+                                       enc_creation(Numbers, Creation),
+                                       lists:map(fun(N) ->
+                                                     uint32_be(N)
+                                                 end,
+                                                 Numbers)]))
+    of
 	Ref when is_reference(Ref) ->
 	    Ref;
-	{'EXIT', {badarg, _}} ->
-	    exit({badarg, mk_ref, [{NodeName, Creation}, Numbers]});
-	Other ->
-	    exit({unexpected_binary_to_term_result, Other})
+        Other ->
+            exit({unexpected_binary_to_term_result, Other})
+    catch
+        error:badarg ->
+            exit({badarg, mk_ref, [{NodeName, Creation}, Numbers]})
     end.
 
 
 available_internal_state(Bool) when Bool == true; Bool == false ->
-    case {Bool,
-          (catch erts_debug:get_internal_state(available_internal_state))} of
-        {true, true} ->
-            true;
-        {false, true} ->
-            erts_debug:set_internal_state(available_internal_state, false),
-            true;
-        {true, _} ->
-            erts_debug:set_internal_state(available_internal_state, true),
-            false;
-        {false, _} ->
-            false
-    end.
+    CurAIS = try
+                 erts_debug:get_internal_state(available_internal_state)
+             catch
+                 _:_ ->
+                     false
+             end,
+    if
+        Bool xor CurAIS ->
+            erts_debug:set_internal_state(available_internal_state, Bool);
+        true ->
+            ok
+    end,
+    CurAIS.
 
+%% Helper for ?AssertErrorStack().
+assert_error_stack(ErrorFun, StackFun, ExprFun) ->
+    try ExprFun() of
+        Result ->
+            error({unexpected_success,Result})
+    catch
+        error:Error:Stack ->
+            case {ErrorFun(Error),StackFun(Stack)} of
+                {ok,ok} ->
+                    ok;
+                {ActualError,ActualStack} ->
+                    Args = case ActualError of
+                               ok ->
+                                   [];
+                               _ ->
+                                   [{unexpected_error, Error},
+                                    {expected, ActualError}]
+                           end ++
+                        case ActualStack of
+                            ok ->
+                                [];
+                            _ ->
+                                [{unexpected_stack, Stack},
+                                 {expected_stack, ActualStack}]
+                        end,
+                    error(assertException, Args)
+            end
+    end.
 
 %%
 %% Check reference counters for node- and dist entries.
@@ -225,14 +300,12 @@ check_node_dist(Fail, NodeRefs, DistRefs) ->
 
 
 check_nd_refc({ThisNodeName, ThisCreation}, NodeRefs, DistRefs, Fail) ->
-    case catch begin
-                   check_refc(ThisNodeName,ThisCreation,"node table",NodeRefs),
-                   check_refc(ThisNodeName,ThisCreation,"dist table",DistRefs),
-                   ok
-               end of
-        ok ->
-            ok;
-        {'EXIT', Reason} ->
+    try
+        check_refc(ThisNodeName,ThisCreation,"node table",NodeRefs),
+        check_refc(ThisNodeName,ThisCreation,"dist table",DistRefs),
+        ok
+    catch
+        exit:Reason ->
             {Y,Mo,D} = date(),
             {H,Mi,S} = time(),
             ErrMsg = io_lib:format("~n"
@@ -292,3 +365,21 @@ check_refc(ThisNodeName,ThisCreation,Table,EntryList) when is_list(EntryList) ->
       end,
       EntryList),
     ok.
+
+%% To be called by end_per_testcase
+%% to check and kill leaked node connections.
+ept_check_leaked_nodes(Config) ->
+    case nodes(connected) of
+        [] -> true;
+        Nodes ->
+            [net_kernel:disconnect(N) || N <- Nodes],
+            Leaked =  {"Leaked connections", Nodes},
+            Fail = case proplists:get_value(tc_status, Config) of
+                       ok -> Leaked;
+                       {failed, Reason} ->
+                           [Reason, {end_per_testcase, Leaked}];
+                       {skipped, _}=Skipped ->
+                           [Skipped, {end_per_testcase, Leaked}]
+                   end,
+            {fail, Fail}
+    end.

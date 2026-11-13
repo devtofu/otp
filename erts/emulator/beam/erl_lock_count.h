@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2008-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2008-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -78,7 +80,7 @@ typedef struct {
 } erts_lcnt_time_t;
 
 typedef struct {
-    /** @brief log2 array of nano seconds occurences */
+    /** @brief log2 array of nano seconds occurrences */
     Uint32 ns[ERTS_LCNT_HISTOGRAM_SLOT_SIZE];
 } erts_lcnt_hist_t;
 
@@ -261,12 +263,14 @@ int erts_lcnt_check_ref_installed(erts_lcnt_ref_t *ref);
 
 /** @brief Convenience macro to re/enable counting on an already initialized
  * reference. Don't forget to specify the lock type in \c flags! */
-#define erts_lcnt_install_new_lock_info(ref, name, id, flags) \
-    if(!erts_lcnt_check_ref_installed(ref)) { \
-        erts_lcnt_lock_info_carrier_t *__carrier; \
-        __carrier = erts_lcnt_create_lock_info_carrier(1);\
-        erts_lcnt_init_lock_info_idx(__carrier, 0, name, id, flags); \
-        erts_lcnt_install(ref, __carrier);\
+#define erts_lcnt_install_new_lock_info(ref, name, id, flags)           \
+    do {                                                                \
+        if(!erts_lcnt_check_ref_installed(ref)) {                       \
+            erts_lcnt_lock_info_carrier_t *__carrier;                   \
+            __carrier = erts_lcnt_create_lock_info_carrier(1);          \
+            erts_lcnt_init_lock_info_idx(__carrier, 0, name, id, flags); \
+            erts_lcnt_install(ref, __carrier);                          \
+        }                                                               \
     } while(0)
 
 erts_lcnt_lock_info_carrier_t *erts_lcnt_create_lock_info_carrier(int count);

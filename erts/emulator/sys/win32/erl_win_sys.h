@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 1997-2018. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 1997-2025. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,7 +16,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * %CopyrightEnd%
  */
 /*
@@ -75,12 +77,6 @@
  * Various configuration options, used to be in the Makefile.
  */
 
-#define NO_ASINH
-#define NO_ACOSH
-#define NO_ATANH
-#define NO_ERF
-#define NO_ERFC
-
 #define NO_SYSCONF
 #define NO_DAEMON
 #define NO_PWD
@@ -95,7 +91,7 @@
 #define ERTS_HAVE_ERTS_SYS_ALIGNED_ALLOC 1
 
 /*
- * Practial Windows specific macros.
+ * Practical Windows specific macros.
  */
 
 #define CreateAutoEvent(state) CreateEvent(NULL, FALSE, state, NULL)
@@ -135,11 +131,10 @@ struct tm *sys_localtime_r(time_t *epochs, struct tm *ptm);
 struct tm *sys_gmtime_r(time_t *epochs, struct tm *ptm);
 time_t sys_mktime( struct tm *ptm);
 
-#define localtime_r sys_localtime_r
-#define HAVE_LOCALTIME_R 1
 #define gmtime_r sys_gmtime_r
 #define HAVE_GMTIME_R
 #define mktime sys_mktime
+extern int sys_daylight;
 
 typedef struct {
     erts_time_t tv_sec;
@@ -273,7 +268,7 @@ extern volatile int erl_fp_exception;
 
 #include <float.h>
 /* I suspect this test isn't right, it might depend on the version of GCC
-   rather than if it's a MINGW gcc, but I havent been able to pinpoint the
+   rather than if it's a MINGW gcc, but I haven't been able to pinpoint the
    exact point where _finite was added to the headers in cygwin... */
 #if defined (__GNUC__) && !defined(__MINGW32__)
 int _finite(double x);

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -22,13 +24,14 @@
 -module(mnesia_recovery_test).
 -author('hakan@erix.ericsson.se').
 
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
+
 -export([init_per_testcase/2, end_per_testcase/2,
          init_per_group/2, end_per_group/2,
          all/0, groups/0]).
 
 -export([coord_dies/1, after_full_disc_partition/1,
          disc_less/1, garb_decision/1,
-         system_upgrade/1,
          delete_during_start/1,
          no_master_2/1, no_master_3/1, one_master_2/1, one_master_3/1,
          two_master_2/1, two_master_3/1, all_master_2/1,
@@ -86,7 +89,10 @@
          after_corrupt_files_table_dat_head/1,
          after_corrupt_files_table_dat_tail/1,
          after_corrupt_files_schema_dat_head/1,
-         after_corrupt_files_schema_dat_tail/1]).
+         after_corrupt_files_schema_dat_tail/1,
+         node_name_as_table_name/1,
+         majority_sync_downgrade/1,
+         diff_sync_downgrade/1]).
 
 -export([reader/2, check/0, get_all_retainers/1,
          verify_data/2, verify_where2read/1,
@@ -120,9 +126,11 @@ all() ->
     [{group, mnesia_down}, {group, explicit_stop},
      coord_dies, {group, schema_trans}, {group, async_dirty},
      {group, sync_dirty}, {group, sym_trans},
-     {group, asym_trans}, after_full_disc_partition,
+     {group, asym_trans}, %% after_full_disc_partition,
      {group, after_corrupt_files}, disc_less, garb_decision,
-     system_upgrade].
+     node_name_as_table_name,
+     {group, sync_to_async_downgrade}
+    ].
 
 groups() -> 
     [{schema_trans, [],
@@ -196,7 +204,9 @@ groups() ->
        after_corrupt_files_table_dat_head,
        after_corrupt_files_table_dat_tail,
        after_corrupt_files_schema_dat_head,
-       after_corrupt_files_schema_dat_tail]}].
+       after_corrupt_files_schema_dat_tail]},
+     {sync_to_async_downgrade, [],
+      [majority_sync_downgrade, diff_sync_downgrade]}].
 
 init_per_group(_GroupName, Config) ->
     Config.
@@ -704,9 +714,9 @@ explicit_stop_during_snmp(Config) when is_list(Config) ->
 	    ?error("test case time out~n", [])
     end,
     ?verify_mnesia(Nodes, []),
-    exit(Do_trans_Pid1, kill),
-    exit(Do_trans_Pid2, kill),
-    exit(Start_stop_Pid, kill),
+    erlang:exit_signal(Do_trans_Pid1, kill),
+    erlang:exit_signal(Do_trans_Pid2, kill),
+    erlang:exit_signal(Start_stop_Pid, kill),
     ok.
 
 do_trans_loop(Tab, Father) ->
@@ -783,13 +793,13 @@ coord_dies(Config) when is_list(Config) ->
     erlang:monitor(process, Pid4),erlang:monitor(process, Pid5),erlang:monitor(process, Pid6),
     
     [receive {Pid,continue} -> ok end || Pid <- [Pid4,Pid5,Pid6]],
-    exit(Pid4,crash),    
+    erlang:exit_signal(Pid4,crash),
     ?match_receive({'DOWN',_,_,Pid4, _}),
     ?match({atomic,[{_,key,1}]}, mnesia:transaction(fun() -> mnesia:read({tab1,key}) end)),
-    exit(Pid5,crash),
+    erlang:exit_signal(Pid5,crash),
     ?match_receive({'DOWN',_,_,Pid5, _}),
     ?match({atomic,[{_,key,1}]}, mnesia:transaction(fun() -> mnesia:read({tab2,key}) end)),
-    exit(Pid6,crash),
+    erlang:exit_signal(Pid6,crash),
     ?match_receive({'DOWN',_,_,Pid6, _}),
     ?match({atomic,[{_,key,1}]}, mnesia:transaction(fun() -> mnesia:read({tab3,key}) end)),
     
@@ -1290,7 +1300,7 @@ kill_after_debug_point(Kill, {DebugNode, Debug_Point}, TransFun, TabsAndDefs, No
     case Kill of
 	coord_pid -> 
 	    ?dl("Intentionally killing pid ~p ", [Pid]),
-	    exit(Pid, normal);
+            erlang:exit_signal(Pid, normal);
 	Node -> 		
 	    mnesia_test_lib:kill_mnesia([Node])
     end,
@@ -1341,7 +1351,7 @@ garb_of_decisions(Kill, Nodes, Tid_list, Trans_res) ->
 	    case length(Tid_list) of
 		1 -> 
 		    %% If there was only one transaction, it should be logged as
-		    %% comitted on every node!
+		    %% committed on every node!
 		    [Tid1] = Tid_list,
 		    verify_garb_transient_logs(Nodes, [Tid1], committed);
 		2 -> 
@@ -1455,7 +1465,7 @@ receive_messages(ListOfMsgs, File, Line) ->
 		    [{Pid, Msg} | receive_messages(ListOfMsgs -- [Msg], File, Line)]
 	    end;
 	Else -> mnesia_test_lib:log("<>WARNING<>~n"
-				    "Recevied unexpected or bad formatted msg~n ~p ~n"
+				    "Received unexpected or bad formatted msg~n ~p ~n"
 				    "While waiting for ~p~n", 
 	 			    [Else, ListOfMsgs], File, Line),
 		receive_messages(ListOfMsgs, File, Line)
@@ -1645,9 +1655,6 @@ disc_less(Config) when is_list(Config) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-system_upgrade(doc) ->
-    ["Test on-line and off-line upgrade of the Mnesia application"].
-
 garb_decision(doc) ->
     ["Test that decisions are garbed correctly."];
 garb_decision(suite) -> [];
@@ -1727,3 +1734,88 @@ check_garb() ->
     catch _:_ -> ok  
     end,
     ok.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+node_name_as_table_name(doc) ->
+    ["Check node name can be used as table name."];
+node_name_as_table_name(suite) ->
+    [];
+node_name_as_table_name(Config) when is_list(Config) ->
+    [N1, N2] = All = ?acquire_nodes(2, Config),
+    Tab = N1,
+
+    ?match({atomic, ok}, mnesia:create_table(Tab, [{ram_copies, [N1]}])),
+
+    ?match([], mnesia_test_lib:kill_mnesia([N1])),
+    ?match(ok, rpc:call(N1, mnesia, start, [[{extra_db_nodes, [N2]}]])),
+    ?match(ok, rpc:call(N1, mnesia, wait_for_tables, [[Tab], 20000])),
+
+    ?verify_mnesia(All, []).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+majority_sync_downgrade(Config) ->
+    ?is_debug_compiled,
+    Nodes = ?acquire_nodes(2, Config),
+
+    Tab = majority_sync_downgrade,
+    ?match({atomic, ok}, mnesia:create_table(Tab, [{ram_copies, Nodes}, {majority, true}])),
+
+    sync_downgrade([Tab], Nodes).
+
+diff_sync_downgrade(Config) ->
+    ?is_debug_compiled,
+    Nodes = ?acquire_nodes(2, Config),
+
+    Tab1 = diff_sync_downgrade1,
+    Tab2 = diff_sync_downgrade2,
+    ?match({atomic, ok}, mnesia:create_table(Tab1, [{ram_copies, Nodes}])),
+    ?match({atomic, ok}, mnesia:create_table(Tab2, [{disc_copies, Nodes}])),
+
+    sync_downgrade([Tab1, Tab2], Nodes).
+
+sync_downgrade(Tabs, [_, N2] = Nodes) ->
+    TestPid = self(),
+    NumTables = length(Tabs),
+
+    %% Stop N2 before it commits transaction
+    DebugId = {mnesia_tm, commit_participant, log_commit},
+    DebugFun = fun(PreviousCtx, _Ctx) ->
+                       TestPid ! {self(), blocked},
+                       receive {TestPid, continue} -> ok end,
+                       ?deactivate_debug_fun(DebugId),
+                       PreviousCtx
+               end,
+    ?remote_activate_debug_fun(N2, DebugId, DebugFun, ok),
+
+    Writer = spawn_link(fun() ->
+                                Fun = fun() ->
+                                              lists:foreach(fun(Tab) ->
+                                                                    mnesia:write({Tab, 1, 1})
+                                                            end, Tabs)
+                                      end,
+                                TestPid ! {self(), mnesia:sync_transaction(Fun)}
+                        end),
+
+    %% N2 is blocked in transaction
+    Blocked = receive {Pid, blocked} -> Pid end,
+
+    Expected1 = lists:duplicate(NumTables, []),
+    ?match(Expected1, lists:map(fun(Tab) -> rpc:call(N2, mnesia, dirty_read, [{Tab, 1}]) end, Tabs)),
+    receive {Writer, EarlyRes} ->
+            ct:fail("Sync transaction returned before all nodes commited, res: ~p~n", [EarlyRes])
+    after 1000 -> ok
+    end,
+
+    %% Allow N2 to finish transaction
+    Blocked ! {self(), continue},
+    ?match({atomic, ok}, receive {Writer, Res} -> Res end),
+
+    Expected2 = lists:map(fun(Tab) ->
+                                  {lists:duplicate(length(Nodes), [{Tab, 1, 1}]), []}
+                          end, Tabs),
+    ?match(Expected2, lists:map(fun(Tab) ->
+                                        rpc:multicall(Nodes, mnesia, dirty_read, [{Tab, 1}])
+                                end, Tabs)),
+    ?verify_mnesia(Nodes, []).

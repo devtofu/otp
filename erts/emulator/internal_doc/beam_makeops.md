@@ -1,4 +1,26 @@
-The beam\_makeops script
+<!--
+%% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2017-2026. All Rights Reserved.
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%
+%% %CopyrightEnd%
+-->
+
+The beam_makeops script
 =======================
 
 This document describes the **beam\_makeops** script.
@@ -27,8 +49,8 @@ They are created by transformation rules (described next).
 * Rules for transforming one or more generic instructions to other
 generic instructions.  The transformation rules allow combining,
 splitting, and removal of instructions, as well as shuffling operands.
-Because of the transformation rules, the runtime can have many
-internal generic instructions that are only known to runtime system.
+Because of the transformation rules, the runtime system can have many
+internal generic instructions not known by the compiler.
 
 * Specific BEAM instructions.  The specific instructions are the
 instructions that are actually executed by the runtime system.  They
@@ -39,7 +61,7 @@ specific instructions.  The OTP 20 release has 389 specific
 instructions.
 
 * The implementation of specific instructions for the traditional
-BEAM interpreter. For the [BeamAsm JIT](BeamAsm) introduced
+BEAM interpreter. For the [BeamAsm JIT](BeamAsm.md) introduced
 in OTP 24, the implementation of instructions are defined in emitter
 functions written in C++.
 
@@ -77,13 +99,13 @@ following line:
     64: move/2
 
 This is a definition of an external generic BEAM instruction. Most
-importantly it specifices that the opcode is 64.  It also defines that
+importantly it specifies that the opcode is 64.  It also defines that
 it has two operands.  The BEAM assembler will use the opcode when
 creating `.beam` files.  The compiler does not really need the arity,
 but it will use it as an internal sanity check when assembling the
 BEAM code.
 
-Let's have a look at `ops.tab` in `erts/emulator/beam`, where the
+Let's have a look at `ops.tab` in `erts/emulator/beam/emu`, where the
 specific `move` instructions are defined.  Here are a few of them:
 
     move x x
@@ -98,8 +120,8 @@ an integer, an atom, or a literal).
 
 Now let's look at the implementation of the `move` instruction.  There
 are multiple files containing implementations of instructions in the
-`erts/emulator/beam` directory.  The `move` instruction is defined in
-`instrs.tab`.  It looks like this:
+`erts/emulator/beam/emu` directory.  The `move` instruction is defined
+in `instrs.tab`.  It looks like this:
 
     move(Src, Dst) {
         $Dst = $Src;
@@ -116,33 +138,35 @@ make the code easier to understand, let's first look at the memory
 layout for the instruction `{move,{atom,id},{x,5}}`:
 
          +--------------------+--------------------+
-    I -> |                 40 |       &&lb_move_cx |
+    I -> |                            &&lb_move_cx |
          +--------------------+--------------------+
          |                        Tagged atom 'id' |
          +--------------------+--------------------+
+         |                                      40 |
+         +--------------------+--------------------+
 
-This example and all other examples in the document assumes a 64-bit
-archictecture, and furthermore that pointers to C code fit in 32 bits.
+This example and all other examples in the document assume a 64-bit
+architecture unless otherwise noted.
 
 `I` in the BEAM virtual machine is the instruction pointer.  When BEAM
 executes an instruction, `I` points to the first word of the
 instruction.
 
-`&&lb_move_cx` is the address to C code that implements `move_cx`.  It
-is stored in the lower 32 bits of the word.  In the upper 32 bits is
-the byte offset to the X register; the register number 5 has been
-multiplied by the word size size 8.
+`&&lb_move_cx` is the address to C code that implements `move_cx`.
 
-In the next word the tagged atom `id` is stored.
+In next word the tagged atom `id` is stored.
+
+It is followed by a word containing the byte offset of the X register;
+the register number 5 has been multiplied by the word size size 8.
 
 With that background, we can look at the generated code for `move_cx`
 in `beam_hot.h`:
 
     OpCase(move_cx):
     {
-      BeamInstr next_pf = BeamCodeAddr(I[2]);
-      xb(BeamExtraData(I[0])) = I[1];
-      I += 2;
+      BeamInstr next_pf = BeamCodeAddr(I[3]);
+      xb(I[2]) = I[1];
+      I += 3;
       ASSERT(VALID_INSTR(next_pf));
       GotoPF(next_pf);
     }
@@ -153,20 +177,15 @@ We will go through each line in turn.
 `OpCase()` macro is defined in `beam_emu.c`.  It will expand this line
 to `lb_move_cx:`.
 
-* `BeamInstr next_pf = BeamCodeAddr(I[2]);` fetches the pointer to
-code for the next instruction to be executed.  The `BeamCodeAddr()`
-macro extracts the pointer from the lower 32 bits of the instruction
-word.
+* `BeamInstr next_pf = BeamCodeAddr(I[3]);` fetches the pointer to
+code for the next instruction to be executed.
 
-* `xb(BeamExtraData(I[0])) = I[1];` is the expansion of `$Dst = $Src`.
-`BeamExtraData()` is a macro that will extract the upper 32 bits from
-the instruction word.  In this example, it will return 40 which is the
-byte offset for X register 5.  The `xb()` macro will cast a byte
-pointer to an `Eterm` pointer and dereference it.  The `I[1]` on
-the right side of the `=` fetches an Erlang term (the atom `id` in
-this case).
+* `xb(I[2]) = I[1];` is the expansion of `$Dst = $Src`.  The `xb()`
+macro will cast a byte pointer to an `Eterm` pointer and dereference
+it.  The `I[1]` on the right-hand side of the `=` fetches an Erlang
+term (the atom `id` in this case).
 
-* `I += 2` advances the instruction pointer to the next
+* `I += 3` advances the instruction pointer to the next
 instruction.
 
 * In a debug-compiled emulator, `ASSERT(VALID_INSTR(next_pf));` makes
@@ -175,14 +194,23 @@ within the `process_main()` function in `beam_emu.c`).
 
 * `GotoPF(next_pf);` transfers control to the next instruction.
 
-Now let's look at the implementation of `move_xx`:
+Let's move on to the memory layout for the `{move,{x,0},{x,3}}`
+instruction:
+
+         +----------+---------+----------+---------+
+    I -> |                            &&lb_move_xx |
+         +----------+---------+----------+---------+
+         |                             0 |      24 |
+         +----------+---------+----------+---------+
+
+and to its implementation:
 
     OpCase(move_xx):
     {
-      Eterm tmp_packed1 = BeamExtraData(I[0]);
-      BeamInstr next_pf = BeamCodeAddr(I[1]);
-      xb((tmp_packed1>>BEAM_TIGHT_SHIFT)) = xb(tmp_packed1&BEAM_TIGHT_MASK);
-      I += 1;
+      Eterm tmp_packed1 = I[1];
+      BeamInstr next_pf = BeamCodeAddr(I[2]);
+      xb((tmp_packed1>>BEAM_LOOSE_SHIFT)) = xb(tmp_packed1&BEAM_LOOSE_MASK);
+      I += 2;
       ASSERT(VALID_INSTR(next_pf));
       GotoPF(next_pf);
     }
@@ -190,19 +218,17 @@ Now let's look at the implementation of `move_xx`:
 We will go through the lines that are new or have changed compared to
 `move_cx`.
 
-* `Eterm tmp_packed1 = BeamExtraData(I[0]);` picks up both X register
-numbers packed into the upper 32 bits of the instruction word.
+* `Eterm tmp_packed1 = I[1];` picks up both X register numbers packed
+into a single word.
 
-* `BeamInstr next_pf = BeamCodeAddr(I[1]);` pre-fetches the address of
-the next instruction. Note that because both X registers operands fits
-into the instruction word, the next instruction is in the very next
-word.
+* `BeamInstr next_pf = BeamCodeAddr(I[2]);` pre-fetches the address of
+the next instruction.
 
-* `xb((tmp_packed1>>BEAM_TIGHT_SHIFT)) = xb(tmp_packed1&BEAM_TIGHT_MASK);`
+* `xb((tmp_packed1>>BEAM_LOOSE_SHIFT)) = xb(tmp_packed1&BEAM_LOOSE_MASK);`
 copies the source to the destination.  (For a 64-bit architecture,
-`BEAM_TIGHT_SHIFT` is 16 and `BEAM_TIGHT_MASK` is `0xFFFF`.)
+`BEAM_LOOSE_SHIFT` is 16 and `BEAM_LOOSE_MASK` is `0xFFFF`.)
 
-* `I += 1;` advances the instruction pointer to the next instruction.
+* `I += 2;` advances the instruction pointer to the next instruction.
 
 `move_xy` is almost identical to `move_xx`.  The only difference is
 the use of the `yb()` macro instead of `xb()` to reference the
@@ -210,10 +236,10 @@ destination register:
 
     OpCase(move_xy):
     {
-      Eterm tmp_packed1 = BeamExtraData(I[0]);
-      BeamInstr next_pf = BeamCodeAddr(I[1]);
-      yb((tmp_packed1>>BEAM_TIGHT_SHIFT)) = xb(tmp_packed1&BEAM_TIGHT_MASK);
-      I += 1;
+      Eterm tmp_packed1 = I[1];
+      BeamInstr next_pf = BeamCodeAddr(I[2]);
+      yb((tmp_packed1>>BEAM_LOOSE_SHIFT)) = xb(tmp_packed1&BEAM_LOOSE_MASK);
+      I += 2;
       ASSERT(VALID_INSTR(next_pf));
       GotoPF(next_pf);
     }
@@ -231,13 +257,13 @@ to a `move2` instruction:
 
     move X1=x Y1=y | move X2=x Y2=y => move2 X1 Y1 X2 Y2
 
-The left side of the arrow (`=>`) is a pattern.  If the pattern
+The left-hand side of the arrow (`=>`) is a pattern.  If the pattern
 matches, the matching instructions will be replaced by the
-instructions on the right side.  Variables in a pattern must start
+instructions on the right-hand side.  Variables in a pattern must start
 with an uppercase letter just as in Erlang.  A pattern variable may be
 followed `=` and one or more type letters to constrain the match to
-one of those types.  The variables that are bound on the left side can
-be used on the right side.
+one of those types.  The variables that are bound on the left-hand side can
+be used on the right-hand side.
 
 We will also need to define a specific instruction and an implementation:
 
@@ -253,19 +279,38 @@ We will also need to define a specific instruction and an implementation:
         $D2 = V2;
     }
 
+The memory layout for the `move2_xyxy 1 2 3 0` instruction will be:
+
+         +----------+---------+----------+---------+
+    I -> |                          &lb_move2_xyxy |
+         +----------+---------+----------+---------+
+         |        0 |      24 |       16 |       8 |
+         +----------+---------+----------+---------+
+
+On a 32-bit system, the memory layout will be:
+
+         +----------+---------+
+    I -> |     &lb_move2_xyxy |
+         +----------+---------+
+         |       16 |       8 |
+         +----------+---------+
+         |        0 |      24 |
+         +----------+---------+
+
 When the loader has found a match and replaced the matched instructions,
 it will match the new instructions against the transformation rules.
 Because of that, we can define the rule for a `move3/6` instruction
 as follows:
 
-    move2 X1=x Y1=y X2=x Y2=y | move X3=x Y3=y => \
+    move2 X1=x Y1=y X2=x Y2=y | move X3=x Y3=y =>
           move3 X1 Y1 X2 Y2 X3 Y3
 
-(A `\` before a newline can be used to break a long line for readability.)
+(For readability, a long transformation line can be broken after `|`
+and `=>` operators.)
 
 It would also be possible to define it like this:
 
-    move X1=x Y1=y | move X2=x Y2=y | move X3=x Y3=y => \
+    move X1=x Y1=y | move X2=x Y2=y | move X3=x Y3=y =>
          move3 X1 Y1 X2 Y2 X3 Y3
 
 but in that case it must be defined before the rule for `move2/4`
@@ -298,7 +343,7 @@ keep multiple generic instructions in a linked list.
 * The loader tries to apply transformation rules against the
 generic instructions in the linked list.  If a rule matches, the
 matched instructions will be removed and replaced with new
-generic instructions constructed from the right side of the
+generic instructions constructed from the right-hand side of the
 transformation.
 
 * If a transformation rule matched, the loader applies the
@@ -322,7 +367,7 @@ in the code area for the module being loaded.
 * The loader translates each operand to a machine word and stores it
 in the code area.  The operand type for the selected specific
 instruction guides the translation.  For example, if the type is `e`,
-the value of the operand is an index into an arry of external
+the value of the operand is an index into an array of external
 functions and will be translated to a pointer to the export entry for
 the function to call.  If the type is `x`, the number of the X
 register will be multiplied by the word size to produce a byte offset.
@@ -330,9 +375,9 @@ register will be multiplied by the word size to produce a byte offset.
 * The loader runs the packing engine to pack multiple operands into a
 single word.  The packing engine is controlled by a small program,
 which is a string where each character is an instruction.  For
-example, the code to pack the operands for `move_xy` is `"22#"` (on a
+example, the code to pack the operands for `move_xy` is `"33Pp"` (on a
 64-bit machine).  That program will pack the byte offsets for both
-registers into the same word as the pointer to C code.
+registers into a single word.
 
 Short overview of instruction loading for BeamAsm
 -------------------------------------------------
@@ -369,7 +414,7 @@ The following files will be written to the output directory:
 * `beam_opcode.hrl` - Used by `beam_asm`.  It contains tag definitions
 used for encoding instruction operands.
 
-The input file should only contain the definition of BEAM_FORMAT_NUMBER
+The input file should only contain the definition of BEAM\_FORMAT\_NUMBER
 and external generic instructions.  (Everything else would be ignored.)
 
 ### Running beam_makeops for the emulator ###
@@ -378,20 +423,16 @@ Give the option `-emulator` to produce output files for the emulator.
 The following output files will be generated in the output directory.
 
 * `beam_opcodes.c` - Defines static data used by the loader
-(`beam_load.c`).  Data about generic instructions, specific
-instructions (including how to pack their operands), and
-transformation rules are all part of this file.
+(`beam_load.c`), providing information about generic and specific
+instructions, as well as all C code for the transformation rules.
 
-* `beam_opcodes.h` - Miscellanous preprocessor definitions, mainly
+* `beam_opcodes.h` - Miscellaneous preprocessor definitions, mainly
 used by `beam_load.c` but also by `beam_{hot,warm,cold}.h`.
-
-* `beam_transform.c` - Implementation of guard constraints and generators
-called from transformation rules.
 
 For the traditional BEAM interpreter, the following files are also
 generated:
 
-* `beam_hot.h`, `beam_warm.h`, `beam_cold.`h - Implementation of
+* `beam_hot.h`, `beam_warm.h`, `beam_cold.h` - Implementation of
 instructions.  Included inside the `process_main()` function in
 `beam_emu.c`.
 
@@ -404,11 +445,6 @@ For BeamAsm, the following files are also generated:
 The following options can be given:
 
 * `wordsize 32|64` - Defines the word size.  Default is 32.
-
-* `code-model Model` - The code model as given to `-mcmodel` option
-for GCC.  Default is `unknown`.  If the code model is `small` (and
-the word size is 64 bits), **beam\_makeops** will pack operands
-into the upper 32 bits of the instruction word.
 
 * `DSymbol=0|1` - Defines the value for a symbol.  The symbol can be
 used in `%if` and `%unless` directives.
@@ -424,8 +460,10 @@ A line with `//` is also a comment.  It is recommended to only
 use this style of comments in files that define implementations of
 instructions.
 
-A long line can be broken into shorter lines by a placing a `\` before
-the newline.
+A long transformation line can be broken after the `=>` operator and
+after `|` operators. Since OTP 25, this is the only way to break transformation
+lines. When reading older source you may see that `\` was used for this
+purpose, but we removed it since it was only seen together with `=>` and `|`.
 
 ### Variable definitions ###
 
@@ -458,7 +496,7 @@ probably never happen in practice.
 #### GC\_REGEXP ####
 
 In `macros.tab`, there is a definition of `GC_REGEXP`.
-It will be described in [a later section](#the-gc_regexp-definition).
+It will be described in [a later section](#the-GC_REGEXP-definition).
 
 #### FORBIDDEN\_TYPES ####
 
@@ -490,7 +528,7 @@ Default is `%hot`.  The directives will be applied to declarations
 of the specific instruction that follow.  Here is an example:
 
     %cold
-    is_number f? xy
+    is_number f xy
     %hot
 
 #### Conditional compilation directives ####
@@ -499,7 +537,7 @@ The `%if` directive includes a range of lines if a condition is
 true.  For example:
 
     %if ARCH_64
-    i_bs_get_integer_32 x f? x
+    i_bs_get_integer_32 x f x
     %endif
 
 The specific instruction `i_bs_get_integer_32` will only be defined
@@ -538,13 +576,14 @@ It is also possible to add an `%else` clause:
 The following symbols are always defined.
 
 * `ARCH_64` - is 1 for a 64-bit machine, and 0 otherwise.
-* `ARCH_32` - is 1 for 32-bit machine, and 1 otherwise.
+* `ARCH_32` - is 1 for 32-bit machine, and 0 otherwise.
 
 The `Makefile` for building the emulator currently defines the
 following symbols by using the `-D` option on the command line for
 **beam\_makeops**.
 
-* `USE_VM_PROBES` - 1 if the runtime system is compiled to use VM probes (support for dtrace or systemtap), 0 otherwise.
+* `USE_VM_PROBES` - 1 if the runtime system is compiled to use VM
+  probes (support for dtrace or systemtap), 0 otherwise.
 
 ### Defining external generic instructions ###
 
@@ -586,8 +625,9 @@ the most common way.  Whenever a specific instruction is created,
 **beam\_makeops** automatically creates an internal generic instruction
 if it does not previously exist.
 
-* Explicitly.  This is necessary only when a generic instruction does
-not have any corresponding specific instruction.
+* Explicitly.  This is necessary only when a generic instruction is
+used in transformations, but does not have any corresponding specific
+instruction.
 
 The syntax for an internal generic instruction is as follows:
 
@@ -726,18 +766,18 @@ register as a port.  Therefore the literal term must not contain a
 port or pid.)
 
 * `S` - Tagged source register (X or Y).  The tag will be tested at
-runtime to retrieve the value from an X register or a Y register.  Slighly
+runtime to retrieve the value from an X register or a Y register.  Slightly
 cheaper than `s`.
 
 * `d` - Tagged destination register (X or Y).  The tag will be tested
 at runtime to set up a pointer to the destination register.  If the
-instruction performs a garbarge collection, it must use the
+instruction performs a garbage collection, it must use the
 `$REFRESH_GEN_DEST()` macro to refresh the pointer before storing to
 it (there are more details about that in a later section).
 
 * `j` - A failure label (combination of `f` and `p`).  If the branch target 0,
 an exception will be raised if instruction fails, otherwise control will be
-transfered to the target address.
+transferred to the target address.
 
 The types that follows are all applied to an operand that has the `u`
 type.
@@ -761,7 +801,7 @@ other modules, such as `call_ext`.
 
 * `F` - Pointer to a fun entry. Used in `make_fun2` and friends.
 
-* `A` - A tagged arityvalue.  Used in instructions that test the arity
+* `A` - A tagged arity value.  Used in instructions that test the arity
 of a tuple.
 
 * `P` - A byte offset into a tuple.
@@ -817,49 +857,6 @@ the `d` operand will be tested to see whether it refers to an X
 register or a Y register, and a pointer to the register will be set
 up.
 
-#### The '?' type modifier ####
-
-The character `?` can be added to the end of an operand to indicate
-that the operand will not be used every time the instruction is executed.
-For example:
-
-    allocate_heap t I t?
-    is_eq_exact f? x xy
-
-In `allocate_heap`, the last operand is the number of live registers.
-It will only be used if there is not enough heap space and a garbage
-collection must be performed.
-
-In `is_eq_exact`, the failure address (the first operand) will only be
-used if the two register operands are not equal.
-
-Knowing that an operand is not always used can improve how packing
-is done for some instructions.
-
-For the `allocate_heap` instruction, without the `?` the packing would
-be done like this:
-
-         +--------------------+--------------------+
-    I -> |       Stack needed | &&lb_allocate_heap +
-         +--------------------+--------------------+
-         |        Heap needed | Live registers     +
-         +--------------------+--------------------+
-
-"Stack needed" and "Heap needed" are always used, but they are in
-different words.  Thus, at runtime the `allocate_heap` instruction
-must read both words from memory even though it will not always use
-"Live registers".
-
-With the `?`, the operands will be packed like this:
-
-         +--------------------+--------------------+
-    I -> |     Live registers | &&lb_allocate_heap +
-         +--------------------+--------------------+
-         |        Heap needed |       Stack needed +
-         +--------------------+--------------------+
-
-Now "Stack needed" and "Heap needed" are in the same word.
-
 ### Defining transformation rules ###
 
 Transformation rules are used to rewrite generic instructions to other
@@ -874,33 +871,32 @@ A rule is recognized by its right-pointer arrow: `=>`.  To the left of
 the arrow is one or more instruction patterns, separated by `|`.  To
 the right of the arrow is zero or more instructions, separated by `|`.
 If the instructions from the BEAM code matches the instruction
-patterns on the left side, they will be replaced with instructions on
-the right side (or removed if there are no instructions on the right).
+patterns on the left-hand side, they will be replaced with
+instructions on the right-hand side (or removed if the right-hand
+side is the single symbol `_`).
 
 #### Defining instruction patterns ####
 
-We will start looking at the patterns on the left side of the arrow.
+We will start looking at the patterns on the left-hand side of the arrow.
 
 A pattern for an instruction consists of its name, followed by a pattern
 for each of its operands.  The operand patterns are separated by spaces.
 
 The simplest possible pattern is a variable.  Just like in Erlang,
-a variable must begin with an uppercase letter.  If the same variable is
-used in multiple operands, the pattern will only match if the operands
-are equal.  For example:
+a variable must begin with an uppercase letter.  In contrast to Erlang,
+variables must **not** be repeated.
 
-    move Same Same =>
-
-This pattern will match if the operands for `move` are the same.  If
-the pattern match, the instruction will be removed.  (That used to be an
-actual rule a long time ago when the compiler would occasionally produce
-instructions such as `{move,{x,2},{x,2}}`.)
-
-Variables that have been bound on the left side can be used on the
-right side.  For example, this rule will rewrite all `move` instructions
-to `assign` instructions with the operands swapped:
+Variables that have been bound on the left-hand side can be used on
+the right-hand side or in predicates.  For example, this rule will rewrite all
+`move` instructions to `assign` instructions with the operands swapped:
 
     move Src Dst => assign Dst Src
+
+To help catch issues caused by unused variables (such as GH-8875), they are
+considered errors. If you wish to give an operand a name for documentation
+purposes, prefix it with an underscore (`_Foobar`) to mark the variable as
+intentionally unused. Conversely, using a variable marked in this manner is
+also an error.
 
 If we only want to match operands of a certain type, we can
 use a type constraint.  A type constraint consists of one or more
@@ -923,6 +919,18 @@ Here the `is_eq_exact` instruction is replaced with a specialized instruction
 that only compares literals, but only if the first operand is a register and
 the second operand is a literal.
 
+#### Removing instructions ####
+
+The instructions of the left-hand side of the pattern can be removed
+by using the `_` symbol on the right-hand side of the
+transformation. For example, a `line` instruction without any actual
+line-number information can be removed like this:
+
+    line n => _
+
+(Before OTP 25, this was instead achieved by leaving the right-hand side
+blank.)
+
 #### Further constraining patterns ####
 
 In addition to specifying a type letter, the actual value for the type can
@@ -934,10 +942,11 @@ Here the second operand of `move` is constrained to be X register 1.
 
 When specifying an atom constraint, the atom is written as it would be
 in the C source code.  That is, it needs an `am_` prefix, and it must
-be listed in `atom.names`.  For example:
+be listed in `atom.names`.  For example, redundant `is_boolean` instructions
+can be removed like this:
 
-    is_boolean Fail=f a==am_true =>
-    is_boolean Fail=f a==am_false =>
+    is_boolean Fail=f a==am_true => _
+    is_boolean Fail=f a==am_false => _
 
 There are several constraints available for testing whether a call is to a BIF
 or a function.
@@ -961,7 +970,7 @@ result.
 The `u$is_not_bif` constraint matches if the operand does not refer to
 a BIF (not listed in `bif.tab`).  For example:
 
-    move S X0=x==0 | line Loc | call_ext_last Ar Func=u$is_not_bif D => \
+    move S X0=x==0 | line Loc | call_ext_last Ar Func=u$is_not_bif D =>
          move S X0 | call_ext_last Ar Func D
 
 The `u$bif:Module:Name/Arity` constraint tests whether the given
@@ -970,7 +979,7 @@ operand refers to a specific BIF.  Note that `Module:Name/Arity`
 be a compilation error.  It is useful when a call to a specific BIF
 should be replaced with an instruction as in this example:
 
-    gc_bif2 Fail Live u$bif:erlang:splus/2 S1 S2 Dst => \
+    gc_bif2 Fail Live u$bif:erlang:splus/2 S1 S2 Dst =>
          gen_plus Fail Live S1 S2 Dst
 
 Here the call to the GC BIF `'+'/2` will be replaced with the instruction
@@ -986,13 +995,14 @@ a specific function.  Here is an example:
     bif1 Fail u$func:erlang:is_constant/1 Src Dst => too_old_compiler
 
 `is_constant/1` used to be a BIF a long time ago.  The transformation
-replaces the call with the `too_old_compiler` instruction which will produce
-a nicer error message than the default error would be for a missing guard BIF.
+replaces the call with the `too_old_compiler` instruction, which is
+specially handled in the loader to produce a nicer error message than
+the default error would be for a missing guard BIF.
 
 #### Type constraints allowed in patterns ####
 
-Here are all type letters that are allowed on the left side of a transformation
-rule.
+Here are all type letters that are allowed on the left-hand side of a
+transformation rule.
 
 * `u` - An untagged integer that fits in a machine word.
 
@@ -1026,26 +1036,55 @@ instruction, it must only be used for a destination register.)
 
 * `o` - Overflow.  An untagged integer that does not fit in a machine word.
 
-#### Guard constraints (predicates) ####
+#### Predicates ####
 
 If the constraints described so far is not enough, additional
 constraints can be implemented in C and be called as a guard function
-on the left side of the transformation.  If the guard function returns
+on the left-hand side of the transformation.  If the guard function returns
 a non-zero value, the matching of the rule will continue, otherwise
-the match will fail.  For example:
+the match will fail.  Such guard functions are hereafter called
+*predicates*.
 
-    ensure_map Lit=q | literal_is_map(Lit) =>
+The most commonly used guard constraints is `equal()`. It can be used
+to remove a redundant `move` instruction like this:
 
-The guard test `literal_is_map/1` tests whether the given literal is a map.
-If the literal is a map, the instruction is unnecessary and can be removed.
+    move R1 R2 | equal(R1, R2) => _
 
-Such guard tests are also called predicates.  At the time of writing, all
-predicates are defined in the file `predicates.tab`.
+or remove a redundant `is_eq_exact` instruction like this:
+
+    is_eq_exact Lbl Src1 Src2 | equal(Src1, Src2) => _
+
+At the time of writing, all predicates are defined in files named
+`predicates.tab` in several directories:
+
+* Predicates used by both the interpreter and the JIT implementations
+  are contained in `$ERL_TOP/erts/emulator/beam/predicates.tab`.
+
+* Predicates only used by x86_64 JIT can be found in
+  `$ERL_TOP/erts/emulator/beam/jit/x86/predicates.tab`.
+
+* Predicates only used by AArc64 (Arm64) JIT can be found in
+  `$ERL_TOP/erts/emulator/beam/jit/arm/predicates.tab`.
+
+* Predicates only used by the interpreter can be found in
+  `$ERL_TOP/erts/emulator/beam/emu/predicates.tab`.
+
+### A very brief note on implementation of predicates ####
 
 It is outside the scope for this document to describe in detail how
 predicates are implemented because it requires knowledge of the
-internal loader data structures, but here is the implementation of
-`literal_is_map()`:
+internal loader data structures, but here is quick look at the
+implementation of a simple predicate called `literal_is_map()`.
+
+Here is first an example how it is used:
+
+    is_map Fail Lit=q | literal_is_map(Lit) => _
+
+If the `Lit` operand is a literal, then the `literal_is_map()`
+predicate is called to determine whether it is a map literal.
+If it is, the instruction is not needed and can be removed.
+
+`literal_is_map()` is implemented like this (in `emu/predicates.tab`):
 
     pred.literal_is_map(Lit) {
         Eterm term;
@@ -1060,7 +1099,7 @@ predicate.  Without the prefix, it would have been interpreted as the
 implementation of an instruction (described in **Defining the
 implementation**).
 
-Predicate functions have a magic variabled called `S`, which is a
+Predicate functions have a magic variable called `S`, which is a
 pointer to a state struct. In the example,
 `beamfile_get_literal(&S->beam, Lit.val);` is used to retrieve the actual term
 for the literal.
@@ -1096,23 +1135,24 @@ generic instruction:
 To match a variable number of arguments we need to use the special
 operand type `*` like this:
 
-    select_val Src=aiq Fail=f Size=u List=* => \
+    select_val Src=aiq Fail=f Size=u List=* =>
         i_const_select_val Src Fail Size List
 
 This transformation renames a `select_val/3` instruction
 with a constant source operand to `i_const_select_val/3`.
 
-#### Constructing new instructions on the right side ####
+#### Constructing new instructions on the right-hand side ####
 
-The most common operand on the right side is a variable that was bound while
-matching the left side.  For example:
+The most common operand on the right-hand side is a variable that was
+bound while matching the pattern on the left-hand side.  For example:
 
     trim N Remaining => i_trim N
 
-An operand can also be a type letter to construct an operand of that type.
-Each type has a default value.  For example, the type `x` has the default
-value 1023, which is the highest X register.  That makes `x` on the right
-side a convenient shortcut for a temporary X register.  For example:
+An operand can also be a type letter to construct an operand of that
+type.  Each type has a default value.  For example, the type `x` has
+the default value 1023, which is the highest X register.  That makes
+`x` on the right-hand side a convenient shortcut for a temporary X
+register.  For example:
 
     is_number Fail Literal=q => move Literal x | is_number Fail x
 
@@ -1131,17 +1171,20 @@ an atom is written the same way as in the C source code.  For example,
 the atom `false` is written as `am_false`.  The atom must be listed in
 `atom.names`.
 
+As a special case, `a=$MODULE` will evaluate to the atom for the current
+module (the module being loaded).
+
 Here is an example showing how values can be specified:
 
-    bs_put_utf32 Fail=j Flags=u Src=s => \
-        i_bs_validate_unicode Fail Src | \
+    bs_put_utf32 Fail=j Flags=u Src=s =>
+        i_bs_validate_unicode Fail Src |
         bs_put_integer Fail i=32 u=1 Flags Src
 
-#### Type letters on the right side ####
+#### Type letters on the right-hand side ####
 
 Here follows all types that are allowed to be used in operands for
-instructions being constructed on the right side of a transformation
-rule.
+instructions being constructed on the right-hand side of a
+transformation rule.
 
 * `u` - Construct an untagged integer.  The default value is 0.
 
@@ -1160,16 +1203,16 @@ use as a temporary X register.
 
 * `n` - NIL (`[]`, the empty list).
 
-#### Function call on the right side ####
+#### Function call on the right-hand side ####
 
 Transformations that are not possible to describe with the rule
 language as described here can be implemented as a generator function
-in C and called from the right side of a transformation.  The left
+in C and called from the right-hand side of a transformation.  The left-hand
 side of the transformation will perform the match and bind operands to
 variables.  The variables can then be passed to a generator function
-on the right side.  For example:
+on the right-hand side.  For example:
 
-    bif2 Fail=j u$bif:erlang:element/2 Index=s Tuple=xy Dst=d => \
+    bif2 Fail=j u$bif:erlang:element/2 Index=s Tuple=xy Dst=d =>
         element(Jump, Index, Tuple, Dst)
 
 This transformation rule matches a call to the BIF `element/2`.
@@ -1182,8 +1225,8 @@ to the maximum tuple size, the instruction `i_fast_element/2` will be
 produced, otherwise the instruction `i_element/4` will be produced.
 The corresponding specific instructions are:
 
-    i_fast_element xy j? I d
-    i_element xy j? s d
+    i_fast_element xy j I d
+    i_element xy j s d
 
 The `i_fast_element/2` instruction is faster because the tuple is
 already an untagged integer.  It also knows that the index is at least
@@ -1191,12 +1234,13 @@ already an untagged integer.  It also knows that the index is at least
 instruction will have to fetch the index from a register, test that it
 is an integer, and untag the integer.
 
-At the time of writing, all generators functions were defined in the
-file `generators.tab`.
+At the time of writing, all generators functions were defined in files
+named `generators.tab` in several directories (in the same directories
+as the `predicates.tab` files).
 
 It is outside the scope of this document to describe in detail how
-generator functions are written, but here is the
-implementation of `element()`:
+generator functions are written, but here is the implementation of
+`element()`:
 
     gen.element(Fail, Index, Tuple, Dst) {
         BeamOp* op;
@@ -1228,7 +1272,7 @@ generator.  Without the prefix, it would have been interpreted as the
 implementation of an instruction (described in **Defining the
 implementation**).
 
-Generator functions have a magic variabled called `S`, which is a
+Generator functions have a magic variable called `S`, which is a
 pointer to a state struct.  In the example, `S` is used in the invocation
 of the `NewBeamOp` macro.
 
@@ -1290,50 +1334,14 @@ A macro definition whose name and arity matches a family of
 specific instructions is assumed to be the implementation of that
 instruction.
 
-A macro can also be invoked from within another macro.  For example,
-`move_deallocate_return/2` avoids repeating code by invoking
-`$deallocate_return()` as a macro:
-
-    move_deallocate_return(Src, Deallocate) {
-        x(0) = $Src;
-        $deallocate_return($Deallocate);
-    }
-
-Here is the definition of `deallocate_return/1`:
-
-    deallocate_return(Deallocate) {
-        //| -no_next
-        int words_to_pop = $Deallocate;
-        SET_I((BeamInstr *) cp_val(*E));
-        E = ADD_BYTE_OFFSET(E, words_to_pop);
-        CHECK_TERM(x(0));
-        DispatchReturn;
-    }
-
-The expanded code for `move_deallocate_return` will look this:
-
-    OpCase(move_deallocate_return_cQ):
-    {
-      x(0) = I[1];
-      do {
-        int words_to_pop = Qb(BeamExtraData(I[0]));
-        SET_I((BeamInstr *) cp_val(*E));
-        E = ADD_BYTE_OFFSET(E, words_to_pop);
-        CHECK_TERM(x(0));
-        DispatchReturn;
-      } while (0);
-    }
+A macro can also be invoked from within another macro.
 
 When expanding macros, **beam\_makeops** wraps the expansion in a
 `do`/`while` wrapper unless **beam\_makeops** can clearly see that no
-wrapper is needed.  In this case, the wrapper is needed.
+wrapper is needed.
 
 Note that arguments for macros cannot be complex expressions, because
-the arguments are split on `,`.  For example, the following would
-not work because **beam\_makeops** would split the expression into
-two arguments:
-
-    $deallocate_return(get_deallocation(y, $Deallocate));
+the arguments are split on `,`.
 
 #### Code generation directives ####
 
@@ -1357,13 +1365,11 @@ To see what `-no_prefetch` does, let's first look at the default code
 generation.  Here is the code generated for `move_cx`:
 
     OpCase(move_cx):
-    {
-      BeamInstr next_pf = BeamCodeAddr(I[2]);
-      xb(BeamExtraData(I[0])) = I[1];
-      I += 2;
-      ASSERT(VALID_INSTR(next_pf));
-      GotoPF(next_pf);
-    }
+    BeamInstr next_pf = BeamCodeAddr(I[3]);
+    xb(I[2]) = I[1];
+    I += 3;
+    ASSERT(VALID_INSTR(next_pf));
+    GotoPF(next_pf);
 
 Note that the very first thing done is to fetch the address to the
 next instruction.  The reason is that it usually improves performance.
@@ -1380,8 +1386,8 @@ We can see that the prefetch is no longer done:
 
     OpCase(move_cx):
     {
-      xb(BeamExtraData(I[0])) = I[1];
-      I += 2;
+      xb(I[2]) = I[1];
+      I += 3;
       ASSERT(VALID_INSTR(*I));
       Goto(*I);
     }
@@ -1411,9 +1417,10 @@ The generated code looks like this:
 
     OpCase(is_atom_fx):
     {
-      if (is_not_atom(xb(I[1]))) {
-        ASSERT(VALID_INSTR(*(I + (fb(BeamExtraData(I[0]))) + 0)));
-        I += fb(BeamExtraData(I[0])) + 0;;
+      Eterm tmp_packed1 = I[1];
+      if (is_not_atom(xb((tmp_packed1>>BEAM_WIDE_SHIFT)))) {
+        ASSERT(VALID_INSTR(*(I + (fb(tmp_packed1&BEAM_WIDE_MASK)) + 0)));
+        I += fb(tmp_packed1&BEAM_WIDE_MASK) + 0;;
         Goto(*I);;
       }
       I += 2;
@@ -1441,27 +1448,27 @@ The generated code looks like this:
 
     OpCase(jump_f):
     {
-      ASSERT(VALID_INSTR(*(I + (fb(BeamExtraData(I[0]))) + 0)));
-      I += fb(BeamExtraData(I[0])) + 0;;
-      Goto(*I);;
+      ASSERT(VALID_INSTR(*(I + (I[1]) + 0)));
+      I += I[1] + 0;;
+      Goto(*I);;ASSERT(!"Fell through 'jump' (-no_next)");
     }
 
 If we remove the `-no_next` directive, the code would look like this:
 
     OpCase(jump_f):
     {
-      BeamInstr next_pf = BeamCodeAddr(I[1]);
-      ASSERT(VALID_INSTR(*(I + (fb(BeamExtraData(I[0]))) + 0)));
-      I += fb(BeamExtraData(I[0])) + 0;;
+      BeamInstr next_pf = BeamCodeAddr(I[2]);
+      ASSERT(VALID_INSTR(*(I + (I[1]) + 0)));
+      I += I[1] + 0;;
       Goto(*I);;
-      I += 1;
+      I += 2;
       ASSERT(VALID_INSTR(next_pf));
       GotoPF(next_pf);
     }
 
 In the end, the C compiler will probably optimize this code to the
 same native code as the first version, but the first version is certainly
-much easier to read for human readers.
+somewhat easier for human readers to understand.
 
 #### Macros in the macros.tab file ####
 
@@ -1471,6 +1478,8 @@ see if any of existing macros can be used rather than re-inventing
 the wheel.
 
 We will describe a few of the most useful macros here.
+
+[](){: #the-GC_REGEXP-definition }
 
 ##### The GC_REGEXP definition #####
 
@@ -1616,7 +1625,7 @@ of the instruction, a pointer will be initialized to point to the X or
 Y register in question.
 
 If there is a garbage collection before the result is stored,
-the stack will move and if the `d` operand refered to a Y
+the stack will move and if the `d` operand referred to a Y
 register, the pointer will no longer be valid.  (Y registers are
 stored on the stack.)
 
@@ -1651,7 +1660,7 @@ similar to this:
 
 #### Variable number of operands ####
 
-Here follows an example of how to to handle an instruction with a variable number
+Here follows an example of how to handle an instruction with a variable number
 of operands for the interpreter.  Here is the instruction definition in `emu/ops.tab`:
 
     put_tuple2 xy I *
@@ -1666,38 +1675,38 @@ operands.
 Here is the implementation:
 
     put_tuple2(Dst, Arity) {
-	Eterm* hp = HTOP;
-	Eterm arity = $Arity;
-	Eterm* dst_ptr = &($Dst);
+        Eterm* hp = HTOP;
+        Eterm arity = $Arity;
+        Eterm* dst_ptr = &($Dst);
 
-	//| -no_next
-	ASSERT(arity != 0);
-	*hp++ = make_arityval(arity);
+        //| -no_next
+        ASSERT(arity != 0);
+        *hp++ = make_arityval(arity);
 
-	/*
-	 * The $NEXT_INSTRUCTION macro points just beyond the fixed
-	 * operands. In this case it points to the descriptor of
-	 * the first element to be put into the tuple.
-	 */
-	I = $NEXT_INSTRUCTION;
-	do {
-	    Eterm term = *I++;
-	    switch (loader_tag(term)) {
-	    case LOADER_X_REG:
-		*hp++ = x(loader_x_reg_index(term));
-		break;
-	    case LOADER_Y_REG:
-		*hp++ = y(loader_y_reg_index(term));
-		break;
-	    default:
-		*hp++ = term;
-		break;
-	    }
-	} while (--arity != 0);
-	*dst_ptr = make_tuple(HTOP);
-	HTOP = hp;
-	ASSERT(VALID_INSTR(* (Eterm *)I));
-	Goto(*I);
+        /*
+         * The $NEXT_INSTRUCTION macro points just beyond the fixed
+         * operands. In this case it points to the descriptor of
+         * the first element to be put into the tuple.
+         */
+        I = $NEXT_INSTRUCTION;
+        do {
+            Eterm term = *I++;
+            switch (loader_tag(term)) {
+            case LOADER_X_REG:
+                *hp++ = x(loader_x_reg_index(term));
+                break;
+            case LOADER_Y_REG:
+                *hp++ = y(loader_y_reg_index(term));
+                break;
+            default:
+                *hp++ = term;
+                break;
+            }
+        } while (--arity != 0);
+        *dst_ptr = make_tuple(HTOP);
+        HTOP = hp;
+        ASSERT(VALID_INSTR(* (Eterm *)I));
+        Goto(*I);
     }
 
 
@@ -1878,16 +1887,16 @@ the specific instruction.
 As an example, the following specific instructions cannot be
 implemented as a combined instruction:
 
-    i_times j? t x x d
-    i_times j? t x y d
-    i_times j? t s s d
+    i_times j t x x d
+    i_times j t x y d
+    i_times j t s s d
 
 We would have to change the order of the operands so that the
 two operands that are different are placed first:
 
-    i_times x x j? t d
-    i_times x y j? t d
-    i_times s s j? t d
+    i_times x x j t d
+    i_times x y j t d
+    i_times s s j t d
 
 We can then define:
 
@@ -1913,10 +1922,10 @@ Several instructions can share a group.  As an example, the following
 instructions have different names, but in the end they all create a
 binary.  The last two operands are common for all of them:
 
-    i_bs_init_fail       xy j? t? x
-    i_bs_init_fail_heap s I j? t? x
-    i_bs_init                W t? x
-    i_bs_init_heap         W I t? x
+    i_bs_init_fail       xy j t x
+    i_bs_init_fail_heap s I j t x
+    i_bs_init               W t x
+    i_bs_init_heap        W I t x
 
 The instructions are defined like this (formatted with extra
 spaces for clarity):
@@ -1979,16 +1988,27 @@ For the BeamAsm runtime system, the implementation of each instruction is define
 by emitter functions written in C++ that emit the assembly code for each instruction.
 There is one emitter function for each family of specific instructions.
 
-Take for example the `move` instruction. In `beam/asm/ops.tab` there is a
-single specific instruction for `move` defined like this:
+All source files containing the emitter functions for generating
+x86_64 native instructions are found in the `beam/jit/x86` directory,
+while the corresponding files for AArch64 (Arm64) are found in
+`beam/jit/arm`. Common source code and header files for both back-ends
+are located in the `beam/jit` directory.
+
+Take for example the `move` instruction. In `beam/jit/x86/ops.tab`
+there used to be a single specific instruction for `move` defined like
+this:
 
     move s d
 
-The implementation is found in `beam/asm/instr_common.cpp`:
+The implementation found in `beam/jit/x86/instr_common.cpp` used to
+look like this:
 
     void BeamModuleAssembler::emit_move(const ArgVal &Src, const ArgVal &Dst) {
         mov_arg(Dst, Src);
     }
+
+(The current implementation is slightly more complicated because of additional
+optimizations.)
 
 The `mov_arg()` helper function will handle all combinations of source and destination
 operands.  For example, the instruction `{move,{x,1},{y,1}}` will be translated like this:
@@ -2000,8 +2020,7 @@ while `{move,{integer,42},{x,0}}` will be translated like this:
 
     mov qword [rbx], 687
 
-It is possible to define more than one specific instruction, but there will still be
-only one emitter function. For example:
+It is possible to define more than one specific instruction. For example:
 
     fload S l
     fload q l
@@ -2023,6 +2042,8 @@ only a single `emit_fload()` function is allowed:
         .
         .
     }
+
+[](){: #handling-a-variable-number-of-operands }
 
 #### Handling a variable number of operands ####
 
@@ -2053,7 +2074,7 @@ Here is the emitter function:
     void BeamModuleAssembler::emit_select_val(const ArgVal &Src,
                                               const ArgVal &Fail,
                                               const ArgVal &Size,
-                                              const Span<ArgVal> &args) {
+                                              const Span<const ArgVal> &args) {
         ASSERT(Size.getValue() == args.size());
            .
            .

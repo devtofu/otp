@@ -2,7 +2,9 @@
 //
 // %CopyrightBegin%
 //
-// Copyright Ericsson AB 2017-2020. All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
+//
+// Copyright Ericsson AB 2017-2025. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -74,6 +76,12 @@ GC_SWAPOUT() {
     c_p->i = I;
 }
 
+MAYBE_EXIT_AFTER_GC() {
+    if (ERTS_PSFLG_EXITING & erts_atomic32_read_nob(&c_p->state)) {
+        goto context_switch3;
+    }
+}
+
 GC_TEST(Ns, Nh, Live) {
     Uint need = $Nh + $Ns;
     if (ERTS_UNLIKELY((E - HTOP) < (need + S_RESERVED))) {
@@ -83,6 +91,7 @@ GC_TEST(Ns, Nh, Live) {
        ERTS_VERIFY_UNUSED_TEMP_ALLOC(c_p);
        PROCESS_MAIN_CHK_LOCKS(c_p);
        SWAPIN;
+       $MAYBE_EXIT_AFTER_GC();
     }
     HEAP_SPACE_VERIFIED($Nh);
 }
@@ -98,6 +107,7 @@ GC_TEST_PRESERVE(NeedHeap, Live, PreserveTerm) {
        PROCESS_MAIN_CHK_LOCKS(c_p);
        $PreserveTerm = reg[$Live];
        SWAPIN;
+       $MAYBE_EXIT_AFTER_GC();
     }
     HEAP_SPACE_VERIFIED($NeedHeap);
 }
@@ -170,7 +180,7 @@ DISPATCH_EXPORT(Export) {
 
     DTRACE_GLOBAL_CALL_FROM_EXPORT(c_p, ep);
 
-    SET_I(ep->addresses[erts_active_code_ix()]);
+    SET_I(ep->dispatch.addresses[erts_active_code_ix()]);
     CHECK_ARGS(I);
     dis_next = *I;
 
@@ -198,7 +208,7 @@ DISPATCH_FUN(I) {
         FCALLS--;
         Goto(dis_next);
     } else {
-        goto context_switch_fun;
+        goto context_switch;
     }
 }
 

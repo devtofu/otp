@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
+ *
+ * SPDX-License-Identifier: Apache-2.0
  * 
- * Copyright Ericsson AB 2017. All Rights Reserved.
+ * Copyright Ericsson AB 2017-2025. All Rights Reserved.
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -49,7 +51,7 @@ typedef union {
 
 typedef struct {
     int vsize;         /* length of vectors */
-    Uint size;         /* total size in bytes */
+    size_t size;       /* total size in bytes */
     SysIOVec* iov;
     ErtsIOQBinary** binv;
 } ErtsIOVecCommon;
@@ -66,8 +68,8 @@ typedef union {
  */
 typedef struct erts_io_queue {
     ErtsAlcType_t alct;
-    int driver;
-    Uint size;       /* total size in bytes */
+    bool driver;
+    size_t size;       /* total size in bytes */
 
     SysIOVec* v_start;
     SysIOVec* v_end;
@@ -91,66 +93,70 @@ typedef struct erts_io_queue {
 #include "erl_binary.h"
 #include "erl_bits.h"
 
-void erts_ioq_init(ErtsIOQueue *q, ErtsAlcType_t alct, int driver);
+void erts_ioq_init(ErtsIOQueue *q, ErtsAlcType_t alct, bool driver);
 void erts_ioq_clear(ErtsIOQueue *q);
-Uint erts_ioq_size(ErtsIOQueue *q);
-int erts_ioq_enqv(ErtsIOQueue *q, ErtsIOVec *vec, Uint skip);
-int erts_ioq_pushqv(ErtsIOQueue *q, ErtsIOVec *vec, Uint skip);
-int erts_ioq_deq(ErtsIOQueue *q, Uint Uint);
-Uint erts_ioq_peekqv(ErtsIOQueue *q, ErtsIOVec *ev);
-SysIOVec *erts_ioq_peekq(ErtsIOQueue *q, int *vlenp);
-Uint erts_ioq_sizeq(ErtsIOQueue *q);
+size_t erts_ioq_size(const ErtsIOQueue *q);
+int erts_ioq_enqv(ErtsIOQueue *q, ErtsIOVec *vec, size_t skip);
+int erts_ioq_pushqv(ErtsIOQueue *q, ErtsIOVec *vec, size_t skip);
+int erts_ioq_deq(ErtsIOQueue *q, size_t size);
+size_t erts_ioq_peekqv(const ErtsIOQueue *q, ErtsIOVec *ev);
+SysIOVec *erts_ioq_peekq(const ErtsIOQueue *q, int *vlenp);
 
-int erts_ioq_iolist_vec_len(Eterm obj, int* vsize, Uint* csize,
-                            Uint* pvsize, Uint* pcsize,
-                            size_t* total_size, Uint blimit);
+int erts_ioq_iolist_vec_len(Eterm obj, int* vsize, size_t* csize,
+                            size_t* pvsize, size_t* pcsize,
+                            size_t* total_size, size_t blimit);
 int erts_ioq_iolist_to_vec(Eterm obj, SysIOVec* iov,
                            ErtsIOQBinary** binv, ErtsIOQBinary* cbin,
-                           Uint bin_limit, int driver_binary);
+                           size_t bin_limit, int driver_binary);
 
 ERTS_GLB_INLINE
-int erts_ioq_iodata_vec_len(Eterm obj, int* vsize, Uint* csize,
-                            Uint* pvsize, Uint* pcsize,
-                            size_t* total_size, Uint blimit);
+int erts_ioq_iodata_vec_len(Eterm obj, int* vsize, size_t* csize,
+                            size_t* pvsize, size_t* pcsize,
+                            size_t* total_size, size_t blimit);
 ERTS_GLB_INLINE
 int erts_ioq_iodata_to_vec(Eterm obj, SysIOVec* iov,
                            ErtsIOQBinary** binv, ErtsIOQBinary* cbin,
-                           Uint bin_limit, int driver_binary);
+                           size_t bin_limit, int driver_binary);
 
 
 #if ERTS_GLB_INLINE_INCL_FUNC_DEF
 
 ERTS_GLB_INLINE
-int erts_ioq_iodata_vec_len(Eterm obj, int* vsize, Uint* csize,
-                            Uint* pvsize, Uint* pcsize,
-                            size_t* total_size, Uint blimit) {
-  if (is_binary(obj)) {
-    /* We optimize for when we get a procbin without a bit-offset
-     * that fits in one iov slot
-     */
-    Eterm real_bin;
-    byte bitoffs;
-    byte bitsize;
-    ERTS_DECLARE_DUMMY(Uint offset);
-    Uint size = binary_size(obj);
-    ERTS_GET_REAL_BIN(obj, real_bin, offset, bitoffs, bitsize);
-    if (size < MAX_SYSIOVEC_IOVLEN && bitoffs == 0 && bitsize == 0) {
-      *vsize = 1;
-      *pvsize = 1;
-      if (thing_subtag(*binary_val(real_bin)) == REFC_BINARY_SUBTAG) {
-          *csize = 0;
-          *pcsize = 0;
-      } else {
-          *csize = size;
-          *pcsize = size;
-      }
-      *total_size = size;
-      return 0;
-    }
-  }
+int erts_ioq_iodata_vec_len(Eterm obj, int* vsize, size_t* csize,
+                            size_t* pvsize, size_t* pcsize,
+                            size_t* total_size, size_t blimit) {
+    if (is_bitstring(obj)) {
+        /* We optimize for when we get a binary without a bit-offset that fits
+         * in one iov slot */
+        ERTS_DECLARE_DUMMY(Eterm br_flags);
+        ERTS_DECLARE_DUMMY(byte *base);
+        size_t offset, size;
+        BinRef *br;
 
-  return erts_ioq_iolist_vec_len(obj, vsize, csize,
-                                 pvsize, pcsize, total_size, blimit);
+        ERTS_GET_BITSTRING_REF(obj, br_flags, br, base, offset, size);
+
+        if (size < MAX_SYSIOVEC_IOVLEN &&
+            BIT_OFFSET(offset) == 0 &&
+            TAIL_BITS(size) == 0) {
+            size = BYTE_SIZE(size);
+            *vsize = 1;
+            *pvsize = 1;
+
+            if (br) {
+                *csize = 0;
+                *pcsize = 0;
+            } else {
+                *csize = size;
+                *pcsize = size;
+            }
+
+            *total_size = size;
+            return 0;
+        }
+    }
+
+    return erts_ioq_iolist_vec_len(obj, vsize, csize,
+                                   pvsize, pcsize, total_size, blimit);
 }
 
 ERTS_GLB_INLINE
@@ -158,41 +164,47 @@ int erts_ioq_iodata_to_vec(Eterm obj,
                            SysIOVec *iov,
                            ErtsIOQBinary **binv,
                            ErtsIOQBinary  *cbin,
-                           Uint bin_limit,
+                           size_t bin_limit,
                            int driver)
 {
-    if (is_binary(obj)) {
-        Eterm real_bin;
-        byte bitoffs;
-        byte bitsize;
-        Uint offset;
-        Uint size = binary_size(obj);
-        ERTS_GET_REAL_BIN(obj, real_bin, offset, bitoffs, bitsize);
-        if (size < MAX_SYSIOVEC_IOVLEN && bitoffs == 0 && bitsize == 0) {
-            Eterm *bptr = binary_val(real_bin);
-            if (thing_subtag(*bptr) == REFC_BINARY_SUBTAG) {
-                ProcBin *pb = (ProcBin *)bptr;
-                if (pb->flags)
-                    erts_emasculate_writable_binary(pb);
-                iov[0].iov_base = pb->bytes+offset;
-                iov[0].iov_len = size;
-                if (driver)
-                    binv[0] = (ErtsIOQBinary*)Binary2ErlDrvBinary(pb->val);
-                else
-                    binv[0] = (ErtsIOQBinary*)pb->val;
+    if (is_bitstring(obj)) {
+        ERTS_DECLARE_DUMMY(Eterm br_flags);
+        size_t offset, size;
+        byte *base;
+        BinRef *br;
+
+        ERTS_PIN_BITSTRING(obj, br_flags, br, base, offset, size);
+        ASSERT(TAIL_BITS(size) == 0);
+
+        if (NBYTES(size) < MAX_SYSIOVEC_IOVLEN) {
+            if (br && BIT_OFFSET(offset) == 0) {
+                Binary *refc_binary = br->val;
+
+                iov[0].iov_base = &base[BYTE_OFFSET(offset)];
+                iov[0].iov_len = NBYTES(size);
+
+                if (driver) {
+                    binv[0] = (ErtsIOQBinary*)Binary2ErlDrvBinary(refc_binary);
+                } else {
+                    binv[0] = (ErtsIOQBinary*)refc_binary;
+                }
+
                 return 1;
-            } else {
-                ErlHeapBin* hb = (ErlHeapBin *)bptr;
+            } else if (br == NULL) {
                 byte *buf = driver ? (byte*)cbin->driver.orig_bytes :
-                    (byte*)cbin->nif.orig_bytes;
-		copy_binary_to_buffer(buf, 0, ((byte *) hb->data)+offset, 0, 8*size);
+                                     (byte*)cbin->nif.orig_bytes;
+
+                copy_binary_to_buffer(buf, 0, base, offset, size);
+
                 iov[0].iov_base = buf;
-                iov[0].iov_len = size;
+                iov[0].iov_len = NBYTES(size);
                 binv[0] = cbin;
+
                 return 1;
             }
         }
     }
+
     return erts_ioq_iolist_to_vec(obj, iov, binv, cbin, bin_limit, driver);
 }
 

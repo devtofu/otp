@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2000-2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2000-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -263,7 +265,7 @@ match_huge_int(Config) when is_list(Config) ->
 	8 ->
 	    %% An attempt will be made to allocate heap space for
 	    %% the bignum (which will probably fail); only if the
-	    %% allocation succeds will the matching fail because
+	    %% allocation succeeds will the matching fail because
 	    %% the binary is too small.
 	    ok
     end,

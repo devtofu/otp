@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1999-2016. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1999-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -26,12 +28,15 @@
 %%
 %%-----------------------------------------------------------------
 -module(megaco_udp_server).
+-moduledoc false.
 
 -behaviour(gen_server).
+
 
 %%-----------------------------------------------------------------
 %% Include files
 %%-----------------------------------------------------------------
+
 -include_lib("megaco/src/udp/megaco_udp.hrl").
 -include_lib("megaco/src/app/megaco_internal.hrl"). 
 
@@ -39,6 +44,7 @@
 %%-----------------------------------------------------------------
 %% External exports
 %%-----------------------------------------------------------------
+
 -export([
 	 start_link/1,
 	 stop/1,
@@ -46,9 +52,11 @@
 	 upgrade_receive_handle/2
 	]).
 
+
 %%-----------------------------------------------------------------
 %% Internal exports
 %%-----------------------------------------------------------------
+
 -export([
 	 init/1, 
 	 handle_call/3, 
@@ -59,6 +67,7 @@
 
 	 handle_received_message/5
 	]).
+
 
 %%-----------------------------------------------------------------
 %% External interface functions
@@ -71,6 +80,7 @@
 start_link(Arg) ->
     gen_server:start_link(?MODULE, Arg, []).
 
+
 %%-----------------------------------------------------------------
 %% Func: stop/1
 %% Description: Stops the process that keeps track of an UDP 
@@ -82,6 +92,7 @@ stop(Pid) ->
 
 upgrade_receive_handle(Pid, NewHandle) ->
     call(Pid, {upgrade_receive_handle, NewHandle}).
+
 
 %%-----------------------------------------------------------------
 %% Internal interface functions
@@ -98,6 +109,7 @@ init(Arg) ->
     ?udp_debug(Arg, "udp server starting", [self()]),
     {ok, Arg}.
 
+
 %%-----------------------------------------------------------------
 %% Func: terminate/2
 %% Description: Termination function for the generic server
@@ -105,6 +117,7 @@ init(Arg) ->
 terminate(Reason, State) ->
     ?udp_debug(State, "udp server terminating", [self(), Reason]),
     ok.
+
 
 %%-----------------------------------------------------------------
 %% Func: handle_call/3
@@ -120,6 +133,7 @@ handle_call(Req, From, UdpRec) ->
 		"~n~p", [From, Req]),
     {reply, {error, {invalid_request, Req}}, UdpRec}.
 
+
 %%-----------------------------------------------------------------
 %% Func: handle_cast/2
 %% Description: Handling cast messages (really just stop and garbage)
@@ -132,16 +146,20 @@ handle_cast(Msg, UdpRec) ->
 		"~n~w", [Msg]),
     {noreply, UdpRec}.
 
+
 %%-----------------------------------------------------------------
 %% Func: handle_info/2
 %% Description: Handling non call/cast messages. Incomming messages
 %%              from the socket and exit codes.
 %%-----------------------------------------------------------------
-handle_info({udp, _UdpId, Ip, Port, Msg}, 
-	    #megaco_udp{serialize = false} = UdpRec) ->
-    #megaco_udp{socket = Socket, module = Mod, receive_handle = RH} = UdpRec,
-    SH = megaco_udp:create_send_handle(Socket, Ip, Port), 
-    MsgSize = size(Msg),
+
+handle_info({udp, _Socket, Ip, Port, Msg}, 
+	    #megaco_udp{serialize = false} = UdpRec) when is_binary(Msg) ->
+    #megaco_udp{handle = Handle,
+                socket = Socket,
+                module = Mod, receive_handle = RH} = UdpRec,
+    SH = megaco_udp:create_send_handle(Handle, Ip, Port), 
+    MsgSize = byte_size(Msg),
     incNumInMessages(SH),
     incNumInOctets(SH, MsgSize),
     case MsgSize of
@@ -150,17 +168,19 @@ handle_info({udp, _UdpId, Ip, Port, Msg},
 	Sz ->
 	    receive_message(Mod, RH, SH, Sz, Msg)
     end,
-    inet:setopts(Socket, [{active, once}]),
+    _ = activate(Socket),
     {noreply, UdpRec};
-handle_info({udp, _UdpId, Ip, Port, Msg}, 
-	    #megaco_udp{serialize = true} = UdpRec) ->
-    #megaco_udp{socket = Socket, module = Mod, receive_handle = RH} = UdpRec,
-    SH = megaco_udp:create_send_handle(Socket, Ip, Port), 
-    MsgSize = size(Msg),
+handle_info({udp, _Socket, Ip, Port, Msg}, 
+	    #megaco_udp{serialize = true} = UdpRec) when is_binary(Msg) ->
+    #megaco_udp{handle = Handle,
+                socket = Socket,
+                module = Mod, receive_handle = RH} = UdpRec,
+    SH = megaco_udp:create_send_handle(Handle, Ip, Port), 
+    MsgSize = byte_size(Msg),
     incNumInMessages(SH),
     incNumInOctets(SH, MsgSize),
     process_received_message(Mod, RH, SH, Msg),
-    inet:setopts(Socket, [{active, once}]),
+    _ = activate(Socket),
     {noreply, UdpRec};
 handle_info(Info, UdpRec) ->
     warning_msg("received unexpected info: "
@@ -199,8 +219,13 @@ handle_received_message(Mod, RH, Parent, SH, Msg) ->
 code_change(_Vsn, State, _Extra) ->
     {ok, State}.
 
-do_stop(#megaco_udp{socket = Socket}) ->
-    gen_udp:close(Socket).
+do_stop(#megaco_udp{handle = Handle}) ->
+    megaco_udp:close(Handle).
+
+
+-compile({inline, [activate/1]}).
+activate(Socket) ->
+    inet:setopts(Socket, [{active, once}]).
 
 
 %%-----------------------------------------------------------------
@@ -217,8 +242,8 @@ incNumInOctets(SH, NumOctets) ->
 incCounter(Key, Inc) ->
     ets:update_counter(megaco_udp_stats, Key, Inc).
 
-% incNumErrors(SH) ->
-%     incCounter({SH, medGwyGatewayNumErrors}, 1).
+%% incNumErrors(SH) ->
+%%     incCounter({SH, medGwyGatewayNumErrors}, 1).
 
 
 %% info_msg(F, A) ->

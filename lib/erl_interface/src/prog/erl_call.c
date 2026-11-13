@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
+ *
+ * SPDX-License-Identifier: Apache-2.0
  * 
- * Copyright Ericsson AB 1996-2020. All Rights Reserved.
+ * Copyright Ericsson AB 1996-2025. All Rights Reserved.
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -61,15 +63,9 @@
 #include <time.h>
 #include <unistd.h>
 
-#if TIME_WITH_SYS_TIME
-# include <sys/time.h>
-# include <time.h>
-#else
-# if HAVE_SYS_TIME_H
+#include <time.h>
+#if HAVE_SYS_TIME_H
 #  include <sys/time.h>
-# else
-#  include <time.h>
-# endif
 #endif
 
 #endif
@@ -83,6 +79,27 @@
 #include <ctype.h>
 #include <fcntl.h>
 #include <signal.h>
+
+/* In VC++, noreturn is a declspec that has to be before the types,
+ * but in GNUC it is an attribute to be placed between return type
+ * and function name, hence __decl_noreturn <types> __noreturn <function name>
+ *
+ * at some platforms (e.g. Android) __noreturn is defined at sys/cdef.h
+ */
+#if __GNUC__
+#  define __decl_noreturn
+#  ifndef __noreturn
+#     define __noreturn __attribute__((noreturn))
+#  endif
+#else
+#  if defined(__WIN32__) && defined(_MSC_VER)
+#    define __noreturn
+#    define __decl_noreturn __declspec(noreturn)
+#  else
+#    define __noreturn
+#    define __decl_noreturn
+#  endif
+#endif
 
 #include "ei.h"
 #include "ei_resolve.h"
@@ -131,9 +148,9 @@ struct call_flags {
 /* start an erlang system */
 int erl_start_sys(ei_cnode *ec, char *alive, Erl_IpAddr addr, int flags,
 		  char *erl, char *add_args[]);
-static void usage_arg(const char *progname, const char *switchname);
-static void usage_error(const char *progname, const char *switchname);
-static void usage(const char *progname);
+__decl_noreturn static void __noreturn usage_arg(const char *progname, const char *switchname);
+__decl_noreturn static void __noreturn usage_error(const char *progname, const char *switchname);
+__decl_noreturn static void __noreturn usage(const char *progname);
 static int get_module(char **mbuf, char **mname);
 static int do_connect(ei_cnode *ec, char *nodename, struct call_flags *flags);
 static int read_stdin(char **buf);
@@ -146,7 +163,9 @@ static char* ei_chk_strdup(char *s);
 static int rpc_print_node_stdout(ei_cnode* ec, int fd, char *mod,
                                  char *fun, const char* inbuf,
                                  int inbuflen, ei_x_buff* x);
-static void exit_free_flags_fields(int exit_status, struct call_flags* flags);
+__decl_noreturn static void __noreturn exit_free_flags_fields(
+                int exit_status,
+                struct call_flags* flags);
 
 /* Converts the given hostname to a shortname, if required. */
 static void format_node_hostname(const struct call_flags *flags,
@@ -438,6 +457,10 @@ int main(int argc, char *argv[])
           /* Failed to resolve our own hostname; try binding to loopback and
            * hope for the best. */
           hp = ei_gethostbyname("localhost");
+          if (!hp) {
+              fprintf(stderr, "erl_call: failed to resolve own hostname (%s) and localhost\n", h_hostname);
+              exit_free_flags_fields(1, &flags);
+          }
           flags.use_localhost_fallback = 1;
 
           format_node_hostname(&flags, h_hostname, h_hostname);
@@ -447,11 +470,11 @@ int main(int argc, char *argv[])
 
       memcpy(&h_ipadr.s_addr, *hp->h_addr_list, sizeof(struct in_addr));
       if (h_alivename) {
-          if (strlen(h_alivename) + strlen(h_hostname) + 2 > sizeof(h_nodename_buf)) {
+          if (snprintf(h_nodename_buf, sizeof(h_nodename_buf), "%s@%s",
+                       h_alivename, h_hostname) > sizeof(h_nodename_buf)) {;
               fprintf(stderr,"erl_call: hostname too long: %s\n", h_hostname);
               exit_free_flags_fields(1, &flags);
           }
-          sprintf(h_nodename, "%s@%s", h_alivename, h_hostname);
       }
       else {
           /* dynamic node name */
@@ -496,11 +519,11 @@ int main(int argc, char *argv[])
     }
 
     if (flags.port == -1) {
-        if (strlen(flags.node) + strlen(host_name) + 2 > sizeof(nodename)) {
+        if (snprintf(nodename, sizeof(nodename),
+                     "%s@%s", flags.node, host_name) > sizeof(nodename)) {
             fprintf(stderr,"erl_call: nodename too long: %s\n", flags.node);
             exit_free_flags_fields(1, &flags);
         }
-        sprintf(nodename, "%s@%s", flags.node, host_name);
     }
     /* 
      * Try to connect. Start an Erlang system if the
@@ -733,7 +756,9 @@ int main(int argc, char *argv[])
       ei_x_new(&e);		/* No version to ei_rpc() */
       
       if (ei_x_format_wo_ver(&e, args) < 0) {
-	  /* FIXME no error message and why -1 ? */
+          fprintf(stderr, "erl_call: Failed to parse arguments,\n"
+                  "see the documentation for allowed term types.\n"
+                  "Arguments: %s\n", args);
           free(mod);
           free(fun);
           free(args);
@@ -817,7 +842,10 @@ static int do_connect(ei_cnode *ec, char *nodename, struct call_flags *flags)
 	hostname++;
 
 	h = ei_gethostbyname(hostname);
-
+        if (!h) {
+            fprintf(stderr, "erl_call: failed to resolve hostname (%s)\n", hostname);
+            exit_free_flags_fields(1, flags);
+        }
 
 	if ((r=erl_start_sys(ec,alive,(Erl_IpAddr)(h->h_addr_list[0]),
 			     start_flags,flags->script,args)) < 0) {
@@ -980,7 +1008,7 @@ static DWORD WINAPI timer_thread(void *data) {
 }
 
 static void start_timeout(int timeout) {
-    if (CreateThread(NULL, 0, timer_thread, (void*)timeout, 0, NULL) == NULL) {
+    if (CreateThread(NULL, 0, timer_thread, (void*)(DWORD_PTR)timeout, 0, NULL) == NULL) {
         fprintf(stderr,"erl_call: Failed to start timer thread\n");
         exit(1);
     }
@@ -1036,19 +1064,19 @@ static void usage_noexit(const char *progname) {
   fprintf(stderr,"         -x  use specified erl start script, default is erl\n");
 }
 
-static void usage_arg(const char *progname, const char *switchname) {
+__decl_noreturn static void __noreturn usage_arg(const char *progname, const char *switchname) {
   fprintf(stderr, "Missing argument(s) for \'%s\'.\n", switchname);
   usage_noexit(progname);
   exit(1);
 }
 
-static void usage_error(const char *progname, const char *switchname) {
+__decl_noreturn static void __noreturn usage_error(const char *progname, const char *switchname) {
   fprintf(stderr, "Illegal argument \'%s\'.\n", switchname);
   usage_noexit(progname);
   exit(1);
 }
 
-static void usage(const char *progname) {
+void __noreturn usage(const char *progname) {
   usage_noexit(progname);
   exit(0);
 }
@@ -1101,7 +1129,7 @@ static char* ei_chk_strdup(char *s)
 }
 
 /*
- * Helper function that that:
+ * Helper function that:
  *
  * 1. Executes a function on a remote node
  *
@@ -1123,6 +1151,9 @@ static int rpc_print_node_stdout(ei_cnode* ec, int fd, char *mod,
     ei_term t;
     erlang_msg msg;
     char rex[MAXATOMLEN];
+#ifndef VALGRIND
+    index = -1;
+#endif
  
     if (ei_xrpc_to(ec, fd, mod, fun, inbuf, inbuflen, EI_RPC_FETCH_STDOUT) < 0) {
 	return ERL_ERROR;
@@ -1185,7 +1216,8 @@ ebadmsg:
 }
 
 
-void exit_free_flags_fields(int exit_status, struct call_flags* flags) {
+__decl_noreturn static void __noreturn
+exit_free_flags_fields(int exit_status, struct call_flags* flags) {
     if (flags->script != NULL) {
         free(flags->script);
     }
@@ -1206,11 +1238,6 @@ void exit_free_flags_fields(int exit_status, struct call_flags* flags) {
 
 
 /* Constants and helper functions used by erl_start_sys */
-
-/* FIXME is this a case a vfork can be used? */
-#if !HAVE_WORKING_VFORK
-# define vfork fork
-#endif
 
 #ifndef MAXPATHLEN
 #define MAXPATHLEN 1024
@@ -1338,7 +1365,8 @@ static HANDLE spawn_erlang_epmd(ei_cnode *ec,
     HANDLE ret;
 
     if(is_erlang){
-	get_addr(ei_thishostname(ec), &myaddr);
+        if (!get_addr(ei_thishostname(ec), &myaddr))
+            return INVALID_HANDLE_VALUE;
 	if((ptr = inet_ntoa(myaddr)) == NULL)
 	    return INVALID_HANDLE_VALUE;
 	else

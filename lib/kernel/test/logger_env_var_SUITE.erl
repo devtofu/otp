@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2018-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2018-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -26,9 +28,10 @@
 
 -import(logger_test_lib,[setup/2,log/3,sync_and_read/3]).
 
+-define(NO_SASL_PROGRESS_REPORTS, 6).
+
 suite() ->
-    [{timetrap,{seconds,60}},
-     {ct_hooks,[logger_test_lib]}].
+    [{timetrap, {seconds, 60}}].
 
 init_per_suite(Config) ->
     Config.
@@ -60,7 +63,8 @@ groups() ->
                  logger_many_handlers_default_first,
                  logger_many_handlers_default_last,
                  logger_many_handlers_default_last_broken_filter,
-                 logger_proxy
+                 logger_proxy,
+                 logger_metadata
                 ]},
      {bad,[],[bad_error_logger,
               bad_level,
@@ -79,8 +83,9 @@ all() ->
     ].
 
 default(Config) ->
-    {ok,#{primary:=P,handlers:=Hs,module_levels:=ML},_Node} = setup(Config,[]),
+    {ok, #{primary := P, handlers := Hs, module_levels := ML}, Peer, _Node} = setup(Config, []),
     notice = maps:get(level,P),
+    true = #{} == maps:get(metadata,P),
     #{module:=logger_std_h} = StdC = find(?STANDARD_HANDLER,Hs),
     all = maps:get(level,StdC),
     StdFilters = maps:get(filters,StdC),
@@ -88,11 +93,11 @@ default(Config) ->
     false = exists(simple,Hs),
     false = exists(sasl,Hs),
     [] = ML,
-    ok.
+    ok = peer:stop(Peer).
 
 default_sasl_compatible(Config) ->
-    {ok,#{primary:=P,handlers:=Hs,module_levels:=ML},_Node} =
-        setup(Config,[{logger_sasl_compatible,true}]),
+    {ok, #{primary := P, handlers := Hs, module_levels := ML}, Peer, _Node} =
+        setup(Config, [{logger_sasl_compatible, true}]),
     info = maps:get(level,P),
     #{module:=logger_std_h} = StdC = find(?STANDARD_HANDLER,Hs),
     all = maps:get(level,StdC),
@@ -101,11 +106,11 @@ default_sasl_compatible(Config) ->
     false = exists(simple,Hs),
     true = exists(sasl,Hs),
     [] = ML,
-    ok.
+    ok = peer:stop(Peer).
 
 error_logger_tty(Config) ->
-    {ok,#{primary:=P,handlers:=Hs,module_levels:=ML},_Node} =
-        setup(Config,[{error_logger,tty}]),
+    {ok, #{primary := P, handlers := Hs, module_levels := ML}, Peer, _Node} =
+        setup(Config, [{error_logger, tty}]),
     notice = maps:get(level,P),
     #{module:=logger_std_h} = StdC = find(?STANDARD_HANDLER,Hs),
     all = maps:get(level,StdC),
@@ -114,10 +119,10 @@ error_logger_tty(Config) ->
     false = exists(simple,Hs),
     false = exists(sasl,Hs),
     [] = ML,
-    ok.
+    ok = peer:stop(Peer).
 
 error_logger_tty_sasl_compatible(Config) ->
-    {ok,#{primary:=P,handlers:=Hs,module_levels:=ML},_Node} = 
+    {ok, #{primary := P, handlers := Hs, module_levels := ML}, Peer, _Node} =
         setup(Config,
               [{error_logger,tty},
                {logger_sasl_compatible,true}]),
@@ -129,10 +134,10 @@ error_logger_tty_sasl_compatible(Config) ->
     false = exists(simple,Hs),
     true = exists(sasl,Hs),
     [] = ML,
-    ok.
+    ok = peer:stop(Peer).
 
 error_logger_false(Config) ->
-    {ok,#{handlers:=Hs,primary:=P,module_levels:=ML},_Node} =
+    {ok, #{handlers := Hs, primary := P, module_levels := ML}, Peer, _Node} =
         setup(Config,
               [{error_logger,false},
                {logger_level,notice}]),
@@ -144,10 +149,10 @@ error_logger_false(Config) ->
     {domain,{_,{log,super,[otp,sasl]}}} = lists:keyfind(domain,1,SimpleFilters),
     false = exists(sasl,Hs),
     [] = ML,
-    ok.
+    ok = peer:stop(Peer).
 
 error_logger_false_progress(Config) ->
-    {ok,#{handlers:=Hs,primary:=P,module_levels:=ML},_Node} =
+    {ok, #{handlers := Hs, primary := P, module_levels := ML}, Peer, _Node} =
         setup(Config,
               [{error_logger,false},
                {logger_level,notice}]),
@@ -159,10 +164,10 @@ error_logger_false_progress(Config) ->
     {domain,{_,{log,super,[otp,sasl]}}} = lists:keyfind(domain,1,SimpleFilters),
     false = exists(sasl,Hs),
     [] = ML,
-    ok.
+    ok = peer:stop(Peer).
 
 error_logger_false_sasl_compatible(Config) ->
-    {ok,#{handlers:=Hs,primary:=P,module_levels:=ML},_Node} =
+    {ok, #{handlers := Hs, primary := P, module_levels := ML}, Peer, _Node} =
         setup(Config,
               [{error_logger,false},
                {logger_level,notice},
@@ -175,39 +180,39 @@ error_logger_false_sasl_compatible(Config) ->
     {domain,{_,{log,super,[otp]}}} = lists:keyfind(domain,1,SimpleFilters),
     true = exists(sasl,Hs),
     [] = ML,
-    ok.
+    ok = peer:stop(Peer).
 
 error_logger_silent(Config) ->
-    {ok,#{handlers:=Hs},_Node} = setup(Config,
-                                       [{error_logger,silent}]),
+    {ok, #{handlers := Hs}, Peer, _Node} = setup(Config,
+        [{error_logger, silent}]),
     false = exists(?STANDARD_HANDLER,Hs),
     false = exists(simple,Hs),
     false = exists(sasl,Hs),
-    ok.
+    ok = peer:stop(Peer).
 
 error_logger_silent_sasl_compatible(Config) ->
-    {ok,#{handlers:=Hs},_Node} = setup(Config,
+    {ok, #{handlers := Hs}, Peer, _Node} = setup(Config,
                                        [{error_logger,silent},
                                         {logger_sasl_compatible,true}]),
     false = exists(?STANDARD_HANDLER,Hs),
     false = exists(simple,Hs),
     true = exists(sasl,Hs),
-    ok.
+    ok = peer:stop(Peer).
 
 
 error_logger_file(Config) ->
     Log = file(Config,?FUNCTION_NAME),
-    {ok,_,Node} = setup(Config,
+    {ok, _, Peer, Node} = setup(Config,
                         [{error_logger,{file,Log}}]),
     check_default_log(Node,Log,
                       file,% dest
                       0),% progress in std logger
-    ok.
+    ok = peer:stop(Peer).
 
 
 logger_file(Config) ->
     Log = file(Config,?FUNCTION_NAME),
-    {ok,#{primary:=P,handlers:=Hs,module_levels:=ML},Node}
+    {ok, #{primary := P, handlers := Hs, module_levels := ML}, Peer, Node}
         = setup(Config,
                 [{logger,
                   [{handler,?STANDARD_HANDLER,logger_std_h,
@@ -224,11 +229,11 @@ logger_file(Config) ->
     false = exists(simple,Hs),
     false = exists(sasl,Hs),
     [] = ML,
-    ok.
+    ok = peer:stop(Peer).
 
 logger_file_sasl_compatible(Config) ->
     Log = file(Config,?FUNCTION_NAME),
-    {ok,#{primary:=P,handlers:=Hs,module_levels:=ML},Node}
+    {ok, #{primary := P, handlers := Hs, module_levels := ML}, Peer, Node}
         = setup(Config,
                 [{logger_sasl_compatible,true},
                  {logger,
@@ -246,11 +251,11 @@ logger_file_sasl_compatible(Config) ->
     false = exists(simple,Hs),
     true = exists(sasl,Hs),
     [] = ML,
-    ok.
+    ok = peer:stop(Peer).
 
 logger_file_log_progress(Config) ->
     Log = file(Config,?FUNCTION_NAME),
-    {ok,#{primary:=P,handlers:=Hs,module_levels:=ML},Node}
+    {ok, #{primary := P, handlers := Hs, module_levels := ML}, Peer, Node}
         = setup(Config,
                 [{logger_level,info},
                  {logger,
@@ -269,11 +274,11 @@ logger_file_log_progress(Config) ->
     false = exists(simple,Hs),
     false = exists(sasl,Hs),
     [] = ML,
-    ok.
+    ok = peer:stop(Peer).
 
 logger_file_no_filter(Config) ->
     Log = file(Config,?FUNCTION_NAME),
-    {ok,#{handlers:=Hs},Node}
+    {ok, #{handlers := Hs}, Peer, Node}
         = setup(Config,
                 [{logger,
                   [{handler,?STANDARD_HANDLER,logger_std_h,
@@ -289,11 +294,11 @@ logger_file_no_filter(Config) ->
     false = exists(simple,Hs),
     false = exists(sasl,Hs),
 
-    ok.
+    ok = peer:stop(Peer).
 
 logger_file_no_filter_level(Config) ->
     Log = file(Config,?FUNCTION_NAME),
-    {ok,#{handlers:=Hs},Node}
+    {ok, #{handlers := Hs}, Peer, Node}
         = setup(Config,
                 [{logger,
                   [{handler,?STANDARD_HANDLER,logger_std_h,
@@ -310,11 +315,11 @@ logger_file_no_filter_level(Config) ->
     false = exists(simple,Hs),
     false = exists(sasl,Hs),
 
-    ok.
+    ok = peer:stop(Peer).
 
 logger_file_formatter(Config) ->
     Log = file(Config,?FUNCTION_NAME),
-    {ok,#{handlers:=Hs},Node}
+    {ok, #{handlers := Hs}, Peer, Node}
         = setup(Config,
                 [{logger,
                   [{handler,?STANDARD_HANDLER,logger_std_h,
@@ -331,11 +336,11 @@ logger_file_formatter(Config) ->
     false = exists(simple,Hs),
     false = exists(sasl,Hs),
 
-    ok.
+    ok = peer:stop(Peer).
 
 logger_filters(Config) ->
     Log = file(Config,?FUNCTION_NAME),
-    {ok,#{handlers:=Hs,primary:=P},Node}
+    {ok, #{handlers := Hs, primary := P}, Peer, Node}
         = setup(Config,
                 [{logger_level,info},
                  {logger,
@@ -357,11 +362,11 @@ logger_filters(Config) ->
     LoggerFilters = maps:get(filters,P),
     true = lists:keymember(stop_progress,1,LoggerFilters),
 
-    ok.
+    ok = peer:stop(Peer).
 
 logger_filters_stop(Config) ->
     Log = file(Config,?FUNCTION_NAME),
-    {ok,#{handlers:=Hs,primary:=P},Node}
+    {ok, #{handlers := Hs, primary := P}, Peer, Node}
         = setup(Config,
                 [{logger_level,info},
                  {logger,
@@ -383,11 +388,11 @@ logger_filters_stop(Config) ->
     LoggerFilters = maps:get(filters,P),
     true = lists:keymember(log_error,1,LoggerFilters),
 
-    ok.
+    ok = peer:stop(Peer).
 
 logger_module_level(Config) ->
     Log = file(Config,?FUNCTION_NAME),
-    {ok,#{handlers:=Hs,module_levels:=ModuleLevels},Node}
+    {ok, #{handlers := Hs, module_levels := ModuleLevels}, Peer, Node}
         = setup(Config,
                 [{logger_level,info},
                  {logger,
@@ -407,11 +412,11 @@ logger_module_level(Config) ->
     false = exists(simple,Hs),
     false = exists(sasl,Hs),
     [{supervisor,error}] = ModuleLevels,
-    ok.
+    ok = peer:stop(Peer).
 
 logger_disk_log(Config) ->
     Log = file(Config,?FUNCTION_NAME),
-    {ok,#{handlers:=Hs},Node}
+    {ok, #{handlers := Hs}, Peer, Node}
         = setup(Config,
                 [{logger,
                   [{handler,?STANDARD_HANDLER,logger_disk_log_h,
@@ -427,11 +432,11 @@ logger_disk_log(Config) ->
     false = exists(simple,Hs),
     false = exists(sasl,Hs),
 
-    ok.
+    ok = peer:stop(Peer).
 
 logger_disk_log_formatter(Config) ->
     Log = file(Config,?FUNCTION_NAME),
-    {ok,#{handlers:=Hs},Node}
+    {ok, #{handlers := Hs}, Peer, Node}
         = setup(Config,
                 [{logger,
                   [{handler,?STANDARD_HANDLER,logger_disk_log_h,
@@ -448,10 +453,10 @@ logger_disk_log_formatter(Config) ->
     false = exists(simple,Hs),
     false = exists(sasl,Hs),
 
-    ok.
+    ok = peer:stop(Peer).
 
 logger_undefined(Config) ->
-    {ok,#{handlers:=Hs,primary:=P},_Node} =
+    {ok, #{handlers := Hs, primary := P}, Peer, _Node} =
         setup(Config,[{logger,[{handler,?STANDARD_HANDLER,undefined}]}]),
     false = exists(?STANDARD_HANDLER,Hs),
     #{module:=logger_simple_h} = SimpleC = find(simple,Hs),
@@ -460,7 +465,7 @@ logger_undefined(Config) ->
     SimpleFilters = maps:get(filters,SimpleC),
     {domain,{_,{log,super,[otp,sasl]}}} = lists:keyfind(domain,1,SimpleFilters),
     false = exists(sasl,Hs),
-    ok.
+    ok = peer:stop(Peer).
 
 
 %% Test that we can add multiple handlers with the default first
@@ -482,7 +487,7 @@ logger_many_handlers_default_first(Config) ->
                    config=>#{type=>{file,LogInfo}}}
                 }
                ]},
-              {logger_level,info}], LogErr, LogInfo, 6).
+              {logger_level,info}], LogErr, LogInfo, ?NO_SASL_PROGRESS_REPORTS).
 
 %% Test that we can add multiple handlers with the default last
 logger_many_handlers_default_last(Config) ->
@@ -502,7 +507,7 @@ logger_many_handlers_default_last(Config) ->
                    config=>#{type=>{file,LogErr}}}
                 }
                ]},
-              {logger_level,info}], LogErr, LogInfo, 7).
+              {logger_level,info}], LogErr, LogInfo, ?NO_SASL_PROGRESS_REPORTS).
 
 %% Check that we can handle that an added logger has a broken filter
 %% This used to cause a deadlock.
@@ -525,10 +530,10 @@ logger_many_handlers_default_last_broken_filter(Config) ->
                    config=>#{type=>{file,LogErr}}}
                 }
                ]},
-              {logger_level,info}], LogErr, LogInfo, 7).
+              {logger_level,info}], LogErr, LogInfo, ?NO_SASL_PROGRESS_REPORTS).
 
 logger_many_handlers(Config, Env, LogErr, LogInfo, NumProgress) ->
-    {ok,_,Node} = setup(Config,Env),
+    {ok, _, Peer, Node} = setup(Config, Env),
     check_single_log(Node,LogErr,
                      file,% dest
                      0,% progress in std logger
@@ -540,12 +545,12 @@ logger_many_handlers(Config, Env, LogErr, LogInfo, NumProgress) ->
     match(Bin,<<"notice:">>,1,notice,info),
     match(Bin,<<"alert:">>,0,alert,info),
 
-    ok.
+    peer:stop(Peer).
 
 logger_proxy(Config) ->
     %% assume current node runs with default settings
     DefOpts = logger_olp:get_opts(logger_proxy),
-    {ok,_,Node} = setup(Config,
+    {ok, _, Peer, Node} = setup(Config,
                         [{logger,[{proxy,#{sync_mode_qlen=>0,
                                            drop_mode_qlen=>2}}]}]),
     Expected = DefOpts#{sync_mode_qlen:=0,
@@ -553,11 +558,17 @@ logger_proxy(Config) ->
     Expected = rpc:call(Node,logger_olp,get_opts,[logger_proxy]),
     Expected = rpc:call(Node,logger,get_proxy_config,[]),
 
-    ok.
+    peer:stop(Peer).
+
+logger_metadata(Config) ->
+    {ok,#{ primary := #{ metadata := #{ test := test } } }, Peer, _}
+        = setup(Config, [{logger_metadata,#{ test => test }}]),
+
+    peer:stop(Peer).
 
 sasl_compatible_false(Config) ->
     Log = file(Config,?FUNCTION_NAME),
-    {ok,_,Node} = setup(Config,
+    {ok, _, Peer, Node} = setup(Config,
                         [{error_logger,{file,Log}},
                          {logger_sasl_compatible,false},
                          {logger_level,info}]), % to get progress
@@ -565,27 +576,27 @@ sasl_compatible_false(Config) ->
                       file,% dest
                       6,% progress in std logger
                       info),
-    ok.
+    peer:stop(Peer).
 
 sasl_compatible_false_no_progress(Config) ->
     Log = file(Config,?FUNCTION_NAME),
-    {ok,_,Node} = setup(Config,
+    {ok, _, Peer, Node} = setup(Config,
                         [{error_logger,{file,Log}},
                          {logger_sasl_compatible,false}]),
     check_default_log(Node,Log,
                       file,% dest
                       0),% progress in std logger
-    ok.
+    peer:stop(Peer).
 
 sasl_compatible(Config) ->
     Log = file(Config,?FUNCTION_NAME),
-    {ok,_,Node} = setup(Config,
+    {ok, _, Peer, Node} = setup(Config,
                         [{error_logger,{file,Log}},
                          {sasl_compatible,true}]),
     check_default_log(Node,Log,
                       file,% dest
                       0),% progress in std logger
-    ok.
+    peer:stop(Peer).
 
 all_logger_level(Config) ->
     [all_logger_level(Config,Level) || Level <- [none,
@@ -601,9 +612,8 @@ all_logger_level(Config) ->
     ok.
 
 all_logger_level(Config,Level) ->
-    {ok,#{primary:=#{level:=Level}},Node} = setup(Config,[{logger_level,Level}]),
-    true = test_server:stop_node(Node),
-    ok.
+    {ok, #{primary := #{level := Level}}, Peer, _Node} = setup(Config, [{logger_level, Level}]),
+    peer:stop(Peer).
 
 bad_error_logger(Config) ->
     error = setup(Config,[{error_logger,baddest}]).

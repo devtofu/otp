@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2011-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2011-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -66,7 +68,7 @@ groups() ->
 %%--------------------------------------------------------------------
 init_per_suite(Config) ->
     application:stop(crypto),
-    try crypto:start() of
+    try application:start(crypto) of
 	ok ->
 	    Config
     catch _:_ ->
@@ -219,12 +221,24 @@ pbdkdf2(Config) when is_list(Config) ->
 pbes1() ->
     [{doc,"Tests encode/decode EncryptedPrivateKeyInfo encrypted with different ciphers using PBES1"}].
 pbes1(Config) when is_list(Config) ->
-    decode_encode_key_file("pbes1_des_cbc_md5_enc_key.pem", "password", "DES-CBC", Config).
+    case lists:member(des_cbc, crypto:supports(ciphers))
+        andalso lists:member(md5, crypto:supports(hashs))
+    of
+        true ->
+            decode_encode_key_file("pbes1_des_cbc_md5_enc_key.pem", "password", "DES-CBC", Config);
+        false ->
+            {skip, alg_not_supported}
+    end.
 
 pbes2() ->
     [{doc,"Tests encode/decode EncryptedPrivateKeyInfo encrypted with different ciphers using PBES2"}].
 pbes2(Config) when is_list(Config) ->
-    decode_encode_key_file("pbes2_des_cbc_enc_key.pem", "password", "DES-CBC", Config),
+    case lists:member(des_cbc, crypto:supports(ciphers)) of
+        true ->
+            decode_encode_key_file("pbes2_des_cbc_enc_key.pem", "password", "DES-CBC", Config);
+        false ->
+            ok
+    end,
     decode_encode_key_file("pbes2_des_ede3_cbc_enc_key.pem", "password", "DES-EDE3-CBC", Config),  
     decode_encode_key_file("pbes2_aes_128_enc_key.pem", "password", "AES-128-CBC", Config),   
     decode_encode_key_file("pbes2_aes_192_enc_key.pem", "password", "AES-192-CBC", Config),   
@@ -243,7 +257,7 @@ old_pbe(Config) when is_list(Config) ->
     {ok, PemAes128Cbc} = file:read_file(filename:join(Datadir, "old_aes_128_cbc.pem")),
     
     PemAes128CbcEntries = public_key:pem_decode(PemAes128Cbc),
-    ct:print("Pem entry: ~p" , [PemAes128CbcEntries]),
+    ct:log("Pem entry: ~p" , [PemAes128CbcEntries]),
     [{'RSAPrivateKey', _, {"AES-128-CBC",_}} = Aes128CbcEntry] = PemAes128CbcEntries,
     #'RSAPrivateKey'{} = Key = public_key:pem_entry_decode(Aes128CbcEntry, "hello_aes"),
     
@@ -252,7 +266,7 @@ old_pbe(Config) when is_list(Config) ->
    {ok, PemAes256Cbc} = file:read_file(filename:join(Datadir, "old_aes_256_cbc.pem")),
     
     PemAes256CbcEntries = public_key:pem_decode(PemAes256Cbc),
-    ct:print("Pem entry: ~p" , [PemAes256CbcEntries]),
+    ct:log("Pem entry: ~p" , [PemAes256CbcEntries]),
     [{'RSAPrivateKey', _, {"AES-256-CBC",_}} = Aes256CbcEntry] = PemAes256CbcEntries,
     Key = public_key:pem_entry_decode(Aes256CbcEntry, "hello_aes").
     

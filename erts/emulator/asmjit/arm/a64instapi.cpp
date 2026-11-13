@@ -1,125 +1,75 @@
-// AsmJit - Machine code generation for C++
+// This file is part of AsmJit project <https://asmjit.com>
 //
-//  * Official AsmJit Home Page: https://asmjit.com
-//  * Official Github Repository: https://github.com/asmjit/asmjit
-//
-// Copyright (c) 2008-2020 The AsmJit Authors
-//
-// This software is provided 'as-is', without any express or implied
-// warranty. In no event will the authors be held liable for any damages
-// arising from the use of this software.
-//
-// Permission is granted to anyone to use this software for any purpose,
-// including commercial applications, and to alter it and redistribute it
-// freely, subject to the following restrictions:
-//
-// 1. The origin of this software must not be misrepresented; you must not
-//    claim that you wrote the original software. If you use this software
-//    in a product, an acknowledgment in the product documentation would be
-//    appreciated but is not required.
-// 2. Altered source versions must be plainly marked as such, and must not be
-//    misrepresented as being the original software.
-// 3. This notice may not be removed or altered from any source distribution.
+// See <asmjit/core.h> or LICENSE.md for license and copyright information
+// SPDX-License-Identifier: Zlib
 
-#include "../core/api-build_p.h"
-#if !defined(ASMJIT_NO_ARM)
+#include <asmjit/core/api-build_p.h>
+#if !defined(ASMJIT_NO_AARCH64)
 
-#include "../core/cpuinfo.h"
-#include "../core/misc_p.h"
-#include "../core/support.h"
-#include "../arm/armfeatures.h"
-#include "../arm/a64instapi_p.h"
-#include "../arm/a64instdb_p.h"
-#include "../arm/a64operand.h"
+#include <asmjit/core/cpuinfo.h>
+#include <asmjit/core/misc_p.h>
+#include <asmjit/support/support_p.h>
+#include <asmjit/arm/a64instapi_p.h>
+#include <asmjit/arm/a64instdb_p.h>
+#include <asmjit/arm/a64operand.h>
 
 ASMJIT_BEGIN_SUB_NAMESPACE(a64)
 
-// ============================================================================
-// [asmjit::a64::InstInternal - Text]
-// ============================================================================
+namespace InstInternal {
+
+// a64::InstInternal - Text
+// ========================
 
 #ifndef ASMJIT_NO_TEXT
-Error InstInternal::instIdToString(uint32_t arch, uint32_t instId, String& output) noexcept {
-  DebugUtils::unused(arch);
-
-  if (ASMJIT_UNLIKELY(!Inst::isDefinedId(instId)))
-    return DebugUtils::errored(kErrorInvalidInstruction);
-
-  const InstDB::InstInfo& info = InstDB::infoById(instId);
-  return output.append(InstDB::_nameData + info._nameDataIndex);
-}
-
-uint32_t InstInternal::stringToInstId(uint32_t arch, const char* s, size_t len) noexcept {
-  DebugUtils::unused(arch);
-
-  if (ASMJIT_UNLIKELY(!s))
-    return Inst::kIdNone;
-
-  if (len == SIZE_MAX)
-    len = strlen(s);
-
-  if (ASMJIT_UNLIKELY(len == 0 || len > InstDB::kMaxNameSize))
-    return Inst::kIdNone;
-
-  uint32_t prefix = uint32_t(s[0]) - 'a';
-  if (ASMJIT_UNLIKELY(prefix > 'z' - 'a'))
-    return Inst::kIdNone;
-
-  uint32_t index = InstDB::instNameIndex[prefix].start;
-  if (ASMJIT_UNLIKELY(!index))
-    return Inst::kIdNone;
-
-  const char* nameData = InstDB::_nameData;
-  const InstDB::InstInfo* table = InstDB::_instInfoTable;
-
-  const InstDB::InstInfo* base = table + index;
-  const InstDB::InstInfo* end  = table + InstDB::instNameIndex[prefix].end;
-
-  for (size_t lim = (size_t)(end - base); lim != 0; lim >>= 1) {
-    const InstDB::InstInfo* cur = base + (lim >> 1);
-    int result = Support::cmpInstName(nameData + cur[0]._nameDataIndex, s, len);
-
-    if (result < 0) {
-      base = cur + 1;
-      lim--;
-      continue;
-    }
-
-    if (result > 0)
-      continue;
-
-    return uint32_t((size_t)(cur - table));
+Error inst_id_to_string(InstId inst_id, InstStringifyOptions options, String& output) noexcept {
+  uint32_t real_id = inst_id & uint32_t(InstIdParts::kRealId);
+  if (ASMJIT_UNLIKELY(!Inst::is_defined_id(real_id))) {
+    return make_error(Error::kInvalidInstruction);
   }
 
-  return Inst::kIdNone;
+  return InstNameUtils::decode(InstDB::_inst_name_index_table[real_id], options, InstDB::_inst_name_string_table, output);
+}
+
+InstId string_to_inst_id(const char* s, size_t len) noexcept {
+  if (ASMJIT_UNLIKELY(!s)) {
+    return BaseInst::kIdNone;
+  }
+
+  if (len == SIZE_MAX) {
+    len = strlen(s);
+  }
+
+  if (len == 0u || len > InstDB::_inst_name_index.max_name_length) {
+    return BaseInst::kIdNone;
+  }
+
+  return InstNameUtils::find_instruction(s, len, InstDB::_inst_name_index_table, InstDB::_inst_name_string_table, InstDB::_inst_name_index);
 }
 #endif // !ASMJIT_NO_TEXT
 
-// ============================================================================
-// [asmjit::a64::InstInternal - Validate]
-// ============================================================================
+// a64::InstInternal - Validate
+// ============================
 
-#ifndef ASMJIT_NO_VALIDATION
-ASMJIT_FAVOR_SIZE Error InstInternal::validate(uint32_t arch, const BaseInst& inst, const Operand_* operands, size_t opCount, uint32_t validationFlags) noexcept {
+#ifndef ASMJIT_NO_INTROSPECTION
+ASMJIT_FAVOR_SIZE Error validate(const BaseInst& inst, const Operand_* operands, size_t op_count, ValidationFlags validation_flags) noexcept {
   // TODO:
-  DebugUtils::unused(arch, inst, operands, opCount, validationFlags);
-  return kErrorOk;
+  Support::maybe_unused(inst, operands, op_count, validation_flags);
+  return Error::kOk;
 }
-#endif // !ASMJIT_NO_VALIDATION
+#endif // !ASMJIT_NO_INTROSPECTION
 
-// ============================================================================
-// [asmjit::a64::InstInternal - QueryRWInfo]
-// ============================================================================
+// a64::InstInternal - QueryRWInfo
+// ===============================
 
 #ifndef ASMJIT_NO_INTROSPECTION
 struct InstRWInfoData {
   uint8_t rwx[Globals::kMaxOpCount];
 };
 
-static const InstRWInfoData instRWInfoData[] = {
-  #define R OpRWInfo::kRead
-  #define W OpRWInfo::kWrite
-  #define X OpRWInfo::kRW
+static const InstRWInfoData inst_rw_info_table[] = {
+  #define R uint8_t(OpRWFlags::kRead)
+  #define W uint8_t(OpRWFlags::kWrite)
+  #define X uint8_t(OpRWFlags::kRW)
 
   {{ R, R, R, R, R, R }}, // kRWI_R
   {{ R, W, R, R, R, R }}, // kRWI_RW
@@ -145,103 +95,151 @@ static const InstRWInfoData instRWInfoData[] = {
   #undef X
 };
 
-static const uint8_t elementTypeSize[8] = { 0, 1, 2, 4, 8, 4, 4, 0 };
+static const uint8_t element_type_size_table[8] = { 0, 1, 2, 4, 8, 4, 4, 0 };
 
-Error InstInternal::queryRWInfo(uint32_t arch, const BaseInst& inst, const Operand_* operands, size_t opCount, InstRWInfo* out) noexcept {
-  // Only called when `arch` matches X86 family.
-  ASMJIT_ASSERT(Environment::isFamilyARM(arch));
-
+Error query_rw_info(const BaseInst& inst, const Operand_* operands, size_t op_count, InstRWInfo* out) noexcept {
   // Get the instruction data.
-  uint32_t instId = inst.id();
-  if (ASMJIT_UNLIKELY(!Inst::isDefinedId(instId)))
-    return DebugUtils::errored(kErrorInvalidInstruction);
+  uint32_t real_id = inst.inst_id() & uint32_t(InstIdParts::kRealId);
 
-  out->_instFlags = 0;
-  out->_opCount = uint8_t(opCount);
-  out->_rmFeature = 0;
-  out->_extraReg.reset();
-  out->_readFlags = 0; // TODO: [ARM] Read PSTATUS.
-  out->_writeFlags = 0; // TODO: [ARM] Write PSTATUS
+  if (ASMJIT_UNLIKELY(!Inst::is_defined_id(real_id))) {
+    return make_error(Error::kInvalidInstruction);
+  }
 
-  const InstDB::InstInfo& instInfo = InstDB::_instInfoTable[instId];
-  const InstRWInfoData& rwInfo = instRWInfoData[instInfo.rwInfoIndex()];
+  out->_inst_flags = InstRWFlags::kNone;
+  out->_op_count = uint8_t(op_count);
+  out->_rm_feature = 0;
+  out->_extra_reg.reset();
+  out->_read_flags = CpuRWFlags::kNone; // TODO: [ARM] Read PSTATUS.
+  out->_write_flags = CpuRWFlags::kNone; // TODO: [ARM] Write PSTATUS
 
-  constexpr uint32_t R = OpRWInfo::kRead;
-  constexpr uint32_t W = OpRWInfo::kWrite;
-  constexpr uint32_t X = OpRWInfo::kRW;
+  const InstDB::InstInfo& inst_info = InstDB::_inst_info_table[real_id];
+  const InstRWInfoData& rw_info = inst_rw_info_table[inst_info.rw_info_index()];
 
-  uint32_t i;
+  if (inst_info.has_flag(InstDB::kInstFlagConsecutive) && op_count > 2) {
+    for (uint32_t i = 0; i < op_count; i++) {
+      OpRWInfo& op = out->_operands[i];
+      const Operand_& src_op = operands[i];
 
-  for (i = 0; i < opCount; i++) {
-    OpRWInfo& op = out->_operands[i];
-    const Operand_& srcOp = operands[i];
-
-    if (!srcOp.isRegOrMem()) {
-      op.reset();
-      continue;
-    }
-
-    uint32_t rwFlags = rwInfo.rwx[i];
-
-    op._opFlags = rwFlags & ~(OpRWInfo::kZExt);
-    op._physId = BaseReg::kIdBad;
-    op._rmSize = 0;
-    op._resetReserved();
-
-    uint64_t rByteMask = op.isRead() ? 0xFFFFFFFFFFFFFFFFu : 0x0000000000000000u;
-    uint64_t wByteMask = op.isWrite() ? 0xFFFFFFFFFFFFFFFFu : 0x0000000000000000u;
-
-    op._readByteMask = rByteMask;
-    op._writeByteMask = wByteMask;
-    op._extendByteMask = 0;
-
-    if (srcOp.isReg()) {
-      if (srcOp.as<Vec>().hasElementIndex()) {
-        // Only part of the vector is accessed if element index [] is used.
-        uint32_t elementType = srcOp.as<Vec>().elementType();
-        uint32_t elementIndex = srcOp.as<Vec>().elementIndex();
-
-        uint32_t elementSize = elementTypeSize[elementType];
-        uint64_t accessMask = uint64_t(Support::lsbMask<uint32_t>(elementSize)) << (elementIndex * elementSize);
-        op._readByteMask &= accessMask;
-        op._writeByteMask &= accessMask;
+      if (!src_op.is_reg_or_mem()) {
+        op.reset();
+        continue;
       }
 
-      // TODO: [ARM] RW info is not finished.
-    }
-    else {
-      const Mem& memOp = srcOp.as<Mem>();
+      OpRWFlags rw_flags = i < op_count - 1 ? (OpRWFlags)rw_info.rwx[0] : (OpRWFlags)rw_info.rwx[1];
 
-      if (memOp.hasBase()) {
-        op.addOpFlags(OpRWInfo::kMemBaseRead);
+      op._op_flags = rw_flags & ~(OpRWFlags::kZExt);
+      op._phys_id = Reg::kIdBad;
+      op._rm_size = 0;
+      op._reset_reserved();
+
+      uint64_t r_byte_mask = op.is_read() ? 0xFFFFFFFFFFFFFFFFu : 0x0000000000000000u;
+      uint64_t w_byte_mask = op.is_write() ? 0xFFFFFFFFFFFFFFFFu : 0x0000000000000000u;
+
+      op._read_byte_mask = r_byte_mask;
+      op._write_byte_mask = w_byte_mask;
+      op._extend_byte_mask = 0;
+      op._consecutive_lead_count = 0;
+
+      if (src_op.is_reg()) {
+        if (i == 0) {
+          op._consecutive_lead_count = uint8_t(op_count - 1);
+        }
+        else {
+          op.add_op_flags(OpRWFlags::kConsecutive);
+        }
+      }
+      else {
+        const Mem& mem_op = src_op.as<Mem>();
+
+        if (mem_op.has_base()) {
+          op.add_op_flags(OpRWFlags::kMemBaseRead);
+          if ((mem_op.has_index() || mem_op.has_offset()) && mem_op.is_pre_or_post()) {
+            op.add_op_flags(OpRWFlags::kMemBaseWrite);
+          }
+        }
+
+        if (mem_op.has_index()) {
+          op.add_op_flags(OpRWFlags::kMemIndexRead);
+        }
+      }
+    }
+  }
+  else {
+    for (uint32_t i = 0; i < op_count; i++) {
+      OpRWInfo& op = out->_operands[i];
+      const Operand_& src_op = operands[i];
+
+      if (!src_op.is_reg_or_mem()) {
+        op.reset();
+        continue;
       }
 
-      if (memOp.hasIndex()) {
-        op.addOpFlags(OpRWInfo::kMemIndexRead);
-        op.addOpFlags(memOp.isPreOrPost() ? OpRWInfo::kMemIndexWrite : 0u);
+      OpRWFlags rw_flags = (OpRWFlags)rw_info.rwx[i];
+
+      op._op_flags = rw_flags & ~(OpRWFlags::kZExt);
+      op._phys_id = Reg::kIdBad;
+      op._rm_size = 0;
+      op._reset_reserved();
+
+      uint64_t r_byte_mask = op.is_read() ? 0xFFFFFFFFFFFFFFFFu : 0x0000000000000000u;
+      uint64_t w_byte_mask = op.is_write() ? 0xFFFFFFFFFFFFFFFFu : 0x0000000000000000u;
+
+      op._read_byte_mask = r_byte_mask;
+      op._write_byte_mask = w_byte_mask;
+      op._extend_byte_mask = 0;
+      op._consecutive_lead_count = 0;
+
+      if (src_op.is_reg()) {
+        if (src_op.as<Vec>().has_element_index()) {
+          // Only part of the vector is accessed if element index [] is used.
+          VecElementType element_type = src_op.as<Vec>().element_type();
+          uint32_t element_index = src_op.as<Vec>().element_index();
+
+          uint32_t element_size = element_type_size_table[size_t(element_type)];
+          uint64_t access_mask = uint64_t(Support::lsb_mask<uint32_t>(element_size)) << (element_index * element_size);
+
+          op._read_byte_mask &= access_mask;
+          op._write_byte_mask &= access_mask;
+        }
+
+        // TODO: [ARM] RW info is not finished.
+      }
+      else {
+        const Mem& mem_op = src_op.as<Mem>();
+
+        if (mem_op.has_base()) {
+          op.add_op_flags(OpRWFlags::kMemBaseRead);
+          if ((mem_op.has_index() || mem_op.has_offset()) && mem_op.is_pre_or_post()) {
+            op.add_op_flags(OpRWFlags::kMemBaseWrite);
+          }
+        }
+
+        if (mem_op.has_index()) {
+          op.add_op_flags(OpRWFlags::kMemIndexRead);
+        }
       }
     }
   }
 
-  return kErrorOk;
+  return Error::kOk;
 }
 #endif // !ASMJIT_NO_INTROSPECTION
 
-// ============================================================================
-// [asmjit::a64::InstInternal - QueryFeatures]
-// ============================================================================
+// a64::InstInternal - QueryFeatures
+// =================================
 
 #ifndef ASMJIT_NO_INTROSPECTION
-Error InstInternal::queryFeatures(uint32_t arch, const BaseInst& inst, const Operand_* operands, size_t opCount, BaseFeatures* out) noexcept {
+Error query_features(const BaseInst& inst, const Operand_* operands, size_t op_count, CpuFeatures* out) noexcept {
   // TODO: [ARM] QueryFeatures not implemented yet.
-  DebugUtils::unused(arch, inst, operands, opCount, out);
-  return kErrorOk;
+  Support::maybe_unused(inst, operands, op_count, out);
+  return Error::kOk;
 }
 #endif // !ASMJIT_NO_INTROSPECTION
 
-// ============================================================================
-// [asmjit::a64::InstInternal - Unit]
-// ============================================================================
+} // {InstInternal}
+
+// a64::InstInternal - Unit
+// ========================
 
 #if defined(ASMJIT_TEST)
 UNIT(arm_inst_api_text) {
@@ -251,4 +249,4 @@ UNIT(arm_inst_api_text) {
 
 ASMJIT_END_SUB_NAMESPACE
 
-#endif // !ASMJIT_NO_ARM
+#endif // !ASMJIT_NO_AARCH64

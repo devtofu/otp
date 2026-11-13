@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2019-2019. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2019-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,6 +23,7 @@
 %%
 
 -module(tls_sup).
+-moduledoc false.
 
 -behaviour(supervisor).
 
@@ -43,14 +46,13 @@ start_link() ->
 %%%  Supervisor callback
 %%%=========================================================================
 
-init([]) ->    
-  
-    TLSConnetionSup = tls_connection_child_spec(),
-    ServerInstanceSup = server_instance_child_spec(), 
-
-    {ok, {{one_for_one, 10, 3600}, [TLSConnetionSup, 
-				    ServerInstanceSup
-				   ]}}.
+init([]) ->      
+    ChildSpecs = [tls_connection_child_spec(), server_instance_child_spec()], 
+    SupFlags = #{strategy  => one_for_one, 
+                 intensity =>   10,
+                 period    => 3600
+                },
+    {ok, {SupFlags, ChildSpecs}}.
 
 
 %%--------------------------------------------------------------------
@@ -58,19 +60,19 @@ init([]) ->
 %%--------------------------------------------------------------------
 
 tls_connection_child_spec() ->
-    Name = tls_connection,  
-    StartFunc = {tls_connection_sup, start_link, []},
-    Restart = permanent, 
-    Shutdown = 4000,
-    Modules = [tls_connection_sup],
-    Type = supervisor,
-    {Name, StartFunc, Restart, Shutdown, Type, Modules}.
+    #{id       => tls_connection_sup,
+      start    => {tls_connection_sup, start_link, []},
+      restart  => permanent, 
+      shutdown => 4000,
+      modules  => [tls_connection_sup],
+      type     => supervisor
+     }.
 
 server_instance_child_spec() ->
-    Name = tls_server_sup,  
-    StartFunc = {tls_server_sup, start_link, []},
-    Restart = permanent, 
-    Shutdown = 4000,
-    Modules = [tls_server_sup],
-    Type = supervisor,
-    {Name, StartFunc, Restart, Shutdown, Type, Modules}.
+    #{id       => tls_server_sup,
+      start    => {tls_server_sup, start_link, []},
+      restart  => permanent, 
+      shutdown => 4000,
+      modules  => [tls_server_sup],
+      type     => supervisor
+     }.

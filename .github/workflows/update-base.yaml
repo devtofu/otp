@@ -1,3 +1,23 @@
+## %CopyrightBegin%
+##
+## SPDX-License-Identifier: Apache-2.0
+##
+## Copyright Ericsson AB 2024-2026. All Rights Reserved.
+##
+## Licensed under the Apache License, Version 2.0 (the "License");
+## you may not use this file except in compliance with the License.
+## You may obtain a copy of the License at
+##
+##     http://www.apache.org/licenses/LICENSE-2.0
+##
+## Unless required by applicable law or agreed to in writing, software
+## distributed under the License is distributed on an "AS IS" BASIS,
+## WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+## See the License for the specific language governing permissions and
+## limitations under the License.
+##
+## %CopyrightEnd%
+
 name: Update docker base image
 
 ## Update the base image every day
@@ -7,36 +27,62 @@ on:
   ## In UTC
   - cron: '0 0 * * *'
 
+permissions:
+  contents: read
+
 ## Build base images to be used by other github workflows
 jobs:
 
   build:
     name: Update base Erlang/OTP build images
     if: github.repository == 'erlang/otp'
-    runs-on: ubuntu-latest
+    ## i386-debian-base builds inside an i386/debian container. On
+    ## ubuntu-26.04 the preinstalled Docker's default seccomp profile
+    ## blocks the socketcall syscall that 32-bit glibc needs for sockets,
+    ## breaking name resolution inside the container
+    ## (https://github.com/actions/runner-images/issues/14790).
+    ## Pin only that type to ubuntu-24.04 until a fixed Docker lands.
+    runs-on: ${{ matrix.type == 'i386-debian-base' && 'ubuntu-24.04' || 'ubuntu-latest' }}
+
+    permissions:
+      packages: write
+      contents: read
 
     strategy:
       matrix:
         type: [debian-base,ubuntu-base,i386-debian-base]
+        branch: [master, maint, maint-26, maint-27]
+      fail-fast: false
 
     steps:
-      - uses: actions/checkout@v2
-      - name: Docker login
-        uses: docker/login-action@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          registry: docker.pkg.github.com
+          ref: ${{ matrix.branch }}
+          persist-credentials: false
+      - name: Cleanup GH Runner
+        shell: bash
+        run: .github/scripts/cleanup_gh_runner.sh
+      - name: Docker login
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Calculate BASE image
-        id: base
-        run: |
-          echo "::set-output name=BASE_TAG::docker.pkg.github.com/erlang/otp/${{ matrix.type }}"
-          .github/scripts/base-tag "${{ matrix.type }}"
       - name: Build base image
+        id: base
+        run: >-
+            BASE_TAG=ghcr.io/${{ github.repository_owner }}/otp/${{ matrix.type }}
+            BASE_USE_CACHE=false
+            .github/scripts/build-base-image.sh "${{ matrix.branch }}"
+      - name: Push master image
+        if: matrix.branch == 'master'
+        env:
+          STEPS_BASE_OUTPUTS_BASE_TAG: ${{ steps.base.outputs.BASE_TAG }}
+        run: docker push ${STEPS_BASE_OUTPUTS_BASE_TAG}:latest
+      - name: Tag and push base image
+        env:
+          STEPS_BASE_OUTPUTS_BASE_TAG: ${{ steps.base.outputs.BASE_TAG }}
         run: |
-          docker build --pull --tag ${{ steps.base.outputs.BASE_TAG }} \
-            --cache-from ${{ steps.base.outputs.BASE_TAG }} \
-            --file .github/dockerfiles/Dockerfile.${{ steps.base.outputs.BASE_TYPE }} \
-            --build-arg BASE=${{ steps.base.outputs.BASE }} .
-      - name: Push base image
-        run: docker push ${{ steps.base.outputs.BASE_TAG }}
+            docker tag "${STEPS_BASE_OUTPUTS_BASE_TAG}:latest" \
+              "${STEPS_BASE_OUTPUTS_BASE_TAG}:${{ matrix.branch }}"
+            docker push "${STEPS_BASE_OUTPUTS_BASE_TAG}:${{ matrix.branch }}"

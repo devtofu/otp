@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2005-2018. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2005-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,18 +16,19 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 %%
-%% Description: This module impements a temporary process that 
-%% performes progress reporting during file transfer calling a user 
+%% Description: This module implements a temporary process that 
+%% performs progress reporting during file transfer calling a user 
 %% defined callback function. Its life span is as long as the ftp connection
 %% processes that spawned it lives. The purpose of this process is to 
 %% shild the ftp connection process from errors and time consuming operations
 %% in the user defined callback function. 
 
 -module(ftp_progress).
+-moduledoc false.
 
 %% Internal API
 -export([start_link/1, report/2, stop/1]).

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2007-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2007-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,7 +22,7 @@
 
 %%
 %%----------------------------------------------------------------------
-%% Purpose: Record and constant defenitions for the SSL-handshake protocol
+%% Purpose: Record and constant definitions for the SSL-handshake protocol
 %% see RFC 5246. Also includes supported hello extensions.
 %%----------------------------------------------------------------------
 
@@ -42,24 +44,27 @@
                   internal_id,
                   peer_certificate,
                   own_certificates,
-                  compression_method,
+                  private_key,
                   cipher_suite,
                   master_secret,
                   srp_username,
+                  max_frag_enum,
                   is_resumable,
                   time_stamp,
                   ecc,                   %% TLS 1.3 Group
                   sign_alg,              %% TLS 1.3 Signature Algorithm
-                  dh_public_value        %% TLS 1.3 DH Public Value from peer
+                  dh_public_value,       %% TLS 1.3 DH Public Value from peer
+                  sni                    %% SNI hostname 
                  }).
 
+-define(EMPTY_ID, <<>>).
 -define(NUM_OF_SESSION_ID_BYTES, 32).  % TSL 1.1 & SSL 3
 -define(NUM_OF_PREMASTERSECRET_BYTES, 48).
 -define(DEFAULT_DIFFIE_HELLMAN_GENERATOR, ssl_dh_groups:modp2048_generator()).
 -define(DEFAULT_DIFFIE_HELLMAN_PRIME, ssl_dh_groups:modp2048_prime()).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%% Handsake protocol - RFC 4346 section 7.4
+%%% Handshake protocol - RFC 4346 section 7.4
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 %% enum {
@@ -81,9 +86,12 @@
 -define(CERTIFICATE_VERIFY, 15).
 -define(CLIENT_KEY_EXCHANGE, 16).
 -define(FINISHED, 20).
-
 -define(MAX_UNIT24, 8388607).
--define(DEFAULT_MAX_HANDSHAKE_SIZE,  (256*1024)).
+
+%% As of OTP-29 when PQC-algorithm SLH-DSA is supported by default
+%% handshakes need to allowed to be bigger by default to handle
+%% normal SLH-DSA keys.
+-define(DEFAULT_MAX_HANDSHAKE_SIZE, 256*1024).
 
 -record(random, {
 	  gmt_unix_time, % uint32
@@ -116,10 +124,9 @@
 
 -record(server_hello, {
 	  server_version,
-	  random,             
+	  random,
 	  session_id,         % opaque SessionID<0..32>
 	  cipher_suite,       % cipher_suites
-	  compression_method, % compression_method
 	  extensions
 	 }).
 
@@ -143,6 +150,8 @@
 -define(KEY_EXCHANGE_DHE_PSK, 3).
 -define(KEY_EXCHANGE_RSA_PSK, 4).
 -define(KEY_EXCHANGE_SRP, 5).
+
+-define(MIN_DH_PRIM_BYTE_SIZE, 256).
 
 -record(server_rsa_params, {
 	  rsa_modulus,  %%  opaque RSA_modulus<1..2^16-1>
@@ -367,6 +376,17 @@
 %% RFC 8422 compliant implementations MUST not support the two formats below
 -define(ECPOINT_ANSIX962_COMPRESSED_PRIME, 1).
 -define(ECPOINT_ANSIX962_COMPRESSED_CHAR2, 2).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% RFC 5764 section 4 Datagram Transport Layer Security (DTLS) Extensions
+%% for SRTP (Secure Real-time Transport Protocol) Key Establishment
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+-define(USE_SRTP_EXT, 14).
+
+-record(use_srtp, {
+    protection_profiles,
+    mki
+   }).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% ECC RFC 4492 Handshake Messages, Section 5

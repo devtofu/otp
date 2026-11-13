@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2021-2021. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2021-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -453,7 +455,7 @@ acceptor_create_handler(#{listener := {Listener, MRef},
 	{'DOWN', MRef, process, Listener, Reason} ->
 	    e("listener down received: "
 	      "~n   ~p", [Reason]),
-	    exit(HPid, kill),
+            erlang:exit_signal(HPid, kill),
 	    acceptor_exit(State, listener, Reason);
 
 	{'DOWN', HMRef, process, HPid, Reason} ->
@@ -470,7 +472,7 @@ acceptor_create_handler(#{listener := {Listener, MRef},
 		    e("failed changing controlling process: "
 		      "~n   ~p", [Reason]),
 		    (catch socket:close(ASock)),
-		    exit(HPid, kill),
+                    erlang:exit_signal(HPid, kill),
 		    acceptor_exit(State, failed_changing_ctrl_proc, Reason)
 	    end
     end.

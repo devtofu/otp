@@ -1,7 +1,9 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 2003-2020. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 2003-2026. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -41,7 +43,7 @@ RELSYSDIR = $(RELEASE_PATH)/lib/common_test-$(VSN)
 # ----------------------------------------------------
 
 BEHAVIOUR_MODULES= \
-	ct_suite
+	ct_suite ct_hooks
 
 MODULES= \
 	ct \
@@ -57,6 +59,7 @@ MODULES= \
 	ct_telnet \
 	ct_util \
 	ct_cover \
+	ct_doctest \
 	ct_testspec \
 	ct_event \
 	ct_master_event \
@@ -70,8 +73,8 @@ MODULES= \
 	ct_config_plain \
 	ct_config_xml \
 	ct_slave \
-        ct_hooks\
         ct_hooks_lock\
+	cte_track\
 	cth_log_redirect\
 	cth_surefire \
 	ct_netconfc \
@@ -115,7 +118,7 @@ DTD_FILES = \
 # FLAGS
 # ----------------------------------------------------
 ERL_COMPILE_FLAGS += -pa ../ebin -I../include -I $(ERL_TOP)/lib/snmp/include/ \
-	-I../../xmerl/inc/ -I $(ERL_TOP)/lib/kernel/include -Werror
+	-I../../xmerl/inc/ -I $(ERL_TOP)/lib/kernel/include -Werror +warn_obsolete_bool_op +nowarn_deprecated_catch
 
 # ----------------------------------------------------
 # Targets
@@ -133,7 +136,7 @@ APPUP_FILE= common_test.appup
 APPUP_SRC= $(APPUP_FILE).src
 APPUP_TARGET= $(EBIN)/$(APPUP_FILE)
 
-tests debug opt: $(TARGET_FILES)
+tests $(TYPES): $(TARGET_FILES)
 
 docs:
 
@@ -170,5 +173,11 @@ release_tests_spec: opt
 
 release_docs_spec: docs
 
-# Include dependencies -- list below added by Kostis Sagonas
-$(EBIN)/cth_log_redirect.beam: ../../kernel/include/logger.hrl ../../kernel/src/logger_internal.hrl
+# ----------------------------------------------------
+# Dependencies
+# ----------------------------------------------------
+$(EBIN)/cth_log_redirect.beam: $(EBIN)/ct_hooks.beam
+$(EBIN)/cth_conn_log.beam: $(EBIN)/ct_hooks.beam
+$(EBIN)/cth_surefire.beam: $(EBIN)/ct_hooks.beam
+
+include $(ERL_TOP)/make/dep.mk

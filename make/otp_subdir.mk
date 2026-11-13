@@ -1,8 +1,10 @@
 # 
 # %CopyrightBegin%
-# 
-# Copyright Ericsson AB 1997-2011. All Rights Reserved.
-# 
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 1997-2025. All Rights Reserved.
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -14,18 +16,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# 
+#
 # %CopyrightEnd%
 #
 # Make include file for otp
 
-.PHONY: debug opt lcnt release docs release_docs tests release_tests \
-	clean depend valgrind asan static_lib
+.PHONY: $(TYPES) release docs release_docs tests release_tests \
+	clean depend static_lib
 
 #
 # Targets that don't affect documentation directories
 #
-opt debug lcnt release docs release_docs tests release_tests clean depend valgrind asan static_lib xmllint:
+$(TYPES) release docs release_docs tests release_tests clean depend static_lib:
 	@set -e ;							\
 	app_pwd=`pwd` ;							\
 	if test -f vsn.mk; then						\
@@ -53,6 +55,10 @@ opt debug lcnt release docs release_docs tests release_tests clean depend valgri
 			APP_PWD="$$app_pwd" APP_VSN=$$app_vsn APP=$$app	\
 			TESTROOT="$(TESTROOT)" update)			\
 		|| exit $$?  ;						\
+	    else							\
+		if test clean = $@ && test ! -f SKIP; then		\
+			$(MAKE) dclean;					\
+		fi ;							\
 	    fi	;							\
 	    echo "=== Leaving application" `basename $$app_pwd` ;	\
 	fi

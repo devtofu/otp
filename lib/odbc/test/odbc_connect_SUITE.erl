@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2002-2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2002-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -46,12 +48,13 @@ suite() -> [{ct_hooks,[ts_install_cth]}].
 all() -> 
     case odbc_test_lib:odbc_check() of
 	ok ->
-	    [not_exist_db, commit, rollback, not_explicit_commit,
-	     no_c_executable, port_dies, control_process_dies,
-	     {group, client_dies}, connect_timeout, timeout,
-	     many_timeouts, timeout_reset, disconnect_on_timeout,
-	     connection_closed, disable_scrollable_cursors,
-	     return_rows_as_lists, api_missuse, extended_errors];
+            [not_exist_db, commit, rollback, not_explicit_commit,
+             no_c_executable, port_dies, control_process_dies,
+             {group, client_dies}, connect_timeout, timeout,
+             many_timeouts, timeout_reset, disconnect_on_timeout,
+             connection_closed, disable_scrollable_cursors,
+             return_rows_as_lists, api_missuse, extended_errors,
+             max_long_column_size];
 	Other -> {skip, Other}
     end.
 
@@ -254,7 +257,7 @@ not_exist_db() ->
 not_exist_db(_Config)  ->
     {error, _} = odbc:connect("DSN=foo;UID=bar;PWD=foobar",
 			      odbc_test_lib:platform_options()),
-    %% So that the odbc control server can be stoped "in the correct way"
+    %% So that the odbc control server can be stopped "in the correct way"
     ct:sleep(100).
 
 %%-------------------------------------------------------------------------
@@ -439,7 +442,7 @@ connect_port_timeout(Config) when is_list(Config) ->
 %%-------------------------------------------------------------------------
 timeout() ->
     [{"Test that timeouts don't cause unwanted behavior sush as receiving"
-     " an anwser to a previously tiemed out query."}].
+     " an answer to a previously timed out query."}].
 timeout(Config)  when is_list(Config) ->
 
     {ok, Ref} =  odbc:connect(?RDBMS:connection_string(),
@@ -511,7 +514,7 @@ update_table_timeout(Table, TimeOut, Pid) ->
 
     %% Do not check {updated, 1} as some drivers will return 0
     %% even though the update is done, which is checked by the test
-    %% case when the altered message is recived.
+    %% case when the altered message is received.
     {updated, _} = odbc:sql_query(Ref, UpdateQuery, TimeOut),
 
     ok = odbc:commit(Ref, commit),
@@ -651,7 +654,7 @@ update_table_timeout_reset(Table, TimeOut, Pid) ->
 
     %% Do not check {updated, 1} as some drivers will return 0
     %% even though the update is done, which is checked by the test
-    %% case when the altered message is recived.
+    %% case when the altered message is received.
     {updated, _} = odbc:sql_query(Ref, UpdateQuery, TimeOut),
 
     ok = odbc:commit(Ref, commit),
@@ -836,21 +839,21 @@ api_missuse()->
 api_missuse(Config) when is_list(Config)->
 
     {ok, Ref} =  odbc:connect(?RDBMS:connection_string(), odbc_test_lib:platform_options()),
-    %% Serious programming fault, connetion will be shut down 
+    %% Serious programming fault, connection will be shut down 
     gen_server:call(Ref, {self(), foobar, 10}, infinity),
     ct:sleep(10),
     undefined = process_info(Ref, status),
 
     {ok, Ref2} =  odbc:connect(?RDBMS:connection_string(),
 			       odbc_test_lib:platform_options()),
-    %% Serious programming fault, connetion will be shut down 
+    %% Serious programming fault, connection will be shut down 
     gen_server:cast(Ref2, {self(), foobar, 10}),
     ct:sleep(10),
     undefined = process_info(Ref2, status),
 
     {ok, Ref3} =  odbc:connect(?RDBMS:connection_string(),
 			       odbc_test_lib:platform_options()),
-    %% Could be an innocent misstake the connection lives. 
+    %% Could be an innocent mistake the connection lives. 
     Ref3 ! foobar, 
     ct:sleep(10),
     {status, _} = process_info(Ref3, status).
@@ -889,6 +892,54 @@ extended_errors(Config) when is_list(Config)->
 
     ok = odbc:disconnect(Ref),
     ok = odbc:disconnect(RefExtended).
+
+%%--------------------------------------------------------------------
+max_long_column_size() ->
+    [{doc,
+      "Test the max_long_column_size connect option: verify that the "
+      "option is accepted and that invalid values are rejected. When "
+      "a database is available, verify that long column data up to the "
+      "configured size is returned without crashing the port."}].
+max_long_column_size(Config) when is_list(Config) ->
+    %% Valid option values are accepted
+    {ok, Ref1} = odbc:connect(?RDBMS:connection_string(),
+                              odbc_test_lib:platform_options() ++
+                                  [{max_long_column_size, 16000}]),
+    ok = odbc:disconnect(Ref1),
+
+    %% Default (0) is accepted
+    {ok, Ref2} = odbc:connect(?RDBMS:connection_string(),
+                              odbc_test_lib:platform_options() ++
+                                  [{max_long_column_size, 0}]),
+    ok = odbc:disconnect(Ref2),
+
+    %% Invalid values are rejected
+    {'EXIT', {bad_option, {max_long_column_size, -1}}} =
+        (catch odbc:connect(?RDBMS:connection_string(),
+                            odbc_test_lib:platform_options() ++
+                                [{max_long_column_size, -1}])),
+    {'EXIT', {bad_option, {max_long_column_size, foo}}} =
+        (catch odbc:connect(?RDBMS:connection_string(),
+                            odbc_test_lib:platform_options() ++
+                                [{max_long_column_size, foo}])),
+
+    %% Verify large data does not crash the port
+    Table = proplists:get_value(tableName, Config),
+    {ok, Ref3} = odbc:connect(?RDBMS:connection_string(),
+                              odbc_test_lib:platform_options() ++
+                                  [{max_long_column_size, 32000}]),
+    {updated, _} = odbc:sql_query(Ref3,
+                                  "CREATE TABLE " ++ Table ++
+                                      " (id INTEGER, data TEXT)"),
+    LargeData = lists:duplicate(10000, $x),
+    {updated, _} = odbc:sql_query(Ref3,
+                                  "INSERT INTO " ++ Table ++
+                                      " VALUES (1, '" ++ LargeData ++ "')"),
+    {selected, _, [{1, ReturnedData}]} =
+        odbc:sql_query(Ref3, "SELECT * FROM " ++ Table),
+    true = length(ReturnedData) > 0,
+    {updated, _} = odbc:sql_query(Ref3, "DROP TABLE " ++ Table),
+    ok = odbc:disconnect(Ref3).
 
 
 is_odbcserver(Name) ->

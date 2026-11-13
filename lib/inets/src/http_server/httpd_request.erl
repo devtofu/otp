@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2005-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2005-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,6 +21,7 @@
 %%
 
 -module(httpd_request).
+-moduledoc false.
 
 -include_lib("inets/src/http_lib/http_internal.hrl").
 -include("httpd.hrl").
@@ -50,7 +53,7 @@ parse(Unknown) ->
     exit({bad_args, Unknown}).
 
 %% Functions that may be returned during the decoding process
-%% if the input data is incompleate. 
+%% if the input data is incomplete. 
 parse_method([Bin, Method, Current, Max, Options, Result]) ->
     parse_method(Bin, Method, Current, Max, Options, Result).
 
@@ -71,9 +74,9 @@ whole_body([Bin, Body, Length])  ->
 
 %% Separate the body for this request from a possible piplined new 
 %% request and convert the body data to "string" format.
-body_data(Headers, Body) ->    
+body_data(Headers, Body) when is_binary(Body)->
     ContentLength = list_to_integer(Headers#http_request_h.'content-length'),
-    case size(Body) - ContentLength of
+    case byte_size(Body) - ContentLength of
  	0 ->
  	    {Body, <<>>};
  	_ ->
@@ -84,8 +87,8 @@ body_data(Headers, Body) ->
 %%-------------------------------------------------------------------------
 %% validate(Method, Uri, Version) -> ok | {error, {bad_request, Reason} |
 %%			     {error, {not_supported, {Method, Uri, Version}}
-%%      Method = "HEAD" | "GET" | "POST" | "PATCH" | "TRACE" | "PUT"
-%%               | "DELETE"
+%%      Method = "HEAD" | "GET" | "POST" | "PATCH" | "OPTIONS" | "TRACE"
+%%               | "PUT" | "DELETE"
 %%      Uri = uri()
 %%      Version = "HTTP/N.M"      
 %% Description: Checks that HTTP-request-line is valid.
@@ -101,6 +104,8 @@ validate("DELETE", Uri, "HTTP/1." ++ _N) ->
 validate("POST", Uri, "HTTP/1." ++ _N) ->
     validate_uri(Uri);
 validate("PATCH", Uri, "HTTP/1." ++ _N) ->
+    validate_uri(Uri);
+validate("OPTIONS", Uri, "HTTP/1." ++ _N) ->
     validate_uri(Uri);
 validate("TRACE", Uri, "HTTP/1." ++ N) when hd(N) >= $1 ->
     validate_uri(Uri);
@@ -202,22 +207,35 @@ parse_headers(<<?CR,?LF,?CR,?LF,Body/binary>>, [], [], _, _,  _, Result) ->
 parse_headers(<<?CR,?LF,?CR,?LF,Body/binary>>, Header, Headers, _, _,
 	      Options, Result) ->
     Customize = proplists:get_value(customize, Options),
+    HttpVersion = lists:nth(3, lists:reverse(Result)),
     case http_request:key_value(lists:reverse(Header)) of
-	undefined -> %% Skip invalid headers
+	undefined -> %% Skip headers with missing :
 	    FinalHeaders = lists:filtermap(fun(H) ->
 						   httpd_custom:customize_headers(Customize, request_header, H)
 					   end,
 					   Headers),
-	    {ok, list_to_tuple(lists:reverse([Body, {http_request:headers(FinalHeaders, #http_request_h{}), FinalHeaders} | Result]))};
+            case http_request:headers(FinalHeaders, #http_request_h{}) of
+                {error, withespace_before_colon} ->
+                    {error, {bad_request, 400, ?ERROR_WHITESPACE_BEFORE_COLON}, HttpVersion};
+                ParsedHeaders ->
+                    {ok, list_to_tuple(lists:reverse([Body, {ParsedHeaders, FinalHeaders} | Result]))}
+            end;
+	{error, whitespace_before_colon} ->
+	    HttpVersion = lists:nth(3, lists:reverse(Result)),
+	    {error, {bad_request, 400, ?ERROR_WHITESPACE_BEFORE_COLON}, HttpVersion};
 	NewHeader ->
-	    case check_header(NewHeader, Options) of 
+	    case check_header(NewHeader, Headers, Options) of
 		ok ->
 		    FinalHeaders = lists:filtermap(fun(H) ->
 							   httpd_custom:customize_headers(Customize, request_header, H)
 						   end, [NewHeader | Headers]),
-		    {ok, list_to_tuple(lists:reverse([Body, {http_request:headers(FinalHeaders, 
-										  #http_request_h{}),  
-							     FinalHeaders} | Result]))};
+
+                    case http_request:headers(FinalHeaders, #http_request_h{}) of
+                        {error, whitespace_before_colon} ->
+                            {error, {bad_request, 400, ?ERROR_WHITESPACE_BEFORE_COLON}, HttpVersion};
+                      ParsedHeaders ->
+                            {ok, list_to_tuple(lists:reverse([Body, {ParsedHeaders, FinalHeaders} | Result]))}
+                    end;
 		
 		{error, Reason} ->
 		    HttpVersion = lists:nth(3, lists:reverse(Result)),
@@ -253,16 +271,24 @@ parse_headers(<<?LF, Octet, Rest/binary>>, Header, Headers, Current, Max,
     %% If ?CR is is missing RFC2616 section-19.3 
     parse_headers(<<?CR,?LF, Octet, Rest/binary>>, Header, Headers, Current, Max,
 		  Options, Result); 
+parse_headers(<<?CR, ?LF, Obs:8, _/binary>>, _, _, _, _, _, Result) when
+          Obs =:= ?SP;
+          Obs =:= ?TAB ->
+        HttpVersion = lists:nth(3, lists:reverse(Result)),
+        {error, {bad_request, 400, "obs-fold not supported"}, HttpVersion};
 parse_headers(<<?CR,?LF, Octet, Rest/binary>>, Header, Headers, Current, Max,
 	      Options, Result) ->
     case http_request:key_value(lists:reverse(Header)) of
 	undefined -> %% Skip headers with missing :
-	    parse_headers(Rest, [Octet], Headers, 
+	    parse_headers(Rest, [Octet], Headers,
 			  Current, Max, Options, Result);
+	{error, whitespace_before_colon} ->
+	    HttpVersion = lists:nth(3, lists:reverse(Result)),
+	    {error, {bad_request, 400, "whitespace before colon in header"}, HttpVersion};
 	NewHeader ->
-	    case check_header(NewHeader, Options) of 
+	    case check_header(NewHeader, Headers, Options) of
 		ok ->
-		    parse_headers(Rest, [Octet], [NewHeader | Headers], 
+		    parse_headers(Rest, [Octet], [NewHeader | Headers],
 				  Current, Max, Options, Result);
 		{error, Reason} ->
 		    HttpVersion = lists:nth(3, lists:reverse(Result)),
@@ -305,24 +331,24 @@ body_chunk(Body, Length, nolimit) ->
 body_chunk(<<>> = Body, Length, MaxChunk) ->
     {ok, {continue, ?MODULE, add_chunk, [Body, Length, MaxChunk]}};
 
-body_chunk(Body, Length, MaxChunk) when Length > MaxChunk ->
-    case size(Body) >= MaxChunk of 
+body_chunk(Body, Length, MaxChunk) when Length > MaxChunk, is_binary(Body) ->
+    case byte_size(Body) >= MaxChunk of
         true ->
             <<Chunk:MaxChunk/binary, Rest/binary>> = Body,
             {ok, {{continue, Chunk}, ?MODULE, add_chunk, [Rest, Length - MaxChunk, MaxChunk]}};
         false ->
             {ok, {continue, ?MODULE, add_chunk, [Body, Length, MaxChunk]}}
     end;
-body_chunk(Body, Length, MaxChunk) ->
-    case size(Body) of
+body_chunk(Body, Length, MaxChunk) when is_binary(Body)->
+    case byte_size(Body) of
         Length ->
             {ok, {last, Body}};
         _ ->
             {ok, {continue, ?MODULE, add_chunk, [Body, Length, MaxChunk]}}
     end.
 
-whole_body(Body, Length) ->
-    case size(Body) of
+whole_body(Body, Length) when is_binary(Body)->
+    case byte_size(Body) of
 	N when N < Length, Length > 0 ->
 	  {?MODULE, add_chunk, [Body, Length, nolimit]};
 	N when N >= Length, Length >= 0 ->  
@@ -340,7 +366,22 @@ validate_uri(RequestURI) ->
         {error, _, _} ->
             {error, {bad_request, {malformed_syntax, RequestURI}}};
         URI ->
-            {ok, URI}
+            {ok, collapse_uri_path_slashes(URI)}
+    end.
+
+%% Collapse consecutive slashes in the path component only.
+%% Uses uri_string:parse/1 to avoid mangling "://" in absolute URIs.
+collapse_uri_path_slashes([$/ | _] = Path) ->
+    %% Path-only form (the common case for httpd requests).
+    httpd_util:collapse_slashes(Path);
+collapse_uri_path_slashes(URI) ->
+    case uri_string:parse(URI) of
+        #{path := Path} = Parsed when map_size(Parsed) > 1 ->
+            %% Absolute URI — collapse only the path, recompose.
+            uri_string:recompose(Parsed#{path => httpd_util:collapse_slashes(Path)});
+        _ ->
+            %% Unparseable or path-only without leading slash.
+            httpd_util:collapse_slashes(URI)
     end.
    
 validate_version("HTTP/1.1") ->
@@ -351,7 +392,7 @@ validate_version(_) ->
     false.
 
 %%----------------------------------------------------------------------
-%% There are 3 possible forms of the reuqest URI 
+%% There are 3 possible forms of the request URI 
 %%
 %%  1. * When the request is not for a special assset. is is instead
 %%     to the server itself
@@ -402,7 +443,7 @@ get_persistens(HTTPVersion,ParsedHeader,ConfigDB)->
     case httpd_util:lookup(ConfigDB, keep_alive, true) of
 	true->
 	    case HTTPVersion of
-		%%If it is version prio to 1.1 kill the conneciton
+		%%If it is version prio to 1.1 kill the connection
 		"HTTP/1." ++ NList ->
 		    case proplists:get_value("connection", ParsedHeader,
 					     "keep-alive") of  
@@ -429,23 +470,50 @@ get_persistens(HTTPVersion,ParsedHeader,ConfigDB)->
 default_version()->
     "HTTP/1.1".
 
-check_header({"content-length", Value}, Maxsizes) ->
-    Max = proplists:get_value(max_content_length, Maxsizes),
+check_header({"content-length", Value}, Headers, MaxSizes) ->
+    case lists:keymember("transfer-encoding", 1, Headers) of
+        true ->
+            {error, {bad_request, 400, ?CL_TE_ERROR}};
+        false ->
+            case check_parsed_content_length_values(Value, Headers) of
+                true ->
+                    check_content_length_value(Value, MaxSizes);
+                false ->
+                    {error, {bad_request, 400,
+                             "Multiple Content-Length headers with different values"}}
+            end
+    end;
+
+check_header({"transfer-encoding", _Value}, Headers, _MaxSizes) ->
+    case lists:keymember("content-length", 1, Headers) of
+        true ->
+            {error, {bad_request, 400, ?CL_TE_ERROR}};
+        false ->
+            ok
+    end;
+
+check_header(_, _, _) ->
+    ok.
+
+check_parsed_content_length_values(CurrentValue, Headers) ->
+    ContentLengths = [V || {"content-length", _} = V <- Headers],
+    length([V || {"content-length", Value} = V <- ContentLengths, Value =:= CurrentValue]) =:= length(ContentLengths).
+
+check_content_length_value(Value, MaxSizes) ->
+    Max = proplists:get_value(max_content_length, MaxSizes),
     MaxLen = length(integer_to_list(Max)),
     case length(Value) =< MaxLen of
-	true ->
-	    try 
-		list_to_integer(Value)
-	    of
-		I when I>= 0 ->
-		    ok;
-		_ ->
-		    {error, {size_error, Max, 411, "negative content-length"}}
-	    catch _:_ ->
-		    {error, {size_error, Max, 411, "content-length not an integer"}}
-	    end;
-	false ->
-	    {error, {size_error, Max, 413, "content-length unreasonably long"}}
-    end;
-check_header(_, _) ->
-    ok.
+        true ->
+            try
+                list_to_integer(Value)
+            of
+                I when I>= 0 ->
+                    ok;
+                _ ->
+                    {error, {size_error, Max, 411, "negative content-length"}}
+            catch _:_ ->
+                    {error, {size_error, Max, 411, "content-length not an integer"}}
+            end;
+        false ->
+            {error, {size_error, Max, 413, "content-length unreasonably long"}}
+    end.

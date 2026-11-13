@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -31,15 +33,19 @@
 -module(mt).
 -author('hakan@erix.ericsson.se').
 -export([
-	 t/0, t/1, t/2, t/3,                % Run test cases
-	 loop/1, loop/2, loop/3,            % loop test cases
-	 doc/0, doc/1,                      % Generate test case doc
-	 struct/0, struct/1,                % View test suite struct
-	 shutdown/0, ping/0, start_nodes/0, % Node admin
-	 read_config/0, write_config/1      % Config admin
-	]).
+         t/0, t/1, t/2, t/3,                % Run test cases
+         loop/1, loop/2, loop/3,            % loop test cases
+         doc/0, doc/1,                      % Generate test case doc
+         struct/0, struct/1,                % View test suite struct
+         shutdown/0, ping/0, start_nodes/0, % Node admin
+         start_peers/1,                     % Peers for mt script
+         read_config/0, write_config/1      % Config admin
+        ]).
 
--include("mnesia_test_lib.hrl").
+-compile([{no_auto_import,[alias/1]},
+          {nowarn_possibly_unsafe_function, {file, consult, 1}}]).
+
+-include("gen_tcp_blocking_dist.hrl").
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Aliases for the (sub) test suites
@@ -64,10 +70,10 @@ alias(medium) -> {mnesia_SUITE, medium};
 alias(nice) -> mnesia_nice_coverage_test;
 alias(recover) -> mnesia_recover_test;
 alias(recovery) -> mnesia_recovery_test;
-alias(registry) -> mnesia_registry_test;
 alias(suite) -> mnesia_SUITE;
 alias(trans) -> mnesia_trans_access_test;
 alias(ixp) -> mnesia_index_plugin_test;
+alias(external) -> mnesia_external_backend_test;
 alias(Other) -> Other.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -235,7 +241,7 @@ ping() ->
     Nodes = mnesia_test_lib:select_nodes(all, Config, ?FILE, ?LINE),
     [{N, net_adm:ping(N)} || N <- Nodes].
 
-%% Slave start all nodes in config spec
+%% Start all nodes in config spec
 start_nodes() ->
     Config = read_config(),
     Nodes = mnesia_test_lib:select_nodes(all, Config, ?FILE, ?LINE),
@@ -245,30 +251,77 @@ start_nodes() ->
 %% loop one testcase /suite until it fails
 
 loop(Case) ->
-    loop_1(Case,-1,read_config()).
+    loop_1(Case,1,infinity,read_config()).
 
 loop(M,F) when is_atom(F) ->
-    loop_1({M,F},-1,read_config());
+    loop_1({M,F},1, infinity, read_config());
 loop(Case,N) when is_integer(N) ->
-    loop_1(Case, N,read_config()).
+    loop_1(Case, 1, N,read_config()).
 
 loop(M,F,N) when is_integer(N) ->
-    loop_1({M,F},N,read_config()).
+    loop_1({M,F},1, N,read_config()).
 
-loop_1(Case,N,Config) when N /= 0 ->
-    io:format("Loop test ~p ~n", [abs(N)]),
-    case ok_result(Res = t(Case,Config)) of
+loop_1(Case,N,Max,Config) when N < Max ->
+    io:format("~nLoop test ~p ~n", [abs(N)]),
+
+    Res = t(Case, Config),
+    case ok_result(Res) of
 	true ->
-	    loop_1(Case,N-1,Config);
+	    loop_1(Case,N+1,Max,Config);
 	error ->
+            io:format("Failed after ~p~n", [N]),
 	    Res
     end;
-loop_1(_,_,_) ->
+loop_1(_,_,_,_) ->
     ok.
-	    
+
 ok_result([{_T,{ok,_,_}}|R]) -> 
     ok_result(R);
-ok_result([{_T,{TC,List}}|R]) when is_tuple(TC), is_list(List) -> 
+ok_result([{_T,{TC,List}}|R]) when is_tuple(TC), is_list(List) ->
     ok_result(List) andalso ok_result(R);
 ok_result([]) -> true;
 ok_result(_) -> error.
+
+%% Peer nodes for mt script
+start_peers(Args) ->
+    [Name2, Name3, TmpDirA | ExtraArgs0] = Args,
+    CodePaths = lists:append([["-pa", P] || P <- code:get_path(), P /= "."]),
+    DistOpts = ?NETWORK_BLOCKER_DIST_OPTS,
+    ExtraArgs =
+        case mnesia_test_lib:has_network_blocker() of
+            true ->
+                CodePaths ++ DistOpts ++ ExtraArgs0;
+            false ->
+                CodePaths ++ ExtraArgs0
+        end,
+    TmpDir = atom_to_list(TmpDirA),
+    {Name2, P2, N2} = start_peer(Name2, TmpDir, ExtraArgs),
+    {Name3, P3, N3} = start_peer(Name3, TmpDir, ExtraArgs),
+    ok = mnesia_test_lib:set_peer_ref(N2, P2),
+    ok = mnesia_test_lib:set_peer_ref(N3, P3).
+
+start_peer(Name, TmpDir, ExtraArgs) ->
+    Dir = TmpDir ++ "/" ++ atom_to_list(Name) ++ "/",
+    ok = filelib:ensure_dir(Dir),
+    Erl = case init:get_argument(progname) of
+              {ok, [[Prog]]} ->
+                  case os:find_executable(Prog) of
+                      false -> "erl";
+                      Found -> Found
+                  end;
+              _ -> "erl"
+          end,
+    RunErl = os:find_executable("run_erl"),
+    {ok, Peer, Node} = peer:start(#{
+        name => Name,
+        host => "localhost",
+        connection => 0,
+        detached => false,
+        exec => {RunErl, ["-daemon"]},
+        post_process_args => fun(Args) ->
+            Cmd = lists:flatten([Erl, " ", lists:join(" ", Args)]),
+            [Dir, Dir, "exec " ++ Cmd]
+        end,
+        args => ExtraArgs
+    }),
+    {Name, Peer, Node}.

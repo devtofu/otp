@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2000-2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2000-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -24,6 +26,7 @@
 %%----------------------------------------------------------------------
 
 -module(megaco_config).
+-moduledoc false.
 
 -behaviour(gen_server).
 
@@ -899,9 +902,9 @@ init([Parent]) ->
 
 do_init() ->
     ?megaco_test_init(),
-    ets:new(megaco_config,      [public, named_table, {keypos, 1}]),
-    ets:new(megaco_local_conn,  [public, named_table, {keypos, 2}]),
-    ets:new(megaco_remote_conn, [public, named_table, {keypos, 2}, bag]),
+    _ = ets:new(megaco_config,      [public, named_table, {keypos, 1}]),
+    _ = ets:new(megaco_local_conn,  [public, named_table, {keypos, 2}]),
+    _ = ets:new(megaco_remote_conn, [public, named_table, {keypos, 2}, bag]),
     megaco_stats:init(megaco_stats, global_snmp_counters()),
     init_scanner(),
     init_user_defaults(),
@@ -1467,7 +1470,7 @@ handle_start_user(Mid, Config) ->
     case catch user_info(Mid, mid) of
         {'EXIT', _} ->
 	    DefaultConfig = user_info(default, all),
-            do_handle_start_user(Mid, DefaultConfig),
+            _ = do_handle_start_user(Mid, DefaultConfig),
 	    do_handle_start_user(Mid, Config);
         _LocalMid ->
             {error, {user_already_exists, Mid}}
@@ -1482,7 +1485,7 @@ do_handle_start_user(UserMid, [{Item, Val} | Rest]) ->
             {error, Reason}
     end;
 do_handle_start_user(UserMid, []) ->
-    do_update_user(UserMid, mid, UserMid),
+    _ = do_update_user(UserMid, mid, UserMid),
     ok;
 do_handle_start_user(UserMid, BadConfig) ->
     ets:match_delete(megaco_config, {{UserMid, '_'}, '_'}),
@@ -1525,7 +1528,7 @@ verify_val(Item, Val) ->
 	    megaco_config_misc:verify_uint(Val);
 
         trans_timer            -> 
-	    verify_timer(Val) and (Val >= 0);
+	    verify_timer(Val) andalso Val >= 0;
 	trans_sender when Val =:= undefined -> true;
 
         pending_timer                      -> verify_timer(Val);
@@ -1715,7 +1718,7 @@ update_auto_ack(#conn_data{trans_timer  = To,
     %% sender goes down. 
     %% Do we need to store the ref? Will we ever need to 
     %% cancel this (apply_at_exit)?
-    megaco_monitor:apply_at_exit(?MODULE, trans_sender_exit, [CH], Pid),
+    _ = megaco_monitor:apply_at_exit(?MODULE, trans_sender_exit, [CH], Pid),
 
     CD#conn_data{auto_ack = true, trans_sender = Pid};
 
@@ -1746,7 +1749,7 @@ update_trans_ack(#conn_data{trans_timer  = To,
     %% sender goes down. 
     %% Do we need to store the ref? Will we ever need to 
     %% cancel this (apply_at_exit)?
-    megaco_monitor:apply_at_exit(?MODULE, trans_sender_exit, [CH], Pid),
+    _ = megaco_monitor:apply_at_exit(?MODULE, trans_sender_exit, [CH], Pid),
 
     CD#conn_data{trans_ack = true, trans_sender = Pid};
 
@@ -1775,7 +1778,7 @@ update_trans_req(#conn_data{trans_timer  = To,
     %% sender goes down. 
     %% Do we need to store the ref? Will we ever need to 
     %% cancel this (apply_at_exit)?
-    megaco_monitor:apply_at_exit(?MODULE, trans_sender_exit, [CH], Pid),
+    _ = megaco_monitor:apply_at_exit(?MODULE, trans_sender_exit, [CH], Pid),
 
     CD#conn_data{trans_req = true, trans_sender = Pid};
 
@@ -1799,7 +1802,7 @@ update_trans_timer(#conn_data{auto_ack     = true,
     %% sender goes down. 
     %% Do we need to store the ref? Will we ever need to 
     %% cancel this (apply_at_exit)?
-    megaco_monitor:apply_at_exit(?MODULE, trans_sender_exit, [CH], Pid),
+    _ = megaco_monitor:apply_at_exit(?MODULE, trans_sender_exit, [CH], Pid),
 
     CD#conn_data{trans_timer = To, trans_sender = Pid};
 
@@ -1817,7 +1820,7 @@ update_trans_timer(#conn_data{trans_req    = true,
     %% sender goes down. 
     %% Do we need to store the ref? Will we ever need to 
     %% cancel this (apply_at_exit)?
-    megaco_monitor:apply_at_exit(?MODULE, trans_sender_exit, [CH], Pid),
+    _ = megaco_monitor:apply_at_exit(?MODULE, trans_sender_exit, [CH], Pid),
 
     CD#conn_data{trans_timer = To, trans_sender = Pid};
 
@@ -1826,7 +1829,7 @@ update_trans_timer(#conn_data{trans_sender = Pid} = CD, 0) when is_pid(Pid) ->
     CD#conn_data{trans_timer = 0, trans_sender = undefined};
 
 update_trans_timer(#conn_data{trans_sender = Pid} = CD, To) 
-  when is_pid(Pid) and (To > 0) ->
+  when is_pid(Pid), To > 0 ->
     megaco_trans_sender:timeout(Pid, To),
     CD#conn_data{trans_timer = To};
 
@@ -1835,7 +1838,7 @@ update_trans_timer(CD, To) when To > 0 ->
 
 %% update trans_ack_maxcount
 update_trans_ack_maxcount(#conn_data{trans_sender = Pid} = CD, Max) 
-  when is_pid(Pid) and (Max > 0) ->
+  when is_pid(Pid), Max > 0 ->
     megaco_trans_sender:ack_maxcount(Pid, Max),
     CD#conn_data{trans_ack_maxcount = Max};
 
@@ -1846,7 +1849,7 @@ update_trans_ack_maxcount(CD, Max)
 
 %% update trans_req_maxcount
 update_trans_req_maxcount(#conn_data{trans_sender = Pid} = CD, Max) 
-  when is_pid(Pid) and (Max > 0) ->
+  when is_pid(Pid), Max > 0 ->
     megaco_trans_sender:req_maxcount(Pid, Max),
     CD#conn_data{trans_req_maxcount = Max};
 
@@ -1857,7 +1860,7 @@ update_trans_req_maxcount(CD, Max)
 
 %% update trans_req_maxsize
 update_trans_req_maxsize(#conn_data{trans_sender = Pid} = CD, Max) 
-  when is_pid(Pid) and (Max > 0) ->
+  when is_pid(Pid), Max > 0 ->
     megaco_trans_sender:req_maxsize(Pid, Max),
     CD#conn_data{trans_req_maxsize = Max};
 
@@ -1968,7 +1971,7 @@ trans_sender_start(#conn_data{conn_handle        = CH,
     %% sender goes down. 
     %% Do we need to store the ref? Will we ever need to 
     %% cancel this (apply_at_exit)?
-    megaco_monitor:apply_at_exit(?MODULE, trans_sender_exit, [CH], Pid),
+    _ = megaco_monitor:apply_at_exit(?MODULE, trans_sender_exit, [CH], Pid),
 
     CD#conn_data{trans_sender = Pid};
 
@@ -1997,7 +2000,7 @@ trans_sender_start(#conn_data{conn_handle        = CH,
     %% sender goes down. 
     %% Do we need to store the ref? Will we ever need to 
     %% cancel this (apply_at_exit)?
-    megaco_monitor:apply_at_exit(?MODULE, trans_sender_exit, [CH], Pid),
+    _ = megaco_monitor:apply_at_exit(?MODULE, trans_sender_exit, [CH], Pid),
 
     CD#conn_data{trans_sender = Pid};
 
@@ -2150,7 +2153,7 @@ update_snmp_counters(CH, PrelCH, [Counter|Counters]) ->
     PrelKey = {PrelCH, Counter},
     Key     = {CH, Counter},
     [{PrelKey,PrelVal}] = ets:lookup(megaco_stats, PrelKey),
-    ets:update_counter(megaco_stats, Key, PrelVal),
+    _ = ets:update_counter(megaco_stats, Key, PrelVal),
     ets:delete(megaco_stats, PrelKey),
     update_snmp_counters(CH, PrelCH, Counters).
 

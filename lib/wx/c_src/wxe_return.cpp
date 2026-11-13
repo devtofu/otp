@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2008-2016. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2008-2026. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -43,8 +45,11 @@ wxeReturn::~wxeReturn () {
 int wxeReturn::send(ERL_NIF_TERM msg) {
   int res;
   if(wxe_debug) {
-    if(isResult)
-      enif_fprintf(stderr, "return to %T:  %T\r\n", caller, msg);
+    if(isResult) {
+      enif_fprintf(stderr, "return to %T: ", caller);
+      wx_print_term(env, msg);
+      enif_fprintf(stderr, "\r\n");
+    }
   }
   if(isResult) {
     res = enif_send(NULL, &caller, env,
@@ -153,9 +158,9 @@ ERL_NIF_TERM wxeReturn::make_double(double val) {
 
 INLINE
 ERL_NIF_TERM wxeReturn::make(const wxString s) {
-    int strLen = s.Len();
     wxCharBuffer resultCB = s.mb_str(utfConverter);
     int * resultPtr = (int *) resultCB.data();
+    int strLen = resultCB.length() / sizeof(int);
     ERL_NIF_TERM head, tail;
     tail = enif_make_list(env, 0);
     for (int i = strLen-1; i >= 0; i--) {
@@ -228,7 +233,8 @@ ERL_NIF_TERM wxeReturn::make_array_objs(wxAuiPaneInfoArray& arr, WxeApp *app, co
   ERL_NIF_TERM head, tail;
   ERL_NIF_TERM class_name = enif_make_atom(env, cname);
   tail = enif_make_list(env, 0);
-  for(unsigned int i = arr.GetCount() -1; i >= 0; i--) {
+  if(arr.GetCount() == 0) return tail;
+  for(ErlNifSInt64 i = arr.GetCount() -1; i >= 0; i--) {
     head = make_ref(app->getRef((void *) &arr.Item(i),memenv), class_name);
     tail = enif_make_list_cell(env, head, tail);
   }
@@ -240,7 +246,8 @@ ERL_NIF_TERM wxeReturn::make_array_objs(wxArrayTreeItemIds& arr)
 {
   ERL_NIF_TERM head, tail;
   tail = enif_make_list(env, 0);
-  for(unsigned int i = arr.GetCount() -1; i >= 0; i--) {
+  if(arr.GetCount() == 0) return tail;
+  for(ErlNifSInt64 i = arr.GetCount() -1; i >= 0; i--) {
     head = make((wxUIntPtr *) arr[i].m_pItem);
     tail = enif_make_list_cell(env, head, tail);
   }
@@ -252,7 +259,8 @@ ERL_NIF_TERM wxeReturn::make_array_objs(wxGridCellCoordsArray& arr)
 {
   ERL_NIF_TERM head, tail;
   tail = enif_make_list(env, 0);
-  for(unsigned int i = arr.GetCount() -1; i >= 0; i--) {
+  if(arr.GetCount() == 0) return tail;
+  for(ErlNifSInt64 i = arr.GetCount() -1; i >= 0; i--) {
     head = make(arr[i]);
     tail = enif_make_list_cell(env, head, tail);
   }
@@ -409,7 +417,7 @@ ERL_NIF_TERM  wxeReturn::make(wxGBSpan val) {
 
 INLINE
 ERL_NIF_TERM  wxeReturn::make(wxMouseState val) {
-  return enif_make_tuple(env, 11,
+  return enif_make_tuple(env, 13,
                          enif_make_atom(env, "wxMouseState"),
                          // TODO not int?
                          enif_make_uint(env, val.GetX()),
@@ -421,7 +429,9 @@ ERL_NIF_TERM  wxeReturn::make(wxMouseState val) {
                          make_bool(val.ShiftDown()),
                          make_bool(val.AltDown()),
                          make_bool(val.MetaDown()),
-                         make_bool(val.CmdDown())
+                         make_bool(val.CmdDown()),
+                         make_bool(val.Aux1IsDown()),
+                         make_bool(val.Aux2IsDown())
                          );
 }
 

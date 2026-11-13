@@ -1,3 +1,25 @@
+<!--
+%% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2013-2025. All Rights Reserved.
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%
+%% %CopyrightEnd%
+-->
+
 Port Signals
 ============
 
@@ -108,7 +130,7 @@ and a private, lock free, queue like, task data structure. This "semi
 locked" approach is similar to how the message boxes of processes are
 managed. The lock is port specific and only used for protection of
 port tasks, so the run queue lock is now needed in more or less the
-same way for ports as for processes. This ensures that we wont see an
+same way for ports as for processes. This ensures that we won't see an
 increased lock contention on run queue locks due to this rewrite of
 the port functionality.
 
@@ -211,7 +233,7 @@ consuming, and did not really depend on the port. That is we would
 like to do this without having the port lock locked.
 
 In order to improve this, state information was re-organized in the
-port structer, so that we can access it using atomic memory
+port structure, so that we can access it using atomic memory
 operations. This together with the new port table implementation,
 enabled us to lookup the port and inspect the state before acquiring
 the port lock, which in turn made it possible to perform preparations

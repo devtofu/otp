@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2012-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2012-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -43,7 +45,7 @@
 
 -import(lists, [foldl/3]).
 
--define(default_timeout, ?t:minutes(20)).
+-define(default_timeout, test_server:minutes(20)).
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -63,13 +65,13 @@ groups() ->
        src_tests_script, crazy_script, optional_apps_script,
        included_script, included_override_script,
        included_fail_script, included_bug_script, exref_script,
-       duplicate_modules_script,
+       duplicate_modules_script, duplicate_entries_script,
        otp_3065_circular_dependenies, included_and_used_sort_script]},
      {tar, [],
       [tar_options, relname_tar, normal_tar, no_mod_vsn_tar, system_files_tar,
        system_src_file_tar, invalid_system_files_tar, variable_tar,
        src_tests_tar, var_tar, exref_tar, link_tar, no_sasl_tar,
-       otp_9507_path_ebin, additional_files_tar, erts_tar]},
+       otp_9507_path_ebin, additional_files_tar, erts_tar, appup_tar]},
      {relup, [],
       [normal_relup, restart_relup, abnormal_relup, no_sasl_relup,
        no_appup_relup, bad_appup_relup, app_start_type_relup, regexp_relup,
@@ -106,6 +108,9 @@ init_per_suite(Config) when is_list(Config) ->
     %% Compile source files in the copy directory.
     Sources = filelib:wildcard(fname([CopyDir,'*','*','*','*','*.erl'])),
     lists:foreach(fun compile_source/1, Sources),
+    %% Deal with subdirectories, if any
+    SubSources = filelib:wildcard(fname([CopyDir,'*','*','*','*','*','*.erl'])),
+    lists:foreach(fun compile_subsource/1, SubSources),
 
     [{copy_dir, CopyDir}, {cwd,Cwd}, {path,Path} | Config].
 
@@ -115,6 +120,16 @@ compile_source(File) ->
     %% file, so we must compile to a binary and write
     %% the output file ourselves.
     U = filename:dirname(filename:dirname(File)),
+    Base = filename:rootname(filename:basename(File)),
+    OutFile = filename:join([U,"ebin",Base++".beam"]),
+    OutFileTemp = OutFile ++ "#",
+    {ok,_,Code} = compile:file(File, [binary]),
+    ok = file:write_file(OutFileTemp, Code),
+    file:rename(OutFileTemp, OutFile).
+
+compile_subsource(File) ->
+    %% Same as compile_source/1 but works a subdirectory lower
+    U = filename:dirname(filename:dirname(filename:dirname(File))),
     Base = filename:rootname(filename:basename(File)),
     OutFile = filename:join([U,"ebin",Base++".beam"]),
     OutFileTemp = OutFile ++ "#",
@@ -278,9 +293,7 @@ unicode_script(Config) when is_list(Config) ->
 
     %% Need to do this on a separate node to make sure it has unicode
     %% filename mode (+fnu*)
-    {ok,HostStr} = inet:gethostname(),
-    Host = list_to_atom(HostStr),
-    {ok,Node} = ct_slave:start(Host,unicode_script_node,[{erl_flags,"+fnui"}]),
+    {ok,Peer,Node} = ?CT_PEER(["+fnui"]),
 
     ok = rpc:call(Node,erl_tar,extract,
 		  [TarFile, [{cwd,UnicodeLibDir},compressed]]),
@@ -313,10 +326,11 @@ unicode_script(Config) when is_list(Config) ->
     rpc:call(Node,code,add_pathz,[filename:dirname(code:which(?MODULE))]),
     rpc:call(Node,?MODULE,delete_tree,[UnicodeLibDir]),
 
+    peer:stop(Peer),
+
     ok.
 
 unicode_script(cleanup,Config) ->
-    _ = ct_slave:stop(unicode_script_node),
     file:delete(fname(?privdir, "unicode_app.tgz")),
     ok.
 
@@ -453,6 +467,18 @@ variable_script(Config) when is_list(Config) ->
 			       LatestName),
 
     ok = file:set_cwd(OldDir),
+    ok.
+
+%% make_script: Duplicate entries in app file
+duplicate_entries_script(Config) when is_list(Config) ->
+    DataDir = ?datadir,
+    create_apps_duplicate_entry(DataDir),
+    {LatestDir, LatestName} = create_script(latest_t21,Config),
+    error = systools:make_script(LatestName,
+        [{path, [DataDir, LatestDir]}]),
+    {LatestDir2, LatestName2} = create_script(latest_t22,Config),
+    ok = systools:make_script(LatestName2,
+        [{path, [DataDir, LatestDir2]}]),
     ok.
 
 %% make_script: Abnormal cases.
@@ -833,16 +859,16 @@ check_exref_warnings(with_db1, W) ->
 	      {lists,non_existing_func,1}]} ->
 	    ok;
 	{ok, L} ->
-	    test_server:fail({exref_warning_undef, L});
+	    ct:fail({exref_warning_undef, L});
 	_E ->
-	    test_server:fail({bad_undef,_E})
+	    ct:fail({bad_undef,_E})
     end;
 check_exref_warnings(without_db1, W) ->
     case get_exref(undef, W) of
 	false ->
 	    ok;
 	{ok, L} ->
-	    test_server:fail({exref_warning_undef, L})
+	    ct:fail({exref_warning_undef, L})
     end.
 
 get_exref(undef, W)   -> filter(get_exref1(exref_undef, W)).
@@ -1090,17 +1116,31 @@ erts_tar(Config) ->
     {Default, Ignored} =
         case os:type()  of
             {unix,_} ->
-                {["beam.smp","dyn_erl","epmd","erl","erl_call","erl_child_setup",
+                {["beam.smp","epmd","erl","erl_call","erl_child_setup",
                   "erlexec","erl.src","escript","heart","inet_gethost","run_erl",
                   "start","start_erl.src","start.src","to_erl"],
                  ["ct_run","dialyzer","erlc","typer","yielding_c_fun"]};
             {win32, _} ->
-                {["beam.smp.pdb","erl.exe",
-                  "erl.pdb","erl_log.exe","erlexec.dll","erlsrv.exe","heart.exe",
-                  "start_erl.exe","werl.exe","beam.smp.dll",
-                  "epmd.exe","erl.ini","erl_call.exe",
-                  "erlexec.pdb","escript.exe","inet_gethost.exe","werl.pdb"],
-                 ["dialyzer.exe","erlc.exe","yielding_c_fun.exe","ct_run.exe","typer.exe"]}
+                Files = ["beam.smp.dll",
+                         "epmd.exe",
+                         "erl.exe",
+                         "erl_call.exe",
+                         "erl_log.exe",
+                         "erlexec.dll",
+                         "erlsrv.exe",
+                         "escript.exe",
+                         "heart.exe",
+                         "inet_gethost.exe",
+                         "start_erl.exe"],
+                PdbFiles = ["beam.jit.pdb" || erlang:system_info(emu_flavor) =:= jit]
+                    ++ [filename:rootname(F) ++ ".pdb" || F <- Files],
+                IgnoredFiles = ["ct_run.exe",
+                           "dialyzer.exe",
+                           "erlc.exe",
+                           "typer.exe",
+                           "yielding_c_fun.exe"],
+                PdbIgnored = [filename:rootname(F) ++ ".pdb" || F <- IgnoredFiles],
+                {Files ++ PdbFiles, IgnoredFiles ++ PdbIgnored}
         end,
 
     ErtsTarContent =
@@ -1110,7 +1150,11 @@ erts_tar(Config) ->
                    || File <- tar_contents(TarName),
                       string:equal(filename:dirname(File),ERTS_DIR),
                       %% Filter out beam.*.smp.*
-                      re:run(filename:basename(File), "beam\\.[^\\.]+\\.smp(\\.dll)?") == nomatch,
+                      re:run(filename:basename(File), "beam\\.[^\\.]+\\.smp(\\.dll|\\.pdb)?") == nomatch,
+                      %% Filter out beam.*.emu.*
+                      re:run(filename:basename(File), "beam\\.([^\\.]+\\.)?emu(\\.dll\\.pdb)?") == nomatch,
+                      %% Filter out beam.*.jit.pdb
+                      re:run(filename:basename(File), "beam\\.[^\\.]+\\.?jit\\.pdb") == nomatch,
                       %% Filter out any erl_child_setup.*
                       re:run(filename:basename(File), "erl_child_setup\\..*") == nomatch
                   ])
@@ -1384,7 +1428,7 @@ src_tests_tar(Config) when is_list(Config) ->
 
 %% make_tar: Check that make_tar handles generation and placement of
 %% tar files for variables outside the main tar file.
-%% Test the {var_tar, include | ownfile | omit} optio.
+%% Test the {var_tar, include | ownfile | omit} option.
 var_tar(Config) when is_list(Config) ->
     {ok, OldDir} = file:get_cwd(),
     PSAVE = code:get_path(),		% Save path
@@ -1543,6 +1587,28 @@ otp_9507_path_ebin(Config) when is_list(Config) ->
 
     ok = file:set_cwd(OldDir),
 
+    ok.
+
+%% make_tar: Check application upgrade file included
+appup_tar(Config) when is_list(Config) ->
+    {ok, OldDir} = file:get_cwd(),
+
+    {LatestDir, LatestName} = create_script(latest_no_mod_vsn,Config),
+
+    DataDir = filename:absname(?copydir),
+    LibDir = fname([DataDir, d_normal, lib]),
+    P = [fname([LibDir, 'db-3.1', ebin]),
+	 fname([LibDir, 'fe-3.1', ebin])],
+
+    ok = file:set_cwd(LatestDir),
+
+    {ok, _, []} = systools:make_script(LatestName, [silent, {path, P}, {script_name, "start"}]),
+    ok = systools:make_tar(LatestName, [{path, P}]),
+    ok = check_tar(fname([lib,'db-3.1',ebin,'db.appup']), LatestName),
+    {ok, _, []} = systools:make_tar(LatestName, [{path, P}, silent]),
+    ok = check_tar(fname([lib,'fe-3.1',ebin,'fe.appup']), LatestName),
+
+    ok = file:set_cwd(OldDir),
     ok.
 
 
@@ -1904,8 +1970,8 @@ app_start_type_relup(Dir2,Name2,Config) ->
     {"LATEST_APP_START_TYPE2",
      [{"LATEST_APP_START_TYPE1",[], UpInstructions}],
      [{"LATEST_APP_START_TYPE1",[], DownInstructions}]} = Release2Relup,
-    %% ?t:format("Up: ~p",[UpInstructions]),
-    %% ?t:format("Dn: ~p",[DownInstructions]),
+    %% test_server:format("Up: ~p",[UpInstructions]),
+    %% test_server:format("Dn: ~p",[DownInstructions]),
     [{load_object_code, {mnesia, _, _}},
      {load_object_code, {runtime_tools, _, _}},
      {load_object_code, {snmp, _, _}},
@@ -2393,14 +2459,14 @@ check_var_script_file(VarDirs, NoExistDirs, RelName) ->
 	VarDirs ->
 	    ok;
 	_ ->
-	    test_server:fail("All variable dirs not in generated script")
+	    ct:fail("All variable dirs not in generated script")
     end,
     case lists:filter(fun(NoExistDir) -> lists:member(NoExistDir, AllPaths) end,
 		      NoExistDirs) of
 	[] ->
 	    ok;
 	_ ->
-	    test_server:fail("Unexpected dirs in generated script")
+	    ct:fail("Unexpected dirs in generated script")
     end.
 
 check_include_script(RelName, ExpectedLoad, ExpectedStart) ->
@@ -2414,7 +2480,7 @@ check_include_script(RelName, ExpectedLoad, ExpectedStart) ->
 		App=/=stdlib],
 
     if ActualLoad =:= ExpectedLoad -> ok;
-       true -> test_server:fail({bad_load_order, ActualLoad, ExpectedLoad})
+       true -> ct:fail({bad_load_order, ActualLoad, ExpectedLoad})
     end,
 
     %% Check that applications are started in given order !
@@ -2424,7 +2490,7 @@ check_include_script(RelName, ExpectedLoad, ExpectedStart) ->
 		App =/= stdlib],
 
     if ActualStart =:= ExpectedStart -> ok;
-       true -> test_server:fail({bad_start_order, ActualStart,ExpectedStart})
+       true -> ct:fail({bad_start_order, ActualStart,ExpectedStart})
     end,
 
     ok.
@@ -2561,6 +2627,12 @@ create_script(latest_app_start_type2,Config) ->
 		 {xmerl,current,none}],
     Apps = core_apps(current) ++ OtherApps,
     do_create_script(latest_app_start_type2,Config,current,Apps);
+create_script(latest_t21, Config) ->
+    Apps = core_apps(current) ++ [{t21, "1.0"}],
+    do_create_script(latest_t21, Config, "4.4", Apps);
+create_script(latest_t22, Config) ->
+    Apps = core_apps(current) ++ [{t22, "1.0"}],
+    do_create_script(latest_t22, Config, "4.4", Apps);
 create_script(current_all_no_sasl,Config) ->
     Apps = [{kernel,current},{stdlib,current},{db,"2.1"},{fe,"3.1"}],
     do_create_script(current_all_no_sasl,Config,current,Apps);
@@ -2892,7 +2964,6 @@ create_include_files(sort_apps_rev, Config) ->
     file:write_file(Name ++ ".rel", list_to_binary(Rel)),
     {filename:dirname(Name), filename:basename(Name)}.
 
-
 create_apps(Dir) ->
     T1 = "{application, t1,\n"
 	" [{vsn, \"1.0\"},\n"
@@ -3011,8 +3082,6 @@ create_apps2(Dir) ->
 	"  {registered, []}]}.\n",
     file:write_file(fname(Dir, 't13.app'), list_to_binary(T13)).
 
-
-
 create_apps_3065(Dir) ->
     T11 = "{application, chTraffic,\n"
 	" [{vsn, \"1.0\"},\n"
@@ -3104,6 +3173,24 @@ create_sort_apps(Dir) ->
 	"  {included_applications, []},\n"
 	"  {registered, []}]}.\n",
     file:write_file(fname(Dir, 't20.app'), list_to_binary(T20)).
+
+create_apps_duplicate_entry(Dir) ->
+    T21 = "{application, t21,\n"
+    " [{vsn, \"1.0\"},\n"
+    "  {description, \"test\"},\n"
+    "  {modules, []},\n"
+    "  {applications, []},\n"
+    "  {included_applications, []},\n"
+    "  {registered, [test, test]}]}.\n",
+    file:write_file(fname(Dir, 't21.app'), list_to_binary(T21)),
+    T22 = "{application, t22,\n"
+    " [{vsn, \"1.0\"},\n"
+    "  {description, \"test\"},\n"
+    "  {modules, []},\n"
+    "  {applications, []},\n"
+    "  {included_applications, []},\n"
+    "  {registered, [test]}]}.\n",
+    file:write_file(fname(Dir, 't22.app'), list_to_binary(T22)).
 
 fname(N) ->
     filename:join(N).

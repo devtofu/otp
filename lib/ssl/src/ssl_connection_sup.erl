@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1998-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1998-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,6 +23,7 @@
 %%
 
 -module(ssl_connection_sup).
+-moduledoc false.
 
 -behaviour(supervisor).
 
@@ -35,7 +38,6 @@
 %%%=========================================================================
 
 -spec start_link() -> {ok, pid()} | ignore | {error, term()}.
-			
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
@@ -43,33 +45,32 @@ start_link() ->
 %%%  Supervisor callback
 %%%=========================================================================
 
-init([]) ->    
-  
-    TLSSup = tls_sup_child_spec(),
-    DTLSSup = dtls_sup_child_spec(),
+init([]) ->
+    ChildSpecs = [tls_sup_child_spec(), dtls_sup_child_spec()],
+    SupFlags = #{strategy  => one_for_one,
+                 intensity =>   10,
+                 period    => 3600
+                },
+    {ok, {SupFlags, ChildSpecs}}.
 
-    {ok, {{one_for_one, 10, 3600}, [TLSSup, DTLSSup]}}.
-
-    
 %%--------------------------------------------------------------------
 %%% Internal functions
 %%--------------------------------------------------------------------
 
 tls_sup_child_spec() ->
-    Name = tls_sup,  
-    StartFunc = {tls_sup, start_link, []},
-    Restart = permanent, 
-    Shutdown = 4000,
-    Modules = [tls_sup],
-    Type = supervisor,
-    {Name, StartFunc, Restart, Shutdown, Type, Modules}.
+    #{id => tls_sup,
+      start => {tls_sup, start_link, []},
+      restart => permanent,
+      shutdown => infinity,
+      modules => [tls_sup],
+      type => supervisor
+     }.
 
 dtls_sup_child_spec() ->
-    Name = dtls_sup,
-    StartFunc = {dtls_sup, start_link, []},
-    Restart = permanent,
-    Shutdown = 4000,
-    Modules = [dtls_sup],
-    Type = supervisor,
-    {Name, StartFunc, Restart, Shutdown, Type, Modules}.
-
+    #{id => dtls_sup,
+      start => {dtls_sup, start_link, []},
+      restart => permanent,
+      shutdown => infinity,
+      modules => [dtls_sup],
+      type => supervisor
+     }.

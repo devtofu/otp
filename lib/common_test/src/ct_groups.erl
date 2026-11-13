@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2004-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2004-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,6 +25,9 @@
 %%% tests.
 
 -module(ct_groups).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
 
 -export([find_groups/4]).
 -export([make_all_conf/3, make_all_conf/4, make_conf/5]).
@@ -57,7 +62,7 @@ find_groups1(Mod, GrNames, TCs, GroupDefs) ->
 	    Path ->
 		{Path,true}
 	end,
-    TCs1 = if (is_atom(TCs) and (TCs /= all)) or is_tuple(TCs) ->
+    TCs1 = if is_atom(TCs), TCs /= all; is_tuple(TCs) ->
 		   [TCs];
 	      true -> 
 		   TCs 
@@ -65,6 +70,17 @@ find_groups1(Mod, GrNames, TCs, GroupDefs) ->
     Found = find(Mod, GrNames1, TCs1, GroupDefs, [],
 		 GroupDefs, FindAll),
     [Conf || Conf <- Found, Conf /= 'NOMATCH'].
+
+%% Finds out if the given group, or child cases / child group of a group, is non-empty.
+not_empty_conf({conf, _Props, _Init, Children, _End}) -> not_empty_conf(Children);
+not_empty_conf([] = _Cases) -> false;
+not_empty_conf([_ | _] = _Cases) -> true;
+not_empty_conf(Name) when is_atom(Name) -> true;
+% Other, unexpected formats we don't actively care about, such as `{mnesia_evil_backup, all}`.
+not_empty_conf(_Format) -> true.
+
+remove_empty_confs(Confs) ->
+    lists:filtermap(fun not_empty_conf/1, Confs).
 
 %% Locate all groups
 find(Mod, all, all, [{Name,Props,Tests} | Gs], Known, Defs, _) 
@@ -191,8 +207,8 @@ find(Mod, GrNames, all, [{testcase,TC,[Prop]} | Gs], Known,
 %% Check if test case should be saved
 find(Mod, GrNames, TCs, [TC | Gs], Known, Defs, FindAll)
   when is_atom(TC) orelse
-       ((size(TC) == 3) andalso (element(1,TC) == testcase)) orelse
-       ((size(TC) == 2) and (element(1,TC) /= group)) ->
+       ((tuple_size(TC) == 3) andalso (element(1,TC) == testcase)) orelse
+       ((tuple_size(TC) == 2) andalso (element(1,TC) /= group)) ->
     Case =
         case TC of
             _ when is_atom(TC) ->
@@ -229,7 +245,7 @@ find(Mod, GrNames, TCs, [TC | Gs], Known, Defs, FindAll)
 	    [Case | find(Mod, GrNames, TCs, Gs, Known, Defs, FindAll)]
     end;
 
-%% Unexpeted term in group list
+%% Unexpected term in group list
 find(Mod, _GrNames, _TCs, [BadTerm | _Gs], Known, _Defs, _FindAll) ->
     Where = if length(Known) == 0 ->
 		    atom_to_list(Mod)++":groups/0";
@@ -253,7 +269,6 @@ find(_Mod, _GrNames, _TCs, [], _Known, _Defs, _) ->
 
 trim({conf,Props,Init,Tests,End}) ->
     try trim(Tests) of
-	[] -> [];
 	Tests1 -> [{conf,Props,Init,Tests1,End}]
     catch
 	throw:_ -> []
@@ -333,8 +348,7 @@ modify_tc_list1(GrSpecTs, TSCs) ->
 					  false -> []
 				      end
 			      end;
-                         (Test) when is_tuple(Test),
-				     (size(Test) > 2) ->
+                         (Test) when tuple_size(Test) > 2 ->
 			      [Test];
 			 (Test={group,_}) ->
 			      [Test];
@@ -500,7 +514,7 @@ make_conf(Mod, Name, Props, TestSpec) ->
 %%%-----------------------------------------------------------------
 
 expand_groups([H | T], ConfTests, Mod) ->
-    [expand_groups(H, ConfTests, Mod) | expand_groups(T, ConfTests, Mod)];
+    remove_empty_confs([expand_groups(H, ConfTests, Mod) | expand_groups(T, ConfTests, Mod)]);
 expand_groups([], _ConfTests, _Mod) ->
     [];
 expand_groups({group,Name}, ConfTests, Mod) ->
@@ -550,11 +564,11 @@ search_and_override([Conf = {conf,Props,Init,Tests,End}], ORSpec, Mod) ->
     Suite = ?val(suite, Props),
     case lists:keysearch(Name, 1, ORSpec) of
 	{value,{Name,default}} ->
-	    [Conf];
+	    [{conf, Props, Init,  search_and_override(Tests, ORSpec, Mod),End}];
 	{value,{Name,ORProps}} ->
-	    [{conf,InsProps(Name,Suite,ORProps),Init,Tests,End}];
+	    [{conf,InsProps(Name,Suite,ORProps),Init, search_and_override(Tests, ORSpec, Mod),End}];
 	{value,{Name,default,[]}} ->
-	    [Conf];
+	    [{conf, Props, Init,  search_and_override(Tests, ORSpec, Mod),End}];
 	{value,{Name,default,SubORSpec}} ->
 	    override_props([Conf], SubORSpec, Name,Mod);
 	{value,{Name,ORProps,SubORSpec}} ->
@@ -562,7 +576,8 @@ search_and_override([Conf = {conf,Props,Init,Tests,End}], ORSpec, Mod) ->
 			    Init,Tests,End}], SubORSpec, Name,Mod);
 	_ ->
 	    [{conf,Props,Init,search_and_override(Tests,ORSpec,Mod),End}]
-    end.
+    end;
+search_and_override(Tests, _, _) -> Tests.
 
 %% Modify the Tests element according to the override specification
 override_props([{conf,Props,Init,Tests,End} | Confs], SubORSpec, Name,Mod) ->

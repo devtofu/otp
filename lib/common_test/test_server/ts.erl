@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -25,6 +27,9 @@
 
 -module(ts).
 
+-compile([{nowarn_possibly_unsafe_function, {file, consult, 1}},
+          {nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
+
 -export([cl_run/1,
 	 run/0, run/1, run/2, run/3, run/4, run/5,
 	 run_category/1, run_category/2, run_category/3,
@@ -33,6 +38,7 @@
 	 estone/0, estone/1,
 	 cross_cover_analyse/1,
 	 compile_testcases/0, compile_testcases/1,
+         compile_datadirs/2,
 	 help/0]).
 
 %% Functions kept for backwards compatibility
@@ -75,9 +81,9 @@
 %%%			 system running in a git repository/source tree.
 %%% ts_make		 Interface to run the `make' program on Unix
 %%%			 and other platforms.
-%%% ts_make_erl		 A corrected version of the standar Erlang module
+%%% ts_make_erl		 A corrected version of the standard Erlang module
 %%%			 make (used for rebuilding test suites).
-%%% ts_lib		 Miscellanous utility functions, each used by several
+%%% ts_lib		 Miscellaneous utility functions, each used by several
 %%%			 other modules.
 %%% ts_benchmark         Supervises otp benchmarks and collects results.
 %%%----------------------------------------------------------------------
@@ -310,7 +316,7 @@ cl_run([App,Cat|Options0]) when is_atom(App) ->
 	    false ->
 		Options0 -- [batch]
 	end,
-    %% Make sure there is exactly one occurence of 'batch'
+    %% Make sure there is exactly one occurrence of 'batch'
     Options2 = [batch|Options1],
 
     Result =
@@ -635,7 +641,7 @@ validate_test(Testspec) ->
 	    io:format("This testspec does not seem to be "
 		      "available.~n Please try ts:tests() "
 		      "to see available tests.~n"),
-	    exit(self(), {error, test_not_available})
+            erlang:exit_signal(self(), {error, test_not_available})
     end.
     
 configvars(Opts) ->
@@ -871,7 +877,7 @@ run_test(File, Args, Options, Vars) ->
 %% r(Mod, Case, Opts)
 %%	Each of these functions starts the test server if it
 %%	isn't already running, then runs the test case(s) selected
-%%	by the aguments.
+%%	by the arguments.
 %%      SpecOrMod can be a module name or the name of a test spec file,
 %%      with the extension .spec or .spec.OsType. The module Mod will 
 %%	be reloaded before running the test cases.
@@ -1011,7 +1017,9 @@ compile_testcases([]) ->
     ok.
 
 compile_datadirs(DataDirs) ->
-    {ok,Variables} = file:consult("variables"),
+    compile_datadirs("variables", DataDirs).
+compile_datadirs(VariablesFile, DataDirs) ->
+    {ok,Variables} = file:consult(VariablesFile),
 
     lists:foreach(fun(Dir) ->
 			  ts_lib:make_non_erlang(Dir, Variables)

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2010-2017. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2010-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,6 +25,7 @@
 %%
 
 -module(diameter_reg).
+-moduledoc false.
 
 -behaviour(gen_server).
 
@@ -76,7 +79,7 @@
 %% # add(T)
 %%
 %% Associate the specified term with self(). The list of pids having
-%% this or other assocations can be retrieved using match/1.
+%% this or other associations can be retrieved using match/1.
 %%
 %% An association is removed when the calling process dies or as a
 %% result of calling remove/1. Adding the same term more than once is

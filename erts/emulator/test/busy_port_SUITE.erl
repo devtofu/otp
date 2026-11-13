@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2017. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -28,9 +30,15 @@
          scheduling_delay_busy/1,
          scheduling_delay_busy_nosuspend/1,
          scheduling_busy_link/1,
-         busy_with_signals/1]).
+         busy_with_signals/1,
+         async_par_nosuspend_abort_cleanup/1,
+         async_nopar_nosuspend_abort_cleanup/1,
+         sync_par_nosuspend_abort_cleanup/1,
+         sync_nopar_nosuspend_abort_cleanup/1,
+         sync_nosuspend_busy_race/1]).
 
 -include_lib("common_test/include/ct.hrl").
+-include("erts_test_utils.hrl").
 
 %% Internal exports.
 -export([init/2,process_init/2,ack/2,call/2,cast/2]).
@@ -44,7 +52,12 @@ all() ->
      no_trap_exit, no_trap_exit_unlinked, trap_exit,
      multiple_writers, hard_busy_driver, soft_busy_driver,
      scheduling_delay_busy,scheduling_delay_busy_nosuspend,
-     scheduling_busy_link, busy_with_signals].
+     scheduling_busy_link, busy_with_signals,
+     async_par_nosuspend_abort_cleanup,
+     async_nopar_nosuspend_abort_cleanup,
+     sync_par_nosuspend_abort_cleanup,
+     sync_nopar_nosuspend_abort_cleanup,
+     sync_nosuspend_busy_race].
 
 init_per_testcase(_Case, Config) when is_list(Config) ->
     Killer = spawn(fun() -> killer_loop([]) end),
@@ -172,9 +185,9 @@ message_order(Config) when is_list(Config) ->
 
 send_to_busy_1(Parent) ->
     {_Owner, Slave} = get_slave(),
-    (catch port_command(Slave, "set_me_busy")),
-    (catch port_command(Slave, "hello")),
-    (catch port_command(Slave, "hello again")),
+    ?Catch(port_command(Slave, "set_me_busy")),
+    ?Catch(port_command(Slave, "hello")),
+    ?Catch(port_command(Slave, "hello again")),
     receive
 	Message ->
 	    Parent ! {self(), Message}
@@ -208,10 +221,10 @@ system_monitor(Config) when is_list(Config) ->
     Parent = self(),
     Busy = spawn_link(
              fun() ->
-                     (catch port_command(Slave, "set busy")),
+                     ?Catch(port_command(Slave, "set busy")),
                      receive {Parent,alpha} -> ok end,
-                     (catch port_command(Slave, "busy")),
-                     (catch port_command(Slave, "free")),
+                     ?Catch(port_command(Slave, "busy")),
+                     ?Catch(port_command(Slave, "free")),
                      Parent ! {self(),alpha},
                      command(lock),
                      receive {Parent,beta} -> ok end,
@@ -255,7 +268,7 @@ no_trap_exit(Config) when is_list(Config) ->
     Pid = fun_spawn(fun no_trap_exit_process/3, [self(), linked, Config]),
     receive
         {Pid, port_created, Port} ->
-            io:format("Process ~w created port ~w", [Pid, Port]),
+            ct:log("Process ~w created port ~w", [Pid, Port]),
             exit(Port, die);
         Other1 ->
             ct:fail({unexpected_message, Other1})
@@ -278,7 +291,7 @@ no_trap_exit_unlinked(Config) when is_list(Config) ->
                     [self(), unlink, Config]),
     receive
         {Pid, port_created, Port} ->
-            io:format("Process ~w created port ~w", [Pid, Port]),
+            ct:log("Process ~w created port ~w", [Pid, Port]),
             exit(Port, die);
         Other1 ->
             ct:fail({unexpected_message, Other1})
@@ -299,9 +312,9 @@ no_trap_exit_process(ResultTo, Link, Config) ->
         linked -> ok;
         unlink -> unlink(Slave)
     end,
-    (catch port_command(Slave, "lock port")),
+    ?Catch(port_command(Slave, "lock port")),
     ResultTo ! {self(), port_created, Slave},
-    (catch port_command(Slave, "suspend me")),
+    ?Catch(port_command(Slave, "suspend me")),
     ok.
 
 %% Assuming the following scenario,
@@ -320,7 +333,7 @@ trap_exit(Config) when is_list(Config) ->
     Pid = fun_spawn(fun busy_port_exit_process/2, [self(), Config]),
     receive
 	      {Pid, port_created, Port} ->
-		  io:format("Process ~w created port ~w", [Pid, Port]),
+                  ct:log("Process ~w created port ~w", [Pid, Port]),
 		  unlink(Pid),
 		  {status, suspended} = process_info(Pid, status),
 		  exit(Port, die);
@@ -340,9 +353,9 @@ busy_port_exit_process(ResultTo, Config) ->
     load_busy_driver(Config),
     _Master = open_port({spawn, "busy_drv master"}, [eof]),
     Slave = open_port({spawn, "busy_drv slave"}, [eof]),
-    (catch port_command(Slave, "lock port")),
+    ?Catch(port_command(Slave, "lock port")),
     ResultTo ! {self(), port_created, Slave},
-    (catch port_command(Slave, "suspend me")),
+    ?Catch(port_command(Slave, "suspend me")),
     receive
 	{'EXIT', Slave, die} ->
 	    ResultTo ! {self(), ok};
@@ -381,8 +394,8 @@ multiple_writers(Config) when is_list(Config) ->
 
 quick_writer() ->
     {_Owner, Port} = get_slave(),
-    (catch port_command(Port, "port to busy")),
-    (catch port_command(Port, "lock me")),
+    ?Catch(port_command(Port, "port to busy")),
+    ?Catch(port_command(Port, "lock me")),
     ok.
 
 hard_busy_driver(Config) when is_list(Config) ->
@@ -755,7 +768,7 @@ run_command(_M,spawn,{Args,Opts}) ->
 run_command(M,spawn,Args) ->
     run_command(M,spawn,{Args,[]});
 run_command(Mod,Func,Args) ->
-    erlang:display({{Mod,Func,Args}, erlang:system_time(microsecond)}),
+    %% erlang:display({{Mod,Func,Args}, erlang:system_time(microsecond)}),
     apply(Mod,Func,Args).
 
 validate_scenario(Data,[{print,Var}|T]) ->
@@ -844,6 +857,138 @@ flood_with_exit_signals(Pid, N) ->
     exit(Pid, pling),
     flood_with_exit_signals(Pid, N-1).
 
+async_par_nosuspend_abort_cleanup(Config) when is_list(Config) ->
+    nosuspend_abort_cleanup_tests(Config, false, true).
+
+async_nopar_nosuspend_abort_cleanup(Config) when is_list(Config) ->
+    nosuspend_abort_cleanup_tests(Config, false, false).
+
+sync_par_nosuspend_abort_cleanup(Config) when is_list(Config) ->
+    nosuspend_abort_cleanup_tests(Config, true, true).
+
+sync_nopar_nosuspend_abort_cleanup(Config) when is_list(Config) ->
+    nosuspend_abort_cleanup_tests(Config, true, false).
+
+nosuspend_abort_cleanup_tests(Config, Sync, Parallelism) ->
+    Master = self(),
+    process_flag(priority,high),
+    Drv = "nosuspend_test_drv",
+    DataDir = proplists:get_value(data_dir, Config),
+    erl_ddll:start(),
+    case erl_ddll:load_driver(DataDir, Drv) of
+        ok ->
+            ok;
+        {error, Error} ->
+            ct:fail(erl_ddll:format_error(Error))
+    end,
+    Port = open_port({spawn_driver, Drv},
+                     [{busy_limits_msgq, {1024, 2048}},
+                      {parallelism, Parallelism}]),
+    NoSuspFun = if Sync ->
+                        fun () ->
+                                port_command(Port, <<0:(16*8*1024)>>, [nosuspend])
+                        end;
+                   true ->
+                        fun () ->
+                                erlang:send(Port,
+                                            {Master, {command, <<0:(16*8*1024)>>}},
+                                            [nosuspend])
+                        end
+                end,
+    NoSuspers = lists:map(fun (_) -> spawn_link(NoSuspFun) end,
+                          lists:seq(1, 10000)),
+    _= port_control(Port, $B, <<>>),
+    receive after 1000 -> ok end,
+    _= port_control(Port, $N, <<>>),
+    SyncCmd = spawn_link(fun () ->
+                                 port_command(Port, <<"should not block for long">>),
+                                 Master ! {self(), done}
+                         end),
+    receive
+        {SyncCmd, done} -> ok
+    after
+        10000 -> ct:fail(port_command_blocked)
+    end,
+    lists:foreach(fun (P) ->
+                          unlink(P),
+                          exit(P,kill),
+                          false = is_process_alive(P)
+                  end,
+                  [SyncCmd | NoSuspers]),
+    true = erlang:port_close(Port),
+    ok = erl_ddll:unload_driver(Drv),
+    ok = erl_ddll:stop(),
+    ok.
+
+sync_nosuspend_busy_race(Config) when is_list(Config) ->
+    ct:timetrap({seconds, 30}),
+    Drv = "nosuspend_test_drv",
+    DataDir = proplists:get_value(data_dir, Config),
+    erl_ddll:start(),
+    case erl_ddll:load_driver(DataDir, Drv) of
+        ok ->
+            ok;
+        {error, Error} ->
+            ct:fail(erl_ddll:format_error(Error))
+    end,
+    process_flag(trap_exit, true),
+    process_flag(priority, high),
+    Port = open_port({spawn_driver, Drv},
+                     [{busy_limits_msgq, {1024, 2048}},
+                      {parallelism, true}]),
+    Data = <<0:(16*8*1024)>>,
+    Senders = [spawn_link(fun () -> nosuspend_send_loop(Port, Data) end)
+               || _ <- lists:seq(1, 8)],
+    Deadline = erlang:monotonic_time(millisecond) + 5000,
+    case toggle_busy_until(Port, Deadline) of
+        ok ->
+            ok;
+        {port_died, Reason} ->
+            ct:fail({port_died, Reason})
+    end,
+    lists:foreach(fun (P) ->
+                          unlink(P),
+                          exit(P, kill),
+                          false = is_process_alive(P)
+                  end,
+                  Senders),
+    true = erlang:port_close(Port),
+    ok = erl_ddll:unload_driver(Drv),
+    ok = erl_ddll:stop(),
+    ok.
+
+nosuspend_send_loop(Port, Data) ->
+    try port_command(Port, Data, [nosuspend]) of
+        _ -> ok
+    catch
+        error:badarg -> exit(normal)
+    end,
+    nosuspend_send_loop(Port, Data).
+
+toggle_busy_until(Port, Deadline) ->
+    receive
+        {'EXIT', Port, Reason} ->
+            {port_died, Reason}
+    after 0 ->
+            case erlang:monotonic_time(millisecond) < Deadline of
+                true ->
+                    busy_control(Port, $B),
+                    receive after 1 -> ok end,
+                    busy_control(Port, $N),
+                    receive after 1 -> ok end,
+                    toggle_busy_until(Port, Deadline);
+                false ->
+                    ok
+            end
+    end.
+
+busy_control(Port, Cmd) ->
+    try port_control(Port, Cmd, <<>>) of
+        _ -> ok
+    catch
+        error:badarg -> ok
+    end.
+
 %%% Utilities.
 
 pal(_F,_A) -> ok.
@@ -869,7 +1014,7 @@ chk_not_value(_, _) ->
 wait_for([]) ->
     ok;
 wait_for(Pids) ->
-    io:format("Waiting for ~p", [Pids]),
+    ct:log("Waiting for ~p", [Pids]),
     receive
 	{'EXIT', Pid, normal} ->
 	    wait_for(lists:delete(Pid, Pids));

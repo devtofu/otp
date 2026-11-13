@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2005-2018. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2005-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 %%
@@ -28,6 +30,7 @@
 %%%-------------------------------------------------------------------
 
 -module(tftp_file).
+-moduledoc false.
 
 %%%-------------------------------------------------------------------
 %%% Interface
@@ -42,10 +45,6 @@
 %%%-------------------------------------------------------------------
 
 -include_lib("kernel/include/file.hrl").
-
--record(initial,
-	{filename,
-	 is_native_ascii}).
 
 -record(state,
 	{access,
@@ -67,7 +66,7 @@
 %% PeerType         = inet | inet6
 %% PeerHost         = ip_address()
 %% PeerPort         = integer()
-%% Acess            = read | write
+%% Access            = read | write
 %% Filename         = string()
 %% Mode             = string()
 %% SuggestedOptions = [{Key, Value}]
@@ -95,8 +94,8 @@
 
 prepare(_Peer, Access, Filename, Mode, SuggestedOptions, Initial) when is_list(Initial) ->
     %% Client side
-    case catch handle_options(Access, Filename, Mode, SuggestedOptions, Initial) of
-	{ok, Filename2, IsNativeAscii, IsNetworkAscii, AcceptedOptions} ->
+    try handle_options(Access, Filename, Mode, SuggestedOptions, Initial) of
+        {Filename2, IsNativeAscii, IsNetworkAscii, AcceptedOptions} ->
 	    State = #state{access           = Access,
 			   filename         = Filename2,
 			   is_native_ascii  = IsNativeAscii,
@@ -105,9 +104,9 @@ prepare(_Peer, Access, Filename, Mode, SuggestedOptions, Initial) when is_list(I
 			   blksize  	    = lookup_blksize(AcceptedOptions),
 			   count    	    = 0,
 			   buffer   	   =  []},
-	    {ok, AcceptedOptions, State};
-	{error, {Code, Text}} ->
-	    {error, {Code, Text}}
+            {ok, AcceptedOptions, State}
+    catch throw : Error ->
+            {error, Error}
     end.
 
 %% ---------------------------------------------------------
@@ -118,7 +117,7 @@ prepare(_Peer, Access, Filename, Mode, SuggestedOptions, Initial) when is_list(I
 %% PeerType         = inet | inet6
 %% PeerHost         = ip_address()
 %% PeerPort         = integer()
-%% Acess            = read | write
+%% Access            = read | write
 %% Filename         = string()
 %% Mode             = string()
 %% SuggestedOptions = [{Key, Value}]
@@ -135,10 +134,10 @@ prepare(_Peer, Access, Filename, Mode, SuggestedOptions, Initial) when is_list(I
 %%
 %% Opens a file for read or write access.
 %% 
-%% On the client side where the open/4 call has been preceeded by a
+%% On the client side where the open/4 call has been preceded by a
 %% call to prepare/4, all options must be accepted or rejected.
-%% On the server side, where there are no preceeding prepare/4 call,
-%% noo new options may be added, but the ones that are present as
+%% On the server side, where there are no preceding prepare/4 call,
+%% no new options may be added, but the ones that are present as
 %% SuggestedOptions may be omitted or replaced with new values
 %% in the AcceptedOptions.
 %%-------------------------------------------------------------------
@@ -151,28 +150,32 @@ open(Peer, Access, Filename, Mode, SuggestedOptions, Initial) when is_list(Initi
 	{error, {Code, Text}} ->
 	    {error, {Code, Text}}
     end;
-open(_Peer, Access, Filename, Mode, NegotiatedOptions, State) when is_record(State, state) ->
+open(_Peer, Access, Filename, Mode, NegotiatedOptions, #state{} = State) ->
     %% Both sides
-    case catch handle_options(Access, Filename, Mode, NegotiatedOptions, State) of
-	{ok, _Filename2, _IsNativeAscii, _IsNetworkAscii, Options} 
-	   when Options =:= NegotiatedOptions ->
-	    do_open(State);
-	{error, {Code, Text}} ->
-	    {error, {Code, Text}}
+    try handle_options(Access, Filename, Mode, NegotiatedOptions, State) of
+        {_Filename2, _IsNativeAscii, _IsNetworkAscii, Options}
+          when Options =:= NegotiatedOptions ->
+            do_open(State, NegotiatedOptions)
+    catch throw : Error ->
+            {error, Error}
     end;
 open(Peer, Access, Filename, Mode, NegotiatedOptions, State) ->
     %% Handle upgrade from old releases. Please, remove this clause in next release.
     State2 = upgrade_state(State),
     open(Peer, Access, Filename, Mode, NegotiatedOptions, State2).
 
-do_open(State) when is_record(State, state) ->
-    case file:open(State#state.filename, file_options(State)) of
-	{ok, Fd} ->
-	    {ok, State#state.options, State#state{fd = Fd}};
-	{error, Reason} when is_atom(Reason) ->
-	    {error, file_error(Reason)}
+do_open(#state{ filename = Filename} = State, Options) ->
+    case file:open(Filename, file_options(State)) of
+        {ok, Fd} ->
+            {ok, Options,
+             State#state{
+               fd = Fd,
+               options = Options,
+               blksize = lookup_blksize(Options) }};
+        {error, Reason} when is_atom(Reason) ->
+            {error, file_error(Reason)}
     end.
-	
+
 file_options(State) ->
     case State#state.access of
 	read  -> [read, read_ahead, raw, binary];
@@ -211,18 +214,19 @@ file_error(Reason) when is_atom(Reason) ->
 read(#state{access = read} = State) ->
     BlkSize = State#state.blksize,
     case file:read(State#state.fd, BlkSize) of
-	{ok, Bin} when is_binary(Bin), size(Bin) =:= BlkSize ->
-	    Count = State#state.count + size(Bin),
-	    {more, Bin, State#state{count = Count}};
-	{ok, Bin} when is_binary(Bin), size(Bin) < BlkSize ->
-	    _ = file:close(State#state.fd),
-	    Count = State#state.count + size(Bin),
-	    {last, Bin, Count};
-	eof ->
-	    {last, <<>>, State#state.count};
-	{error, Reason} ->
-	    _ = file:close(State#state.fd),
-	    {error, file_error(Reason)}
+        {ok, Bin} when is_binary(Bin), byte_size(Bin) =:= BlkSize ->
+            Count = State#state.count + byte_size(Bin),
+            {more, Bin, State#state{count = Count}};
+        {ok, Bin} when is_binary(Bin), byte_size(Bin) < BlkSize ->
+            _ = file:close(State#state.fd),
+            Count = State#state.count + byte_size(Bin),
+            {last, Bin, Count};
+        eof ->
+            _ = file:close(State#state.fd),
+            {last, <<>>, State#state.count};
+        {error, Reason} ->
+            _ = file:close(State#state.fd),
+            {error, file_error(Reason)}
     end;
 read(State) ->
     %% Handle upgrade from old releases. Please, remove this clause in next release.
@@ -248,20 +252,27 @@ read(State) ->
 %%-------------------------------------------------------------------
 
 write(Bin, #state{access = write} = State) when is_binary(Bin) ->
-    Size = size(Bin),
+    Size = byte_size(Bin),
     BlkSize = State#state.blksize,
-    case file:write(State#state.fd, Bin) of
-	ok when Size =:= BlkSize->
-	    Count = State#state.count + Size,
-	    {more, State#state{count = Count}};
-	ok when Size < BlkSize->
-	    _ = file:close(State#state.fd),
-	    Count = State#state.count + Size,
-	    {last, Count};
-	{error, Reason}  ->
-	    _ = file:close(State#state.fd),
-	    _ = file:delete(State#state.filename),
-	    {error, file_error(Reason)}
+    if
+        Size > BlkSize ->
+            _ = file:close(State#state.fd),
+            _ = file:delete(State#state.filename),
+            {error, {badblk, "Block larger than blksize"}};
+        true -> % Size =< BlkSize ->
+            case file:write(State#state.fd, Bin) of
+                ok when Size < BlkSize ->
+                    _ = file:close(State#state.fd),
+                    Count = State#state.count + Size,
+                    {last, Count};
+                ok -> % when Size == BlkSize ->
+                    Count = State#state.count + Size,
+                    {more, State#state{count = Count}};
+                {error, Reason}  ->
+                    _ = file:close(State#state.fd),
+                    _ = file:delete(State#state.filename),
+                    {error, file_error(Reason)}
+            end
     end;
 write(Bin, State) ->
     %% Handle upgrade from old releases. Please, remove this clause in next release.
@@ -283,10 +294,11 @@ write(Bin, State) ->
 abort(_Code, _Text, #state{fd = Fd, access = Access} = State) ->
     _ = file:close(Fd),
     case Access of
-	write ->
-	    ok = file:delete(State#state.filename);
-	read ->
-	    ok
+        write ->
+            _ = file:delete(State#state.filename),
+            ok;
+        read ->
+            ok
     end.
 
 %%-------------------------------------------------------------------
@@ -294,44 +306,65 @@ abort(_Code, _Text, #state{fd = Fd, access = Access} = State) ->
 %%-------------------------------------------------------------------
 
 handle_options(Access, Filename, Mode, Options, Initial) ->
-    I = #initial{filename = Filename, is_native_ascii = is_native_ascii()},
-    {Filename2, IsNativeAscii} = handle_initial(Initial, I),
-    IsNetworkAscii = handle_mode(Mode, IsNativeAscii),
+    {Filename2, IsNativeAscii} = handle_initial(Initial, Filename),
+    IsNetworkAscii =
+        case Mode of
+            "netascii" when IsNativeAscii =:= true ->
+                true;
+            "octet" ->
+                false;
+            _ ->
+                throw({badop, "Illegal mode " ++ Mode})
+        end,
     Options2 = do_handle_options(Access, Filename2, Options),
-    {ok, Filename2, IsNativeAscii, IsNetworkAscii, Options2}.
+    {Filename2, IsNativeAscii, IsNetworkAscii, Options2}.
 
-handle_mode(Mode, IsNativeAscii) ->
-    case Mode of
-	"netascii" when IsNativeAscii =:= true -> true;
-	"octet" -> false;
-	_ -> throw({error, {badop, "Illegal mode " ++ Mode}})
+handle_initial(
+  #state{filename = Filename, is_native_ascii = IsNativeAscii}, _FName) ->
+    {Filename, IsNativeAscii};
+handle_initial(Initial, Filename) when is_list(Initial) ->
+    Opts = get_initial_opts(Initial, #{}),
+    {case Opts of
+         #{ root_dir := RootDir } ->
+             safe_filename(Filename, RootDir);
+         #{} ->
+             Filename
+     end,
+     maps:get(is_native_ascii, Opts, is_native_ascii())}.
+
+get_initial_opts([], Opts) -> Opts;
+get_initial_opts([Opt | Initial], Opts) ->
+    case Opt of
+        {root_dir, RootDir} ->
+            is_map_key(root_dir, Opts) andalso
+                throw({badop, "Internal error. root_dir already set"}),
+            get_initial_opts(Initial, Opts#{ root_dir => RootDir });
+        {native_ascii, Bool} when is_boolean(Bool) ->
+            get_initial_opts(Initial, Opts#{ is_native_ascii => Bool })
     end.
 
-handle_initial([{root_dir, Dir} | Initial], I) ->
-    case catch filename_join(Dir, I#initial.filename) of
-	{'EXIT', _} ->
-	    throw({error, {badop, "Internal error. root_dir is not a string"}});
-	Filename2 ->
-	    handle_initial(Initial, I#initial{filename = Filename2})
-    end;
-handle_initial([{native_ascii, Bool} | Initial], I) ->
-    case Bool of
-	true  -> handle_initial(Initial, I#initial{is_native_ascii = true});
-	false -> handle_initial(Initial, I#initial{is_native_ascii = false})
-    end;
-handle_initial([], I) when is_record(I, initial) ->
-    {I#initial.filename, I#initial.is_native_ascii};
-handle_initial(State, _) when is_record(State, state) ->
-    {State#state.filename, State#state.is_native_ascii}.
-
-filename_join(Dir, Filename) ->
-    case filename:pathtype(Filename) of
-	absolute ->
-	    [_ | RelFilename] = filename:split(Filename),
-	    filename:join([Dir, RelFilename]);
-	_ ->
-	    filename:join([Dir, Filename])
+safe_filename(Filename, RootDir) ->
+    absolute =:= filename:pathtype(RootDir) orelse
+        throw({badop, "Internal error. root_dir is not absolute"}),
+    filelib:is_dir(RootDir) orelse
+        throw({badop, "Internal error. root_dir not a directory"}),
+    RelFilename =
+        case filename:pathtype(Filename) of
+            absolute ->
+                case filename:split(Filename) of
+                    [_] -> "";
+                    [_ | RelPath] ->
+                        filename:join(RelPath)
+                end;
+            _ -> Filename
+        end,
+    case filelib:safe_relative_path(RelFilename, RootDir) of
+        unsafe ->
+            throw({badop, "Internal error. Filename out of bounds"});
+        SafeFilename ->
+            filename:join(RootDir, SafeFilename)
     end.
+
 
 do_handle_options(Access, Filename, [{Key, Val} | T]) ->
     case Key of
@@ -360,15 +393,15 @@ do_handle_options(_Access, _Filename, []) ->
 
 
 handle_integer(Access, Filename, Key, Val, Options, Min, Max) ->
-    case catch list_to_integer(Val) of
-	{'EXIT', _} ->
-	    do_handle_options(Access, Filename, Options);
+    try list_to_integer(Val) of
 	Int when Int >= Min, Int =< Max ->
 	    [{Key, Val} | do_handle_options(Access, Filename, Options)];
 	Int when Int >= Min, Max =:= infinity ->
 	    [{Key, Val} | do_handle_options(Access, Filename, Options)];
 	_Int ->
-	    throw({error, {badopt, "Illegal " ++ Key ++ " value " ++ Val}})
+            throw({badopt, "Illegal " ++ Key ++ " value " ++ Val})
+    catch error : _ ->
+            do_handle_options(Access, Filename, Options)
     end.
 
 lookup_blksize(Options) ->

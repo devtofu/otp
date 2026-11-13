@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2006-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2006-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -24,7 +26,7 @@
 	 init_per_testcase/2,end_per_testcase/2,
 	 tobias/1,empty_string/1,md5/1,silly_coverage/1,
 	 confused_literals/1,integer_encoding/0,integer_encoding/1,
-	 override_bif/1]).
+	 override_bif/1,catch_precedence/1]).
 	 
 -include_lib("common_test/include/ct.hrl").
 
@@ -49,6 +51,14 @@
 %% opaque types from attributes in v3_kernel.
 -opaque misc_SUITE_test_cases() :: [atom()].
 
+%% Cover handling of the `nifs` attribute.
+-nifs([all/0]).
+
+%% Import SSA records.
+-import_record(beam_ssa, [b_module, b_blk, b_function, b_set,
+                          b_var, b_literal, b_remote, b_local,
+                          b_ret]).
+
 init_per_testcase(Case, Config) when is_atom(Case), is_list(Config) ->
     Config.
 
@@ -66,11 +76,18 @@ all() ->
 groups() -> 
     [{p,[parallel],
       [tobias,empty_string,silly_coverage,
-       confused_literals,override_bif]},
+       confused_literals,override_bif,catch_precedence]},
      {slow,[parallel],[integer_encoding,md5]}].
 
 init_per_suite(Config) ->
     test_lib:recompile(?MODULE),
+    if
+        is_atom(Config) ->
+            %% Cover handling of load_nif. Will never actually be called.
+            _ = erlang:load_nif("no_real_nif", 42);
+        true ->
+            ok
+    end,
     Config.
 
 end_per_suite(_Config) ->
@@ -91,7 +108,21 @@ slow_group() ->
             %% Cloned module. Don't run.
             []
     end.
-    
+
+catch_precedence(Config) when is_list(Config) ->
+        %% lower than addition
+        3 = begin (catch throw(2)) + 1 end,
+        2 = begin catch throw(2) + 1 end,
+
+        %% lower than comparison
+        true = begin (catch throw(false)) =/= true end,
+        false = begin catch throw(false) =/= true end,
+
+        %% lower than send (which has the same precedence as =)
+        Pid = spawn_link(fun () -> receive stop -> ok end end),
+        false = is_pid(begin (catch throw(Pid)) ! stop end),
+        true = is_pid(begin catch throw(Pid) ! stop end).
+
 %%
 %% Functions that override new and old bif's
 %%
@@ -169,24 +200,14 @@ silly_coverage(Config) when is_list(Config) ->
                 {function,0,foo,2,[bad_clauses]}],
     expect_error(fun() -> v3_core:module(BadAbstr, []) end),
 
-    %% sys_core_fold, sys_core_alias, sys_core_bsm, v3_kernel
+    %% sys_core_fold, sys_core_alias, sys_core_bsm, beam_core_to_ssa
     BadCoreErlang = {c_module,[],
-		     name,[],[],
+		     {c_literal,[],name},[],[],
 		     [{{c_var,[],{foo,2}},seriously_bad_body}]},
     expect_error(fun() -> sys_core_fold:module(BadCoreErlang, []) end),
     expect_error(fun() -> sys_core_alias:module(BadCoreErlang, []) end),
     expect_error(fun() -> sys_core_bsm:module(BadCoreErlang, []) end),
-    expect_error(fun() -> v3_kernel:module(BadCoreErlang, []) end),
-
-    %% beam_kernel_to_ssa
-    BadKernel = {k_mdef,[],?MODULE,
-		 [{foo,0}],
-		 [],
-		 [{k_fdef,
-		   {k,[],[],[]},
-		   f,0,[],
-		   seriously_bad_body}]},
-    expect_error(fun() -> beam_kernel_to_ssa:module(BadKernel, []) end),
+    expect_error(fun() -> beam_core_to_ssa:module(BadCoreErlang, []) end),
 
     %% beam_ssa_lint
     %% beam_ssa_bool
@@ -194,8 +215,11 @@ silly_coverage(Config) when is_list(Config) ->
     %% beam_ssa_share
     %% beam_ssa_pre_codegen
     %% beam_ssa_codegen
-    BadSSA = {b_module,#{},a,b,c,
-              [{b_function,#{func_info=>{mod,foo,0}},args,bad_blocks,0}]},
+    BadSSA = #b_module{anno=#{},name=a,exports=b,attributes=c,
+                       body=[#b_function{anno=#{func_info=>{mod,foo,0}},
+                                         args=args,
+                                         bs=bad_blocks,
+                                         cnt=0}]},
     expect_error(fun() -> beam_ssa_lint:module(BadSSA, []) end),
     expect_error(fun() -> beam_ssa_bool:module(BadSSA, []) end),
     expect_error(fun() -> beam_ssa_recv:module(BadSSA, []) end),
@@ -204,10 +228,16 @@ silly_coverage(Config) when is_list(Config) ->
     expect_error(fun() -> beam_ssa_codegen:module(BadSSA, []) end),
 
     %% beam_ssa_opt
-    BadSSABlocks = #{0 => {b_blk,#{},[bad_code],{b_ret,#{},arg}}},
-    BadSSAOpt = {b_module,#{},a,[],[],
-                 [{b_function,#{func_info=>{mod,foo,0}},[],
-                   BadSSABlocks,0}]},
+    BadSSABlocks = #{0 => #b_blk{anno=#{},
+                                 is=[bad_code],
+                                 last=#b_ret{anno=#{},arg=arg}}},
+    BadSSAFunc = #b_function{anno=#{func_info => {mod,foo,0}},
+                             args=[],
+                             bs=BadSSABlocks,
+                             cnt=0},
+    BadSSAOpt = #b_module{anno=#{},name=a,
+                          exports=[],attributes=[],
+                          body=[BadSSAFunc]},
     expect_error(fun() -> beam_ssa_opt:module(BadSSAOpt, []) end),
 
     %% beam_ssa_bc_size
@@ -220,8 +250,12 @@ silly_coverage(Config) when is_list(Config) ->
 
     %% Cover printing of annotations in beam_ssa_pp
     PPAnno = #{func_info=>{mod,foo,0},other_anno=>value,map_anno=>#{k=>v}},
-    PPBlocks = #{0=>{b_blk,#{},[],{b_ret,#{},{b_literal,42}}}},
-    PP = {b_function,PPAnno,[],PPBlocks,0},
+    PPBlocks = #{0 =>
+                     #b_blk{anno=#{},
+                            is=[],
+                            last=#b_ret{anno=#{},
+                                        arg=#b_literal{val=42}}}},
+    PP = #b_function{anno=PPAnno,args=[],bs=PPBlocks,cnt=0},
     io:put_chars(beam_ssa_pp:format_function(PP)),
 
     %% beam_a
@@ -257,17 +291,6 @@ silly_coverage(Config) when is_list(Config) ->
     TrimInput = BlockInput,
     expect_error(fun() -> beam_trim:module(TrimInput, []) end),
 
-    %% beam_peep. This is tricky. Use a select instruction with
-    %% an odd number of elements in the list to crash
-    %% prune_redundant_values/2 but not beam_clean:clean_labels/1.
-    PeepInput = {?MODULE,[{foo,0}],[],
-		 [{function,foo,0,2,
-		   [{label,1},
-		    {func_info,{atom,?MODULE},{atom,foo},0},
-		    {label,2},{select,select_val,r,{f,2},[{f,2}]}]}],
-		 2},
-    expect_error(fun() -> beam_peep:module(PeepInput, []) end),
-
     BeamZInput = {?MODULE,[{foo,0}],[],
 		  [{function,foo,0,2,
 		    [{label,1},
@@ -288,56 +311,77 @@ silly_coverage(Config) when is_list(Config) ->
 cover_beam_ssa_bc_size(20) ->
     ok;
 cover_beam_ssa_bc_size(N) ->
-    BcSizeKey = {b_local,{b_literal,name},1},
+    BcSizeKey = #b_local{name=#b_literal{val=name},arity=1},
     %% Try different sizes for the opt_st record.
     OptSt = erlang:make_tuple(N, #{}, [{1,opt_st}]),
     expect_error(fun() -> beam_ssa_bc_size:opt(#{BcSizeKey => OptSt}) end),
     cover_beam_ssa_bc_size(N + 1).
 
 bad_ssa_lint_input() ->
-    {b_module,#{},t,
-     [{a,1},{b,1},{c,1},{module_info,0},{module_info,1}],
-     [],
-     [{b_function,
-       #{func_info => {t,a,1},location => {"t.erl",4}},
-       [{b_var,0}],
-       #{0 => {b_blk,#{},[],{b_ret,#{},{b_var,'@undefined_var'}}}},
-       3},
-      {b_function,
-       #{func_info => {t,b,1},location => {"t.erl",5}},
-       [{b_var,0}],
-       #{0 =>
-             {b_blk,#{},
-              [{b_set,#{},{b_var,'@first_var'},first_op,[]},
-               {b_set,#{},{b_var,'@second_var'},second_op,[]},
-               {b_set,#{},{b_var,'@ret'},succeeded,[{b_var,'@first_var'}]}],
-              {b_ret,#{},{b_var,'@ret'}}}},
-       3},
-      {b_function,
-       #{func_info => {t,c,1},location => {"t.erl",6}},
-       [{b_var,0}],
-       #{0 =>
-             {b_blk,#{},
-              [{b_set,#{},{b_var,'@first_var'},first_op,[]},
-               {b_set,#{},{b_var,'@ret'},succeeded,[{b_var,'@first_var'}]},
-               {b_set,#{},{b_var,'@second_var'},second_op,[]}],
-              {b_ret,#{},{b_var,'@ret'}}}},
-       3},
-      {b_function,
-       #{func_info => {t,module_info,0}},
-       [],
-       #{0 =>
-             {b_blk,#{},
-              [{b_set,#{},
-                {b_var,{'@ssa_ret',3}},
-                call,
-                [{b_remote,
-                  {b_literal,erlang},
-                  {b_literal,get_module_info},
-                  1},
-                 {b_var,'@unknown_variable'}]}],
-              {b_ret,#{},{b_var,{'@ssa_ret',3}}}}},
-       4}]}.
+    Ret = #b_var{name=100},
+    Funcs = [#b_function{anno=#{func_info => {t,a,1},location => {"t.erl",4}},
+                         args=[#b_var{name=0}],
+                         bs=#{0 =>
+                                  #b_blk{anno=#{},
+                                         is=[],
+                                         last=#b_ret{anno=#{},
+                                                     arg=#b_var{name='@undefined_var'}}}},
+                         cnt=3},
+             #b_function{anno=#{func_info => {t,b,1},location => {"t.erl",5}},
+                         args=[#b_var{name=0}],
+                         bs=#{0 =>
+                               #b_blk{anno=#{},
+                                      is=[#b_set{anno=#{},
+                                                 dst=#b_var{name='@first_var'},
+                                                 op=first_op,
+                                                 args=[]},
+                                          #b_set{anno=#{},
+                                                 dst=#b_var{name='@second_var'},
+                                                 op=second_op,
+                                                 args=[]},
+                                          #b_set{anno=#{},
+                                                 dst=#b_var{name='@ret'},
+                                                 op=succeeded,
+                                                 args=[#b_var{name='@first_var'}]}],
+                                      last=#b_ret{anno=#{},
+                                                  arg=#b_var{name='@ret'}}}},
+                         cnt=3},
+             #b_function{anno=#{func_info => {t,c,1},location => {"t.erl",6}},
+                         args=[#b_var{name=0}],
+                         bs=#{0 =>
+                                  #b_blk{anno=#{},
+                                         is=[#b_set{anno=#{},
+                                                    dst=#b_var{name='@first_var'},
+                                                    op=first_op,
+                                                    args=[]},
+                                             #b_set{anno=#{},
+                                                    dst=#b_var{name='@ret'},
+                                                    op=succeeded,
+                                                    args=[#b_var{name='@first_var'}]},
+                                             #b_set{anno=#{},
+                                                    dst=#b_var{name='@second_var'},
+                                                    op=second_op,
+                                                    args=[]}],
+                                         last=#b_ret{anno=#{},
+                                                     arg=#b_var{name='@ret'}}}},
+                         cnt=3},
+             #b_function{anno=#{func_info => {t,module_info,0}},
+                         args=[],
+                         bs=#{0 =>
+                                  #b_blk{anno=#{},
+                                         is=[#b_set{anno=#{},
+                                                    dst=Ret,
+                                                    op=call,
+                                                    args=[#b_remote{mod=#b_literal{val=erlang},
+                                                                    name=#b_literal{val=get_module_info},
+                                                                    arity=1},
+                                                          #b_var{name='@unknown_variable'}]}],
+                                         last=#b_ret{anno=#{},arg=Ret}}},
+                         cnt=4}],
+    #b_module{anno=#{},name=t,
+              exports=[{a,1},{b,1},{c,1},{module_info,0},{module_info,1}],
+              attributes=[],
+              body=Funcs}.
 
 expect_error(Fun) ->
     try	Fun() of

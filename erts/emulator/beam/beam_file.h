@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2020-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2020-2026. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,6 +27,7 @@
 
 #include "sys.h"
 #include "atom.h"
+#include "beam_types.h"
 
 #define CHECKSUM_SIZE 16
 
@@ -54,10 +57,6 @@ int iff_init(const byte *data, size_t size, IFF_File *iff);
 int iff_read_chunk(IFF_File *iff, Uint id, IFF_Chunk *chunk);
 
 typedef struct {
-    /* The encoding that was used to create this table. This is only used for
-     * version tests. */
-    ErtsAtomEncoding encoding;
-
     Sint32 count;
     Eterm *entries;
 } BeamFile_AtomTable;
@@ -120,12 +119,17 @@ typedef struct {
     Sint32 flags;
 
     Sint32 name_count;
-    Eterm *names;
+    Sint *names;
 
     Sint32 location_size;
     Sint32 item_count;
     BeamFile_LineEntry *items;
 } BeamFile_LineTable;
+
+enum beamfile_line_flags {
+    BEAMFILE_EXECUTABLE_LINE = 1, /* The executable_line instruction is used. */
+    BEAMFILE_FORCE_LINE_COUNTERS = 2 /* Force emission of line counters. */
+};
 
 typedef struct {
     struct erl_heap_fragment *heap_fragments;
@@ -141,6 +145,50 @@ typedef struct {
 } BeamFile_LiteralTable;
 
 typedef struct {
+    /* To simplify code that queries types, the first entry (which must be
+     * present) is always the "any type." */
+    Sint32 count;
+    char fallback; /* If this is a fallback type table */
+    BeamType *entries;
+} BeamFile_TypeTable;
+
+
+#define BEAMFILE_DEBUG_INFO_ENTRY_FRAME_SIZE 0
+#define BEAMFILE_DEBUG_INFO_ENTRY_VAR_MAPPINGS 1
+#define BEAMFILE_DEBUG_INFO_ENTRY_CALLS 2
+
+#define BEAMFILE_FRAMESIZE_ENTRY (-2)
+#define BEAMFILE_FRAMESIZE_NONE (-1)
+
+typedef struct {
+    Uint32 location_index;
+    Sint32 frame_size;
+    Sint32 num_vars;
+    Sint32 num_calls_terms;
+    Eterm *first;
+} BeamFile_DebugItem;
+
+typedef struct {
+    Sint32 item_count;
+    Sint32 term_count;
+    BeamFile_DebugItem *items;
+    Eterm *terms;
+    byte *is_literal;
+} BeamFile_DebugTable;
+
+typedef struct {
+    Eterm name;
+    Sint def_literal;
+    Sint32 num_fields;
+} BeamFile_Record;
+
+typedef struct {
+    Sint32 record_count;
+    Sint32 total_field_count;
+    BeamFile_Record *records;
+} BeamFile_RecordTable;
+
+typedef struct {
     IFF_File iff;
 
     Eterm module;
@@ -150,8 +198,14 @@ typedef struct {
     BeamFile_AtomTable atoms;
     BeamFile_ImportTable imports;
     BeamFile_ExportTable exports;
+#ifdef BEAMASM
+    BeamFile_ExportTable locals;
+#endif
     BeamFile_LambdaTable lambdas;
     BeamFile_LineTable lines;
+    BeamFile_TypeTable types;
+    BeamFile_DebugTable debug;
+    BeamFile_RecordTable record;
 
     /* Static literals are those defined in the file, and dynamic literals are
      * those created when loading. The former is positively indexed starting
@@ -178,6 +232,7 @@ enum beamfile_read_result {
 
     /* Mandatory chunks */
     BEAMFILE_READ_MISSING_ATOM_TABLE,
+    BEAMFILE_READ_OBSOLETE_ATOM_TABLE,
     BEAMFILE_READ_CORRUPT_ATOM_TABLE,
     BEAMFILE_READ_MISSING_CODE_CHUNK,
     BEAMFILE_READ_CORRUPT_CODE_CHUNK,
@@ -185,17 +240,21 @@ enum beamfile_read_result {
     BEAMFILE_READ_CORRUPT_EXPORT_TABLE,
     BEAMFILE_READ_MISSING_IMPORT_TABLE,
     BEAMFILE_READ_CORRUPT_IMPORT_TABLE,
+    BEAMFILE_READ_CORRUPT_LOCALS_TABLE,
 
     /* Optional chunks */
     BEAMFILE_READ_CORRUPT_LAMBDA_TABLE,
     BEAMFILE_READ_CORRUPT_LINE_TABLE,
-    BEAMFILE_READ_CORRUPT_LITERAL_TABLE
+    BEAMFILE_READ_CORRUPT_LITERAL_TABLE,
+    BEAMFILE_READ_CORRUPT_TYPE_TABLE,
+    BEAMFILE_READ_CORRUPT_DEBUG_TABLE,
+    BEAMFILE_READ_CORRUPT_RECORD_TABLE,
 };
 
 typedef struct {
     /* TAG_xyz */
-    int type;
-    BeamInstr val;
+    UWord type;
+    UWord val;
 } BeamOpArg;
 
 typedef struct beamop {
@@ -230,6 +289,8 @@ typedef struct {
 #include "erl_process.h"
 #include "erl_message.h"
 
+void beamfile_init(void);
+
 /** @brief Reads the given module binary into \p beam and validates its
  * structural integrity. */
 enum beamfile_read_result
@@ -239,10 +300,14 @@ beamfile_read(const byte *data, size_t size, BeamFile *beam);
  * it. */
 void beamfile_free(BeamFile *beam);
 
-/** @brief Copies a term into the dynamic literal table.
+/** @brief Copies a term into the dynamic literal table
+ *
+ * @param[in] deduplicate Whether to try to deduplicate the term before
+ * insertion. Set to zero if you require a new unique literal, for example if
+ * it needs to be modified in the late stages of loading.
  *
  * @return A literal index that can be used in beamfile_get_literal */
-Sint beamfile_add_literal(BeamFile *beam, Eterm term);
+Sint beamfile_add_literal(BeamFile *beam, Eterm term, int deduplicate);
 
 /** @brief Gets a term from the literal table.
  *

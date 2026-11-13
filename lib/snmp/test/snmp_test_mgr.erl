@@ -1,7 +1,9 @@
 %% 
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2021. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -147,13 +149,19 @@ receive_response() ->
     receive_response(get_timeout()).
 
 receive_response(Timeout) ->
-    d("await response within ~w ms",[Timeout]),
+    d("await response within ~w ms", [Timeout]),
     receive
 	{snmp_pdu, PDU} when is_record(PDU, pdu) ->
-	    d("received PDU: ~n\t~p",[PDU]),
-	    PDU
+	    d("[await response] received PDU: "
+              "~n      ~p", [PDU]),
+	    PDU;
+        {error, Reason} = ERROR ->
+	    ?EPRINT("[await response] received unexpected error: "
+                    "~n      ~p", [Reason]),
+            ERROR
     after Timeout ->
-	    d("response timeout",[]),
+	    ?EPRINT("[await response] unexpected timeout: "
+                    "~n      ~p", [process_info(self(), messages)]),
 	    {error, timeout}
     end.
 
@@ -250,19 +258,17 @@ init({Options, CallerPid}) ->
 	    IpFamily = get_value(ipfamily, Options, inet),
 	    ?IPRINT("init -> IpFamily: ~p", [IpFamily]),
 	    AgIp = case snmp_misc:assq(agent, Options) of
-		       {value, Addr} when is_tuple(Addr) andalso 
-                                          (size(Addr) =:= 4) andalso
-                                          (IpFamily =:= inet) ->
+		       {value, Addr} when  (tuple_size(Addr) =:= 4) andalso
+                                   (IpFamily =:= inet) ->
                            ?IPRINT("init -> Addr: ~p", [Addr]),
 			   Addr;
-		       {value, Addr} when is_tuple(Addr) andalso 
-                                          (size(Addr) =:= 8) andalso
-                                          (IpFamily =:= inet6) ->
+		       {value, Addr} when  (tuple_size(Addr) =:= 8) andalso
+                                   (IpFamily =:= inet6) ->
                            ?IPRINT("init -> Addr: ~p", [Addr]),
 			   Addr;
 		       {value, Host} when is_list(Host) ->
                            ?IPRINT("init -> Host: ~p", [Host]),
-			   {ok, Ip} = snmp_misc:ip(Host, IpFamily),
+			   {ok, Ip} = ?LIB:which_host_ip(Host, IpFamily),
 			   Ip
 		   end,
 	    ?IPRINT("init -> AgIp: ~p", [AgIp]),
@@ -1298,7 +1304,7 @@ cast(Msg) ->
 sizeOf(L) when is_list(L) ->
     length(lists:flatten(L));
 sizeOf(B) when is_binary(B) ->
-    size(B).
+    byte_size(B).
 
 d(F)    -> d(F, []).
 d(F, A) -> d(get(debug), F, A).

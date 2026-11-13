@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1996-2019. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 %% This is an -*- erlang -*- file.
@@ -30,9 +32,11 @@
 	     auth,
 	     code,
 	     code_server,
+             data_publisher,
 	     dist_util,
 	     erl_boot_server,
 	     erl_compile_server,
+	     erl_debugger,
 	     erl_distribution,
              erl_erts_errors,
 	     erl_reply,
@@ -55,6 +59,8 @@
 	     inet6_udp,
 	     inet6_sctp,
 	     inet_config,
+             inet_epmd_dist,
+             inet_epmd_socket,
 	     inet_hosts,
 	     inet_gethost_native,
 	     inet_tcp_dist,
@@ -70,6 +76,7 @@
              logger_filters,
              logger_formatter,
              logger_h_common,
+             logger_handler,
              logger_handler_watcher,
              logger_olp,
              logger_proxy,
@@ -83,9 +90,10 @@
 	     os,
 	     ram_file,
 	     rpc,
-	     user,
 	     user_drv,
 	     user_sup,
+             prim_tty,
+             prim_tty_sighandler,
              disk_log,
              disk_log_1,
              disk_log_server,
@@ -95,12 +103,14 @@
              erl_epmd,
 	     erts_debug,
              gen_tcp,
-             gen_udp,
-	     gen_sctp,
 	     gen_tcp_socket,
+             gen_udp,
+	     gen_udp_socket,
+	     gen_sctp,
              inet,
              inet_db,
              inet_dns,
+             inet_dns_tsig,
              inet_parse,
              inet_res,
              inet_tcp,
@@ -117,6 +127,7 @@
 	     seq_trace,
              socket,
 	     standard_error,
+             trace,
 	     wrap_log_reader]},
   {registered, [application_controller,
 		erl_reply,
@@ -151,9 +162,14 @@
   {applications, []},
   {env, [{logger_level, notice},
          {logger_sasl_compatible, false},
-         {shell_docs_ansi,auto}
+         {net_tickintensity, 4},
+         {net_ticktime, 60},
+         {prevent_overlapping_partitions, true},
+         {shell_docs_ansi,auto},
+         {shell_history_drop,[]}
         ]},
   {mod, {kernel, []}},
-  {runtime_dependencies, ["erts-12.0", "stdlib-3.13", "sasl-3.0", "crypto-5.0"]}
- ]
+  {runtime_dependencies, ["erts-@OTP-20406@", "stdlib-@OTP-20412@",
+                          "sasl-3.0", "crypto-5.8"]}
+  ]
 }.

@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2020-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2020-2026. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,13 +25,18 @@
 
 #include "sys.h"
 #include "erl_process.h"
+#include "erl_md5.h"
 
 /* Macros for manipulating locations. */
 #define LINE_INVALID_LOCATION (0)
 
 #define IS_VALID_LOCATION(File, Line) \
     ((unsigned) (File) < 255 && (unsigned) (Line) < ((1 << 24) - 1))
-#define MAKE_LOCATION(File, Line) (((File) << 24) | (Line))
+/* Builds a location entry, silently ignoring unrepresentable locations. */
+#define MAKE_LOCATION(File, Line)        \
+    (IS_VALID_LOCATION((File), (Line)) ? \
+        (((File) << 24) | (Line)) :      \
+        LINE_INVALID_LOCATION)
 #define LOC_FILE(Loc) ((Loc) >> 24)
 #define LOC_LINE(Loc) ((Loc) & ((1 << 24)-1))
 
@@ -40,9 +47,10 @@
 #  define BEAM_NATIVE_MIN_FUNC_SZ 4
 #endif
 
-#define MD5_SIZE 16
+#define MD5_SIZE MD5_DIGEST_LENGTH
 
 typedef struct BeamCodeLineTab_ BeamCodeLineTab;
+typedef struct BeamDebugTab_ BeamDebugTab;
 
 /*
  * Header of code chunks which contains additional information
@@ -83,10 +91,40 @@ typedef struct beam_code_header {
      */
     const BeamCodeLineTab *line_table;
 
+#ifdef BEAMASM
+
+    /*
+     * Coverage support.
+     */
+    Uint coverage_mode;
+    void *coverage;
+    byte *line_coverage_valid;
+    Uint32 *loc_index_to_cover_id;
+    Uint line_coverage_len;
+
+    /*
+     * Debug information. debug->items are indexed directly by
+     * the index in each `debug_line` instruction.
+     */
+    const BeamDebugTab *debug;
+#endif
+
+    /*
+     * Debugging instrumentation to use while loading the module
+     */
+    Uint debugger_flags;
+
     /*
      * Pointer to the module MD5 sum (16 bytes)
      */
     const byte *md5_ptr;
+
+    /*
+     * Boolean array with functions declared as -nifs().
+     * Indexed same as functions[].
+     * NULL if no -nifs().
+     */
+    byte* are_nifs;
 
     /*
      * Start of function pointer table.  This table contains pointers to
@@ -109,7 +147,23 @@ struct BeamCodeLineTab_ {
         Uint16* p2;
         Uint32* p4;
     } loc_tab;
-    const void** func_tab[1];
+    const void** func_tab[];
+};
+
+/*
+ * Layout of the debug information.
+ */
+typedef struct {
+    Uint32 location_index;
+    Sint16 frame_size;
+    Uint16 num_vars;
+    Uint32 num_calls_terms;
+    Eterm *first;
+} BeamDebugItem;
+
+struct BeamDebugTab_ {
+    Uint32 item_count;
+    BeamDebugItem *items;
 };
 
 /* Total code size in bytes */
@@ -120,8 +174,9 @@ void erts_release_literal_area(struct ErtsLiteralArea_* literal_area);
 
 struct erl_fun_entry;
 void erts_purge_state_add_fun(struct erl_fun_entry *fe);
-Export *erts_suspend_process_on_pending_purge_lambda(Process *c_p,
-                                                     struct erl_fun_entry*);
+const Export *
+erts_suspend_process_on_pending_purge_lambda(Process *c_p,
+                                             const struct erl_fun_entry*);
 
 /*
  * MFA event debug "tracing" usage:

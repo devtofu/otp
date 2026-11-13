@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2003-2016. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2003-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -22,7 +24,10 @@
 %%%                from disk (alt. consumes a string), processes it, and
 %%%                exports is using the specified Callback module.
 -module(xmerl_xlate).
+-moduledoc false.
 
+-compile([{nowarn_unsafe_function, {xmerl_scan, hook_state, 1}},
+          {nowarn_unsafe_function, {xmerl_scan, string, 2}}]).
 
 -export([file/3,
 	 string/3]).

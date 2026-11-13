@@ -1,18 +1,21 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2016-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
 %%
-%% The contents of this file are subject to the Erlang Public License,
-%% Version 1.1, (the "License"); you may not use this file except in
-%% compliance with the License. You should have received a copy of the
-%% Erlang Public License along with this software. If not, it can be
-%% retrieved online at http://www.erlang.org/.
+%% Copyright Ericsson AB 2016-2026. All Rights Reserved.
 %%
-%% Software distributed under the License is distributed on an "AS IS"
-%% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See
-%% the License for the specific language governing rights and limitations
-%% under the License.
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
 %%
 %% %CopyrightEnd%
 %%
@@ -20,6 +23,7 @@
 %%
 
 -module(dtls_packet_demux).
+-moduledoc false.
 
 -behaviour(gen_server).
 
@@ -27,12 +31,14 @@
 -include_lib("kernel/include/logger.hrl").
 
 %% API
--export([start_link/5,
+-export([start_link/6,
          active_once/3,
          accept/2,
          sockname/1,
          close/1,
-         new_owner/1,
+         new_owner/2,
+         new_connection/2,
+         connection_setup/2,
          get_all_opts/1,
          set_all_opts/2,
          get_sock_opts/2,
@@ -45,9 +51,10 @@
          handle_cast/2,
          handle_info/2,
 	 terminate/2,
-         code_change/3]).
+         code_change/3,
+         format_status/1]).
 
--record(state, 
+-record(state,
 	{active_n,
          port,
 	 listener,
@@ -55,9 +62,9 @@
 	 dtls_options,
 	 emulated_options,
 	 dtls_msq_queues = kv_new(),
-	 clients = set_new(),
 	 dtls_processes = kv_new(),
 	 accepters  = queue:new(),
+         owner, %% Listen process owner
 	 first,
          close,
          session_id_tracker
@@ -67,8 +74,8 @@
 %%% API
 %%%===================================================================
 
-start_link(Port, TransportInfo, EmOpts, InetOptions, DTLSOptions) ->
-    gen_server:start_link(?MODULE, [Port, TransportInfo, EmOpts, InetOptions, DTLSOptions], []).
+start_link(Owner, Port, TransportInfo, EmOpts, InetOptions, DTLSOptions) ->
+    gen_server:start_link(?MODULE, [Owner, Port, TransportInfo, EmOpts, InetOptions, DTLSOptions], []).
 
 active_once(PacketSocket, Client, Pid) ->
     gen_server:cast(PacketSocket, {active_once, Client, Pid}).
@@ -82,8 +89,14 @@ sockname(PacketSocket) ->
 close(PacketSocket) ->
     call(PacketSocket, close).
 
-new_owner(PacketSocket) ->
-    call(PacketSocket, new_owner).
+new_owner(PacketSocket, Owner) ->
+    call(PacketSocket, {new_owner, Owner}).
+
+new_connection(PacketSocket, Client) ->
+    call(PacketSocket, {new_connection, Client, self()}).
+
+connection_setup(PacketSocket, Client) ->
+    gen_server:cast(PacketSocket, {connection_setup, Client}).
 
 get_sock_opts(PacketSocket, SplitSockOpts) ->
     call(PacketSocket,  {get_sock_opts, SplitSockOpts}).
@@ -102,9 +115,11 @@ getstat(PacketSocket, Opts) ->
 %%% gen_server callbacks
 %%%===================================================================
 
-init([Port0, TransportInfo, EmOpts, DTLSOptions, Socket]) ->
+init([Owner, Port0, TransportInfo, EmOpts, DTLSOptions, Socket]) ->
     InternalActiveN = get_internal_active_n(),
-    {ok, SessionIdHandle} = session_id_tracker(Socket, DTLSOptions),
+    erlang:monitor(process, Owner),
+    {ok, SessionIdHandle} = session_id_tracker(Socket),
+    proc_lib:set_label({dtls_server_packet_demultiplexer, Port0}),
     {ok, #state{active_n = InternalActiveN,
                 port = Port0,
                 first = true,
@@ -112,6 +127,7 @@ init([Port0, TransportInfo, EmOpts, DTLSOptions, Socket]) ->
                 dtls_options = DTLSOptions,
                 emulated_options = EmOpts,
                 listener = Socket,
+                owner = Owner,
                 close = false,
                 session_id_tracker = SessionIdHandle}}.
 
@@ -124,31 +140,45 @@ handle_call({accept, Accepter}, From, #state{active_n = N,
 					     listener = Socket} = State0) ->
     next_datagram(Socket, N),
     State = State0#state{first = false,
-			 accepters = queue:in({Accepter, From}, Accepters)}, 		 
+                         accepters = queue:in({Accepter, From}, Accepters)},
     {noreply, State};
 
 handle_call({accept, Accepter}, From, #state{accepters = Accepters} = State0) ->
-    State = State0#state{accepters = queue:in({Accepter, From}, Accepters)}, 		 
+    State = State0#state{accepters = queue:in({Accepter, From}, Accepters)},
     {noreply, State};
 handle_call(sockname, _, #state{listener = Socket} = State) ->
     Reply = inet:sockname(Socket),
     {reply, Reply, State};
-handle_call(close, _, #state{dtls_processes = Processes,
-                             accepters = Accepters} = State) ->
-    case kv_empty(Processes) of
-        true ->
-            {stop, normal, ok, State#state{close=true}};
-        false -> 
-            lists:foreach(fun({_, From}) ->
-                                  gen_server:reply(From, {error, closed})
-                          end, queue:to_list(Accepters)),
-            {reply, ok,  State#state{close = true, accepters = queue:new()}}
+handle_call(close, _, State0) ->
+    case do_close(State0) of
+        {stop, State} ->
+            {stop, normal, stop, State};
+        {wait, State} ->
+            {reply, waiting, State}
     end;
-handle_call(new_owner, _, State) ->
-    {reply, ok,  State#state{close = false, first = true}};
+handle_call({new_owner, Owner}, _, State) ->
+    {reply, ok,  State#state{close = false, first = true, owner = Owner}};
+handle_call({new_connection, Old, _Pid}, _,
+            #state{accepters = Accepters, dtls_msq_queues = MsgQs0} = State) ->
+    case queue:is_empty(Accepters) of
+        false ->
+            case kv_lookup(Old, MsgQs0) of
+                {value, OldQueue} ->
+                    MsgQs1 = kv_delete(Old, MsgQs0),
+                    MsgQs = kv_enter({old,Old}, OldQueue, MsgQs1),
+                    {reply, true, State#state{dtls_msq_queues = MsgQs}};
+                none ->
+                    %% Already set as old
+                    {reply, true, State}
+            end;
+        true ->
+            {reply, false, State}
+    end;
+
 handle_call({get_sock_opts, {SocketOptNames, EmOptNames}}, _, #state{listener = Socket,
-                                                               emulated_options = EmOpts} = State) ->
-    case get_socket_opts(Socket, SocketOptNames) of
+                                                                     transport = TransportInfo,
+                                                                     emulated_options = EmOpts} = State) ->
+    case get_socket_opts(Socket, SocketOptNames,  element(1, TransportInfo)) of
         {ok, Opts} ->
             {reply, {ok, emulated_opts_list(EmOpts, EmOptNames, []) ++ Opts}, State};
         {error, Reason} ->
@@ -157,20 +187,31 @@ handle_call({get_sock_opts, {SocketOptNames, EmOptNames}}, _, #state{listener = 
 handle_call(get_all_opts, _, #state{dtls_options = DTLSOptions,
                                     emulated_options = EmOpts} = State) ->
     {reply, {ok, EmOpts, DTLSOptions}, State};
-handle_call({set_sock_opts, {SocketOpts, NewEmOpts}}, _, #state{listener = Socket, emulated_options = EmOpts0} = State) ->
-    set_socket_opts(Socket, SocketOpts),
+handle_call({set_sock_opts, {SocketOpts, NewEmOpts}}, _, #state{listener = Socket, emulated_options = EmOpts0,
+                                                                transport = TransportInfo} = State) ->
+    set_socket_opts(Socket, SocketOpts, element(1, TransportInfo)),
     EmOpts = do_set_emulated_opts(NewEmOpts, EmOpts0),
     {reply, ok, State#state{emulated_options = EmOpts}};
-handle_call({set_all_opts, {SocketOpts, NewEmOpts, SslOpts}}, _, #state{listener = Socket} = State) ->
-    set_socket_opts(Socket, SocketOpts),
+handle_call({set_all_opts, {SocketOpts, NewEmOpts, SslOpts}}, _, #state{listener = Socket,
+                                                                        transport = TransportInfo} = State) ->
+    set_socket_opts(Socket, SocketOpts, element(1, TransportInfo)),
     {reply, ok, State#state{emulated_options = NewEmOpts, dtls_options = SslOpts}};
-handle_call({getstat, Options}, _,  #state{listener = Socket, transport =  {TransportCb, _,_,_,_}} = State) ->
-    Stats = dtls_socket:getstat(TransportCb, Socket, Options),
+handle_call({getstat, Options}, _,  #state{listener = Socket, transport =  TransportInfo} = State) ->
+    Stats = dtls_socket:getstat(element(1, TransportInfo), Socket, Options),
     {reply, Stats, State}.
 
 handle_cast({active_once, Client, Pid}, State0) ->
     State = handle_active_once(Client, Pid, State0),
-    {noreply, State}.
+    {noreply, State};
+handle_cast({connection_setup, Client}, #state{dtls_msq_queues = MsgQueues} = State) ->
+    case kv_lookup({old, Client}, MsgQueues) of
+        none ->
+            {noreply, State};
+        {value, {Pid, _}} ->
+            Pid ! {socket_reused, Client},
+            %% Will be deleted when handling DOWN message
+            {noreply, State}
+    end.
 
 handle_info({Transport, Socket, IP, InPortNo, _} = Msg, #state{listener = Socket, transport = {_,Transport,_,_,_}} = State0) ->
     State = handle_datagram({IP, InPortNo}, Msg, State0),
@@ -190,24 +231,47 @@ handle_info({udp_error, Socket, econnreset = Error}, #state{listener = Socket, t
     ?LOG_NOTICE(Report),
     {noreply, State};
 handle_info({ErrorTag, Socket, Error}, #state{listener = Socket, transport = {_,_,_, ErrorTag,_}} = State) ->
-    Report = io_lib:format("SSL Packet muliplxer shutdown: Socket error: ~p ~n", [Error]),
+    Report = io_lib:format("SSL Packet muliplexer shutdown: Socket error: ~p ~n", [Error]),
     ?LOG_NOTICE(Report),
     {noreply, State#state{close=true}};
 
-handle_info({'DOWN', _, process, Pid, _}, #state{clients = Clients,
-						 dtls_processes = Processes0,
-                                                 dtls_msq_queues = MsgQueues0,
-                                                 close = ListenClosed} = State) ->
+handle_info({'DOWN', _, process, Owner, _}, #state{owner = Owner} = State0) ->
+    case do_close(State0) of
+        {stop, State} ->
+            {stop, normal, State};
+        {wait, State} ->
+            {noreply, State}
+    end;
+handle_info({'DOWN', _, process, Pid, _},
+            #state{dtls_processes = Processes0,
+                   dtls_msq_queues = MsgQueues0,
+                   close = ListenClosed} = State0) ->
     Client = kv_get(Pid, Processes0),
     Processes = kv_delete(Pid, Processes0),
-    MsgQueues = kv_delete(Client, MsgQueues0),
+    State = case kv_lookup(Client, MsgQueues0) of
+                none ->
+                    MsgQueues1 = kv_delete({old, Client}, MsgQueues0),
+                    State0#state{dtls_processes = Processes, dtls_msq_queues = MsgQueues1};
+                {value, {Pid, _}} ->
+                    MsgQueues1 = kv_delete(Client, MsgQueues0),
+                    %% Restore old process if exists
+                    case kv_lookup({old, Client}, MsgQueues1) of
+                        none ->
+                            State0#state{dtls_processes = Processes, dtls_msq_queues = MsgQueues1};
+                        {value, Old} ->
+                            MsgQueues2 = kv_delete({old, Client}, MsgQueues1),
+                            MsgQueues = kv_insert(Client, Old, MsgQueues2),
+                            State0#state{dtls_processes = Processes, dtls_msq_queues = MsgQueues}
+                    end;
+                {value, _} -> %% Old process died (just delete its queue)
+                    MsgQueues1 = kv_delete({old, Client}, MsgQueues0),
+                    State0#state{dtls_processes = Processes, dtls_msq_queues = MsgQueues1}
+            end,
     case ListenClosed andalso kv_empty(Processes) of
         true ->
             {stop, normal, State};
         false ->
-            {noreply, State#state{clients = set_delete(Client, Clients),
-                                  dtls_processes = Processes,
-                                  dtls_msq_queues = MsgQueues}}
+            {noreply, State}
     end.
 
 terminate(_Reason, _State) ->
@@ -216,77 +280,112 @@ terminate(_Reason, _State) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
+-spec format_status(map()) -> map().
+format_status(Status) ->
+    maps:map(
+      fun(state, #state{dtls_options = Options} = State) ->
+              State#state{dtls_options =
+                              ssl_gen_statem:format_options(Options),
+                          dtls_msq_queues = ?SECRET_PRINTOUT};
+         (_,Value) ->
+              Value
+      end, Status).
+
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-handle_datagram(Client, Msg, #state{clients = Clients,
-				    accepters = AcceptorsQueue0} = State) ->
-    case set_is_member(Client, Clients) of
-	false ->
+
+do_close(#state{dtls_processes = Processes, accepters = Accepters} = State) ->
+    case kv_empty(Processes) of
+        true ->
+            {stop, State#state{close=true}};
+        false ->
+            lists:foreach(fun({_, From}) -> gen_server:reply(From, {error, closed}) end,
+                          queue:to_list(Accepters)),
+            {wait, State#state{close = true, accepters = queue:new()}}
+    end.
+
+handle_datagram(Client, Msg, #state{dtls_msq_queues = MsgQueues, accepters = AcceptorsQueue0} = State) ->
+    case kv_lookup(Client, MsgQueues) of
+	none ->
 	    case queue:out(AcceptorsQueue0) of
-		{{value, {UserPid, From}}, AcceptorsQueue} ->	
-		    setup_new_connection(UserPid, From, Client, Msg, 
+		{{value, {UserPid, From}}, AcceptorsQueue} ->
+		    setup_new_connection(UserPid, From, Client, Msg,
 					 State#state{accepters = AcceptorsQueue});
 		{empty, _} ->
 		    %% Drop packet client will resend
 		    State
 	    end;
-	true -> 
-	    dispatch(Client, Msg, State)
+	{value, Queue} ->
+	    dispatch(Queue, Client, Msg, State)
     end.
 
-dispatch(Client, Msg, #state{dtls_msq_queues = MsgQueues} = State) ->
-    case kv_lookup(Client, MsgQueues) of
-	{value, Queue0} ->
-	    case queue:out(Queue0) of
-		{{value, Pid}, Queue} when is_pid(Pid) ->
-		    Pid ! Msg,
-		    State#state{dtls_msq_queues = 
-				    kv_update(Client, Queue, MsgQueues)};
-		{{value, _UDP}, _Queue} ->
-		    State#state{dtls_msq_queues = 
-				    kv_update(Client, queue:in(Msg, Queue0), MsgQueues)};
-		{empty, Queue} ->
-		    State#state{dtls_msq_queues = 
-				    kv_update(Client, queue:in(Msg, Queue), MsgQueues)}
-	    end
+dispatch({Pid, Queue0}, Client, Msg, #state{dtls_msq_queues = MsgQueues} = State) ->
+    case queue:out(Queue0) of
+        {{value, Pid}, Queue} when is_pid(Pid) ->
+            Pid ! Msg,
+            State#state{dtls_msq_queues =
+                            kv_update(Client, {Pid, Queue}, MsgQueues)};
+        {{value, _UDP}, _Queue} ->
+            State#state{dtls_msq_queues =
+                            kv_update(Client, {Pid, queue:in(Msg, Queue0)}, MsgQueues)};
+        {empty, Queue} ->
+            State#state{dtls_msq_queues =
+                            kv_update(Client, {Pid, queue:in(Msg, Queue)}, MsgQueues)}
     end.
+
 next_datagram(Socket, N) ->
     inet:setopts(Socket, [{active, N}]).
 
 handle_active_once(Client, Pid, #state{dtls_msq_queues = MsgQueues} = State0) ->
-    Queue0 = kv_get(Client, MsgQueues),
+    {Key, Queue0} = case kv_lookup(Client, MsgQueues) of
+                        {value, {Pid, Q0}} -> {Client, Q0};
+                        _ ->
+                            OldKey = {old, Client},
+                            {Pid, Q0} = kv_get(OldKey, MsgQueues),
+                            {OldKey, Q0}
+                    end,
     case queue:out(Queue0) of
-	{{value, Pid}, _} when is_pid(Pid) ->
-	    State0;
-	{{value, Msg}, Queue} ->	      
-	    Pid ! Msg,
-	    State0#state{dtls_msq_queues = kv_update(Client, Queue, MsgQueues)};
-	{empty, Queue0} ->
-	    State0#state{dtls_msq_queues = kv_update(Client, queue:in(Pid, Queue0), MsgQueues)}
+        {{value, Pid}, _} when is_pid(Pid) ->
+            State0;
+        {{value, Msg}, Queue} ->
+            Pid ! Msg,
+            State0#state{dtls_msq_queues = kv_update(Key, {Pid, Queue}, MsgQueues)};
+        {empty, Queue0} ->
+            State0#state{dtls_msq_queues = kv_update(Key, {Pid, queue:in(Pid, Queue0)}, MsgQueues)}
     end.
 
 setup_new_connection(User, From, Client, Msg, #state{dtls_processes = Processes,
-						     clients = Clients,
 						     dtls_msq_queues = MsgQueues,
 						     dtls_options = DTLSOpts,
 						     port = Port,
 						     listener = Socket,
-                                                     session_id_tracker = Tracker,
+                                                     session_id_tracker = Tracker0,
 						     emulated_options = EmOpts} = State) ->
+    Tracker = case erlang:is_process_alive(Tracker0) of
+                  true ->
+                      Tracker0;
+                  false ->
+                      {ok, Tracker1} = session_id_tracker(Socket),
+                      Tracker1
+              end,
+
     ConnArgs = [server, "localhost", Port, {self(), {Client, Socket}},
-		{DTLSOpts, EmOpts, [{session_id_tracker, Tracker}]}, User, dtls_socket:default_cb_info()],
+		{DTLSOpts,
+                 emulated_opts_list(EmOpts, [mode, active], []),
+                 [{session_id_tracker, Tracker}]},
+                User, dtls_socket:default_cb_info()],
     case dtls_connection_sup:start_child(ConnArgs) of
 	{ok, Pid} ->
 	    erlang:monitor(process, Pid),
-	    gen_server:reply(From, {ok, Pid, {Client, Socket}}),
+	    gen_server:reply(From, {ok, Pid}),
 	    Pid ! Msg,
-	    State#state{clients = set_insert(Client, Clients), 
-			dtls_msq_queues = kv_insert(Client, queue:new(), MsgQueues),
+            State#state{session_id_tracker = Tracker,
+                        dtls_msq_queues = kv_insert(Client, {Pid, queue:new()}, MsgQueues),
 			dtls_processes = kv_insert(Pid, Client, Processes)};
 	{error, Reason} ->
 	    gen_server:reply(From, {error, Reason}),
-	    State
+            State#state{session_id_tracker = Tracker}
     end.
 
 kv_update(Key, Value, Store) ->
@@ -295,7 +394,9 @@ kv_lookup(Key, Store) ->
     gb_trees:lookup(Key, Store).
 kv_insert(Key, Value, Store) ->
     gb_trees:insert(Key, Value, Store).
-kv_get(Key, Store) -> 
+kv_enter(Key, Value, Store) ->
+    gb_trees:enter(Key, Value, Store).
+kv_get(Key, Store) ->
     gb_trees:get(Key, Store).
 kv_delete(Key, Store) ->
     gb_trees:delete(Key, Store).
@@ -303,15 +404,6 @@ kv_new() ->
     gb_trees:empty().
 kv_empty(Store) ->
     gb_trees:is_empty(Store).
-
-set_new() ->
-    gb_sets:empty().
-set_insert(Item, Set) ->
-    gb_sets:insert(Item, Set).
-set_delete(Item, Set) ->
-    gb_sets:delete(Item, Set).
-set_is_member(Item, Set) ->
-    gb_sets:is_member(Item, Set).
 
 call(Server, Msg) ->
     try
@@ -325,20 +417,24 @@ call(Server, Msg) ->
             {error, closed}
     end.
 
-set_socket_opts(_, []) ->
+set_socket_opts(_, [], _) ->
     ok;
-set_socket_opts(Socket, SocketOpts) ->
-    inet:setopts(Socket, SocketOpts).
+set_socket_opts(Socket, SocketOpts, gen_udp) ->
+    inet:setopts(Socket, SocketOpts);
+set_socket_opts(Socket, SocketOpts, Cb) ->
+    Cb:setopts(Socket, SocketOpts).
 
-get_socket_opts(_, []) ->
+get_socket_opts(_, [], _) ->
      {ok, []};
-get_socket_opts(Socket, SocketOpts) ->
-    inet:getopts(Socket, SocketOpts).
+get_socket_opts(Socket, SocketOpts, gen_udp) ->
+    inet:getopts(Socket, SocketOpts);
+get_socket_opts(Socket, SocketOpts, Cb) ->
+    Cb:getopts(Socket, SocketOpts).
 
 do_set_emulated_opts([], Opts) ->
     Opts;
 do_set_emulated_opts([{mode, Value} | Rest], Opts) ->
-    do_set_emulated_opts(Rest,  Opts#socket_options{mode = Value}); 
+    do_set_emulated_opts(Rest,  Opts#socket_options{mode = Value});
 do_set_emulated_opts([{active, N0} | Rest], Opts=#socket_options{active = Active}) when is_integer(N0) ->
     N = tls_socket:update_active_n(N0, Active),
     do_set_emulated_opts(Rest,  Opts#socket_options{active = N});
@@ -348,15 +444,15 @@ do_set_emulated_opts([{active, Value} | Rest], Opts) ->
 emulated_opts_list(_,[], Acc) ->
     Acc;
 emulated_opts_list( Opts, [mode | Rest], Acc) ->
-    emulated_opts_list(Opts, Rest, [{mode, Opts#socket_options.mode} | Acc]); 
+    emulated_opts_list(Opts, Rest, [{mode, Opts#socket_options.mode} | Acc]);
 emulated_opts_list(Opts, [active | Rest], Acc) ->
     emulated_opts_list(Opts, Rest, [{active, Opts#socket_options.active} | Acc]).
 
 %% Regardless of the option reuse_sessions we need the session_id_tracker
 %% to generate session ids, but no sessions will be stored unless
 %% reuse_sessions = true.
-session_id_tracker(Listner,_) ->
-    dtls_server_session_cache_sup:start_child(Listner).
+session_id_tracker(Listener) ->
+    dtls_server_session_cache_sup:start_child(Listener).
 
 get_internal_active_n() ->
     case application:get_env(ssl, internal_active_n) of

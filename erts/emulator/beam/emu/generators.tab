@@ -2,7 +2,9 @@
 //
 // %CopyrightBegin%
 //
-// Copyright Ericsson AB 2020. All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
+//
+// Copyright Ericsson AB 2020-2026. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,6 +20,36 @@
 //
 // %CopyrightEnd%
 //
+
+// Rewrites call_fun2 as call_fun: we're not yet helped by the Tag parameter,
+// and can't do anything clever with Func either.
+gen.call_fun2(Tag, Arity, Func) {
+    BeamOp *call;
+
+    (void)Tag;
+
+    $NewBeamOp(S, call);
+    $BeamOpNameArity(call, call_fun, 1);
+    call->a[0] = Arity;
+    call->next = NULL;
+
+    /* Move the fun in place when needed. We don't generate this at the moment,
+     * but a future version of the compiler might keep Func in a Y register. */
+    if (Func.type != TAG_x || Arity.val != (Func.val & REG_MASK)) {
+        BeamOp *move;
+
+        $NewBeamOp(S, move);
+        $BeamOpNameArity(move, move, 2);
+        move->a[0] = Func;
+        move->a[1].type = TAG_x;
+        move->a[1].val = Arity.val;
+        move->next = call;
+
+        return move;
+    }
+
+    return call;
+}
 
 // Generate the fastest instruction to fetch an integer from a binary.
 gen.get_integer2(Fail, Ms, Live, Size, Unit, Flags, Dst) {
@@ -493,7 +525,7 @@ gen.select_tuple_arity(Src, Fail, Size, Rest) {
 
     for (i = 3; i < arity - 2*align; i+=2) {
         tmp[i-3].type = TAG_v;
-        tmp[i-3].val  = make_arityval(Rest[i-3].val);
+        tmp[i-3].val  = make_arityval_unchecked(Rest[i-3].val);
         tmp[i-2]      = Rest[i-2];
     }
 
@@ -531,9 +563,13 @@ gen.new_small_map_lit(Dst, Live, Size, Rest) {
     $BeamOpArity(op, 3 + size/2);
     op->next = NULL;
 
-    tmp = thp = erts_alloc(ERTS_ALC_T_LOADER_TMP, (1 + size/2) * sizeof(*tmp));
-    keys = make_tuple(thp);
-    *thp++ = make_arityval(size/2);
+    tmp = thp = erts_alloc(ERTS_ALC_T_LOADER_TMP, ((size == 0 ? 0 : 1) + size/2) * sizeof(*tmp));
+    if (size == 0) {
+        keys = ERTS_GLOBAL_LIT_EMPTY_TUPLE;
+    } else {
+        keys = make_tuple(thp);
+        *thp++ = make_arityval(size/2);
+    }
 
     dst = op->a+3;
 
@@ -556,7 +592,7 @@ gen.new_small_map_lit(Dst, Live, Size, Rest) {
         *dst++ = Rest[i + 1];
     }
 
-    lit = beamfile_add_literal(&S->beam, keys);
+    lit = beamfile_add_literal(&S->beam, keys, 1);
     erts_free(ERTS_ALC_T_LOADER_TMP, tmp);
 
     op->a[0] = Dst;
@@ -660,7 +696,7 @@ gen.get_binary2(Fail, Ms, Live, Size, Unit, Flags, Dst) {
         op->a[3] = Unit;
         op->a[4] = Dst;
     } else if (Size.type == TAG_i) {
-        $BeamOpNameArity(op, i_bs_get_binary_imm2, 6);
+        $BeamOpNameArity(op, i_bs_get_binary_imm2, 5);
         op->a[0] = Ms;
         op->a[1] = Fail;
         op->a[2] = Live;
@@ -668,8 +704,7 @@ gen.get_binary2(Fail, Ms, Live, Size, Unit, Flags, Dst) {
         if (!beam_load_safe_mul(Size.val, Unit.val, &op->a[3].val)) {
             goto error;
         }
-        op->a[4] = Flags;
-        op->a[5] = Dst;
+        op->a[4] = Dst;
     } else if (Size.type == TAG_q) {
         Eterm big = beamfile_get_literal(&S->beam, Size.val);
         Uint bigval;
@@ -679,7 +714,7 @@ gen.get_binary2(Fail, Ms, Live, Size, Unit, Flags, Dst) {
             $BeamOpNameArity(op, jump, 1);
             op->a[0] = Fail;
         } else {
-            $BeamOpNameArity(op, i_bs_get_binary_imm2, 6);
+            $BeamOpNameArity(op, i_bs_get_binary_imm2, 5);
             op->a[0] = Ms;
             op->a[1] = Fail;
             op->a[2] = Live;
@@ -687,8 +722,7 @@ gen.get_binary2(Fail, Ms, Live, Size, Unit, Flags, Dst) {
             if (!beam_load_safe_mul(bigval, Unit.val, &op->a[3].val)) {
                 goto error;
             }
-            op->a[4] = Flags;
-            op->a[5] = Dst;
+            op->a[4] = Dst;
         }
     } else if (Size.type == TAG_x || Size.type == TAG_y) {
         $BeamOpNameArity(op, i_bs_get_binary2, 6);
@@ -696,8 +730,7 @@ gen.get_binary2(Fail, Ms, Live, Size, Unit, Flags, Dst) {
         op->a[1] = Fail;
         op->a[2] = Live;
         op->a[3] = Size;
-        op->a[4].type = TAG_u;
-        op->a[4].val = (Unit.val << 3) | Flags.val;
+        op->a[4] = Unit;
         op->a[5] = Dst;
     } else {
         /* Invalid literal size. */
@@ -753,14 +786,14 @@ gen.is_function2(Fail, Fun, Arity) {
         $BeamOpNameArity(move_arity, move, 2);
         move_arity->a[0] = Arity;
         move_arity->a[1].type = TAG_x;
-        move_arity->a[1].val = 1023;
+        move_arity->a[1].val = MAX_REG-1;
 
         $BeamOpNameArity(op, cold_is_function2, 3);
         op->a[0] = Fail;
         op->a[1].type = TAG_x;
         op->a[1].val = 1022;
         op->a[2].type = TAG_x;
-        op->a[2].val = 1023;
+        op->a[2].val = MAX_REG-1;
         return move_fun;
     }
 }
@@ -771,7 +804,7 @@ INIT_YREGS(S, N) {
 	BeamOp* init;
 
 	$NewBeamOp($S, init);
-	$BeamOpNameArity(init, init, 1);
+	$BeamOpNameArity(init, i_init, 1);
 	init->a[0] = Yregs[i];
 	*p = init;
 	p = &init->next;
@@ -791,7 +824,7 @@ gen.allocate(Ns, Live, N, Yregs) {
 	 * At least half of the Y registers need explicit
 	 * initialization. It will be cheaper to zero all Y registers.
 	 */
-	$BeamOpNameArity(alloc, allocate_zero, 2);
+	$BeamOpNameArity(alloc, i_allocate_zero, 2);
     } else {
 	$BeamOpNameArity(alloc, allocate, 2);
 	p = &alloc->next;
@@ -814,7 +847,7 @@ gen.allocate_heap(Ns, Nh, Live, N, Yregs) {
 	 * At least half of the Y registers need explicit
 	 * initialization. It will be cheaper to zero all Y registers.
 	 */
-	$BeamOpNameArity(alloc, allocate_heap_zero, 3);
+	$BeamOpNameArity(alloc, i_allocate_heap_zero, 3);
     } else {
 	$BeamOpNameArity(alloc, allocate_heap, 3);
 	p = &alloc->next;
@@ -830,4 +863,604 @@ gen.init_yregs(N, Yregs) {
     p = &first;
     $INIT_YREGS(S, N.val);
     return first;
+}
+
+gen.create_bin(Fail, Alloc, Live, Unit, Dst, N, Segments) {
+    BeamOp* op;
+    int fixed_args;
+    BeamOpArg* src;
+    BeamOpArg* dst;
+    BeamOpArg* endp;
+
+    endp = Segments + N.val;
+    N.val = 5*N.val/6;
+
+    $NewBeamOp(S, op);
+    $BeamOpNameArity(op, i_bs_create_bin, 5);
+    fixed_args = op->arity;
+    $BeamOpArity(op, (N.val + fixed_args));
+
+    op->a[0] = Fail;
+    op->a[1] = Alloc;
+    op->a[2] = Live;
+    op->a[3] = Dst;
+    op->a[4] = N;
+
+    for (src = Segments, dst = op->a+fixed_args; src < endp; src += 6, dst += 5) {
+        UWord unit;
+        BeamOpArg Flags;
+        Uint flags = 0;
+        BeamOpArg Size;
+        Uint type;
+        Uint segment;
+
+        ASSERT(src[0].type = TAG_a);
+        ASSERT(src[1].type == TAG_u);
+        ASSERT(src[2].type == TAG_u);
+        segment = src[1].val;
+
+        /* Get unit. */
+        dst[1] = src[2];
+        unit = dst[1].val;
+
+        /* Translate flags. */
+        Flags = src[3];              /* Flags */
+        if (Flags.type != TAG_n) {
+            if (Flags.type == TAG_q) {
+                Eterm term = beamfile_get_literal(&S->beam, Flags.val);
+                while (is_list(term)) {
+                    Eterm* consp = list_val(term);
+                    Eterm elem = CAR(consp);
+                    switch (elem) {
+                    case am_little:
+                        flags |= BSF_LITTLE;
+                        break;
+                    case am_native:
+                        flags |= BSF_NATIVE;
+                        break;
+                    }
+                    term = CDR(consp);
+                }
+                ASSERT(is_nil(term));
+            }
+        }
+        Flags.type = TAG_u;
+        Flags.val = flags;
+        $NativeEndian(Flags);
+        Flags.val = (segment << 3) | Flags.val;
+        dst[2] = Flags;
+
+        /* Store source. */
+        dst[3] = src[4];        /* Src */
+
+        /* Get size */
+        Size = src[5];          /* Size */
+
+        /* Translate type. */
+        switch (src[0].val) {
+        case am_append:
+            type = BSC_APPEND;
+            break;
+        case am_private_append:
+            type = BSC_PRIVATE_APPEND;
+            break;
+        case am_binary:
+            {
+                UWord bits;
+                type = BSC_BINARY;
+                if (Size.type == TAG_a && Size.val == am_all) {
+                    type = BSC_BINARY_ALL;
+                } else if (Size.type == TAG_i &&
+                           (Sint) Size.val >= 0 &&
+                           beam_load_safe_mul(Size.val, unit, &bits) &&
+                           (bits >> (sizeof(Uint)-1)*8) == 0) {
+                    type = BSC_BINARY_FIXED_SIZE;
+                    Size.type = TAG_u;
+                    Size.val = bits;
+                    unit = 0;
+                }
+            }
+            break;
+        case am_float:
+            {
+                UWord bits;
+                type = BSC_FLOAT;
+                if (Size.type == TAG_i &&
+                    (Sint) Size.val >= 0 &&
+                    beam_load_safe_mul(Size.val, unit, &bits) &&
+                    (bits >> (sizeof(Uint)-1)*8) == 0) {
+                    type = BSC_FLOAT_FIXED_SIZE;
+                    Size.type = TAG_u;
+                    Size.val = bits;
+                    unit = 0;
+                }
+            }
+            break;
+        case am_integer:
+            {
+                UWord bits;
+                type = BSC_INTEGER;
+                if (Size.type == TAG_i &&
+                    (Sint) Size.val >= 0 &&
+                    beam_load_safe_mul(Size.val, unit, &bits) &&
+                    (bits >> (sizeof(Uint)-1)*8) == 0) {
+                    type = BSC_INTEGER_FIXED_SIZE;
+                    Size.type = TAG_u;
+                    Size.val = bits;
+                    unit = 0;
+                }
+            }
+            break;
+        case am_string:
+            type = BSC_STRING;
+            ASSERT(Size.type == TAG_i);
+            ASSERT(unit == 8);
+            Size.type = TAG_u;
+            Size.val = Size.val; /* Size of string in bytes. */
+            unit = 0;
+            break;
+        case am_utf8:
+            type = BSC_UTF8;
+            break;
+        case am_utf16:
+            type = BSC_UTF16;
+            break;
+        case am_utf32:
+            type = BSC_UTF32;
+            Size.type = TAG_u;
+            Size.val = 32;
+            break;
+        default:
+            abort();
+        }
+        dst[0].type = TAG_u;
+        dst[0].val = type;
+
+        /* Store value of unit. */
+        dst[1].val = unit;
+
+        /* Store size. */
+        dst[4] = Size;
+    }
+    return op;
+}
+
+gen.update_record(Hint, Size, Src, Dst, N, Updates) {
+    BeamOp *begin, *prev;
+    Sint count, i;
+
+    ASSERT(Hint.type == TAG_a);
+    ASSERT(Size.type == TAG_u && Size.val < SCRATCH_X_REG);
+    ASSERT(N.type == TAG_u && !(N.val % 2) && (N.val / 2) <= Size.val);
+
+    $NewBeamOp(S, begin);
+    if (Hint.val == am_inplace) {
+        $BeamOpNameArity(begin, i_update_record_in_place, 5);
+    } else {
+        $BeamOpNameArity(begin, i_update_record_copy, 5);
+    }
+
+    begin->a[0] = Size;
+    begin->a[1] = Src;
+    begin->a[2] = Dst;
+    begin->a[3] = Updates[0];
+    begin->a[4] = Updates[1];
+
+    count = N.val;
+    prev = begin;
+
+    for (i = 2; i < count; i += 2) {
+        BeamOp *next;
+        int same_reg;
+
+        $NewBeamOp(S, next);
+        $BeamOpNameArity(next, i_update_record_continue, 2);
+
+        /* Encode the offset from the _end_ of the tuple so that we can act
+         * relative to HTOP. */
+        next->a[0].type = TAG_u;
+        next->a[0].val = (Size.val + 1) - Updates[i].val;
+
+        if (Updates[i + 1].type != Dst.type) {
+            same_reg = 0;
+        } else if (Dst.type == TAG_x || Dst.type == TAG_y) {
+            /* We must not compare the type indices (if any). */
+            same_reg = (Updates[i + 1].val & REG_MASK) == (Dst.val & REG_MASK);
+        } else {
+            same_reg = 1;
+        }
+
+        /* The first instruction overwrites the destination register after
+         * stashing its contents to SCRATCH_X_REG, so all updates must be
+         * rewritten accordingly. */
+        if (same_reg) {
+            next->a[1].type = TAG_x;
+            next->a[1].val = SCRATCH_X_REG;
+        } else {
+            next->a[1] = Updates[i + 1];
+        }
+
+        next->next = NULL;
+        prev->next = next;
+
+        prev = next;
+    }
+
+    if (Hint.val == am_inplace) {
+        BeamOp *next;
+
+        $NewBeamOp(S, next);
+        $BeamOpNameArity(next, i_update_record_in_place_done, 0);
+
+        next->next = NULL;
+        prev->next = next;
+    }
+
+    return begin;
+}
+
+gen.bs_match(Fail, Ctx, N, List) {
+    BeamOp* first_op = 0;
+    BeamOp** next_ptr = &first_op;
+    BeamOp* test_heap_op = 0;
+    BeamOp* read_op = 0;
+#ifdef ARCH_64
+    BeamOp* eq_op = 0;
+#endif
+    int src;
+
+    src = 0;
+    while (src < N.val) {
+        Uint unit;
+        Uint size;
+        Uint words_needed;
+        BeamOp* op;
+
+        /* Calculate the number of heap words needed for this
+         * instruction. */
+        words_needed = 0;
+        switch (List[src].val) {
+        case am_binary:
+            ASSERT(List[src+3].type == TAG_u);
+            ASSERT(List[src+4].type == TAG_u);
+            size = List[src+3].val * List[src+4].val;
+            words_needed = erts_extracted_bitstring_size(size);
+            break;
+        case am_integer:
+            ASSERT(List[src+3].type == TAG_u);
+            ASSERT(List[src+4].type == TAG_u);
+            size = List[src+3].val * List[src+4].val;
+            if (size >= SMALL_BITS) {
+                words_needed = BIG_NEED_FOR_BITS(size);
+            }
+            break;
+        case am_get_tail:
+            words_needed = BUILD_SUB_BITSTRING_HEAP_NEED;
+            break;
+        }
+
+        /* Emit a test_heap instrution if needed and there is
+         * no previous one. */
+        if ((List[src].val == am_Eq || words_needed) && test_heap_op == 0 &&
+            List[src+1].type == TAG_u) {
+            $NewBeamOp(S, test_heap_op);
+            $BeamOpNameArity(test_heap_op, test_heap, 2);
+
+            test_heap_op->a[0].type = TAG_u;
+            test_heap_op->a[0].val = 0; /* Number of heap words */
+            test_heap_op->a[1] = List[src+1]; /* Live */
+
+            *next_ptr = test_heap_op;
+            next_ptr = &test_heap_op->next;
+        }
+
+        if (words_needed) {
+            test_heap_op->a[0].val += words_needed;
+        }
+
+        /* Translate this sub-instruction to a BEAM instruction. */
+        op = 0;
+        switch (List[src].val) {
+        case am_ensure_at_least: {
+            Uint size = List[src+1].val;
+            unit = List[src+2].val;
+            if (size != 0 && unit == 1) {
+                $NewBeamOp(S, op);
+                $BeamOpNameArity(op, i_bs_ensure_bits, 3);
+                op->a[0] = Ctx;
+                op->a[1].type = TAG_u;
+                op->a[1].val = size;
+                op->a[2] = Fail;
+            } else if (size != 0 && unit != 1) {
+                $NewBeamOp(S, op);
+                $BeamOpNameArity(op, i_bs_ensure_bits_unit, 4);
+
+                op->a[0] = Ctx;
+                op->a[1].type = TAG_u;
+                op->a[1].val = size; /* Size */
+                op->a[2].type = TAG_u;
+                op->a[2].val = unit; /* Unit */
+                op->a[3] = Fail;
+            } else if (size == 0 && unit == 8) {
+                $NewBeamOp(S, op);
+                $BeamOpNameArity(op, i_bs_test_unit8, 2);
+
+                op->a[0] = Fail;
+                op->a[1] = Ctx;
+            } else if (size == 0 && unit != 1) {
+                $NewBeamOp(S, op);
+                $BeamOpNameArity(op, i_bs_test_unit, 3);
+
+                op->a[0] = Fail;
+                op->a[1] = Ctx;
+                op->a[2].type = TAG_u;
+                op->a[2].val = unit;
+            } else if (size == 0 && unit == 1) {
+                /* This test is redundant because it always
+                 * succeeds. This should only happen for unoptimized
+                 * code. Generate a dummy instruction to ensure that
+                 * we don't trigger the sanity check at the end of
+                 * this generator. */
+                $NewBeamOp(S, op);
+                $BeamOpNameArity(op, delete_me, 0);
+            }
+            src += 3;
+            break;
+        }
+        case am_ensure_exactly: {
+            $NewBeamOp(S, op);
+            $BeamOpNameArity(op, bs_test_tail2, 3);
+
+            op->a[0] = Fail;
+            op->a[1] = Ctx;
+            op->a[2]= List[src+1]; /* Size */
+
+            src += 2;
+            break;
+        }
+        case am_binary: {
+            ASSERT(List[src+3].type == TAG_u);
+            ASSERT(List[src+4].type == TAG_u);
+            size = List[src+3].val;
+            unit = List[src+4].val;
+
+            $NewBeamOp(S, op);
+            $BeamOpNameArity(op, i_bs_get_fixed_binary, 3);
+
+            op->a[0] = Ctx;
+            op->a[1].type = TAG_u;
+            op->a[1].val = size * unit; /* Size */
+            op->a[2] = List[src+5]; /* Dst */
+
+            read_op = 0;
+            src += 6;
+            break;
+        }
+        case am_integer: {
+            Uint flags = 0;
+            BeamOpArg Flags;
+
+            /* Translate flags. */
+            Flags = List[src+2];
+            if (Flags.type == TAG_n) {
+                Flags.type = TAG_u;
+                Flags.val = 0;
+            } else if (Flags.type == TAG_q) {
+                Eterm term = beamfile_get_literal(&S->beam, Flags.val);
+                while (is_list(term)) {
+                    Eterm* consp = list_val(term);
+                    Eterm elem = CAR(consp);
+                    switch (elem) {
+                    case am_little:
+                        flags |= BSF_LITTLE;
+                        break;
+                    case am_native:
+                        flags |= BSF_NATIVE;
+                        break;
+                    case am_signed:
+                        flags |= BSF_SIGNED;
+                        break;
+                    }
+                    term = CDR(consp);
+                }
+                ASSERT(is_nil(term));
+                Flags.type = TAG_u;
+                Flags.val = flags;
+                $NativeEndian(Flags);
+            }
+
+            ASSERT(List[src+3].type == TAG_u);
+            ASSERT(List[src+4].type == TAG_u);
+            size = List[src+3].val * List[src+4].val;
+
+#define READ_OP_SIZE 1
+            if (size < SMALL_BITS && flags == 0) {
+                /* This is a suitable segment -- an unsigned big
+                 * endian integer that fits in a small. */
+                if (read_op == 0 || read_op->a[READ_OP_SIZE].val + size > 8*sizeof(Uint)) {
+                    /* There is either no previous i_bs_read_bits instruction or
+                     * the size of this segment don't fit into it. */
+                    $NewBeamOp(S, read_op);
+                    $BeamOpNameArity(read_op, i_bs_read_bits, 2);
+
+                    read_op->a[0] = Ctx;
+                    read_op->a[1].type = TAG_u;
+                    read_op->a[1].val = 0;
+
+                    *next_ptr = read_op;
+                    next_ptr = &read_op->next;
+                }
+
+                read_op->a[READ_OP_SIZE].val += size;
+
+                $NewBeamOp(S, op);
+                $BeamOpNameArity(op, i_bs_extract_integer, 2);
+                op->a[0].type = TAG_u;
+                op->a[0].val = size;
+                op->a[1] = List[src+5]; /* Dst */
+            } else {
+                /* Little endian, signed, or might not fit in a small. */
+                $NewBeamOp(S, op);
+                $BeamOpNameArity(op, i_bs_get_fixed_integer, 4);
+
+                op->a[0] = Ctx;
+                op->a[1].type = TAG_u;
+                op->a[1].val = size;    /* Size */
+                op->a[2] = Flags;       /* Flags */
+                op->a[3] = List[src+5]; /* Dst */
+
+                read_op = 0;
+            }
+
+            src += 6;
+            break;
+        }
+        case am_Eq: {
+            ASSERT(List[src+2].type == TAG_u);
+            ASSERT(List[src+3].type == TAG_u);
+            size = List[src+2].val;
+
+            if (read_op == 0 || read_op->a[READ_OP_SIZE].val + size > 8*sizeof(Uint)) {
+                /* There is either no previous i_bs_read_bits instruction or
+                 * the size of this segment don't fit into it. */
+                $NewBeamOp(S, read_op);
+                $BeamOpNameArity(read_op, i_bs_read_bits, 2);
+
+                read_op->a[0] = Ctx;
+                read_op->a[1].type = TAG_u;
+                read_op->a[1].val = 0;
+
+                *next_ptr = read_op;
+                next_ptr = &read_op->next;
+            }
+
+            read_op->a[READ_OP_SIZE].val += size;
+
+#ifdef ARCH_64
+            if (eq_op &&
+                eq_op->next == 0 && /* Previous instruction? */
+                eq_op->a[1].val + size <= 8*sizeof(Uint)) {
+                /* Coalesce with the previous `=:=` instruction. */
+                eq_op->a[1].val += size;
+                eq_op->a[2].val = eq_op->a[2].val << size | List[src+3].val;
+            }
+#else
+            if (0) {
+                ;
+            }
+#endif
+            else {
+                $NewBeamOp(S, op);
+                $BeamOpNameArity(op, i_bs_eq, 3);
+
+#ifdef ARCH_64
+                eq_op = op;
+#endif
+
+                op->a[0] = Fail;
+                op->a[1] = List[src+2]; /* Size */
+                op->a[2] = List[src+3]; /* Value */
+            }
+
+            src += 4;
+            break;
+        }
+        case am_get_tail:
+            $NewBeamOp(S, op);
+            $BeamOpNameArity(op, i_bs_get_tail, 2);
+
+            op->a[0] = Ctx;
+            op->a[1] = List[src+3]; /* Dst */
+
+            read_op = 0;
+            src += 4;
+            break;
+        case am_skip:
+            ASSERT(List[src+1].type == TAG_u);
+            size = List[src+1].val;
+
+            $NewBeamOp(S, op);
+
+            if (read_op && read_op->a[READ_OP_SIZE].val + size <= 8*sizeof(Uint)) {
+                read_op->a[READ_OP_SIZE].val += size;
+                $BeamOpNameArity(op, i_bs_drop, 1);
+                op->a[0] = List[src+1]; /* Size */
+            } else {
+                $BeamOpNameArity(op, i_bs_skip, 2);
+                op->a[0] = Ctx;
+                op->a[1] = List[src+1]; /* Size */
+                read_op = 0;
+            }
+
+            src += 2;
+            break;
+        default:
+            /*
+             * This is an unknown sub command. It was probably produced by a later
+             * release of Erlang/OTP than the current one. Fail loading.
+             */
+
+            $NewBeamOp(S, op);
+            $BeamOpNameArity(op, bad_bs_match, 1);
+            op->a[0] = List[src];
+            *next_ptr = op;
+            return first_op;
+        }
+
+        if (op) {
+            *next_ptr = op;
+            next_ptr = &op->next;
+        }
+    }
+
+    if (test_heap_op && test_heap_op->a[0].val == 0) {
+        /* This test_heap instruction was forced by the `=:=` sub
+         * instruction, but it turned out that no test_heap instruction was
+         * needed. */
+        $BeamOpNameArity(test_heap_op, delete_me, 0);
+    }
+
+    if (first_op == 0) {
+        erts_exit(ERTS_ERROR_EXIT, "loading bs_match in %T:%T/%d: no instructions loaded",
+                  S->module, S->function, S->arity);
+    }
+
+    ASSERT(first_op);
+    return first_op;
+}
+
+gen_increment(stp, reg, val, dst) {
+    BeamOp* op;
+    $NewBeamOp($stp, op);
+    $BeamOpNameArity(op, i_increment, 3);
+    op->a[0] = $reg;
+    op->a[1].type = TAG_u;
+    op->a[1].val = $val;
+    op->a[2] = $dst;
+    return op;
+}
+
+gen.increment(Reg, Integer, Dst) {
+    $gen_increment(S, Reg, Integer.val, Dst);
+}
+
+gen.increment_from_minus(Reg, Integer, Dst) {
+    $gen_increment(S, Reg, -Integer.val, Dst);
+}
+
+gen.plus_from_minus(Fail, Live, Src, Integer, Dst) {
+    BeamOp* op;
+
+    ASSERT(Integer.type == TAG_i && IS_SSMALL(-(Sint)Integer.val));
+
+    $NewBeamOp(S, op);
+    $BeamOpNameArity(op, gen_plus, 5);
+    op->a[0] = Fail;
+    op->a[1] = Live;
+    op->a[2] = Src;
+    op->a[3].type = TAG_i;
+    op->a[3].val = -(Sint)Integer.val;
+    op->a[4] = Dst;
+
+    return op;
 }

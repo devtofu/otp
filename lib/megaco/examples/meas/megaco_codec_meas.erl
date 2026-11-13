@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2002-2020. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2002-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -39,6 +41,16 @@
 %%----------------------------------------------------------------------
 
 -module(megaco_codec_meas).
+-moduledoc """
+This module implements a simple megaco codec measurement tool.
+
+Results are written to file (excel compatible text files) and on stdout.
+
+_Note_ that this module is _not_ included in the runtime part of the
+application.
+""".
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
 
 %% -compile(export_all).
 
@@ -46,7 +58,7 @@
 %% API
 %% Avoid warning for local function error/2 clashing with autoimported BIF.
 -compile({no_auto_import,[error/2]}).
--export([start/0, start/1]).
+-export([start/0, start/1, start/2]).
 -export([start1/0]).
 
 %% Internal exports
@@ -55,6 +67,10 @@
 
 
 -include_lib("kernel/include/file.hrl").
+
+%% We are not mstone but the (mstone) lib module has general
+%% functions that we can use.
+-define(LIB, megaco_codec_mstone_lib).
 
 -define(V3, v3).
 
@@ -74,26 +90,62 @@
 
 -define(DEFAULT_MESSAGE_PACKAGE, megaco_codec_transform:default_message_package()).
 
+-define(DEFAULT_OPTS, #{verbose => true}).
+
+-define(FTS(), formated_timestamp()).
+
+
 -record(stat, {name, ecount, etime, dcount, dtime, size}).
 
 
 %% Runs the measurement on all "official" codecs
 
+-doc false.
 start1() ->
     put(everbose,true),
     start().
 
+-doc(#{equiv => start/1}).
 start() ->
-    meas_init(?DEFAULT_MESSAGE_PACKAGE, ?MEASURE_CODECS).
+    meas_init(1, ?DEFAULT_OPTS, ?DEFAULT_MESSAGE_PACKAGE, ?MEASURE_CODECS).
+
+-doc """
+start(MessagePackage)
+
+This function runs the measurement on all the _official_ codecs; pretty,
+compact, ber, per and erlang.
+
+This function is intended to be called from the _meas_ script, which
+uses the '-s' arguments to run the function:
+
+```text
+erl -s megaco_codec_meas start time_test
+```
+
+""".
+
+-spec start([MessagePackage]) -> ok when
+      MessagePackage :: atom();
+           (MessagePackage) -> ok when
+      MessagePackage :: atom();
+           (Factor) -> ok when
+      Factor :: pos_integer().
 
 start([MessagePackage]) ->
-    do_start(MessagePackage, ?MEASURE_CODECS);
+    do_start(1, ?DEFAULT_OPTS, MessagePackage, ?MEASURE_CODECS);
+start(Factor) when is_integer(Factor) andalso (Factor > 0) ->
+    do_start(Factor, ?DEFAULT_OPTS, ?DEFAULT_MESSAGE_PACKAGE, ?MEASURE_CODECS);
 start(MessagePackage) ->
-    do_start(MessagePackage, ?MEASURE_CODECS).
+    do_start(1, ?DEFAULT_OPTS, MessagePackage, ?MEASURE_CODECS).
 
-do_start(MessagePackageRaw, Codecs) ->
+-doc false.
+start(Factor, Opts) when is_integer(Factor) andalso (Factor > 0) andalso
+                         is_map(Opts) ->
+    do_start(Factor, Opts, ?DEFAULT_MESSAGE_PACKAGE, ?MEASURE_CODECS).
+
+do_start(Factor, Opts, MessagePackageRaw, Codecs) ->
     MessagePackage = parse_message_package(MessagePackageRaw), 
-    meas_init(MessagePackage, Codecs).
+    meas_init(Factor, Opts, MessagePackage, Codecs).
     
 parse_message_package(MessagePackageRaw) when is_list(MessagePackageRaw) ->
     list_to_atom(MessagePackageRaw);
@@ -113,7 +165,7 @@ parse_message_package(BadMessagePackage) ->
 %%    pretty | compact | ber | per | erlang
 %%
 
-meas_init(MessagePackage, Codecs) ->
+meas_init(Factor, Opts, MessagePackage, Codecs) ->
     %% process_flag(trap_exit, true),
     io:format("~nRun meas on message package: ~p~n~n", [MessagePackage]),
     display_os_info(),
@@ -124,9 +176,9 @@ meas_init(MessagePackage, Codecs) ->
     case megaco_codec_transform:messages(MessagePackage) of
 	Messages when is_list(Messages) ->
 	    ExpandedMessages = expand_messages(Codecs, Messages),
-	    Results = t1(ExpandedMessages, []), 
+	    Results = t1(Factor, Opts, ExpandedMessages, []), 
 	    display_time(Started, os:timestamp()),
-	    store_results(Results);
+            process_results(Opts, Results);
 	Error ->
 	    Error
     end.
@@ -139,12 +191,8 @@ display_os_info() ->
 	    Str ->
 		Str
 	end,
-    case os:type() of
-	{OsFam, OsName} ->
-	    io:format("OS:                  ~p-~p: ~s~n", [OsFam, OsName, V]);
-	OsFam ->
-	    io:format("OS:                  ~p: ~s~n", [OsFam, V])
-    end.
+    {OsFam, OsName} = os:type(),
+    io:format("OS:                  ~p-~p: ~s~n", [OsFam, OsName, V]).
 	    
 display_system_info() ->
     SysArch = string:strip(erlang:system_info(system_architecture),right,$\n),
@@ -155,39 +203,7 @@ display_system_info() ->
     
     
 display_app_info() ->
-    display_megaco_info(),
-    display_asn1_info().
-
-display_megaco_info() ->
-    MI = megaco:module_info(),
-    {value, {attributes, Attr}} = lists:keysearch(attributes, 1, MI),
-    {value, {app_vsn,    Ver}}  = lists:keysearch(app_vsn, 1, Attr),
-    FlexStr = 
-	case megaco_flex_scanner:is_enabled() of
-	    true ->
-		case megaco_flex_scanner:is_reentrant_enabled() of
-		    true ->
-			"reentrant flex";
-		    false ->
-			"non-reentrant flex"
-		end;
-	    false ->
-		"no flex"
-	end,
-    io:format("Megaco version:      ~s (~s)~n", [Ver, FlexStr]).
-
-display_asn1_info() ->
-    AI = megaco_ber_media_gateway_control_v1:info(),
-    Vsn = 
-	case lists:keysearch(vsn, 1, AI) of
-	    {value, {vsn, V}} when is_atom(V) ->
-		atom_to_list(V);
-	    {value, {vsn, V}} when is_list(V) ->
-		V;
-	    _ ->
-		"unknown"
-	end,
-    io:format("ASN.1 version:       ~s~n", [Vsn]).
+    ?LIB:display_app_info().
 
 
 %% {MegaSec, Sec, MicroSec}
@@ -200,6 +216,9 @@ display_time(Start, Fin) ->
     io:format("          ~s~n~n~n", [FormatDiff]),
     ok.
     
+formated_timestamp() ->
+    format_timestamp(os:timestamp()).
+
 format_timestamp({_N1, _N2, N3} = Now) ->
     {Date, Time}   = calendar:now_to_datetime(Now),
     {YYYY,MM,DD}   = Date,
@@ -228,41 +247,41 @@ format_diff(Start, Fin) ->
     
     
 			      
-t1([], Results) ->
+t1(_Factor, _Opts, [], Results) ->
     lists:reverse(Results);
-t1([{Id, Codec, Conf, _, _} = ECodec|EMsgs], Results) ->
-    case (catch measure(ECodec)) of
+t1(Factor, Opts, [{Id, Codec, Conf, _, _} = ECodec|EMsgs], Results) ->
+    case (catch measure(Factor, Opts, ECodec)) of
 	{'EXIT', Reason} ->
 	    error("measure of codec ~p exited: ~n~p", [Codec, Reason]),
-	    t1(EMsgs, Results);
+	    t1(Factor, Opts, EMsgs, Results);
 	{error, Reason} ->
 	    error("skipping codec ~p: ~n~p", [Codec, Reason]),
-	    t1(EMsgs, Results);
+	    t1(Factor, Opts, EMsgs, Results);
 	{ok, Res} ->
-	    t1(EMsgs, [{Id, Conf, Res}| Results])
+	    t1(Factor, Opts, EMsgs, [{Id, Conf, Res}| Results])
     end.
 
 
-measure({Id, Codec, Conf, Count, Msgs}) ->
-    io:format("measure using codec ~p ~p~n ", [Codec, Conf]),
+measure(Factor, Opts, {Id, Codec, Conf, Count, Msgs}) ->
+    io:format("[~s] measure using codec ~p ~p~n ", [?FTS(), Codec, Conf]),
     {Init, Conf1} = measure_init(Conf),
     Conf2 = [{version3,?V3}|Conf1],
-    Res = measure(Id, Codec, Conf2, Msgs, [], Count),
+    Res = measure(Factor, Opts, Id, Codec, Conf2, Msgs, [], Count),
     measure_fin(Init),
     Res.
 
 
 expand_messages(Codecs, Messages) ->
     ECodecs = expand_codecs(Codecs, []),
-    expand_messages(ECodecs, Messages, []).
+    do_expand_messages(ECodecs, Messages, []).
 
-expand_messages([], _, EMessages) ->
+do_expand_messages([], _, EMessages) ->
     lists:reverse(EMessages);
-expand_messages([{Id, Codec, Conf, Count} | ECodecs], Messages, EMessages) ->
+do_expand_messages([{Id, Codec, Conf, Count} | ECodecs], Messages, EMessages) ->
     case lists:keysearch(Id, 1, Messages) of
 	{value, {Id, Msgs}} ->
-	    expand_messages(ECodecs, Messages, 
-			    [{Id, Codec, Conf, Count, Msgs}|EMessages]);
+	    do_expand_messages(ECodecs, Messages, 
+                               [{Id, Codec, Conf, Count, Msgs}|EMessages]);
 	false ->
 	    exit({error, {no_such_codec_data, Id}})
     end.
@@ -273,6 +292,8 @@ expand_codecs([Codec|Codecs], ECodecs) when is_atom(Codec) ->
     ECodec = expand_codec(Codec),
     expand_codecs(Codecs, [ECodec|ECodecs]).
 
+%% Make "sure" the factor is evenly divisible by the message count
+%% for *all* codec's.
 expand_codec(Codec) ->
     case Codec of
 	pretty ->
@@ -293,9 +314,7 @@ expand_codec(Codec) ->
 	     {Codec, megaco_erl_dist_encoder, [compressed], 400},
 	     {Codec, megaco_erl_dist_encoder, [megaco_compressed], 10000},
  	     {Codec, megaco_erl_dist_encoder, [], 10000}
-	    ];
-	Else ->
-	    exit({error, {invalid_codec, Else}})
+	    ]
     end.
 
 
@@ -312,74 +331,95 @@ measure_fin(_) ->
     ok.
 
 
-measure(_Dir, _Codec, _Conf, [], [], _MCount) ->
+measure(_Factor, _Opts, _Dir, _Codec, _Conf, [], [], _MCount) ->
     {error, no_messages};
 
-measure(_Dir, _Codec, _Conf, [], Res, _MCount) ->
+measure(_Factor, _Opts, _Dir, _Codec, _Conf, [], Res, _MCount) ->
 
-    Eavg = avg([Etime/Ecnt || #stat{ecount = Ecnt, etime = Etime} <- Res]),
-    Davg = avg([Dtime/Dcnt || #stat{dcount = Dcnt, dtime = Dtime} <- Res]),
-    Savg = avg([Size       || #stat{size = Size} <- Res]),
+    {Savg, Eavg, Davg} = process_measure_results(Res),
 
-    io:format("~n  Measurment on ~p messages:"
-	      "~n  Average size:   ~w bytes, "
-	      "~n          encode: ~w microsec, "
-	      "~n          decode: ~w microsec~n~n", 
-	      [length(Res), Savg, Eavg, Davg]),
+    io:format("~n[~s] Measurment on ~p messages:"
+	      "~n  Average:"
+              "~n      Size:   ~w bytes, "
+	      "~n      Encode: ~w nanosec, "
+	      "~n      Decode: ~w nanosec~n~n", 
+	      [?FTS(), length(Res), Savg, Eavg, Davg]),
 
     {ok, lists:reverse(Res)};
 
-measure(Dir, Codec, Conf, [{Name, Bin}|Msgs], Results, MCount) ->
-    io:format(" ~p", [Name]),
-    case (catch do_measure(Dir, Codec, Conf, Name, Bin, MCount)) of
+measure(Factor, #{verbose := Verbose} = Opts,
+        Dir, Codec, Conf, [{Name, Bin}|Msgs], Results, MCount) ->
+    vprint(Verbose, " ~p", [Name]),
+    case (catch do_measure(Factor, Opts,
+                           Dir, Codec, Conf, Name, Bin, MCount)) of
 	{ok, Stat} ->
-	    measure(Dir, Codec, Conf, Msgs, [Stat | Results], MCount);
+	    measure(Factor, Opts,
+                    Dir, Codec, Conf, Msgs, [Stat | Results], MCount);
 
 	{error, S} ->
-	    io:format("~n~s failed: ~n", [Name]),
+            if
+                (Verbose =:= true) ->
+                    io:format("~n[~s] ~s failed: ~n", [?FTS(), Name]);
+                true ->
+                    io:format("[~s] ~s failed: ~n", [?FTS(), Name])
+            end,
 	    error(S,[]),
-	    measure(Dir, Codec, Conf, Msgs, Results, MCount);
+	    measure(Factor, Opts, Dir, Codec, Conf, Msgs, Results, MCount);
 
 	{info, S} ->
-	    case get(verbose) of
+            vprint(Verbose, "~n"),
+	    case Verbose orelse get(verbose) of
 		true ->
-		    io:format("~n", []),
 		    info(S,[]);
 		_ ->
-		    io:format("~n~s skipped~n", [Name])
+		    io:format("~s skipped~n", [Name])
 	    end,
-	    measure(Dir, Codec, Conf, Msgs, Results, MCount)
+	    measure(Factor, Opts, Dir, Codec, Conf, Msgs, Results, MCount)
 
     end.
 
+process_measure_results(Res) when is_list(Res) ->
+    Savg = avg([Size       || #stat{size = Size} <- Res]),
+    Eavg = avg([Etime/Ecnt || #stat{ecount = Ecnt, etime = Etime} <- Res]),
+    Davg = avg([Dtime/Dcnt || #stat{dcount = Dcnt, dtime = Dtime} <- Res]),
+    {Savg, Eavg, Davg}.
 
-do_measure(_Id, Codec, Conf, Name, BinMsg, MCount) ->
+
+
+do_measure(Factor, Opts, _Id, Codec, Conf, Name, BinMsg, MCount) ->
     %% io:format("~n~s~n", [binary_to_list(BinMsg)]),
-    {Version, NewBin}  = detect_version(Codec, Conf, BinMsg),
-    {Msg, Dcnt, Dtime} = measure_decode(Codec, Conf, Version, NewBin, MCount),
-    {_,   Ecnt, Etime} = measure_encode(Codec, Conf, Version, Msg, MCount),
+    {Version, NewBin}  = detect_version(Opts, Codec, Conf, BinMsg),
+    {Msg, Dcnt, Dtime} =
+        measure_decode(Factor, Codec, Conf, Version, NewBin, MCount),
+    {_,   Ecnt, Etime} =
+        measure_encode(Factor, Codec, Conf, Version, Msg, MCount),
 
     {ok, #stat{name   = Name, 
 	       ecount = Ecnt, etime = Etime, 
 	       dcount = Dcnt, dtime = Dtime, 
-	       size = size(NewBin)}}.
+	       size = byte_size(NewBin)}}.
 
-detect_version(Codec, Conf, Bin) ->
+detect_version(#{verbose := Verbose} = _Opts, Codec, Conf, Bin) ->
     case (catch Codec:version_of(Conf, Bin)) of
 	{ok, V} ->
-	    io:format("[~w]", [V]),
-	    {ok, M} = Codec:decode_message(Conf, V, Bin),
+            vprint(Verbose, "[~w]", [V]),
+ 	    {ok, M} = Codec:decode_message(Conf, V, Bin),
 	    {ok, NewBin} = Codec:encode_message(Conf, V, M),
-	    io:format("[~w]", [size(NewBin)]),
+            vprint(Verbose, "[~w]", [byte_size(NewBin)]),
 	    {V, NewBin};
 	Error ->
-	    io:format("~nversion detection failed:~n~p", [Error]),
+            if
+                (Verbose =:= true) ->
+                    io:format("~nversion detection failed:~n~p", [Error]);
+                true ->
+                    io:format("version detection failed:~n~p", [Error])
+            end,
 	    Error
     end.
 	    
 
-measure_decode(Codec, Conf, Version, Bin, MCount) ->
-    case measure_codec(Codec, decode_message, Conf, Version, Bin, MCount) of
+measure_decode(Factor, Codec, Conf, Version, Bin, MCount) ->
+    case measure_codec(Factor, Codec, decode_message, Conf, Version, Bin, MCount) of
 	{ok, Res} ->
 	    Res;
 	{error, Reason} ->
@@ -387,8 +427,8 @@ measure_decode(Codec, Conf, Version, Bin, MCount) ->
 	    throw({error, S})
     end.
 
-measure_encode(Codec, Conf, Version, Bin, MCount) ->
-    case measure_codec(Codec, encode_message, Conf, Version, Bin, MCount) of
+measure_encode(Factor, Codec, Conf, Version, Bin, MCount) ->
+    case measure_codec(Factor, Codec, encode_message, Conf, Version, Bin, MCount) of
 	{ok, Res} ->
 	    Res;
 	{error, Reason} ->
@@ -397,21 +437,28 @@ measure_encode(Codec, Conf, Version, Bin, MCount) ->
     end.
 
 
-measure_codec(Codec, Func, Conf, Version, Bin, MCount) ->
-    Pid = spawn_link(?MODULE, do_measure_codec, 
-                     [self(), Codec, Func, Conf, Version, Bin, MCount]),
+measure_codec(Factor, Codec, Func, Conf, Version, Bin, MCount) 
+  when is_integer(Factor) andalso (Factor > 0) andalso
+       is_atom(Codec) andalso
+       is_atom(Func) andalso
+       is_list(Conf) andalso
+       is_integer(MCount) andalso (MCount > 0) ->
+    {Pid, MRef} =
+        spawn_monitor(?MODULE, do_measure_codec, 
+                      [Factor, Codec, Func, Conf, Version, Bin, MCount]),
     receive
-	{measure_result, Pid, Func, Res} ->
+        {'DOWN', MRef, process, Pid, {measure_result, Res}} ->
 	    {ok, Res};
-	{error, Pid, Error} ->
+	{'DOWN', MRef, process, Pid, {error, Error}} ->
 	    {error, Error};
-	Else ->
+	{'DOWN', MRef, process, Pid, Else} ->
 	    {error, {unexpected_result, Else}}
     after ?MEASURE_TIMEOUT ->
 	    Info = 
 		case (catch process_info(Pid)) of
 		    I when is_list(I) ->
-			exit(Pid, kill),
+                        erlang:demonitor(MRef),
+                        erlang:exit_signal(Pid, kill),
 			I;
 		    _ ->
 			undefined
@@ -420,21 +467,22 @@ measure_codec(Codec, Func, Conf, Version, Bin, MCount) ->
     end.
 
 
-do_measure_codec(Parent, Codec, Func, Conf, Version, Bin, MCount) ->
+-doc false.
+do_measure_codec(Factor, Codec, Func, Conf, Version, Bin, MCount) ->
     {ok, Count} = measure_warmup(Codec, Func, Conf, Version, Bin, MCount),
+    Count2      = Count div Factor,
     Res = timer:tc(?MODULE, do_measure_codec_loop, 
-		   [Codec, Func, Conf, Version, Bin, Count, dummy]),
+		   [Codec, Func, Conf, Version, Bin, Count2, dummy],
+                   nanosecond),
     case Res of
 	{Time, {ok, M}} ->
-	    %% io:format("~w ", [Time]),
-	    Parent ! {measure_result, self(), Func, {M, Count, Time}};
+	    exit({measure_result, {M, Count2, Time}});
 	{_Time, Error} ->
-	    Parent ! {error, self(), Error}
-    end,
-    unlink(Parent). % Make sure Parent don't get our exit signal
+            exit({error, Error})
+    end.
 
 
-%% This function does more mor less what the real measure function
+%% This function does more or less what the real measure function
 %% above does. But with the diff:
 %% 1) Warmup to ensure that all used code are loaded
 %% 2) To aproximate the encoding time, to ensure that 
@@ -443,16 +491,23 @@ measure_warmup(Codec, Func, Conf, Version, M, MCount) ->
     Res = timer:tc(?MODULE, do_measure_codec_loop, 
 		   [Codec, Func, Conf, Version, M, MCount, dummy]),
     case Res of
-	{Time, {ok, _}} ->
+	{Time, {ok, _}} when is_integer(Time) andalso (Time > 0) ->
 	    %% OK so far, now calculate the count:
-	    Count = round(?MEASURE_COUNT_TIME/(Time/MCount)),
-	    %% io:format("~w ", [Count]),
-	    {ok, Count};
-	{_Time, Error} ->
-	    {error, {warmup_failed, Error}}
+            %% For some reason we get a 'badarith' on some platforms
+            %% here. Since this is just the warmup we can try-catch.
+            try round(?MEASURE_COUNT_TIME/(Time/MCount)) of
+                Count ->
+                    {ok, Count}
+            catch
+                _:_:_ ->
+                    {error, {failed_calculated_count, Time, MCount}}
+            end;
+	{Time, Error} ->
+	    {error, {warmup_failed, Time, Error}}
     end.
 
 
+-doc false.
 do_measure_codec_loop(_Codec, _Func, _Conf, _Version, _Bin, 0, M) ->
     {ok, M};
 do_measure_codec_loop(Codec, Func, Conf, Version, Bin, Count, _) ->
@@ -461,6 +516,50 @@ do_measure_codec_loop(Codec, Func, Conf, Version, Bin, Count, _) ->
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+process_results(#{bench := true}, Results) ->
+    ProcessedResults = process_bench_results(Results),
+    {bench, ProcessedResults};
+process_results(_, Results) ->
+    store_results(Results).
+
+process_bench_results(Results) ->
+    process_bench_results(Results, []).
+
+process_bench_results([] = _Results, AccProcessedResults) ->
+    lists:reverse(AccProcessedResults);
+process_bench_results([{BaseName, Config, Result} | Results],
+                      AccProcessedResults) ->
+    Name = process_bench_result_name(BaseName, Config),
+    ProcessedResult = process_measure_results(Result),
+    process_bench_results(Results,
+                          [{Name, ProcessedResult} | AccProcessedResults]).
+
+process_bench_result_name(pretty = BaseName, []) ->
+    BaseName;
+process_bench_result_name(pretty = BaseName, [flex_scanner]) ->
+    list_to_atom(f("~w_~w", [BaseName, flex]));
+process_bench_result_name(compact = BaseName, []) ->
+    BaseName;
+process_bench_result_name(compact = BaseName, [flex_scanner]) ->
+    list_to_atom(f("~w_~w", [BaseName, flex]));
+process_bench_result_name(ber = BaseName, []) ->
+    BaseName;
+process_bench_result_name(ber = BaseName, [native]) ->
+    list_to_atom(f("~w_~w", [BaseName, native]));
+process_bench_result_name(per = BaseName, []) ->
+    BaseName;
+process_bench_result_name(per = BaseName, [native]) ->
+    list_to_atom(f("~w_~w", [BaseName, native]));
+process_bench_result_name(erlang, []) ->
+    erl;
+process_bench_result_name(erlang, [megaco_compressed]) ->
+    erl_mc;
+process_bench_result_name(erlang, [compressed]) ->
+    erl_c;
+process_bench_result_name(erlang, [megaco_compressed, compressed]) ->
+    erl_mc_c.
+
 
 store_results(Results) ->
     io:format("storing: ~n", []),    
@@ -591,13 +690,14 @@ start_flex_scanner() ->
         {flex_scanner_error, Reason} ->
             throw({error, {failed_loading_flex_scanner_driver, Reason}})
     after 10000 ->
-            exit(Pid, kill),
+            erlang:exit_signal(Pid, kill),
             throw({error, {failed_starting_flex_scanner, timeout}})
     end.
 
 stop_flex_scanner(Pid) ->
     Pid ! stop_flex_scanner.
 
+-doc false.
 flex_scanner_handler(Pid) ->
     case (catch megaco_flex_scanner:start()) of
         {ok, Port} when is_port(Port) ->
@@ -638,6 +738,23 @@ flex_scanner_handler(Pid, PortOrPorts) ->
             info("flex scanner handler got something:~n~p", [Other]),
             flex_scanner_handler(Pid, PortOrPorts)
     end.
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+vprint(Verbose, F) ->
+    vprint(Verbose, F, []).
+
+vprint(true, F, A) ->
+    io:format(F, A);
+vprint(_, _, _) ->
+    ok.
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+f(F, A) ->
+    lists:flatten(io_lib:format(F, A)).
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

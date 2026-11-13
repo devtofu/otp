@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2017-2019. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2017-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,6 +20,8 @@
 %% %CopyrightEnd%
 %%
 -module(gen_tcp_dist).
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
 
 %%
 %% This is an example of how to plug in an arbitrary distribution
@@ -38,7 +42,8 @@
 %%
 
 -export([listen/1, accept/1, accept_connection/5,
-	 setup/5, close/1, select/1, is_node_name/1]).
+	 setup/5, close/1, select/1, is_node_name/1,
+         address/0]).
 
 %% Optional
 -export([setopts/2, getopts/2]).
@@ -71,6 +76,12 @@ select(Node) ->
             end;
 	_ -> false
     end.
+
+%% ------------------------------------------------------------
+%% Get the address family that this distribution uses
+%% ------------------------------------------------------------
+address() ->
+    get_tcp_address().
 
 %% ------------------------------------------------------------
 %% Create the listen socket, i.e. the port that this erlang
@@ -183,7 +194,7 @@ flush_controller(Pid, Socket) ->
 accept_connection(AcceptPid, DistCtrl, MyNode, Allowed, SetupTime) ->
     spawn_opt(?MODULE, do_accept,
 	      [self(), AcceptPid, DistCtrl, MyNode, Allowed, SetupTime],
-	      [link, {priority, max}]).
+	      dist_util:net_ticker_spawn_options()).
 
 do_accept(Kernel, AcceptPid, DistCtrl, MyNode, Allowed, SetupTime) ->
     ?trace("~p~n",[{?MODULE, do_accept, self(), MyNode}]),
@@ -230,7 +241,7 @@ nodelay() ->
 setup(Node, Type, MyNode, LongOrShortNames,SetupTime) ->
     spawn_opt(?MODULE, do_setup, 
 	      [self(), Node, Type, MyNode, LongOrShortNames, SetupTime],
-	      [link, {priority, max}]).
+	      dist_util:net_ticker_spawn_options()).
 
 do_setup(Kernel, Node, Type, MyNode, LongOrShortNames, SetupTime) ->
     ?trace("~p~n",[{?MODULE, do_setup, self(), Node}]),
@@ -344,9 +355,12 @@ split_node([], _, Ack)        -> [lists:reverse(Ack)].
 %% ------------------------------------------------------------
 get_tcp_address(Socket) ->
     {ok, Address} = inet:sockname(Socket),
+    NetAddr = get_tcp_address(),
+    NetAddr#net_address{address = Address}.
+
+get_tcp_address() ->
     {ok, Host} = inet:gethostname(),
     #net_address {
-		  address = Address,
 		  host = Host,
 		  protocol = tcp,
 		  family = inet
@@ -444,7 +458,7 @@ hs_data_common(DistCtrl) ->
 %%   the connection down if no incoming traffic is seen.
 %%   This process also executes on max priority.
 %%
-%%   These parties are linked togheter so should one
+%%   These parties are linked together so should one
 %%   of them fail, all of them are terminated and the
 %%   connection is taken down.
 %%
@@ -569,7 +583,7 @@ call_ctrlr(Ctrlr, Msg) ->
 %% non-blocking send operation exposed in its API
 %% and we don't want to run the distribution
 %% controller under high priority. Therefore this
-%% sparate process with max prio that dispatches
+%% separate process with max prio that dispatches
 %% ticks.
 %%
 dist_cntrlr_tick_handler(Socket) ->
@@ -700,7 +714,7 @@ dist_cntrlr_setup_loop(Socket, TickHandler, Sup) ->
 
 dist_cntrlr_input_setup(DHandle, Socket, Sup) ->
     link(Sup),
-    %% Ensure we don't try to put data before registerd
+    %% Ensure we don't try to put data before we are registered
     %% as input handler...
     receive
         DHandle ->
@@ -775,7 +789,7 @@ death_row() ->
 
 death_row(normal) ->
     %% We do not want to exit with normal
-    %% exit reason since it wont bring down
+    %% exit reason since it won't bring down
     %% linked processes...
     death_row();
 death_row(Reason) ->

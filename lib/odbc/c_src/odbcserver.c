@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 1999-2016. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 1999-2026. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,10 +28,10 @@
   database using the Microsoft ODBC API. The c-process is implemented
   using two threads the supervisor thread and the database handler thread.
   If the database thread should hang erlang can close the c-process down
-  by sendig a shutdown request to the supervisor thread.
+  by sending a shutdown request to the supervisor thread.
 
   Erlang will start this c-process as a port-program and send information
-  regarding inet-port nummbers through the erlang-port.
+  regarding inet-port numbers through the erlang-port.
   After that c-process will communicate via sockets with erlang. The
   reason for this is that some odbc-drivers do unexpected things with
   stdin/stdout messing up the erlang-port communication.
@@ -41,7 +43,7 @@
    Bytes, StringTerminator]
    
    CommandByte - constants between 0 and 255
-   identifing the request defined in odbc_internal.hrl and odbcserver.h
+   identifying the request defined in odbc_internal.hrl and odbcserver.h
 
    Bytes - How to interpret this sequence of bytes depends on the
    CommandByte.
@@ -60,7 +62,10 @@
    they are converted to string values.
 
    [?OPEN_CONNECTION, C_AutoCommitMode, C_TraceDriver, C_SrollableCursors,
-   C_TupelRow, BinaryStrings, ConnectionStr]
+   C_TupelRow, BinaryStrings, ExtendedErrors, 255, 1,
+   MaxLongColumnSizeOctets (4 bytes, big-endian, 0 = default), ConnectionStr]
+   Legacy layout: same first six bytes then ConnectionStr; optional tuning via
+   ERL_ODBC_MAX_LONG_COLUMN_SIZE.
    [?CLOSE_CONNECTION]		     
    [?COMMIT_TRANSACTION, CommitMode]
    [?QUERY, SQLQuery]
@@ -78,6 +83,7 @@
    C_SrollableCursors - ?ON | ?OFF
    C_TupelRow -  - ?ON | ?OFF
    BinaryStrings - ?ON | ?OFF
+   ExtendedErrors - ?ON | ?OFF
    ConnectionStr -  String
    CommitMode -  ?COMMIT | ?ROLLBACK
    SQLQuery  - String
@@ -103,6 +109,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <errno.h>
 
 #ifdef UNIX
 #include <unistd.h>
@@ -139,11 +146,12 @@ DWORD WINAPI database_handler(const char *port);
 #else
 void database_handler(const char *port);
 #endif
-static db_result_msg handle_db_request(byte *reqstring, db_state *state);
+static db_result_msg handle_db_request(byte *reqstring, size_t msg_len,
+                                       db_state *state);
 static void supervise(const char *port);
 /* ----------------- ODBC functions --------------------------------------*/
 
-static db_result_msg db_connect(byte *connStrIn, db_state *state);
+static db_result_msg db_connect(byte *args, size_t args_len, db_state *state);
 static db_result_msg db_close_connection(db_state *state);
 static db_result_msg db_end_tran(byte compleationtype, db_state *state);
 static db_result_msg db_query(byte *sql, db_state *state);
@@ -191,7 +199,7 @@ static byte * receive_erlang_port_msg(void);
 #ifdef WIN32
 static SOCKET connect_to_erlang(const char *port); 
 static void send_msg(db_result_msg *msg, SOCKET socket);
-static byte *receive_msg(SOCKET socket);
+static byte *receive_msg(SOCKET socket, size_t *msg_len_out);
 static Boolean receive_msg_part(SOCKET socket,
 				byte * buffer, size_t msg_len);
 static Boolean send_msg_part(SOCKET socket, byte * buffer, size_t msg_len);
@@ -200,7 +208,7 @@ static void init_winsock(void);
 #elif defined(UNIX)
 static int connect_to_erlang(const char *port);
 static void send_msg(db_result_msg *msg, int socket);
-static byte *receive_msg(int socket);
+static byte *receive_msg(int socket, size_t *msg_len_out);
 static Boolean receive_msg_part(int socket, byte * buffer, size_t msg_len);
 static Boolean send_msg_part(int socket, byte * buffer, size_t msg_len);
 static void close_socket(int socket); 
@@ -208,7 +216,7 @@ static void tcp_nodelay(int sock);
 #endif
 static void clean_socket_lib(void);
 
-/*------------- Memory handling funtions --------------------------------*/
+/*------------- Memory handling functions --------------------------------*/
 
 static void * safe_malloc(int size);
 static void * safe_realloc(void * ptr, int size);
@@ -218,7 +226,7 @@ static void free_params(param_array **params, int cols);
 static void clean_state(db_state *state);
 static SQLLEN* alloc_strlen_indptr(int n, int val);
 
-/* ------------- Init/map/bind/retrive functions -------------------------*/
+/* ------------- Init/map/bind/retrieve functions -------------------------*/
 
 static void init_driver(int erl_auto_commit_mode, int erl_trace_driver,
 			   db_state *state);
@@ -249,6 +257,7 @@ static int num_out_params(int num_of_params, param_array* params);
 /* ------------- Error handling functions --------------------------------*/
 
 static diagnos get_diagnos(SQLSMALLINT handleType, SQLHANDLE handle, Boolean extendedErrors);
+static void append_error_msg(diagnos *diagnosp, const char *str);
 
 /* ------------- Boolean functions ---------------------------------------*/
 
@@ -331,7 +340,7 @@ void supervise(const char *port) {
 #endif
     
     socket = connect_to_erlang(port);
-    msg = receive_msg(socket);
+    msg = receive_msg(socket, NULL);
 
     if(msg[0] == SHUTDOWN) {
 	reason = EXIT_SUCCESS;
@@ -355,7 +364,7 @@ DWORD WINAPI database_handler(const char *port)
     byte *request_buffer = NULL;
     db_state state =
     {NULL, NULL, NULL, NULL, 0, {NULL, 0, 0},
-     FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE};
+     FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, (SQLULEN)0};
     byte request_id;
 #ifdef WIN32
     SOCKET socket;
@@ -367,23 +376,26 @@ DWORD WINAPI database_handler(const char *port)
     socket = connect_to_erlang(port);
   
     do {      
-	request_buffer = receive_msg(socket);
+        {
+            size_t req_len;
+            request_buffer = receive_msg(socket, &req_len);
 
-	request_id = request_buffer[0];
-	msg = handle_db_request(request_buffer, &state);
+            request_id = request_buffer[0];
+            msg = handle_db_request(request_buffer, req_len, &state);
+        }
 
-	send_msg(&msg, socket); /* Send answer to erlang */
-	    
-	if (msg.dyn_alloc) {
-	    ei_x_free(&(state.dynamic_buffer));
-	} else {
-	    free(msg.buffer);
-	    msg.buffer = NULL;
-	}   
-	
-	free(request_buffer);
-	request_buffer = NULL;
-    
+        send_msg(&msg, socket); /* Send answer to erlang */
+
+        if (msg.dyn_alloc) {
+            ei_x_free(&(state.dynamic_buffer));
+        } else {
+            free(msg.buffer);
+            msg.buffer = NULL;
+        }
+
+        free(request_buffer);
+        request_buffer = NULL;
+
     } while(request_id != CLOSE_CONNECTION);
 
     shutdown(socket, 2);
@@ -396,49 +408,80 @@ DWORD WINAPI database_handler(const char *port)
 }
  
 /* Description: Calls the appropriate function to handle the database
-   request recived from the erlang-process. Returns a message to send back
+   request received from the erlang-process. Returns a message to send back
    to erlang. */
-static db_result_msg handle_db_request(byte *reqstring, db_state *state)
+static db_result_msg handle_db_request(byte *reqstring, size_t msg_len,
+                                       db_state *state)
 {
     byte *args;
     byte request_id;
+    size_t args_len;
   
     /* First byte is an index that identifies the requested command the
        rest is the argument string. */
     request_id = reqstring[0]; 
     args = reqstring + sizeof(byte);
+    args_len = (msg_len > sizeof(byte)) ? (msg_len - sizeof(byte)) : 0;
   
     switch(request_id) {
     case OPEN_CONNECTION:
-	return db_connect(args, state); 
+        return db_connect(args, args_len, state);
     case CLOSE_CONNECTION:
-	return db_close_connection(state);
+        return db_close_connection(state);
     case COMMIT_TRANSACTION:
-	if(args[0] == COMMIT) {
-	    return db_end_tran((byte)SQL_COMMIT, state);
-	} else { /* args[0] == ROLLBACK */
-	    return db_end_tran((byte)SQL_ROLLBACK, state);
-	}
+        if(args[0] == COMMIT) {
+            return db_end_tran((byte)SQL_COMMIT, state);
+        } else { /* args[0] == ROLLBACK */
+            return db_end_tran((byte)SQL_ROLLBACK, state);
+        }
     case QUERY:
-	return db_query(args, state);
+        return db_query(args, state);
     case SELECT_COUNT:
-	return db_select_count(args, state);
+        return db_select_count(args, state);
     case SELECT:
-	return db_select(args, state);
+        return db_select(args, state);
     case PARAM_QUERY:
-	return db_param_query(args, state);
+        return db_param_query(args, state);
     case DESCRIBE:
-	return db_describe_table(args, state);
+        return db_describe_table(args, state);
     default:
-	DO_EXIT(EXIT_FAILURE); /* Should not happen */
-    }  
+        DO_EXIT(EXIT_FAILURE); /* Should not happen */
+    }
 }
  
 /* ----------------- ODBC-functions  ----------------------------------*/
+
+static SQLULEN
+clamp_max_long_col_size(SQLULEN value)
+{
+    if (value == (SQLULEN)0)
+        return (SQLULEN)DEFAULT_MAX_LONG_COL_SIZE;
+    if (value > (SQLULEN)HARD_MAX_LONG_COL_SIZE)
+        return (SQLULEN)HARD_MAX_LONG_COL_SIZE;
+    return value;
+}
+
+static SQLULEN
+max_long_col_size_from_env(void)
+{
+    const char *e = getenv("ERL_ODBC_MAX_LONG_COLUMN_SIZE");
+    unsigned long v;
+    char *end = NULL;
+
+    if (e == NULL || e[0] == '\0')
+        return (SQLULEN)0;
+    errno = 0;
+    v = strtoul(e, &end, 10);
+    if (end == e || *end != '\0')
+        return (SQLULEN)0;
+    if (errno == ERANGE)
+        return (SQLULEN)0;
+    return (SQLULEN)v;
+}
  
 /* Description: Tries to open a connection to the database using
    <connStrIn>, returns a message indicating the outcome. */
-static db_result_msg db_connect(byte *args, db_state *state)
+static db_result_msg db_connect(byte *args, size_t args_len, db_state *state)
 {
     /*
      * Danil Onishchenko aka RubberCthulhu, alevandal@gmail.com. 2013.01.09.
@@ -463,14 +506,32 @@ static db_result_msg db_connect(byte *args, db_state *state)
     int erl_auto_commit_mode, erl_trace_driver,
 	    use_srollable_cursors, tuple_row_state, binary_strings,
 	    extended_errors;
+    SQLULEN long_col_cfg;
   
+    if (args_len < 6)
+        DO_EXIT(EXIT_FAILURE);
+
     erl_auto_commit_mode = args[0];
     erl_trace_driver = args[1];
     use_srollable_cursors = args[2];
     tuple_row_state = args[3];
     binary_strings = args[4];
     extended_errors = args[5];
-    connStrIn = args + 6 * sizeof(byte);
+
+    if (args_len >= 13 && args[6] == OPEN_CONNECTION_PROTO_V1_A &&
+        args[7] == OPEN_CONNECTION_PROTO_V1_B) {
+        long_col_cfg = ((SQLULEN)args[8] << 24) | ((SQLULEN)args[9] << 16) |
+            ((SQLULEN)args[10] << 8) | (SQLULEN)args[11];
+        connStrIn = args + 12;
+        max_long_column_size(state) = clamp_max_long_col_size(long_col_cfg);
+    } else {
+        connStrIn = args + 6;
+        max_long_column_size(state) =
+            clamp_max_long_col_size(max_long_col_size_from_env());
+    }
+
+    if ((size_t)(connStrIn - args) >= args_len)
+        DO_EXIT(EXIT_FAILURE);
 
     if(tuple_row_state == ON) {
 	    tuple_row(state) = TRUE;  
@@ -507,8 +568,8 @@ static db_result_msg db_connect(byte *args, db_state *state)
   
     if (!sql_success(result)) {
 	diagnos = get_diagnos(SQL_HANDLE_DBC, connection_handle(state), extended_errors(state));
-	strcat((char *)diagnos.error_msg,
-	       " Connection to database failed.");
+        append_error_msg(&diagnos,
+                         " Connection to database failed.");
 	msg = encode_error_message((char *)diagnos.error_msg,
                                    extended_error(state, diagnos.sqlState),
                                    diagnos.nativeError );
@@ -544,7 +605,7 @@ static db_result_msg db_connect(byte *args, db_state *state)
 				      SQL_ATTR_AUTOCOMMIT,
 				      (SQLPOINTER)auto_commit_mode, 0))) {
 	diagnos = get_diagnos(SQL_HANDLE_DBC, connection_handle(state), extended_errors(state));
-	strcat((char *)diagnos.error_msg, " Set autocommit mode failed.");
+        append_error_msg(&diagnos, " Set autocommit mode failed.");
 
 	msg = encode_error_message((char*)diagnos.error_msg,
                                    extended_error(state, diagnos.sqlState),
@@ -645,8 +706,15 @@ static db_result_msg db_query(byte *sql, db_state *state)
 	    diagnos =  get_diagnos(SQL_HANDLE_STMT, statement_handle(state), extended_errors(state));
 	    if(strcmp((char *)diagnos.sqlState, INFO) == 0) { 
 		    is_error[0] = 0;
-		    strncat((char *)is_error, (char *)diagnos.error_msg, 
-			    5);
+#ifdef HAVE_GCC_DIAG_IGNORE_WSTRINGOP_TRUNCATION
+_Pragma("GCC diagnostic push");
+_Pragma("GCC diagnostic ignored \"-Wstringop-truncation\"");
+#endif
+		    strncat((char *)is_error, (char *)diagnos.error_msg,
+                            5);
+#ifdef HAVE_GCC_DIAG_IGNORE_WSTRINGOP_TRUNCATION
+_Pragma("GCC diagnostic pop");
+#endif
 		    str_tolower((char *)&is_error, 5);
 		    /* The ODBC error handling could have been more
 		       predictable but alas ... we try to make the best of
@@ -674,12 +742,12 @@ static db_result_msg db_query(byte *sql, db_state *state)
 	do {
 	    ei_x_encode_list_header(&dynamic_buffer(state), 1);
 	    msg = encode_result(state);
-	    /* We don't want to continue if an error occured */
+	    /* We don't want to continue if an error occurred */
 	    if (msg.length != 0) { 
 		break;
 	    }
 	    msg = more_result_sets(state);
-	    /* We don't want to continue if an error occured */
+	    /* We don't want to continue if an error occurred */
 	    if (msg.length != 0) { 
 		break;
 	    }
@@ -749,7 +817,7 @@ static db_result_msg db_select_count(byte *sql, db_state *state)
 }
 
 /* Description: Fetches rows from the result set associated with the
-   connection by db_select_count. The method of seletion will be according
+   connection by db_select_count. The method of selection will be according
    too <args> */
 static db_result_msg db_select(byte *args, db_state *state)
 {
@@ -1068,7 +1136,7 @@ static db_result_msg encode_error_message(char *reason, char *errCode, SQLINTEGE
     return msg;
 }
 
-/* Description: Encode a messge that is a erlang atom */
+/* Description: Encode a message that is a erlang atom */
 static db_result_msg encode_atom_message(char* atom)
 {
     int index;
@@ -1148,7 +1216,7 @@ static db_result_msg encode_result(db_state *state)
 	    do {
 		num_of_rows = num_of_rows + (int)RowCountPtr;
 		msg = more_result_sets(state);
-		/* We don't want to continue if an error occured */
+		/* We don't want to continue if an error occurred */
 		if (msg.length != 0) { 
 		    return msg;
 		}
@@ -1316,9 +1384,9 @@ static db_result_msg encode_column_name_list(SQLSMALLINT num_of_columns,
     SQLULEN size;
 
     msg = encode_empty_message();
-    
+
     ei_x_encode_list_header(&dynamic_buffer(state), num_of_columns);
-  
+
     for (i = 0; i < num_of_columns; ++i) {
 
 	if(!sql_success(SQLDescribeCol(statement_handle(state),
@@ -1328,13 +1396,18 @@ static db_result_msg encode_column_name_list(SQLSMALLINT num_of_columns,
 				       &nullable)))
 	    DO_EXIT(EXIT_DESC);
 
-	if(sql_type == SQL_LONGVARCHAR || sql_type == SQL_LONGVARBINARY || sql_type == SQL_WLONGVARCHAR)
-	    size = MAXCOLSIZE;
-    
+        if(sql_type == SQL_LONGVARCHAR || sql_type == SQL_LONGVARBINARY || sql_type == SQL_WLONGVARCHAR) {
+            if(size == 0) {
+                size = max_long_column_size(state);
+            } else if(size > max_long_column_size(state)) {
+                size = max_long_column_size(state);
+            }
+        }
+
 	(columns(state)[i]).type.decimal_digits = dec_digits;
 	(columns(state)[i]).type.sql = sql_type;
 	(columns(state)[i]).type.col_size = size;
-      
+
 	msg = map_sql_2_c_column(&columns(state)[i], state);
 	if (msg.length > 0) {
 	    return msg; /* An error has occurred */
@@ -1342,18 +1415,18 @@ static db_result_msg encode_column_name_list(SQLSMALLINT num_of_columns,
 	    if (columns(state)[i].type.len > 0) {
 		columns(state)[i].buffer =
 		    (char *)safe_malloc(columns(state)[i].type.len);
-	
+
 		if (columns(state)[i].type.c == SQL_C_BINARY) {
-		    /* retrived later by retrive_binary_data */
+		    /* retrieved later by retrive_binary_data */
 		} else {
 		    if(!sql_success(
-			SQLBindCol
-			(statement_handle(state),
-			 (SQLSMALLINT)(i+1),
-			 columns(state)[i].type.c,
-			 columns(state)[i].buffer,
-			 columns(state)[i].type.len,
-			 &columns(state)[i].type.strlen_or_indptr)))
+                                    SQLBindCol
+                                    (statement_handle(state),
+                                     (SQLSMALLINT)(i+1),
+                                     columns(state)[i].type.c,
+                                     columns(state)[i].buffer,
+                                     columns(state)[i].type.len,
+                                     &columns(state)[i].type.strlen_or_indptr)))
 			DO_EXIT(EXIT_BIND);
 		}
 		ei_x_encode_string_len(&dynamic_buffer(state),
@@ -1386,9 +1459,9 @@ static db_result_msg encode_value_list(SQLSMALLINT num_of_columns,
 	result = SQLFetch(statement_handle(state)); 
     
 	if (result == SQL_NO_DATA) /* Reached end of result set */
-	{
-	    break;
-	}
+            {
+                break;
+            }
 
 	ei_x_encode_list_header(&dynamic_buffer(state), 1);
 
@@ -1947,9 +2020,9 @@ static void close_socket(int socket)
 #endif
 
 #ifdef WIN32
-static byte * receive_msg(SOCKET socket) 
+static byte * receive_msg(SOCKET socket, size_t *msg_len_out)
 #elif defined(UNIX)
-static byte * receive_msg(int socket) 
+static byte * receive_msg(int socket, size_t *msg_len_out)
 #endif
 {
     byte lengthstr[LENGTH_INDICATOR_SIZE];
@@ -1969,6 +2042,9 @@ static byte * receive_msg(int socket)
 	close_socket(socket);
 	DO_EXIT(EXIT_SOCKET_RECV_BODY);
     }
+
+    if (msg_len_out != NULL)
+        *msg_len_out = msg_len;
 
     return buffer;
 }
@@ -2075,7 +2151,7 @@ static void clean_socket_lib(void)
 }
     
 
-/*------------- Memmory handling funtions -------------------------------*/
+/*------------- Memory handling functions -------------------------------*/
 static void *safe_malloc(int size)
 {
     void *memory;
@@ -2172,7 +2248,7 @@ static SQLLEN* alloc_strlen_indptr(int n, int val)
     return arr;
 }
 
-/* ------------- Init/map/bind/retrive functions  ------------------------*/
+/* ------------- Init/map/bind/retrieve functions  ------------------------*/
 
 /* Prepare the state for a connection */
 static void init_driver(int erl_auto_commit_mode, int erl_trace_driver,
@@ -2410,7 +2486,7 @@ static void init_param_statement(int cols, SQLLEN num_param_values,
     }
 
     /* Note the (SQLLEN *) cast is correct as the API function SQLSetStmtAttr
-       takes either an interger or a pointer depending on the attribute */
+       takes either an integer or a pointer depending on the attribute */
     if(!sql_success(SQLSetStmtAttr(statement_handle(state),
 				   SQL_ATTR_PARAMSET_SIZE,
 				   (SQLLEN *)num_param_values,
@@ -2721,8 +2797,8 @@ static db_result_msg more_result_sets(db_state *state)
 	   sets */
 	exists_more_result_sets(state) = FALSE;
 	diagnos = get_diagnos(SQL_HANDLE_STMT, statement_handle(state), extended_errors(state));
-	strcat((char *)diagnos.error_msg,
-	       "Failed to create on of the result sets");
+        append_error_msg(&diagnos,
+                         "Failed to create on of the result sets");
 	msg = encode_error_message((char*)diagnos.error_msg,
                                    extended_error(state, diagnos.sqlState),
                                    diagnos.nativeError);
@@ -2737,10 +2813,29 @@ static Boolean sql_success(SQLRETURN result)
 
 /* ------------- Error handling functions --------------------------------*/
 
+/* Description: Append <str> to diagnos->error_msg, never writing past the
+   end of the MAX_ERR_MSG-byte buffer. get_diagnos() may fill error_msg
+   completely (up to MAX_ERR_MSG - 1 bytes), leaving no room for the
+   context strings that callers used to append with an unbounded strcat().
+   That overflowed the stack-allocated buffer when a database/driver
+   returned a long diagnostic message. This helper truncates instead,
+   always keeping the buffer NUL-terminated. */
+static void append_error_msg(diagnos *diagnosp, const char *str)
+{
+    size_t used = strlen((char *)diagnosp->error_msg);
+    size_t avail;
+
+    if (used >= MAX_ERR_MSG - 1) {
+        return; /* buffer already full, nothing fits */
+    }
+    avail = (MAX_ERR_MSG - 1) - used; /* space left excluding NUL */
+    strncat((char *)diagnosp->error_msg, str, avail);
+}
+
 /* Description: An ODBC function can post zero or more diagnostic records
    each time it is called. This function loops through the current set of
-   diagnostic records scaning for error messages and the sqlstate.
-   If this function is called when no error has ocurred only the sqlState
+   diagnostic records scanning for error messages and the sqlstate.
+   If this function is called when no error has occurred only the sqlState
    field may be referenced.*/
 static diagnos get_diagnos(SQLSMALLINT handleType, SQLHANDLE handle, Boolean extendedErrors)
 {

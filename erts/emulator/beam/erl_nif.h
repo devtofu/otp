@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2009-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2009-2026. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -57,9 +59,13 @@
 ** 2.15: 22.0 ERL_NIF_SELECT_CANCEL, enif_select_(read|write)
 **            enif_term_type
 ** 2.16: 24.0 enif_init_resource_type, enif_dynamic_resource_call
+** 2.17: 26.0 enif_set_option, enif_get_string_length, enif_make_new_atom,
+**            enif_make_new_atom_len, ERL_NIF_UTF8
+** 2.18: 29.0 enif_term_size, enif_get_atom_cache_index,
+**            enif_max_atom_cache_index
 */
 #define ERL_NIF_MAJOR_VERSION 2
-#define ERL_NIF_MINOR_VERSION 16
+#define ERL_NIF_MINOR_VERSION 18
 
 /*
  * WHEN CHANGING INTERFACE VERSION, also replace erts version below with
@@ -70,7 +76,7 @@
  * If you're not on the OTP team, you should use a placeholder like
  * erts-@MyName@ instead.
  */
-#define ERL_NIF_MIN_ERTS_VERSION "erts-12.0"
+#define ERL_NIF_MIN_ERTS_VERSION "erts-14.0"
 
 /*
  * The emulator will refuse to load a nif-lib with a major version
@@ -87,6 +93,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <string.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -94,11 +101,11 @@ extern "C" {
 
 typedef ErlNapiUInt64 ErlNifUInt64;
 typedef ErlNapiSInt64 ErlNifSInt64;
-typedef ErlNapiUInt ErlNifUInt;
-typedef ErlNapiSInt ErlNifSInt;
+typedef ErlNapiUInt ErlNifUInt; // Undocumented, do not use
+typedef ErlNapiSInt ErlNifSInt; // Undocumented, do not use
 
 #define ERL_NIF_VM_VARIANT "beam.vanilla"
-typedef ErlNifUInt ERL_NIF_TERM;
+typedef ErlNapiUInt ERL_NIF_TERM;
 
 typedef ERL_NIF_TERM ERL_NIF_UINT;
 
@@ -186,7 +193,8 @@ typedef enum
 
 typedef enum
 {
-    ERL_NIF_LATIN1 = 1
+    ERL_NIF_LATIN1 = 1,
+    ERL_NIF_UTF8 = 2,
 }ErlNifCharEncoding;
 
 typedef struct
@@ -200,6 +208,9 @@ typedef struct
 }ErlNifPort;
 
 typedef ErlDrvMonitor ErlNifMonitor;
+
+typedef void ErlNifOnHaltCallback(void *priv_data);
+typedef void ErlNifOnUnloadThreadCallback(void *priv_data);
 
 typedef struct enif_resource_type_t ErlNifResourceType;
 typedef void ErlNifResourceDtor(ErlNifEnv*, void*);
@@ -325,14 +336,25 @@ typedef enum {
 #define ERL_NIF_THR_DIRTY_CPU_SCHEDULER 2
 #define ERL_NIF_THR_DIRTY_IO_SCHEDULER 3
 
+typedef enum {
+    ERL_NIF_OPT_DELAY_HALT = 1,
+    ERL_NIF_OPT_ON_HALT = 2,
+    ERL_NIF_OPT_ON_UNLOAD_THREAD = 3
+} ErlNifOption;
+
 #if (defined(__WIN32__) || defined(_WIN32) || defined(_WIN32_))
 #  define ERL_NIF_API_FUNC_DECL(RET_TYPE, NAME, ARGS) RET_TYPE (*NAME) ARGS
 typedef struct {
 #  include "erl_nif_api_funcs.h"
    void* erts_alc_test;
+   const void* erts_internal_test_ptr;
 } TWinDynNifCallbacks;
 extern TWinDynNifCallbacks WinDynNifCallbacks;
 #  undef ERL_NIF_API_FUNC_DECL
+#endif
+
+#ifdef STATIC_ERLANG_NIF_LIBNAME
+#  define STATIC_ERLANG_NIF
 #endif
 
 #if (defined(__WIN32__) || defined(_WIN32) || defined(_WIN32_)) && !defined(STATIC_ERLANG_DRIVER) && !defined(STATIC_ERLANG_NIF)
@@ -342,34 +364,50 @@ extern TWinDynNifCallbacks WinDynNifCallbacks;
 
 #else /* non windows or included from emulator itself */
 
-#  define ERL_NIF_API_FUNC_DECL(RET_TYPE, NAME, ARGS) extern RET_TYPE NAME ARGS
+/* Redundant declaration of deallocator functions as they are referred to by
+ * __attribute__(malloc) of allocator functions and we cannot change
+ * the declaration order in erl_nif_api_funcs.h due to Windows. */
+extern void enif_free(void* ptr);
+extern void enif_mutex_destroy(ErlNifMutex *mtx);
+extern void enif_cond_destroy(ErlNifCond *cnd);
+extern void enif_rwlock_destroy(ErlNifRWLock *rwlck);
+extern void enif_thread_opts_destroy(ErlNifThreadOpts *opts);
+extern void enif_ioq_destroy(ErlNifIOQueue *q);
+
+#  if (defined(__WIN32__) || defined(_WIN32) || defined(_WIN32_))
+#    define ERL_NIF_API_FUNC_DECL(RET_TYPE, NAME, ARGS) extern RET_TYPE NAME ARGS
+#  else
+#    define ERL_NIF_API_FUNC_DECL(RET_TYPE, NAME, ARGS) ERL_NAPI_EXPORT extern RET_TYPE NAME ARGS
+#  endif
 #  include "erl_nif_api_funcs.h"
-#  undef ERL_NIF_API_FUNC_DECL
 #endif
 
 #if (defined(__WIN32__) || defined(_WIN32) || defined(_WIN32_))
 #  define ERL_NIF_INIT_GLOB TWinDynNifCallbacks WinDynNifCallbacks;
 #  define ERL_NIF_INIT_ARGS TWinDynNifCallbacks* callbacks
 #  define ERL_NIF_INIT_BODY memcpy(&WinDynNifCallbacks,callbacks,sizeof(TWinDynNifCallbacks))
-#  define ERL_NIF_INIT_EXPORT __declspec(dllexport)
 #else 
 #  define ERL_NIF_INIT_GLOB
 #  define ERL_NIF_INIT_ARGS void
 #  define ERL_NIF_INIT_BODY
-#  if defined(__GNUC__) && __GNUC__ >= 4
-#    define ERL_NIF_INIT_EXPORT __attribute__ ((visibility("default")))
-#  elif defined (__SUNPRO_C) && (__SUNPRO_C >= 0x550)
-#    define ERL_NIF_INIT_EXPORT __global
-#  else
-#    define ERL_NIF_INIT_EXPORT
-#  endif
 #endif
 
+
 #ifdef STATIC_ERLANG_NIF
-#  define ERL_NIF_INIT_DECL(MODNAME) ErlNifEntry* MODNAME ## _nif_init(ERL_NIF_INIT_ARGS)
+#  ifdef STATIC_ERLANG_NIF_LIBNAME
+#    define ERL_NIF_INIT_NAME(MODNAME) ERL_NIF_INIT_NAME2(STATIC_ERLANG_NIF_LIBNAME)
+#    define ERL_NIF_INIT_NAME2(LIB) ERL_NIF_INIT_NAME3(LIB)
+#    define ERL_NIF_INIT_NAME3(LIB) LIB ## _nif_init
+#  else
+#    define ERL_NIF_INIT_NAME(MODNAME) MODNAME ## _nif_init
+#  endif
+#  define ERL_NIF_INIT_DECL(MODNAME) \
+          ErlNifEntry* ERL_NIF_INIT_NAME(MODNAME)(ERL_NIF_INIT_ARGS)
 #else
-#  define ERL_NIF_INIT_DECL(MODNAME) ERL_NIF_INIT_EXPORT ErlNifEntry* nif_init(ERL_NIF_INIT_ARGS)
+#  define ERL_NIF_INIT_DECL(MODNAME) \
+          ERL_NAPI_EXPORT ErlNifEntry* nif_init(ERL_NIF_INIT_ARGS)
 #endif
+
 
 #ifdef __cplusplus
 }
@@ -410,10 +448,11 @@ ERL_NIF_INIT_EPILOGUE
 #endif
 
 #ifdef HAVE_USE_DTRACE
-ERL_NIF_TERM erl_nif_user_trace_s1(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]);
-ERL_NIF_TERM erl_nif_user_trace_i4s4(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]);
-ERL_NIF_TERM erl_nif_user_trace_n(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]);
+ERL_NIF_API_FUNC_DECL(ERL_NIF_TERM,erl_nif_user_trace_s1,(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]));
+ERL_NIF_API_FUNC_DECL(ERL_NIF_TERM,erl_nif_user_trace_i4s4,(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]));
+ERL_NIF_API_FUNC_DECL(ERL_NIF_TERM,erl_nif_user_trace_n,(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]));
 #endif
 
-#endif /* __ERL_NIF_H__ */
+#undef ERL_NIF_API_FUNC_DECL
 
+#endif /* __ERL_NIF_H__ */

@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 1996-2018. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 1996-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -327,7 +329,7 @@ extern ErtsCodePtr beam_bif_export_trap;
 
 #define ERTS_BIF_PREP_TRAP(Export, Proc, Arity)                               \
     do {                                                                      \
-        (Proc)->i = (Export)->addresses[erts_active_code_ix()];               \
+        (Proc)->i = (Export)->dispatch.addresses[erts_active_code_ix()];      \
         (Proc)->arity = (Arity);                                              \
         (Proc)->freason = TRAP;                                               \
     } while(0);
@@ -522,23 +524,23 @@ do {									\
 
 extern Export erts_bif_handle_signals_return_export;
 
-#define ERTS_BIF_HANDLE_SIGNALS_RETURN(P, VAL)                          \
-    BIF_TRAP1(&erts_bif_handle_signals_return_export, (P), (VAL))
+#define ERTS_BIF_HANDLE_SIGNALS_FROM_RETURN(P, FROM, VAL)               \
+    BIF_TRAP2(&erts_bif_handle_signals_return_export, (P), (FROM), (VAL))
 
-#define ERTS_BIF_PREP_HANDLE_SIGNALS_RETURN(Ret, P, Val)                \
-    ERTS_BIF_PREP_TRAP1((Ret), &erts_bif_handle_signals_return_export,  \
-                        (P), (Val))
+#define ERTS_BIF_PREP_HANDLE_SIGNALS_FROM_RETURN(Ret, P, From, Val)     \
+    ERTS_BIF_PREP_TRAP2((Ret), &erts_bif_handle_signals_return_export,  \
+                        (P), (From), (Val))
 
 #define ERTS_BIF_PREP_EXITED(RET, PROC)	                                \
 do {                                                                    \
     KILL_CATCHES((PROC));                                               \
-    ERTS_BIF_PREP_ERROR((RET), (PROC), EXTAG_EXIT);                     \
+    ERTS_BIF_PREP_ERROR((RET), (PROC), EXTAG_EXIT | EXF_PANIC);         \
 } while (0)
 
-#define ERTS_BIF_EXITED(PROC)		\
-do {					\
-    KILL_CATCHES((PROC));		\
-    BIF_ERROR((PROC), EXTAG_EXIT);	\
+#define ERTS_BIF_EXITED(PROC)		        \
+do {					        \
+    KILL_CATCHES((PROC));		        \
+    BIF_ERROR((PROC), EXTAG_EXIT | EXF_PANIC);	\
 } while (0)
 
 #define ERTS_BIF_CHK_EXITED(PROC)	\
@@ -585,7 +587,8 @@ erts_reschedule_bif(Process *proc,
 
 #endif /* ERTS_GLB_INLINE_INCL_FUNC_DEF */
 
-Uint16 erts_monitor_opts(Eterm opts, Eterm *tag);
+Uint32 erts_link_opts(Eterm opts, Uint32 *rm_flags);
+Uint32 erts_monitor_opts(Eterm opts, Eterm *tag);
 
 #include "erl_bif_table.h"
 

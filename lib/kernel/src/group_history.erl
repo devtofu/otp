@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2017-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2017-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,6 +20,7 @@
 %% %CopyrightEnd%
 %%
 -module(group_history).
+-moduledoc false.
 -export([load/0, add/1]).
 
 -include_lib("kernel/include/logger.hrl").
@@ -166,7 +169,8 @@ open_new_log(Name) ->
     case open_log() of
         {error, Reason} ->
             handle_open_error(Reason),
-            disable_history();
+            disable_history(),
+            [];
         _ ->
             _ = disk_log:close(Name),
             load()
@@ -309,10 +313,7 @@ disk_log_info(Tag) ->
     Value.
 
 find_wrap_values() ->
-    ConfSize = case application:get_env(kernel, shell_history_file_bytes) of
-        undefined -> ?DEFAULT_SIZE;
-        {ok, S} -> S
-    end,
+    ConfSize = application:get_env(kernel, shell_history_file_bytes, ?DEFAULT_SIZE),
     SizePerFile = max(?MIN_HISTORY_SIZE, ConfSize div ?MAX_HISTORY_FILES),
     FileCount = if SizePerFile > ?MIN_HISTORY_SIZE ->
                        ?MAX_HISTORY_FILES
@@ -376,7 +377,10 @@ find_path() ->
 to_drop() ->
     case application:get_env(kernel, shell_history_drop) of
         undefined ->
-            application:set_env(kernel, shell_history_drop, ?DEFAULT_DROP),
+            %% The AC might be overloaded/not responding and
+            %% we want the shell to be as responsive as possible
+            %% so we set a short timeout
+            application:set_env(kernel, shell_history_drop, ?DEFAULT_DROP, [{timeout, 10}]),
             ?DEFAULT_DROP;
         {ok, V} when is_list(V) -> [Ln++"\n" || Ln <- V];
         {ok, _} -> ?DEFAULT_DROP

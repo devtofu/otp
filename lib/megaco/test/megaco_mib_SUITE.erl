@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2002-2020. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2002-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -48,6 +50,7 @@
          handle_trans_ack/5
         ]).
 
+-include_lib("common_test/include/ct.hrl").
 -include_lib("megaco/include/megaco.hrl").
 -include_lib("megaco/include/megaco_message_v1.hrl").
 -include("megaco_test_lib.hrl").
@@ -190,6 +193,7 @@ plain(suite) ->
 plain(doc) ->
     ["Test case for the basic statistics counter handling. "];
 plain(Config) when is_list(Config) ->
+    ct:timetrap(?SECS(10)),
     io:format("create test table 1~n", []),
     Tab1 = megaco_test_cnt1,
     megaco_stats:init(Tab1),
@@ -292,6 +296,8 @@ connect(suite) ->
 connect(doc) ->
     [];
 connect(Config) when is_list(Config) ->
+    Factor = ?config(megaco_factor, Config),
+    ct:timetrap(?SECS(10) + Factor * ?SECS(1)),
     Pre = fun() ->
                   progress("start nodes"),
                   MgcNode = make_node_name(mgc),
@@ -408,6 +414,8 @@ traffic(suite) ->
 traffic(doc) ->
     [];
 traffic(Config) when is_list(Config) ->
+    Factor = ?config(megaco_factor, Config),
+    ct:timetrap(?MINS(1) + Factor * ?SECS(10)),
     Pre = fun() ->
                   progress("start nodes"),
                   MgcNode = make_node_name(mgc),
@@ -675,11 +683,15 @@ traffic_verify_counter(Name, Counter, Counters, Expected) ->
 	{value, {Counter, Val}} ->
             i("counter ~w *not* verified for ~p: "
               "~n   Expected: ~w"
-              "~n   Actual:   ~w", [Counter, Name, Expected, Val]),
-	    exit({illegal_counter_value, Counter, Val, Expected, Name});
+              "~n   Actual:   ~w"
+              "~n   Counters: ~w",
+              [Counter, Name, Expected, Val, Counters]),
+	    exit({illegal_counter_value, Name, Counter, Expected, Val,
+                  Counters});
 	false ->
-            i("counter ~w *not* found for ~p", [Counter, Name]),
-	    exit({not_found, Counter, Counters, Name, Expected})
+            i("counter ~w *not* found for ~p: "
+              "~n   Counters: ~p", [Counter, Name, Counters]),
+	    exit({not_found, Name, Counter, Counters, Expected})
     end.
     
 
@@ -1108,7 +1120,9 @@ mgc_handle_request({handle_disconnect, CH, _PV, R}) ->
     megaco:cancel(CH, R), % Cancel the outstanding messages
     ok;
 mgc_handle_request({handle_syntax_error, _RH, _PV, _ED}) ->
-    reply;
+    %% There is no point in this test where this is expected.
+    %% There if it *does* happen; stop 
+    no_reply;
 mgc_handle_request({handle_message_error, _CH, _PV, _ED}) ->
     no_reply;
 mgc_handle_request({handle_trans_request, CH, PV, ARs}) ->
@@ -1200,13 +1214,21 @@ start_mg(Node, Mid, Encoding, Transport, Verbosity) ->
 mg(Parent, Verbosity, Config) ->
     process_flag(trap_exit, true),
     put(verbosity, Verbosity),
-    put(sname,   "MG"),
+    put(sname,     get_mg_sname(Config)),
     i("mg -> starting"),
     {Mid, ConnHandle} = mg_init(Config),
     notify_started(Parent),
     S = #mg{parent = Parent, mid = Mid, conn_handle = ConnHandle},
     i("mg -> started"),
     mg_loop(S).
+
+get_mg_sname(Config) ->
+    case get_conf(local_mid, Config) of
+        {deviceName, Name} ->
+            Name;
+        _ ->
+            "MG"
+end.
 
 mg_init(Config) ->
     d("mg_init -> entry"),
@@ -1497,8 +1519,17 @@ mg_handle_request({handle_connect, CH, _PV},
 mg_handle_request({handle_disconnect, CH, _PV, _R}, S) ->
     {ok, S#mg{conn_handle = CH}};
 
-mg_handle_request({handle_syntax_error, _RH, _PV, _ED}, S) ->
-    {reply, S};
+mg_handle_request({handle_syntax_error, RH, PV, ED}, S) ->
+    %% There is no point in this test where this is expected.
+    %% But if it *does* happen; stop
+    %% But can we do that from here? Spawn?
+    p("Received unexpected syntax error: cancel connection"
+      "~n   RH: ~p"
+      "~n   PV: ~p"
+      "~n   ED: ~p", [RH, PV, ED]),
+    megaco:cancel(S#mg.conn_handle, ED),
+    megaco:disconnect(S#mg.conn_handle, {syntax_error, ED}),
+    {no_reply, S};
 
 mg_handle_request({handle_message_error, CH, _PV, _ED}, S) ->
     {no_reply, S#mg{conn_handle = CH}};

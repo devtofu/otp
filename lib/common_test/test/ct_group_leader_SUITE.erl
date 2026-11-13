@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2012-2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2012-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -103,8 +105,7 @@ verify_cases([{?eh,tc_done,{M,F,_}}|Ts], Cases0, true) ->
 	    Cases = Cases0 -- [{M,F}],
 	    verify_cases(Ts, Cases, true);
 	false ->
-	    io:format("~p not found\n", [{M,F}]),
-	    ?t:fail()
+	    ct:fail("~p not found\n", [{M,F}])
     end;
 verify_cases([{?eh,_,_}|Ts], Cases, Par) ->
     verify_cases(Ts, Cases, Par);

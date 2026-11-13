@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2008-2016. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%%-------------------------------------------------------------------
 %%% File    : wxe_util.erl
@@ -23,8 +25,8 @@
 %%%
 %%% Created :  9 Feb 2007 by Dan Gudmundsson <dgud@erix.ericsson.se>
 %%%-------------------------------------------------------------------
-%% @hidden
 -module(wxe_util).
+-moduledoc false.
 
 -export([register_pid/1,rec/1,
 	 connect_cb/2,disconnect_cb/2,
@@ -37,8 +39,15 @@
          queue_cmd/11,queue_cmd/12,queue_cmd/13,queue_cmd/14,queue_cmd/15,
          make_env/0, delete_env/1, get_consts/0,
          debug_ping/0, debug_driver/1,
-         init_opengl/1
+         init_opengl/2
         ]).
+
+-nifs([queue_cmd/1,queue_cmd/2,queue_cmd/3,queue_cmd/4,queue_cmd/5,
+       queue_cmd/6,queue_cmd/7,queue_cmd/8,queue_cmd/9,queue_cmd/10,
+       queue_cmd/11,queue_cmd/12,queue_cmd/13,queue_cmd/14,queue_cmd/15,
+       make_env/0, delete_env/1, debug_driver/1, get_consts_impl/0,
+       init_opengl/2
+      ]).
 
 -export([priv_dir/2, opt_error_log/3, init_nif/1]).
 
@@ -49,7 +58,7 @@
 
 init_nif(Silent) ->
     {PrivDir, NifDir} = priv_dir("wxe_driver", Silent),
-    os:putenv("WX_PRIV_DIR", PrivDir),
+    os:putenv("WX_PRIV_DIR", unicode:characters_to_list(PrivDir)),
     erlang:load_nif(filename:join(NifDir, "wxe_driver"), 0).
 
 
@@ -58,7 +67,7 @@ color(RGBA) -> RGBA.
 
 get_name(Where, Id) when is_atom(Where), is_integer(Id) ->
     {_Atom2Id, EnumId2Atom} = persistent_term:get(wx_consts),
-    maps:get(Id, maps:get(Where, EnumId2Atom, undefined), undefined).
+    maps:get(Id, maps:get(Where, EnumId2Atom, #{}), undefined).
 
 get_const(Atom) when is_atom(Atom) ->
     {Atom2Id, _EnumId2Atom} = persistent_term:get(wx_consts),
@@ -78,7 +87,7 @@ get_consts() ->
     get_consts_impl(),
     rec(?WXE_GET_CONSTS).
 
-init_opengl(_) -> ?NIF_ERROR.
+init_opengl(_,_) -> ?NIF_ERROR.
 get_consts_impl() -> ?NIF_ERROR.
 
 debug_ping() -> queue_cmd(?WXE_DEBUG_PING).
@@ -105,13 +114,9 @@ queue_cmd(_,_,_,_,_,_,_,_,_,_,_,_,_,_,_) -> ?NIF_ERROR.
 
 rec(Op) ->
     receive
-	{'_wxe_result_', Res} -> Res;
-	{'_wxe_error_', Op, MFA, Error} ->
-	    erlang:error({Error, MFA});
-	{'_wxe_error_', Op, {M,F,A}, Error} ->
-	    Msg = io_lib:format("~p in ~w:~w/~w", [Error, M, F, A]),
-	    wxe_master ! {wxe_driver, error, Msg},
-	    rec(Op)
+        {'_wxe_result_', Res} -> Res;
+        {'_wxe_error_', Op, MFA, Error} ->
+            erlang:error({Error, MFA})
     end.
 
 register_pid(#wx_ref{ref=Index}) ->
@@ -172,7 +177,12 @@ priv_dir(Driver0, Silent) ->
 	{ok, _} ->
 	    {Priv, Priv};
 	{error, _} ->
-	    SrcPriv = filename:join(Priv, erlang:system_info(system_architecture)),
+            Arch = case os:type() of
+                       {win32, _} -> win32;
+                       _ ->
+                           erlang:system_info(system_architecture)
+                   end,
+            SrcPriv = filename:join(Priv, Arch),
 	    case file:read_file_info(filename:join(SrcPriv, Driver)) of
 		{ok, _} ->
 		    {Priv, SrcPriv};
@@ -190,6 +200,6 @@ strip([H|R], Src) ->
     [H| strip(R, Src)].
 
 opt_error_log(false, Format, Args) ->
-    error_logger:format(Format, Args);
+    logger:log(error, Format, Args, #{domain => [wx]});
 opt_error_log(true, _Format, _Args) ->
     ok.

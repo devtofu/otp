@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2013-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2013-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -17,6 +19,7 @@
 %%
 %% %CopyrightEnd%
 -module(cdv_proc_cb).
+-moduledoc false.
 
 -export([col_to_elem/1,
 	 col_spec/0,
@@ -77,7 +80,7 @@ get_details(Id, _) ->
 	    Info = "The process you are searching for was residing on "
 		"a remote node. No process information is available. "
 		"Show information about the remote node?",
-	    Fun = fun() -> cdv_virtual_list_wx:start_detail_win(NodeId, port) end,
+	    Fun = fun() -> cdv_virtual_list_wx:start_detail_win(NodeId, node) end,
 	    {yes_no, Info, Fun};
 	{error,not_found} ->
 	    Info = "The process you are searching for could not be found.",
@@ -153,7 +156,7 @@ info_fields() ->
        {"Old Binary vheap", old_bin_vheap},
        {"Binary vheap unused",  bin_vheap_unused},
        {"Old Binary vheap unused", old_bin_vheap_unused},
-       {"Number of Heap Fragements", num_heap_frag},
+       {"Number of Heap Fragments", num_heap_frag},
        {"Heap Fragment Data",heap_frag_data},
        {"New Heap Start",   new_heap_start},
        {"New Heap Top",     new_heap_top},

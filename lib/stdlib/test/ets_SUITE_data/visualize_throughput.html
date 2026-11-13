@@ -1,27 +1,31 @@
 <!doctype html>
 <html lang="en">
 
-<!-- %% -->
-<!-- %% %CopyrightBegin% -->
-<!-- %% -->
-<!-- %% Copyright Ericsson AB and Kjell Winblad 1996-2020. All Rights Reserved. -->
-<!-- %% -->
-<!-- %% Licensed under the Apache License, Version 2.0 (the "License"); -->
-<!-- %% you may not use this file except in compliance with the License. -->
-<!-- %% You may obtain a copy of the License at -->
-<!-- %% -->
-<!-- %%     http://www.apache.org/licenses/LICENSE-2.0 -->
-<!-- %% -->
-<!-- %% Unless required by applicable law or agreed to in writing, software -->
-<!-- %% distributed under the License is distributed on an "AS IS" BASIS, -->
-<!-- %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. -->
-<!-- %% See the License for the specific language governing permissions and -->
-<!-- %% limitations under the License. -->
-<!-- %% -->
-<!-- %% %CopyrightEnd% -->
-<!-- %% -->
-<!-- %% Author: Kjell Winblad -->
-<!-- %% -->
+<!--
+ %CopyrightBegin%
+
+ SPDX-License-Identifier: Apache-2.0
+
+ Copyright Ericsson AB 1996-2026. All Rights Reserved.
+ Copyright Kjell Winblad 1996-2024. All Rights Reserved.
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+
+ %CopyrightEnd%
+
+ Author: Kjell Winblad
+
+ -->
   
   <head>
     <meta charset="utf-8">
@@ -71,10 +75,10 @@
     <input type="checkbox" class="showCheck" value="[set,public,{write_concurrency,true},{read_concurrency,true}]" checked> Show <code>[set,public,{write_concurrency,true},{read_concurrency,true}]</code>
     <br>
     <button id="renderButton" type="button">Render</button> 
-    
-    <script src="https://code.jquery.com/jquery-3.3.1.slim.min.js"
-	    integrity="sha256-3edrmyuQ0w65f8gfBsqowzjJe2iM6n0nKciPUp8y+7E="
-	    crossorigin="anonymous"></script>
+    <script
+      src="https://code.jquery.com/jquery-4.0.0.slim.min.js"
+      integrity="sha256-8DGpv13HIm+5iDNWw1XqxgFB4mj+yOKFNb+tHBZOowc="
+      crossorigin="anonymous"></script>
     <script>
       var loading = false;
       function toggleLoadingScreen(){
@@ -240,10 +244,12 @@
           function plotScenario(name, plotType) {
               var data = scenarioDataMap[name];
               var yAxisTitle = undefined;
+              var graphId = "graph" + nrOfGraphs;
+              var fullscreenButtonid = "fullscreenButton" + nrOfGraphs;
               nrOfGraphs = nrOfGraphs + 1;
-              $("<div class='added' id='graph" + nrOfGraphs + "'>")
+              $("<div class='added' id='" + graphId + "'>")
                   .insertBefore(insertPlaceholder);
-              $("<button type='button' class='added' id='fullscreenButton" + nrOfGraphs + "'>Fill screen</button>")
+              $("<button type='button' class='added' id='" + fullscreenButtonid + "'>Fill screen</button>")
                   .insertBefore(insertPlaceholder);
               $("<span class='added'><br><hr><br></span>")
                   .insertBefore(insertPlaceholder);
@@ -265,17 +271,17 @@
                       title: yAxisTitle
                   }
               };
-              $("#fullscreenButton" + nrOfGraphs).click(
+              $("#" + fullscreenButtonid).click(
                   function () {
-                      $('#graph' + nrOfGraphs).replaceWith(
-                          $("<div class='added' id='graph" + nrOfGraphs + "'>"));
+                      $('#' + graphId).replaceWith(
+                          $("<div class='added' id='" + graphId + "'>"));
                       layout = $.extend({}, layout, {
                           width: $(window).width() - 40,
                           height: $(window).height() - 40
                       });
-                      Plotly.newPlot('graph' + nrOfGraphs, data, layout);
+                      Plotly.newPlot(graphId, data, layout);
                   });
-              Plotly.newPlot('graph' + nrOfGraphs, data, layout);
+              Plotly.newPlot(graphId, data, layout);
           }
           $.each(scenarioList,
               function (index, name) {

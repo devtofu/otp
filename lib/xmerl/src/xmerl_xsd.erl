@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2006-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2006-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -17,42 +19,23 @@
 %%
 %% %CopyrightEnd%
 %%
-
-%% @doc Interface module for XML Schema validation. 
-%% It handles the W3.org 
-%% <a href="http://www.w3.org/XML/Schema#dev">specifications</a>
-%% of XML Schema second edition 28 october 2004. For an introduction to
-%% XML Schema study <a href="http://www.w3.org/TR/xmlschema-0/">part 0.</a>
-%% An XML structure is validated by xmerl_xsd:validate/[2,3].
-%% @type global_state(). <p>The global state of the validator. It is 
-%% representated by the <code>#xsd_state{}</code> record.
-%% </p>
-%% @type option_list(). <p>Options allow to customize the behaviour of the 
-%% validation.
-%% </p>
-%% <p>
-%% Possible options are :
-%% </p>
-%% <dl>
-%%   <dt><code>{tab2file,boolean()}</code></dt>
-%%      <dd>Enables saving of abstract structure on file for debugging
-%%         purpose.</dd>
-%%   <dt><code>{xsdbase,filename()}</code></dt>
-%%      <dd>XSD Base directory.</dd>
-%%   <dt><code>{fetch_fun,FetchFun}</code></dt>
-%%      <dd>Call back function to fetch an external resource.</dd>
-%%   <dt><code>{fetch_path,PathList}</code></dt>
-%%      <dd>PathList is a list of directories to search when fetching files.
-%%          If the file in question is not in the fetch_path, the URI will
-%%          be used as a file name.</dd>
-%%   <dt><code>{state,State}</code></dt>
-%%      <dd>It is possible by this option to provide a state with process
-%%          information from an earlier validation.</dd> 
-%% </dl>
-%% @type filename() = string()
-%% @end
-%%%-------------------------------------------------------------------
+%%----------------------------------------------------------------------
 -module(xmerl_xsd).
+-moduledoc """
+Interface module for XML Schema validation.
+
+It handles the W3.org [specifications](http://www.w3.org/XML/Schema#dev) of
+XML Schema second edition 28 october 2004.  For an introduction to
+XML Schema please study [part 0](http://www.w3.org/TR/xmlschema-0/).
+
+An XML structure is validated by [`xmerl_xsd:validate/[2,3]`](`validate/2`).
+""".
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}},
+          {nowarn_unsafe_function, {xmerl_scan, file, 1}},
+          {nowarn_unsafe_function, {xmerl_scan, file, 2}},
+          {nowarn_unsafe_function, {xmerl_scan, string, 1}},
+          {nowarn_unsafe_function, {xmerl_scan, string, 2}}]).
 
 %%----------------------------------------------------------------------
 %% Include files
@@ -85,82 +68,130 @@
 	       splitwith/2,mapfoldl/3,keysearch/3,keymember/3,
 	       keyreplace/4,keydelete/3]).
 
+%%----------------------------------------------------------------------
+%% Types
+%%----------------------------------------------------------------------
+
+-compile({nowarn_hidden_doc, [xsd_state/0]}).
+-doc hidden.
+-type xsd_state() :: #xsd_state{}.
+
+-doc """
+The global state of the validator.
+
+It is represented by the `#xsd_state{}` record.
+""".
+-type global_state() :: xsd_state().
+
+-doc """
+Options that allow to customize the behaviour of the validation.
+
+Possible options are :
+
+- **`{tab2file,boolean()}`** - Enables saving of abstract structure on file for debugging purpose.
+- **`{xsdbase,filename()}`** - XSD Base directory.
+- **`{fetch_fun,FetchFun}`** - Call back function to fetch an external resource.
+- **`{fetch_path,PathList}`** - PathList is a list of directories to search when fetching files.
+  If the file in question is not in the fetch_path, the URI will be used as a file name.
+- **`{state,State}`** - It is possible by this option to provide a state with process
+  information from an earlier validation.
+""".
+-type option_list() :: [{xsdbase,filename()} |
+                        {atom(),term()}].
+
+-type filename() :: string().
 
 
 %%======================================================================
 %% Functions
 %%======================================================================
 
-%% @spec validate(Element,State) -> Result
-%% @equiv validate(Element,State,[])
+-doc(#{ equiv => validate(Element, State, []) }).
+-spec validate(Element :: xmerl:element(), State :: global_state()) -> _.
 validate(Xml,State) ->
     validate(Xml,State,[]).
 
-%% @spec validate(Element,State,Options) -> Result
-%%       Element      = XmlElement
-%%       Options      = option_list() 
-%%       Result       = {ValidElement,global_state()} | {error,Reasons}
-%%       ValidElement = XmlElement
-%%       State        = global_state()
-%%       Reasons      = [ErrorReason] | ErrorReason
-%% @doc Validates a parsed well-formed XML element (Element).
-%% <p>A call to validate/2 or validate/3 must provide a well formed 
-%% parsed XML element <code>#xmlElement{}</code> and a State,
-%% <code>global_state()</code>, which holds necessary information from
-%% an already processed schema.
-%% Thus validate enables reuse of the schema information and
-%% therefore if one shall validate several times towards the same
-%% schema it reduces time consumption.</p>
-%% <p>The result, ValidElement, is the valid element that conforms to the 
-%% post-schema-validation infoset. When the validator finds an error it
-%% tries to continue and reports a list of all errors found. In those cases
-%% an unexpected error is found it may cause a single error reason.
-%% </p>
-%% <p> Usage example:</p>
-%% <p>
-%% <code>1>{E,_} = xmerl_scan:file("my_XML_document.xml").</code><br/>
-%% <code>2>{ok,S} = xmerl_xsd:process_schema("my_XML_Schema.xsd").</code><br/>
-%% <code>3>{E2,_} = xmerl_xsd:validate(E,S).</code>
-%% </p>
-%% <p> Observe that E2 may differ from E if for instance there are default
-%% values defined in <code>my_XML_Schema.xsd</code>.</p>
+-doc """
+Validate a parsed well-formed XML element (`Element`).
+
+A call to `validate/2` or `validate/3` must provide a well formed
+parsed XML [`Element :: #xmlElement{}`](`t:xmerl:xmlElement/0`)
+and a State, `t:global_state/0`, which holds necessary information
+from an already processed schema.  Thus validate enables reuse
+of the schema information and therefore if one shall validate
+several times towards the same schema it reduces time consumption.
+
+The result, `ValidElement`, is the valid element that conforms to the
+post-schema-validation infoset. When the validator finds an error it tries to
+continue and reports a list of all errors found. In those cases an unexpected
+error is found it may cause a single error reason.
+
+Usage example:
+``` erlang
+1>{E,_} = xmerl_scan:file("my_XML_document.xml").
+2>{ok,S} = xmerl_xsd:process_schema("my_XML_Schema.xsd").
+3>{E2,_} = xmerl_xsd:validate(E,S).
+```
+
+Observe that E2 may differ from E if for instance there are default values
+defined in `my_XML_Schema.xsd`.
+""".
+-spec validate(Element, global_state(), Options) -> Result when
+      Element      :: xmerl:xmlElement(),
+      Options      :: option_list(),
+      Result       :: {ValidElement,global_state()} | {error,Reasons},
+      ValidElement :: xmerl:xmlElement(),
+      Reasons      :: [ErrorReason] | ErrorReason,
+      ErrorReason  :: term().
 validate(Xml,State,Opts) when is_record(State,xsd_state) ->
     S2 = initiate_state2(State,Opts),
     S3 = validation_options(S2,Opts),
     validate3(S3#xsd_state.schema_name,Xml,S3).
 
-%% @spec state2file(State) -> ok | {error,Reason}
-%% @doc Same as state2file(State,SchemaName)
-%%
-%% The name of the saved file is the same as the name of the
-%% schema, but with <code>.xss</code> extension.
+
+-doc """
+Equivalent to [`state2file(State, SchemaName)`](`state2file/2`).
+
+`SchemaName` is the name of the schema in `State`.
+""".
+-spec state2file(State :: global_state()) -> ok | {error,Reason} when
+      Reason :: term().
 state2file(S=#xsd_state{schema_name=SN}) ->
     state2file(S,filename:rootname(SN)).
 
-%% @spec state2file(State,FileName) -> ok | {error,Reason}
-%%       State = global_state()
-%%       FileName = string()
-%% @doc Saves the schema state with all information of the processed
-%% schema in a file. You can provide the file name for the saved
-%% state. FileName is saved with the <code>.xss</code> extension
-%% added.
+-doc """
+Save the schema processing state to a file.
+
+Saves the schema state with all information of the processed schema in a file.
+You can provide the file name for the saved state. FileName is saved with the
+`.xss` extension added.
+""".
+-spec state2file(global_state(), FileName :: string()) ->
+          ok | {error,Reason} when
+      Reason :: term().
 state2file(S,FileName) when is_record(S,xsd_state) ->
     save_xsd_state(S),
-    case catch ets:tab2file(S#xsd_state.table,lists:append(FileName,".xss")) of
-	{'EXIT',Reason} ->
-	    {error,{[],?MODULE,Reason}};
-	Ret -> Ret
+    try
+        ets:tab2file(S#xsd_state.table,lists:append(FileName,".xss"))
+    catch
+	error:Reason:StackTrace ->
+	    {error,{[],?MODULE,{Reason, StackTrace}}}
     end.
 
-%% @spec file2state(FileName) -> {ok,State} | {error,Reason}
-%%       State = global_state()
-%%       FileName = string()
-%% @doc Reads the schema state with all information of the processed
-%% schema from a file created with <code>state2file/[1,2]</code>.  The
-%% format of this file is internal. The state can then be used
-%% validating an XML document.
+
+-doc """
+Read the schema processing state from a file.
+
+Reads the schema state with all information of the processed schema from
+a file created with `state2file/[1,2]`. The format of this file is internal.
+The state can then be used validating an XML document.
+""".
+-spec file2state(FileName :: string()) ->
+          {ok,State} | {error,Reason} when
+      State  :: global_state(),
+      Reason :: term().
 file2state(FileName) ->
-    case catch ets:file2tab(FileName) of
+    try ets:file2tab(FileName) of
 	{ok,Tab} ->
 	    case load_xsd_state(Tab) of
 		[{state,S}] when is_record(S,xsd_state) ->
@@ -170,15 +201,24 @@ file2state(FileName) ->
 		    {error,{[],?MODULE,{incomplete_file,FileName,Other}}}
 	    end;
 	{error,Reason} ->
-	    {error,{[],?MODULE,Reason}};
-	Other ->
-	    {error,{[],?MODULE,Other}}
+	    {error,{[],?MODULE,Reason}}
+    catch
+        error:Reason:StackTrace ->
+	    {error,{[],?MODULE,{'EXIT', {Reason, StackTrace}}}}
     end.
 
 save_xsd_state(S) ->
-    catch ets:insert(S#xsd_state.table,{state,S}).
+    try
+        ets:insert(S#xsd_state.table,{state,S})
+    catch
+        _:_ -> ok
+    end.
 load_xsd_state(Table) ->
-    catch ets:lookup(Table,state).
+    try
+        ets:lookup(Table,state)
+    catch
+        error:Reason:StackTrace -> {'EXIT', {Reason, StackTrace}}
+    end.
    
 xmerl_xsd_vsn() ->
     case lists:keysearch(vsn,1,xmerl_xsd:module_info(attributes)) of
@@ -195,30 +235,35 @@ xmerl_xsd_vsn_check(S=#xsd_state{vsn=MD5_VSN}) ->
 	    {error,{[],?MODULE,{different_version_of_xmerl_xsd_module_used,
 		    state_not_reliable}}}
     end.
-    
-	
 
-%% @spec process_validate(Schema,Element) -> Result
-%% @equiv process_validate(Schema,Xml,[])
+
+-doc(#{ equiv => process_validate(Schema, Element, []) }).
+-spec process_validate(Schema :: string(), Element :: xmerl:element()) -> _.
 process_validate(Schema,Xml) ->
     process_validate(Schema,Xml,[]).
-%% @spec process_validate(Schema,Element,Options) -> Result
-%%       Schema   = string()
-%%       Element  = XmlElement
-%%       Options  = option_list()
-%%       Result   = {ValidXmlElement,State} | {error,Reason}
-%%       Reason   = [ErrorReason] | ErrorReason
-%% @doc Validates a parsed well-formed XML element towards an XML
-%% schema.  <p> Validates in two steps. First it processes the schema,
-%% saves the type and structure info in an ets table and then
-%% validates the element towards the schema.</p>
-%% <p> Usage example:</p>
-%% <p>
-%% <code>1>{E,_} = xmerl_scan:file("my_XML_document.xml").</code><br/>
-%% <code>2>{E2,_} = xmerl_xsd:validate("my_XML_Schema.xsd",E).</code>
-%% </p>
-%% <p> Observe that E2 may differ from E if for instance there are default
-%% values defined in <code>my_XML_Schema.xsd</code>.</p>
+
+-doc """
+Validate a parsed well-formed XML element towards an XML schema.
+
+Validates in two steps. First it processes the schema, saves the type and
+structure info in an ETS table and then validates the element towards the
+schema.
+
+Usage example:
+
+`1>{E,_} = xmerl_scan:file("my_XML_document.xml").`
+`2>{E2,_} = xmerl_xsd:process_validate("my_XML_Schema.xsd",E).`
+
+Observe that E2 may differ from E if for instance there are default values
+defined in `my_XML_Schema.xsd`.
+""".
+-spec process_validate(Schema, Element, Options) -> Result when
+      Schema       :: string(),
+      Element      :: xmerl:element(),
+      Options      :: option_list(),
+      Result       :: {ValidElement,global_state()} | {error,Reasons},
+      ValidElement :: xmerl:element(),
+      Reasons      :: [Reason :: term()] | Reason :: term().
 process_validate(Schema,Xml,Opts) ->
     TargetNamespace = target_namespace(Xml),
     case Schema of
@@ -247,12 +292,9 @@ process_validate2({SE,_},Schema,Xml,Opts) ->
 
 validate3(Schema, Xml,S =#xsd_state{errors=[]}) -> 
     Ret = {_, S2} = 
-	case catch validate_xml(Xml, S) of
+	try validate_xml(Xml, S) of
 	    _Err = {error, Reason} ->
 		{Xml, acc_errs(S, Reason)};
-	    {'EXIT', Reason} ->
-		{Xml, acc_errs(S, {error_path(Xml, Xml#xmlElement.name), ?MODULE,
-				 {undefined, {internal_error, Reason}}})};
 	    {XML2, Rest, Sx} ->
 		case lists:dropwhile(fun(X) when is_record(X, xmlComment) -> true; (_) -> false end, Rest) of
 		    [] ->
@@ -266,6 +308,13 @@ validate3(Schema, Xml,S =#xsd_state{errors=[]}) ->
 			{Xml,acc_errs(Sx,{error_path(UnValidated,Xml#xmlElement.name),?MODULE,
 					  {unvalidated_rest,UnValidated}})}
 		end
+        catch
+            error:Reason:StackTrace -> 
+                {Xml, acc_errs(S, {error_path(Xml, Xml#xmlElement.name), ?MODULE,
+                                   {undefined, {internal_error, {Reason, StackTrace}}}})};
+	    exit:Reason ->
+		{Xml, acc_errs(S, {error_path(Xml, Xml#xmlElement.name), ?MODULE,
+                                   {undefined, {internal_error, Reason}}})}            
 	end,
     save_to_file(S2,filename:rootname(Schema)++".tab2"),
     case S2#xsd_state.errors of
@@ -278,24 +327,29 @@ validate3(Schema, Xml,S =#xsd_state{errors=[]}) ->
 validate3(_,_,S) ->
     return_schema_error(S#xsd_state.errors).
 
-%% @spec process_schema(Schema) -> Result
-%% @equiv process_schema(Schema,[])
+
+-doc(#{ equiv => process_schema(Schema, []) }).
+-spec process_schema(Schema :: string()) -> _.
 process_schema(Schema) ->
     process_schema(Schema,[]).
-%% @spec process_schema(Schema,Options) -> Result
-%%       Schema  = string()
-%%       Result  = {ok,State} | {error,Reason}
-%%       State   = global_state()
-%%       Reason  = [ErrorReason] | ErrorReason
-%%       Options = option_list()
-%% @doc Reads the referenced XML schema and checks that it is valid.
-%% Returns the <code>global_state()</code> with schema info or an 
-%% error reason. The error reason may be a list of several errors
-%% or a single error encountered during the processing.
+
+-doc """
+Read an XML schema and check that it is valid.
+
+Reads the referenced XML schema and checks that it is valid. Returns the
+`t:global_state/0` with schema info or an error reason. The error reason
+may be a list of several errors or a single error encountered
+during the processing.
+""".
+-spec process_schema(Schema :: string(), Options :: option_list()) ->
+          {ok, State} | {error, Reasons} when
+      State   :: global_state(),
+      Reasons :: [Reason :: term()] | Reason :: term().
 process_schema(Schema,Options) when is_list(Options) ->
     State = initiate_state(Options,Schema),
-    process_schema(Schema, State);
-process_schema(Schema, State=#xsd_state{fetch_fun=Fetch})->
+    process_schema2(Schema, State).
+%%
+process_schema2(Schema, State=#xsd_state{fetch_fun=Fetch})->
     case Fetch(Schema, State) of
 	{ok,{file,File},_} ->
 	    process_schema2(xmerl_scan:file(File), State, Schema);
@@ -306,7 +360,7 @@ process_schema(Schema, State=#xsd_state{fetch_fun=Fetch})->
 	Err ->
 	    Err
     end.
-
+%%
 process_schema2(Err={error,_},_,_) ->
     Err;
 process_schema2({SE,_},State,_Schema) ->
@@ -316,27 +370,36 @@ process_schema2({SE,_},State,_Schema) ->
 	S3 = #xsd_state{errors=[]} ->
 	    {ok,S3};
 	S3 ->
-	    delete_table(S3),
+	    _ = delete_table(S3),
 	    return_error(S3#xsd_state.errors)
     end.
 
-%% @spec process_schemas(Schemas) -> Result
-%% @equiv process_schema(Schemas,[])
+
+-doc(#{ equiv => process_schemas(Schemas, []) }).
+-spec process_schemas(Schemas :: list()) -> _.
 process_schemas(Schemas) ->
     process_schemas(Schemas,[]).
-%% @spec process_schemas(Schemas,Options) -> Result
-%%       Schemas  = [{NameSpace,string()}|Schemas] | []
-%%       Result   = {ok,State} | {error,Reason}
-%%       Reason   = [ErrorReason] | ErrorReason
-%%       Options  = option_list()
-%% @doc Reads the referenced XML schemas and controls they are valid.
-%% Returns the <code>global_state()</code> with schema info or an 
-%% error reason. The error reason may be a list of several errors
-%% or a single error encountered during the processing.
+
+-doc """
+Read XML schemas and check that they are valid.
+
+Reads the referenced XML schemas and controls they are valid. Returns the
+`t:global_state/0` with schema info or an error reason. The error reason may be
+a list of several errors or a single error encountered during the processing.
+""".
+-spec process_schemas(Schemas, Options) ->
+          {ok, State} | {error, Reasons} when
+      Schemas   :: nonempty_list({NameSpace, Schema}),
+      Options   :: option_list(),
+      NameSpace :: term(),
+      Schema    :: string(),
+      State     :: global_state(),
+      Reasons   :: [Reason :: term()] | Reason :: term().
 process_schemas(Schemas=[{_,Schema}|_],Options) when is_list(Options) ->
     State = initiate_state(Options,Schema),
-    process_schemas(Schemas, State);
-process_schemas([{_NS,Schema}|Rest],State=#xsd_state{fetch_fun=Fetch}) ->
+    process_schemas2(Schemas, State).
+%%%
+process_schemas2([{_NS,Schema}|Rest],State=#xsd_state{fetch_fun=Fetch}) ->
     Res=
     case Fetch(Schema,State) of
 	{ok,{file,File},_} ->
@@ -350,19 +413,19 @@ process_schemas([{_NS,Schema}|Rest],State=#xsd_state{fetch_fun=Fetch}) ->
     end,
     case Res of
 	{ok,S2} ->
-	    process_schemas(Rest,S2);
+	    process_schemas2(Rest,S2);
 	_ ->
 	    Res
     end;
-process_schemas([],S) when is_record(S,xsd_state) ->
-    {ok,S}.
+process_schemas2([],State=#xsd_state{}) ->
+    {ok,State}.
 
 initiate_state(Opts,Schema) ->
     XSDBase = filename:dirname(Schema),
     {{state,S},RestOpts}=new_state(Opts),
     S2 = create_tables(S),
     initiate_state2(S2#xsd_state{schema_name = Schema, xsd_base=XSDBase,
-				 fetch_fun = fun fetch/2}, 
+				 fetch_fun = fun fetch/2},
 		    RestOpts).
 
 initiate_state2(S,[]) ->
@@ -400,7 +463,7 @@ new_state(Opts) ->
 %% information as defined elements and types.
 validate_schema(E=#xmlElement{},
 		    S) ->
-    %% namespace is always a xmlNamespace record, attributs a list of
+    %% namespace is always a xmlNamespace record, attributes a list of
     %% #xmlAttributes and content a list of #xmlElements|#xmlText|...
 
     %% Have to save namespace nodes. Use of namespace in paths for
@@ -421,15 +484,15 @@ validate_schema_ph2(S=#xsd_state{derived_types=[]}) ->
     S;
 validate_schema_ph2(S=#xsd_state{derived_types=DT}) ->
     deduce_derived_types(DT,S).
-    
+
 %% traverse_content/2 creates the content model of the schema.
-%% content model depends on (1) the type: 
+%% content model depends on (1) the type:
 %% complex type:
 %%       sequence, choice, all
 %% simple type: no content other than characters
 %% (2) minOccurs/maxOccurs attributes.
 %% The schema for schemas content model is:
-%% schema:	  ((include | import | redefine | annotation)*, 
+%% schema:	  ((include | import | redefine | annotation)*,
 %%		  (((simpleType | complexType | group | attributeGroup)
 %%		   | element | attribute | notation), annotation*)*)
 %% attribute:	  (annotation?, simpleType?)
@@ -457,9 +520,9 @@ validate_schema_ph2(S=#xsd_state{derived_types=DT}) ->
 %% appinfo:	  ({any})*
 %% documentation: ({any})*
 %% simpleType:	  (annotation?, (restriction | list | union))
-%% restriction:	  (annotation?, (simpleType?, (minExclusive | 
-%%		   minInclusive | maxExclusive | maxInclusive | 
-%%		   totalDigits | fractionDigits | length | minLength | 
+%% restriction:	  (annotation?, (simpleType?, (minExclusive |
+%%		   minInclusive | maxExclusive | maxInclusive |
+%%		   totalDigits | fractionDigits | length | minLength |
 %%		   maxLength | enumeration | whiteSpace | pattern)*))
 %% list:	  (annotation?, simpleType?)
 %% union:	  (annotation?, simpleType*)
@@ -482,10 +545,10 @@ traverse_content(E=#xmlElement{name=Name},S) ->
 	    S6 = substitution_default(finalDefault,E,S5),
 	    S7 = substitution_default(blockDefault,E,S6),
 	    traverse_content2(Content,S7,[]);
-	Err -> 
+	Err ->
 	    exit({error,{[],?MODULE,{schema_error,Err}}})
     end.
-    
+
 
 traverse_content2([],S,Acc) ->
     {reverse(remove_annotation(Acc)),reset_scope(S)};
@@ -534,8 +597,8 @@ substitution_default(Subst = blockDefault,El,S) ->
     S#xsd_state{blockDefault = substitution(Subst,El,S)}.
 substitution(Subst,El,_S) ->
     split_by_whitespace(get_attribute_value(Subst,El,[]),[]).
-    
-	 
+
+
 %% element_content may be one of: annotation, type def(simple or
 %% complex), import, unique, key, keyref, attribute def, attribute
 %% group, all, group, complexContent, simpleContent, choice, sequence
@@ -543,7 +606,7 @@ element_content({attribute,S=#xsd_state{scope=Scope}},Att,Env) ->
     case qualify_NCName(Att,S) of
 	no_name ->
 	    Ref = attribute_ref(Att),
-	    AttRef = 
+	    AttRef =
 		{attribute,get_QName(Ref,Att#xmlElement.namespace, %%QQQ
 				     reset_scope(S))},
 	    {AttRef,add_ref(S,AttRef)};
@@ -563,7 +626,7 @@ element_content({element,S},El,Env) ->
     case qualify_NCName(El,S) of
 	no_name ->
 	    Ref = particle_ref(El),
-	    {Occ,S2} = occurance(El,{1,1},S),
+	    {Occ,S2} = occurrence(El,{1,1},S),
 	    %% 3.3.3 bullet 2.2
 	    S3 = element_forbidden_properties(El,S2),
 	    S4 = element_forbidden_content(El#xmlElement.content,S3),
@@ -578,7 +641,7 @@ element_content({element,S},El,Env) ->
 	    Type2 = remove_annotation(Type),
 	    Unique = [X||X={unique,_} <- Type2],
 	    Key = [X||X={K,_} <- Type2,K == key orelse K==keyref],
-	    {Occur,S4} = occurance(El,{1,1},S3),
+	    {Occur,S4} = occurrence(El,{1,1},S3),
 	    {SE,S5} = element_properties(El#xmlElement.attributes,
 					 #schema_element{},El,S4),
 	    CM = remove_attributes([X||X={Y,_}<-Type2,
@@ -586,14 +649,14 @@ element_content({element,S},El,Env) ->
 				       keyref=/=Y,annotation=/=Y]),
 	    %% take care of key/keyref later
 	    SE2 = SE#schema_element{name=Name,type=CM,uniqueness=Unique,
-				    key=Key, occurance=Occur,
+				    key=Key, occurrence=Occur,
 				    scope=S5#xsd_state.scope},
 	    S6 = insert_substitutionGroup(SE2,S5),
 	    S7 = save_object({element,SE2},S6),
 	    {{element,{Name,Occur}},S7}
     end;
 element_content({complexType,S},CT,Env) ->
-    %% complex type definition without a name is returnd and added to
+    %% complex type definition without a name is returned and added to
     %% the content model at this level. A complex type may also contain
     %% attributes or attribute group references in the end of its content.
     %%?debug("complexType content: ~p~nenv: ~p~n",[CT,Env]),
@@ -607,7 +670,7 @@ element_content({complexType,S},CT,Env) ->
 			   in_scope(anonymous,S2),[complexType|Env]),
 	    S4 = check_cm(complexType,allowed_content(complexType,Env),CM,S3),
 	    Name1 = get_QName('_xmerl_no_name_',CT#xmlElement.namespace,S4),
-	    S5 = set_scope(S#xsd_state.scope,S4),	    
+	    S5 = set_scope(S#xsd_state.scope,S4),
 	    {Content,Attributes}=split_content(remove_annotation(CM)),
 	    SCT2 = base_type(Content,SCT),
 	    CTObj =
@@ -677,7 +740,7 @@ element_content({group,S},G,Env) ->
 	    %% "Schema Representation Constraint: Individual Component
 	    %% Redefinition"
 	    Ref = particle_ref(G),
-	    {Occur,S2} = occurance(G,{1,1},S),
+	    {Occur,S2} = occurrence(G,{1,1},S),
 	    GRef =
 		{group,
 	      {get_QName(Ref,G#xmlElement.namespace,reset_scope(S2)),%%QQQ
@@ -694,16 +757,16 @@ element_content({group,S},G,Env) ->
     end;
 element_content({all,S},All,Env) ->
     %% each element occurs 0 or 1 times in any order
-    %% {all,[{element_name,occurance}]}
+    %% {all,[{element_name,occurrence}]}
 %%    CM = content_model(Seq#xmlElement.content,S,[all|Env]),
-    {Occur,S1} = occurance(All,{1,1},S),
+    {Occur,S1} = occurrence(All,{1,1},S),
     {CM,S2} = type(All#xmlElement.content,S1,[all|Env]),
     S3 = check_cm(all,allowed_content(all,Env),CM,S2),
     {{all,{[X||X = {element,_} <- CM],Occur}},S3};
 element_content({sequence,S},Seq,Env) ->
-    %% {sequence,[{element_name,occurance}]}
+    %% {sequence,[{element_name,occurrence}]}
 %%    CM = content_model(Seq#xmlElement.content,S,[sequence|Env]),
-    {Occur,S1} = occurance(Seq,{1,1},S),
+    {Occur,S1} = occurrence(Seq,{1,1},S),
     {CM,S2} = type(Seq#xmlElement.content,S1,[sequence|Env]),
     S3 = check_cm(sequence,allowed_content(sequence,Env),CM,S2),
     {{sequence,{remove_annotation(CM),Occur}},S3};
@@ -712,12 +775,12 @@ element_content({choice,S},Choice,Env) ->
     %%                   (element | group | choice | sequence | any)*)
     %% returns: {choice,[element_name]}
 %%    CM = content_model(Choice#xmlElement.content,S,[choice|Env]),
-    {Occur,S1} = occurance(Choice,{1,1},S),
+    {Occur,S1} = occurrence(Choice,{1,1},S),
     {CM,S2} = type(Choice#xmlElement.content,S1,[choice|Env]),
     S3 = check_cm(choice,allowed_content(choice,Env),CM,S2),
     {{choice,{remove_annotation(CM),Occur}},S3};
 element_content({any,S},Any,_Env) ->
-    {Occur,S1} = occurance(Any,{1,1},S),
+    {Occur,S1} = occurrence(Any,{1,1},S),
     NameSpace = wildcard_namespace(Any,S1),
     PC = processor_contents(Any),
     ?debug("element_content, any: Any content:~p~n",[Any#xmlElement.content]),
@@ -735,7 +798,7 @@ element_content({any,S},Any,_Env) ->
 			      {unexpected_content_in_any,Err}})
 	 end,
     {{any,{NameSpace,Occur,PC}},S2};
-element_content({IDC,S},El,Env) 
+element_content({IDC,S},El,Env)
   when IDC==unique;IDC==key;IDC==keyref->
     QName = qualify_NCName(El,reset_scope(S)),
     Ref = keyrefer(IDC,El,S),
@@ -753,7 +816,7 @@ element_content({IDC,S},El,Env)
     end;
 element_content({selector,S},Sel,_Env) ->
     case get_attribute_value(xpath,Sel,error) of
-	error -> 
+	error ->
 	    S2 = acc_errs(S,{error_path(Sel,Sel#xmlElement.name),?MODULE,
 			     {missing_xpath_attribute,selector}}),
 	    {{selector,[]},S2};
@@ -762,7 +825,7 @@ element_content({selector,S},Sel,_Env) ->
     end;
 element_content({field,S},F,_Env) ->
     case get_attribute_value(xpath,F,error) of
-	error -> 
+	error ->
 	    S2 = acc_errs(S,{error_path(F,F#xmlElement.name),?MODULE,
 			     {missing_xpath_attribute,field}}),
 	    {{field,[]},S2};
@@ -809,7 +872,7 @@ element_content({restriction,S},R,Env) ->
     %% repeated. However, attributes are inherited.
     %% possible parents are simpleType or complexType (grand parent)
     %% If parent is simpleType the base type is either the attribute
-    %% base (resolved by base_type/1) or the type defined in content. 
+    %% base (resolved by base_type/1) or the type defined in content.
     {CM,S2} = type(R#xmlElement.content,S,[restriction|Env]),
     S3 = check_cm(restriction,allowed_content(restriction,Env),CM,S2),
     {BaseTypeName,CM2,S4} = restriction_base_type(R,CM,S3), %% a QName
@@ -836,7 +899,7 @@ element_content({import,S=#xsd_state{schema_name=ThisSchema,
     %% schema.
 
     %% namespace and schemaLocation
-    Namespace = 
+    Namespace =
 	case get_attribute_value(namespace,I,undefined) of
 	    L when is_list(L) ->
 		list_to_atom(L);
@@ -849,7 +912,7 @@ element_content({import,S=#xsd_state{schema_name=ThisSchema,
     %% If SchemaLocation is absent, the identification of that schema
     %% is leaved to the instance, application or user, via the
     %% mechanisms described §4.3 in XML Schema Part 1.
-    
+
     S2 = process_external_schema_once(SchemaLocation,Namespace,S),
     {{import,[]},S2#xsd_state{schema_name=ThisSchema,
 			      targetNamespace=ThisNameS}};
@@ -872,7 +935,7 @@ element_content({redefine,S=#xsd_state{schema_name=ThisSchema}},RD,Env) ->
 				 S3#xsd_state{redefine=true},[redefine|Env]),
 	    S5 = S4#xsd_state{redefine=false},
 	    S6 = check_cm(redefine,allowed_content(redefine,Env),CM,S5),
-	    S7 = redefine(CM,S6),	    
+	    S7 = redefine(CM,S6),
 	    {{redefine,[]},S7};
 	Errs ->
 	    S3 = S2#xsd_state{schema_name=ThisSchema,
@@ -881,9 +944,9 @@ element_content({redefine,S=#xsd_state{schema_name=ThisSchema}},RD,Env) ->
     end;
 element_content({anyAttribute,S},AA,_Env) ->
     %% has attributes processContents = (lax | skip | strict) : strict
-    %% namespace = ((##any | ##other) | 
+    %% namespace = ((##any | ##other) |
     %%               List of (anyURI | (##targetNamespace | ##local)) )  : ##any
-    
+
     NameSpace = wildcard_namespace(AA,S),
     PC = processor_contents(AA),
     Pred = fun(E=#xmlElement{}) -> case kind(E) of
@@ -904,7 +967,7 @@ element_content({simpleContent,S},SC,Env) ->
     %% only as child of complexType.
     %% allowed content: (annotation?, (restriction | extension))
     S2 = pre_check_cm(simpleContent,SC#xmlElement.content,mk_name(S#xsd_state.scope),S),
-    case filter(fun(X=#xmlElement{}) -> 
+    case filter(fun(X=#xmlElement{}) ->
 			case kind(X) of
 			    restriction -> true;
 			    extension -> true;
@@ -931,7 +994,7 @@ element_content({complexContent,S},CC,Env) ->
 					end;
 		   (_) -> false
 		end,CC#xmlElement.content) of
-	[E] -> 
+	[E] ->
 	    element_content(kind(E,S2),E,[complexContent|Env]);
 	Err ->
 	    {[],acc_errs(S2,{error_path(CC,CC#xmlElement.name),?MODULE,
@@ -995,9 +1058,9 @@ element_content({Other,S=#xsd_state{errors=Errs}},C,_Env) ->
     end.
 
 
-type(C,S,Env) -> 
+type(C,S,Env) ->
     type(C,S,Env,[]).
-type([E=#xmlElement{}|Els],S,Env,Acc) -> 
+type([E=#xmlElement{}|Els],S,Env,Acc) ->
     {CM,S2} = element_content(kind(E,S),E,Env),
     type(Els,set_scope(S#xsd_state.scope,S2),
 	 Env,[CM|Acc]);
@@ -1005,7 +1068,7 @@ type([_H|Els],S,Env,Acc) ->
     type(Els,S,Env,Acc);
 type([],S,_Env,Acc) ->
     {flatten(reverse(Acc)),S}.
-    
+
 simpleUrType() ->
     {anySimpleType,[]}.
 %% simpleUrTypeRef() ->
@@ -1105,7 +1168,7 @@ list_type(L,S,Env) ->
 	    %% this type should be preliminary saved and checked after
 	    %% the parsing of the schema.
 	    TypeRef ={simpleType,
-		      get_QName(V,L#xmlElement.namespace,reset_scope(S))}, 
+		      get_QName(V,L#xmlElement.namespace,reset_scope(S))},
 	    {[TypeRef],add_ref(S,TypeRef)}
     end.
 union_types(U,S,Env) ->
@@ -1118,7 +1181,7 @@ union_types(U,S,Env) ->
 		UTypeRefs =
 		    [{simpleType,get_QName(X,U#xmlElement.namespace,
 					   reset_scope(S))}||X<-Names],
-		{UTypeRefs,foldl(fun(X,S_in) -> add_ref(S_in,X) end,S,UTypeRefs)} 
+		{UTypeRefs,foldl(fun(X,S_in) -> add_ref(S_in,X) end,S,UTypeRefs)}
 	end,
     {DefinedTypes,S3} = union_types1(U#xmlElement.content,S2,Env),
     {MemberTypes++DefinedTypes,S3}.
@@ -1162,7 +1225,7 @@ recursive_redefine2(Name,[{group,{Name,Occ}}|T],S) ->
 	NewName ->
 	    [{group,{NewName,Occ}}|T]
     end;
-recursive_redefine2(Name,[{MG,{C,Occ}}|T],S) 
+recursive_redefine2(Name,[{MG,{C,Occ}}|T],S)
   when MG =:= sequence; MG =:= choice; MG=:= all; MG=:= group ->
     C2 = recursive_redefine2(Name,C,S),
     [{MG,{C2,Occ}}|recursive_redefine2(Name,T,S)];
@@ -1170,7 +1233,7 @@ recursive_redefine2(Name,[H|T],S) ->
     [H|recursive_redefine2(Name,T,S)];
 recursive_redefine2(_,[],_) ->
     [].
-    
+
 rename_redef_group(Name={LN,Scope,NS},S) ->
     %% Scope must be []
     NewName = {LN,['#redefine'|Scope],NS},
@@ -1181,8 +1244,8 @@ rename_redef_group(Name={LN,Scope,NS},S) ->
 	_ ->
 	    failed
     end.
-	    
-    
+
+
 add_ref(S=#xsd_state{unchecked_references=UR},STRef={simpleType,Ref}) ->
     case {is_builtin_simple_type(Ref),Ref} of
 	{true,_} ->
@@ -1229,7 +1292,7 @@ add_circularity_ref(Ref={Kind,To},S=#xsd_state{circularity_disallowed=CD,
     end;
 add_circularity_ref(_,S) ->
     S.
-get_circularity_mark({TD,_},S) 
+get_circularity_mark({TD,_},S)
   when TD==simpleType;TD==complexType;TD==simple_or_complex_Type ->
     case S#xsd_state.circularity_stack of
 	[From={typeDef,_}|_] ->
@@ -1280,7 +1343,7 @@ facets([{restriction,{BaseType,CM}}],_S) ->
 facets(_,_S) ->
     {undefined,[]}.
 
-group_facets(Facets) ->    
+group_facets(Facets) ->
     group_facets(Facets,[]).
 group_facets(L=[{enumeration,_}|_Rest],Acc) ->
     {Enums,Rest} = splitwith(fun({enumeration,_}) -> true;
@@ -1349,8 +1412,8 @@ restriction_base_type(R,CM,S) ->
 	BT ->
 	    {get_QName(BT,R#xmlElement.namespace,reset_scope(S)),CM,S}
     end.
-		    
-base_type([{restriction,{BaseT,_}}],SCT) -> 
+
+base_type([{restriction,{BaseT,_}}],SCT) ->
     SCT#schema_complex_type{base_type=BaseT};
 base_type([{extension,{BaseT,_}}],SCT) ->
     SCT#schema_complex_type{base_type=BaseT};
@@ -1426,7 +1489,7 @@ check_cm(Kind,S4SCM,ContentModel,S) ->
 	    exit({error,{[],?MODULE,{internal_error,Err}}})
     end.
 
-check_cm2(Kind,#chain{content=S4SCM,occurance=Occ},
+check_cm2(Kind,#chain{content=S4SCM,occurrence=Occ},
 	 ContentModel,S) ->
     case occurance_loop(Occ,fun check_chain/1,
 			[S4SCM,ContentModel,Kind,S],0) of
@@ -1445,7 +1508,7 @@ check_cm2(Kind,#chain{content=S4SCM,occurance=Occ},
 	    Err = {[],?MODULE,{illegal_content,Reason,Kind}},
 	    {ContentModel,acc_errs(S,Err)}
     end;
-check_cm2(Kind,#alternative{content=S4SCM,occurance=Occ},
+check_cm2(Kind,#alternative{content=S4SCM,occurrence=Occ},
 	 ContentModel,S) ->
     case occurance_loop(Occ,fun check_alternative/1,
 			[S4SCM,ContentModel,Kind,S],0) of
@@ -1471,13 +1534,13 @@ check_cm2(_,{Kind,Occ},CM,S) ->
 %% check_simple_cm
 check_simple_cm([Kind,CM]) ->
     check_simple_cm(Kind,CM).
-    
+
 
 check_simple_cm(Kind,[]) ->
     {error,{[],?MODULE,{no_match,{Kind,[]}}}};
 check_simple_cm(Kind,[{Kind,_}|Rest]) ->
     {ok,[Kind,Rest]};
-check_simple_cm(Kind,[{Other,_}|Rest]) 
+check_simple_cm(Kind,[{Other,_}|Rest])
   when Kind==simpleType;Kind==complexType ->
     case Other of
 	simple_or_complex_Type -> {ok,[Kind,Rest]};
@@ -1536,7 +1599,7 @@ check_alternative(Kind,[S4SC|S4SCs],AltCM = [_H|_T],
     end;
 check_alternative(Kind,[],_AltCM,_S) ->
     {error,{[],?MODULE,{no_match,Kind}}}.
-    
+
 
 %% occurance_loop keeps track of the right number of elements
 %% Third argument is a list: [S4SContent,ContentModel]
@@ -1566,7 +1629,7 @@ occurance_kind([_,_,Kind,_]) ->
     Kind;
 occurance_kind(_) ->
     [].
-%% if_simple_hd(S4SCM,ConstrCM) 
+%% if_simple_hd(S4SCM,ConstrCM)
 %%   when is_record(S4SCM,chain);is_record(S4SCM,alternative);is_list(S4SCM) ->
 %%     ConstrCM;
 %% if_simple_hd(_,[H|_Tl]) ->
@@ -1603,7 +1666,7 @@ get_occur({_,{_,Occ={Min,_},_}}) when is_integer(Min) ->
     Occ;
 get_occur(Other) ->
     Other.
-    
+
 %% remove_whitespace(L=[T=#xmlText{}|Rest]) ->
 %%     case is_whitespace(T) of
 %% 	true ->
@@ -1612,7 +1675,7 @@ get_occur(Other) ->
 %%     end;
 %% remove_whitespace(L) ->
 %%     L.
-    
+
 optional(optional_text) ->
     true;
 optional({_,{0,_}}) ->
@@ -1621,16 +1684,28 @@ optional({_,{_,{0,_}}}) ->
     true; %% sequence, all or choice
 optional({any,{_,{0,_},_}}) ->
     true;
-optional(#chain{occurance={0,_}}) ->
+optional(#chain{occurrence={0,_}}) ->
     true;
-optional(#alternative{occurance={0,_}}) ->
+optional(#alternative{occurrence={0,_}}) ->
     true;
 optional(#chain{content=Content}) ->
-    catch is_optional_content(Content);
+    try
+        is_optional_content(Content)
+    catch
+        throw:false -> false
+    end;
 optional(#alternative{content=Content}) ->
-    catch is_optional_content(Content);
+    try
+        is_optional_content(Content)
+    catch
+        throw:false -> false
+    end;
 optional({all,{Content,_}}) ->
-    catch is_optional_content(Content);
+    try
+        is_optional_content(Content)
+    catch
+        throw:false -> false
+    end;
 optional(_) ->
     false.
 
@@ -1671,10 +1746,10 @@ allowed_content(element,_Parents) ->
 	       #chain{content=
 			 [#alternative{content=
 				  [{simpleType,{1,1}},{complexType,{1,1}}],
-				  occurance={0,1}},
+				  occurrence={0,1}},
 			  #alternative{content=
 				  [{unique,{1,1}},{key,{1,1}},{keyref,{1,1}}],
-				  occurance={0,unbounded}}]
+				  occurrence={0,unbounded}}]
 			}]
 	     };
 allowed_content(attribute,_Parents) ->
@@ -1689,12 +1764,12 @@ allowed_content(complexType,Parents) ->
 		    [#alternative{content=
 				  [{group,{1,1}},{all,{1,1}},
 				   {choice,{1,1}},{sequence,{1,1}}],
-				  occurance={0,1}},
+				  occurrence={0,1}},
 		     #chain{content=
 			    [#alternative{content=
 					  [{attribute,{1,1}},
 					   {attributeGroup,{1,1}}],
-					  occurance={0,unbounded}},
+					  occurrence={0,unbounded}},
 			     {anyAttribute,{0,1}}]
 			   }
 		    ]
@@ -1714,7 +1789,7 @@ allowed_content(attributeGroup,Parents) ->
 				 [#alternative{content=
 					  [{attribute,{1,1}},
 					   {attributeGroup,{1,1}}],
-					  occurance={0,unbounded}},
+					  occurrence={0,unbounded}},
 				  {anyAttribute,{0,1}}]}]}
     end;
 allowed_content(group,_Parents) ->
@@ -1722,7 +1797,7 @@ allowed_content(group,_Parents) ->
 	      [{annotation,{0,1}},
 	       #alternative{content=
 		       [{all,{1,1}},{choice,{1,1}},{sequence,{1,1}}],
-		       occurance={0,1}}]};
+		       occurrence={0,1}}]};
 allowed_content(all,_Parents) ->
     #chain{content=[{annotation,{0,1}},{element,{0,unbounded}}]};
 allowed_content(SorC,_Parents) when SorC==sequence;SorC==choice ->
@@ -1732,7 +1807,7 @@ allowed_content(SorC,_Parents) when SorC==sequence;SorC==choice ->
 		       [{element,{1,1}},{group,{1,1}},
 			{choice,{1,1}},{sequence,{1,1}},
 			{any,{1,1}}],
-		       occurance={0,unbounded}}]};
+		       occurrence={0,unbounded}}]};
 %% allowed_content(E,_Parents)
 %%   when E==any;E==selector;E==field;E==notation;E==include;E==import;
 %%        E==anyAttribute ->
@@ -1744,7 +1819,7 @@ allowed_content(SorC,_Parents) when SorC==sequence;SorC==choice ->
 %% 			 [{selector,{1,1}},{selector,{1,unbounded}}]}]};
 %% allowed_content(annotation,_Parents) ->
 %%     #alternative{content=[{appinfo,{1,1}},{documentation,{1,1}}],
-%% 	    occurance={0,unbounded}};
+%% 	    occurrence={0,unbounded}};
 %% allowed_content(E,_Parents) when E==appinfo;E==documentation ->
 %%     {any,{0,unbounded}};
 allowed_content(simpleType,_Parents) ->
@@ -1771,7 +1846,7 @@ allowed_content(LU,_Parent) when LU==list;LU==union ->
 %% 	      [#alternative{content=
 %% 		       [{include,{1,1}},{import,{1,1}},
 %% 			{redefine,{1,1}},{annotation,{1,1}}],
-%% 		       occurance={0,1}},
+%% 		       occurrence={0,1}},
 %% 	       #chain{content=
 %% 			 [#alternative{content=
 %% 				  [#alternative{content=
@@ -1781,14 +1856,14 @@ allowed_content(LU,_Parent) when LU==list;LU==union ->
 %% 				   {attribute,{1,1}},
 %% 				   {notation,{1,1}}]},
 %% 			  {annotation,{0,unbounded}}],
-%% 			 occurance={0,unbounded}}]};
+%% 			 occurrence={0,unbounded}}]};
 allowed_content(redefine,_Parents) ->
     #alternative{content=
 	    [{annotation,{1,1}},
 	     #alternative{content=
 		     [{simpleType,{1,1}},{complexType,{1,1}},
 		      {group,{1,1}},{attributeGroup,{1,1}}]}],
-	    occurance={0,unbounded}};
+	    occurrence={0,unbounded}};
 allowed_content(E,_Parents) when E==simpleContent;
 				 E==complexContent ->
     #chain{content=
@@ -1826,7 +1901,7 @@ allowed_content(extension,Parents) ->
 %%     [];
 %% allowed_content(pattern,_Parents) ->
 %%     [].
-	       
+
 
 
 
@@ -1842,7 +1917,7 @@ allowed_content2(restriction,simpleType) ->
 				   {length,{1,1}},{minLength,{1,1}},
 				   {maxLength,{1,1}},{enumeration,{1,1}},
 				   {whiteSpace,{1,1}},{pattern,{1,1}}],
-				  occurance={0,unbounded}}]}]};
+				  occurrence={0,unbounded}}]}]};
 allowed_content2(restriction,simpleContent) ->
     #chain{content=
 	      [{annotation,{0,1}},
@@ -1855,12 +1930,12 @@ allowed_content2(restriction,simpleContent) ->
 				  {length,{1,1}},{minLength,{1,1}},
 				  {maxLength,{1,1}},{enumeration,{1,1}},
 				  {whiteSpace,{1,1}},{pattern,{1,1}}],
-				 occurance={0,unbounded}}],
-			 occurance={0,1}},
+				 occurrence={0,unbounded}}],
+			 occurrence={0,1}},
 	       #chain{content=
 			 [#alternative{content=
 				 [{attribute,{1,1}},{attributeGroup,{1,1}}],
-				  occurance={0,unbounded}},
+				  occurrence={0,unbounded}},
 			  {anyAttribute,{0,1}}]}]};
 allowed_content2(restriction,complexContent) ->
     #chain{content=
@@ -1868,11 +1943,11 @@ allowed_content2(restriction,complexContent) ->
 	       #alternative{content=
 		       [{group,{1,1}},{all,{1,1}},{choice,{1,1}},
 			{sequence,{1,1}}],
-		       occurance={0,1}},
+		       occurrence={0,1}},
 	       #chain{content=
 			 [#alternative{content=
 				  [{attribute,{1,1}},{attributeGroup,{1,1}}],
-				  occurance={0,unbounded}},
+				  occurrence={0,unbounded}},
 			  {anyAttribute,{0,1}}]}]};
 allowed_content2(extension,simpleContent) ->
     #chain{content=
@@ -1880,7 +1955,7 @@ allowed_content2(extension,simpleContent) ->
 	       #chain{content=
 			 [#alternative{content=
 				  [{attribute,{1,1}},{attributeGroup,{1,1}}],
-				  occurance={0,unbounded}},
+				  occurrence={0,unbounded}},
 			  {anyAttribute,{0,1}}]}]};
 allowed_content2(extension,complexContent) ->
     #chain{content=
@@ -1889,19 +1964,19 @@ allowed_content2(extension,complexContent) ->
 			 [#alternative{content=
 				  [{group,{1,1}},{all,{1,1}},{choice,{1,1}},
 				   {sequence,{1,1}}],
-				  occurance={0,1}},
+				  occurrence={0,1}},
 			  #chain{content=
 				    [#alternative{content=
 					     [{attribute,{1,1}},
 					      {attributeGroup,{1,1}}],
-					     occurance={0,1}},
+					     occurrence={0,1}},
 				     {anyAttribute,{0,1}}]}]}]}.
-						  
+
 
 set_occurance(Ch = #chain{},Occ) ->
-    Ch#chain{occurance=Occ};
+    Ch#chain{occurrence=Occ};
 set_occurance(Alt = #alternative{},Occ) ->
-    Alt#alternative{occurance=Occ};
+    Alt#alternative{occurrence=Occ};
 set_occurance({Name,_},Occ) when is_atom(Name) ->
     {Name,Occ}.
 %% set_occurance(CM,_) ->
@@ -1944,7 +2019,7 @@ process_external_schema(absent,S) ->
 
 fetch_external_schema(Path,S) when is_list(Path) ->
     FetchFun = S#xsd_state.fetch_fun,
-    %%    {ExtXSD,S2} = 
+    %%    {ExtXSD,S2} =
 	case FetchFun(Path,S) of
 	    {ok,{file,File},_} ->
 		?debug("scanning file: ~p~n",[File]),
@@ -1956,12 +2031,8 @@ fetch_external_schema(Path,S) when is_list(Path) ->
 		end;
 	    {_,{string,String},_} -> %% this is for a user defined fetch fun that returns an xml document on string format.
 		?debug("scanning string: ~p~n",[String]),
-		case xmerl_scan:string(String,S#xsd_state.xml_options) of
-		    {error,Reason} ->
-			{error,acc_errs(S,{[],?MODULE,{parsing_external_schema_failed,Path,Reason}})};
-		    {EXSD,_} ->
-			{EXSD,S#xsd_state{schema_name=Path}}
-		end;
+                {EXSD,_} = xmerl_scan:string(String,S#xsd_state.xml_options),
+                {EXSD,S#xsd_state{schema_name=Path}};
 	    {ok,[],_} ->
 		{ok,S};
 	    {_,Other,_} ->
@@ -1985,19 +2056,19 @@ is_already_processed(NameSpace,#xsd_state{schema_name=SchemaName,
 	    false
     end.
 
-%% 
+%%
 save_namespace_definition(NameSpace,
 			  S=#xsd_state{targetNamespace=TNS,
 				       global_namespace_nodes=GNS,
 				       checked_namespace_nodes=CNS}) ->
     %% 1) Have to find a matching namespace in the global list for
     %% this schema, and get the associated prefix. 2) Then check
-    %% whether a schema with this prefix - namespace combinaton
+    %% whether a schema with this prefix - namespace combination
     %% already is checked, if so do nothing. 3a) If this namespace is
     %% checked but with another prefix only add the prefix - namespace
     %% pair to the checked namespace list. 3b) Otherwise add the
     %% prefix - namespace pair.
-    {Prefix,S2} = 
+    {Prefix,S2} =
 	case keysearch(TNS,1,GNS) of
 	    {value,{_,ImportedNodes}} ->
 		case keysearch(NameSpace,2,ImportedNodes) of
@@ -2097,7 +2168,7 @@ attribute_form(Form,S) ->
 
 element_properties([#xmlAttribute{name=default,value=Default}|Rest],SE,El,S) ->
     case SE#schema_element.value_constraint of
-	{fixed,_} -> 
+	{fixed,_} ->
 	    Err = {error_path(El,schema),?MODULE,{"only one of final/default attributes allowed",
 		   El#xmlElement.name}},
 	    element_properties(Rest,SE,El,acc_errs(S,Err));
@@ -2107,7 +2178,7 @@ element_properties([#xmlAttribute{name=default,value=Default}|Rest],SE,El,S) ->
     end;
 element_properties([#xmlAttribute{name=fixed,value=Fixed}|Rest],SE,El,S) ->
     case SE#schema_element.value_constraint of
-	{default,_} -> 
+	{default,_} ->
 	    Err = {error_path(El,schema),?MODULE,
 		   {"only one of final/default attributes allowed",
 		    El#xmlElement.name}},
@@ -2209,7 +2280,7 @@ element_forbidden_content([T=#xmlText{}|Rest],S) ->
 	_ ->
 	    acc_errs(S,{error_path(T,schema),?MODULE,{illegal_element_content,T}})
     end.
-	
+
 c_t_properties(El,CT,S) ->
     c_t_properties(El#xmlElement.attributes,El,CT,S).
 c_t_properties([#xmlAttribute{name=final,value=V}|Rest],El,CT,S) ->
@@ -2253,12 +2324,12 @@ legal_block_values(element,BlockValues) ->
     list_members(BlockValues,[extension,restriction,substitution]);
 legal_block_values(complexType,BlockValues) ->
     list_members(BlockValues,[extension,restriction]).
- 
+
 legal_final_values(_,['#all']) ->
     true;
 legal_final_values(_,FinalValues) ->
     list_members(FinalValues,[extension,restriction]).
-	
+
 boolean_to_atom(B) when B=="1";B=="true" ->
     true;
 boolean_to_atom(B) when B=="0";B=="false" ->
@@ -2275,14 +2346,15 @@ set_num_el(S=#xsd_state{},#xsd_state{num_el=I}) ->
     S#xsd_state{num_el=I}.
 
 
-occurance(El=#xmlElement{attributes=Atts},{Min,Max},S) ->
+occurrence(El=#xmlElement{attributes=Atts},{Min,Max},S) ->
     AttVal=fun(#xmlAttribute{value=V},Sin) -> 
-		   case catch mk_int_or_atom(V) of
-		       {'EXIT',_} ->
+		   try mk_int_or_atom(V) of
+		       IAV -> {IAV,Sin}
+                   catch
+		       error:_ ->
 			   Err = {error_path(El,schema),?MODULE,
 				  {illegal_occurance_value,V}},
-			   {V,acc_errs(Sin,Err)};
-		       IAV -> {IAV,Sin}
+			   {V,acc_errs(Sin,Err)}
 		   end;
 	      (V1,Sin) -> {V1,Sin}
 	   end,
@@ -2296,7 +2368,7 @@ mk_int_or_atom(V="unbounded") ->
     list_to_atom(V);
 mk_int_or_atom(V) when is_list(V) ->
     list_to_integer(V);
-mk_int_or_atom(V) -> 
+mk_int_or_atom(V) ->
     V.
 
 %% E is a complexType, possible kind of content is A)simpleContent, B)
@@ -2311,15 +2383,15 @@ mixed(E=#xmlElement{content=C},S) ->
 	{undefined,_} ->
 	    case [X||X=#xmlElement{}<-C,
 		     kind(X)==complexContent] of
-		[E2] -> 
+		[E2] ->
 %%		    {get_attribute_value(mixed,E2,false),S};
 		    mixed(E2,S);
-		_ -> 
+		_ ->
 		    {false,S}
 	    end;
 	{M,_} when M=="1";M=="true" -> {true,S};
 	{M,_} when M=="0";M=="false" -> {false,S};
-	{M,_} -> 
+	{M,_} ->
 	    Err = {error_path(E,schema),?MODULE,{invalid_mixed_value,M}},
 	    {false,acc_errs(S,Err)}
     end.
@@ -2362,7 +2434,7 @@ complexity([H|T]) ->
 %% 3)	Check the immediate attributes and contents of the element
 %%         comparing these against the attributes and contents
 %%         permitted.
-%% 	a) simple type: 
+%% 	a) simple type:
 %% 	   -verify there are no attributes or elements.
 %% 	   -verify character content matches rules for type.
 %% 	b) complex type:
@@ -2470,7 +2542,7 @@ check_element_type(XML=[#xmlElement{}|_],[{all,{CM,Occ}}|_CMRest],
 %% 3 often. CMEL may be ((simpleType | complexType)?, (unique | key | keyref)*))
 check_element_type(XML=[XMLEl=#xmlElement{}|_],[CMEl|CMRest],Env,
 		   Block,S,Checked) ->
-    %% Three possible releations between XMLEl - CMEl:
+    %% Three possible relations between XMLEl - CMEl:
     %% (1) XMLEl matches CMEl.
     %% (2) XMLEl don't matches CMEl and CMEl is optional.
     %% (3) XMLEl don't matches CMEl, CMEl mandatory, - error.
@@ -2547,6 +2619,9 @@ check_element_type(XML=[#xmlText{}|_],
     {ResolvedType,_} = resolve({simple_or_complex_Type,BT},S),
     check_element_type(XML,ResolvedType,Env,Block,S,Checked);
 
+check_element_type(_C, optional_text, _Env, _Block, S, _Checked) ->
+    {[], [], S};
+
 %% single schema object
 check_element_type(XML=[_H|_],
 		   #schema_complex_type{name=Name,block=Bl,content=C},
@@ -2563,14 +2638,14 @@ check_element_type(XML=[XMLEl=#xmlElement{name=Name}|RestXML],
 		   CMEl=#schema_element{name=CMName,type=Type},
 		   Env,Block,S,Checked) ->
     ElName = mk_EII_QName(Name,XMLEl,S#xsd_state{scope=element(2,CMName)}),
-    {Min,Max} = CMEl#schema_element.occurance,
+    {Min,Max} = CMEl#schema_element.occurrence,
     case cmp_name(ElName,CMName,S) of %% substitutionGroup
 	true when S#xsd_state.num_el =< Max ->
 	    S1 = id_constraints(CMEl,XMLEl,S),
 	    %% If CMEl element has a substitutionGroup we have to
-	    %% switch to the rigth element and type here.
+	    %% switch to the right element and type here.
 	    {CMEl2,Type2,S2} =
-		if 
+		if
 		    ElName =:= CMName ->
 			{CMEl,Type,S1};
 		    true ->
@@ -2581,8 +2656,8 @@ check_element_type(XML=[XMLEl=#xmlElement{name=Name}|RestXML],
 				{CMEl,Type,Ssub}
 			end
 		end,
-			
-	    {ResolvedType,S3} = resolve(Type2,XMLEl,S2), 
+
+	    {ResolvedType,S3} = resolve(Type2,XMLEl,S2),
 	    %% What's the value of Resolve?: It must be a simpleType,
 	    %% complexType or an identity-constraint object
 	    XsiFactors  = xsi_factors(CMEl2),
@@ -2592,7 +2667,7 @@ check_element_type(XML=[XMLEl=#xmlElement{name=Name}|RestXML],
 	    S6 = check_form(ElName,Name,XMLEl,
 			    actual_form_value(CMEl#schema_element.form,
 					      S5#xsd_state.elementFormDefault),
-			    S5), 
+			    S5),
 	    %Step into content of XML element.
 	    {Content,_,S7} =
 		case
@@ -2614,11 +2689,11 @@ check_element_type(XML=[XMLEl=#xmlElement{name=Name}|RestXML],
 	true ->
 	    {error,{error_path(XMLEl, Name), ?MODULE,
 		    {element_not_suitable_with_schema, ElName, S}}};
-	_ when S#xsd_state.num_el >= Min -> 
+	_ when S#xsd_state.num_el >= Min ->
 	    %% it may be a match error or an optional element not
 	    %% present
-	    {[], XML, S#xsd_state{num_el=0}}; 
-	_ -> 
+	    {[], XML, S#xsd_state{num_el=0}};
+	_ ->
 	    {error,{error_path(XMLEl,Name),?MODULE,
 		    {element_not_suitable_with_schema,ElName,CMName,CMEl,S}}}
     end;
@@ -2633,7 +2708,7 @@ check_element_type(XML=[#xmlElement{content=_Content}|_Rest],
     case check_sequence(XML,Els,Occ,Env,S#xsd_state{num_el=0},Checked) of
 	Err = {error,_} ->
 	    Err;
-	{ValidContent,Rest2,S2} -> 
+	{ValidContent,Rest2,S2} ->
 	    %% The sequence may consume more than one element
 	    %%{ValidContent,Rest,acc_errs(S2,{sequence_unexpected_rest_objects,UnexpRest})}
 	    {ValidContent,Rest2,S2}
@@ -2686,7 +2761,7 @@ check_element_type(XML=[E=#xmlElement{name=Name}|Rest],
 					Fun(T,Sin2,Fun);
 				   ([],Sin,_Fun) ->
 					Sin;
-				   (El,Sin,_Fun) -> 
+				   (El,Sin,_Fun) ->
 					Err = {error_path(E,Name),?MODULE,
 					       {illegal_component_in_any,El}},
 					acc_errs(Sin,Err)
@@ -2705,7 +2780,7 @@ check_element_type(XML=[E=#xmlElement{name=Name}|Rest],
     end;
 check_element_type([],CM,_Env,_Block,S,Checked) ->
     %% #schema_complex_type, any, #schema_group, anyType and lists are
-    %% catched above.
+    %% caught above.
     case CM of
 	#schema_simple_type{} ->
 	    {NewVal,S2} = check_type(CM,[],unapplied,S),
@@ -2777,7 +2852,7 @@ check_sequence(Seq=[_InstEl=#xmlElement{}|_],[El|Els],Occ={_Min,_Max},Env,S,Chec
 %%	    Err;
 	{Ret,UnValRest,S3} ->
 	    %% must also take care of more elements of same name
-	    %% decrease occurance in El for the optional measurements
+	    %% decrease occurrence in El for the optional measurements
 	    %% when Seq is empty.
 	    check_sequence(UnValRest,[decrease_occurance(El)|Els],Occ,Env,
 			   count_num_el(set_num_el(S3,S2)),
@@ -2835,7 +2910,7 @@ check_choice(XML,[],{0,_},_,S,Checked) ->
     %% Choice is optional
     {Checked,XML,set_num_el(S,0)};
 check_choice(XML,[],_,_,S,Checked) ->
-    %% Choice has already matched something, the rest is for somthing
+    %% Choice has already matched something, the rest is for something
     %% else to match.
     case S#xsd_state.num_el > 0 of
 	true ->
@@ -2895,7 +2970,7 @@ check_all([],CM,_Occ,_,S,Checked,_PrevXML) ->
     end.
 
 check_any(E,Any,_Env,S) ->
-    case catch validate_xml(E,S#xsd_state{scope=[]}) of
+    try validate_xml(E,S#xsd_state{scope=[]}) of
 	{[Result],[],S2} ->
 	    {Result,S2#xsd_state{scope=S#xsd_state.scope}};
 	{Result,[],S2} ->
@@ -2903,10 +2978,15 @@ check_any(E,Any,_Env,S) ->
 	{_,_Unvalidated,S2} ->
 	    Err = {error_path(E,undefined),?MODULE,{failed_validating,E,Any}},
 	    {E,acc_errs(S2#xsd_state{scope=S#xsd_state.scope},Err)};
-	{error,Reason} -> 
-	    {E,acc_errs(S,Reason)};
-	{'EXIT',Reason} ->
-%%	    {E,acc_errs(S,format_error({internal_error,Reason},E,Any,Env))}
+	{error,Reason} ->
+	    {E,acc_errs(S,Reason)}
+    catch
+	error:Reason:StackTrace ->
+            %% {E,acc_errs(S,format_error({internal_error,Reason},E,Any,Env))}
+	    Err = {error_path(E,undefined),?MODULE,{internal_error,{Reason, StackTrace}}},
+	    {E,acc_errs(S,Err)};
+        exit:Reason ->
+            %% {E,acc_errs(S,format_error({internal_error,Reason},E,Any,Env))}
 	    Err = {error_path(E,undefined),?MODULE,{internal_error,Reason}},
 	    {E,acc_errs(S,Err)}
     end.
@@ -2945,7 +3025,7 @@ schemaLocations(El=#xmlElement{attributes=Atts},S) ->
 		L when length(L) > 0 ->
 		    case length(L) rem 2 of
 			0 ->
-			    PairList = 
+			    PairList =
 				fun([],_Fun) ->
 					[];
 				   ([SLNS,SLLoc|Rest],Fun) ->
@@ -2977,12 +3057,16 @@ allow_empty_content([{extension,{_BT,_CM=[]}}]) ->
     true;
 allow_empty_content([{_,{_,{0,_}}}|Rest]) ->
     allow_empty_content(Rest);
+allow_empty_content([{any,{_,{0,_},_}}|Rest]) ->
+    allow_empty_content(Rest);
 allow_empty_content([{_,{Content,_}}|Rest]) ->
      case allow_empty_content(Content) of
 	 true ->
 	     allow_empty_content(Rest);
 	 _ -> false
      end;
+allow_empty_content([optional_text|Rest]) ->
+    allow_empty_content(Rest);
 allow_empty_content(_) ->
     false.
 
@@ -3033,10 +3117,10 @@ check_attributes(XMLEl=#xmlElement{attributes=[]},_,_,S) ->
     {XMLEl,S};
 check_attributes(XMLEl=#xmlElement{name=N,attributes=Atts},_,XsiFactors,S) ->
     Fun =
-	fun(AttX,S_in) -> 
+	fun(AttX,S_in) ->
 		case reserved_attribute(AttX,XMLEl#xmlElement.namespace) of
 		    true ->
-			AttQName = 
+			AttQName =
 			    mk_EII_QName(AttX#xmlAttribute.name,XMLEl,S_in),
 			check_xsi_factors(AttQName,AttX,XsiFactors,XMLEl,S_in);
 		    _ ->
@@ -3079,7 +3163,7 @@ check_attributes([],[SA|SchemaAtts],XMLEl,XsiFactors,S,CheckedAtts) ->
 	    end;
 	{{anyAttribute,{_Namespaces,_PC}},S2} ->
 	    check_attributes([],SchemaAtts,XMLEl,XsiFactors,
-			     S2,CheckedAtts);	    
+			     S2,CheckedAtts);
 	Err ->
 	    ErrMsg={error_path(XMLEl,XMLEl#xmlElement.name),?MODULE,
 		    {schema_error,unexpected_object,SA,Err}},
@@ -3095,7 +3179,7 @@ check_attributes([Att|Atts],SchemaAtts,XMLEl,XsiFactors,
     case search_attribute(IsQ,AttQName,SchemaAtts) of
 	{AttObj={attribute,_},SchemaAtts2} ->
 	    {SA,S2} = load_object(AttObj,S),
-	    #schema_attribute{type=[AttType]} = SA, 
+	    #schema_attribute{type=[AttType]} = SA,
 	    {Val,S4} = check_type(AttType,
 				  Att#xmlAttribute.value, unapplied,S2),
 	    check_attributes(Atts,SchemaAtts2,XMLEl,XsiFactors,S4,
@@ -3161,7 +3245,7 @@ check_anyAttribute_namespace2([_H|T],NS) ->
     check_anyAttribute_namespace2(T,NS);
 check_anyAttribute_namespace2([],_NS) ->
     false.
-    
+
 resolve_attributeGroups(SchemaAtts,El,S) ->
     resolve_attributeGroups(SchemaAtts,El,S,[],[]).
 resolve_attributeGroups([AG={attributeGroup,_}|SchemaAtts],El,S,Parents,Acc) ->
@@ -3201,7 +3285,7 @@ check_type({union,Types},Value,_FacetS,S) ->
 check_type(ST={simpleType,QName={Name,_Scope,_NS}},Value, FacetS,S) ->
     case is_builtin_simple_type(QName) of
 	true ->
-	    {ConstrainedValue,S2} = 
+	    {ConstrainedValue,S2} =
 		constrained(QName,default_facets(FacetS,Name),Value,S),
 	    case xmerl_xsd_type:check_simpleType(Name,ConstrainedValue,S2) of
 		{ok,_} when Name=='IDREF';Name=='IDREFS' ->
@@ -3234,7 +3318,7 @@ check_simpleType(#schema_simple_type{base_type=BT,final=_Final,
 	{{_ST,_,_},_} ->
 	    case is_builtin_simple_type(BT) of
 		true ->
-		    {ConstrainedValue,S2} = 
+		    {ConstrainedValue,S2} =
 			constrained(BT,merge_facets(default_facets(FacetS,BT),Facets),Value,S),
 		    {_,_S3} = check_type({simpleType,BT},ConstrainedValue,applied,S2);
 		_ ->
@@ -3312,7 +3396,7 @@ merge_facets([],DefinedF) ->
 merge_facets([F={Name,_}|Rest],DefinedF) ->
     %% At this moment only F has the allowed value
     merge_facets(Rest,keyreplace(Name,1,DefinedF,F)).
-    
+
 constrained({T,_,_},Facets,Value,S) ->
     FacetFuns = [facet_fun(T,F)||F<-Facets],
     constrained2(FacetFuns,Value,S).
@@ -3388,7 +3472,7 @@ check_uniqueness(Unique,XMLEl,S) ->
 	    end;
 	_ -> S
     end.
-    
+
 target_node_set(SelectorPath,XMLEl,S) ->
     xmerl_xpath:string(SelectorPath,XMLEl,
 		       [{namespace,S#xsd_state.namespace_nodes}]).
@@ -3401,7 +3485,7 @@ qualified_node_set([],_Set,_El,S,Acc) ->
 qualified_node_set(_,[],_El,S,Acc) ->
     {Acc,S};
 qualified_node_set(Paths,[QN|QNs],El,S,Acc) ->
-    Fun = fun(P,Sx) -> 
+    Fun = fun(P,Sx) ->
 		  case apply_field(P,QN,Sx) of
 		      L when length(L) =< 1 -> % Part1:3.11.4.3
 			  {L,Sx};
@@ -3431,7 +3515,7 @@ check_keys([Key=#id_constraint{selector={selector,SelectorPath},
     TargetNodeSet = target_node_set(SelectorPath,XMLEl,S),
     S3=
 	case qualified_node_set(Fields,TargetNodeSet,XMLEl,S) of
-	    {L,S1} when length(L)==length(TargetNodeSet) -> 
+	    {L,S1} when length(L)==length(TargetNodeSet) ->
 		%% Part1: 3.11.4.4.2.1
 		S2 = key_sequence_uniqueness(L,XMLEl,S1),
 		_ = save_key(Key#id_constraint{key_sequence=L},S2),
@@ -3518,8 +3602,8 @@ is_key_el_equal(#xmlAttribute{value=V1},#xmlAttribute{value=V1}) ->
 is_key_el_equal(_,_) ->
     false.
 
-is_equal_content([T1|Rest1],[T2|Rest2]) 
-  when is_record(T1,xmlText),is_record(T2,xmlText) -> 
+is_equal_content([T1|Rest1],[T2|Rest2])
+  when is_record(T1,xmlText),is_record(T2,xmlText) ->
     case is_whitespace(T1) of
 	true ->
 	    case is_whitespace(T2) of
@@ -3588,8 +3672,8 @@ check_keyref_cardinality(_,KR=#id_constraint{category=keyref,fields=KeyRefFs},
     end;
 check_keyref_cardinality(Name,_,_,S) ->
     acc_errs(S,{[],?MODULE,{could_not_load_keyref,Name}}).
-    
-check_references(S) when is_record(S,xsd_state) ->    
+
+check_references(S) when is_record(S,xsd_state) ->
     check_references(S#xsd_state.unchecked_references,S).
 check_references([],S) ->
     S;
@@ -3639,7 +3723,7 @@ check_reference({simple_or_complex_Type,Ref},S=#xsd_state{errors=Errs}) ->
     end;
 check_reference(Ref,S) ->
     acc_errs(S,{[],?MODULE,{internal_error,unknown_reference,Ref}}).
-    
+
 %% Substitution groups should be checked for cirkular references
 %% (invalid), that reference structure and type structure are
 %% concistent.
@@ -3651,12 +3735,13 @@ check_substitutionGroups(SGs,S) ->
     save_substitutionGroup(SGs,S3).
 check_substGr_acyclic(SGs,S) ->
     Set = sofs:family(SGs),
-    case catch sofs:family_to_digraph(Set, [acyclic]) of
-	{'EXIT',{cyclic,_}} ->
-	    acc_errs(S,{[],?MODULE,{cyclic_substitutionGroup,SGs}});
+    try sofs:family_to_digraph(Set, [acyclic]) of
 	DG ->
 	    digraph:delete(DG),
 	    S
+    catch
+        error:cyclic ->
+            acc_errs(S,{[],?MODULE,{cyclic_substitutionGroup,SGs}})
     end.
 check_substGr_type_structure([SG|SGs],S) ->
     check_substGr_type_structure(SGs,check_substGr_type_structure2(SG,S));
@@ -3665,49 +3750,54 @@ check_substGr_type_structure([],S) ->
 check_substGr_type_structure2({Head,SGMembers},S) ->
     TypeCheck =
 	fun(SG,S_in) ->
-		case catch cmp_substGr_types(Head,SG,S_in) of
-		    {'EXIT',_} -> 
-			acc_errs(S_in,{[],?MODULE,
+                try
+                    cmp_substGr_types(Head,SG,S_in)
+                catch
+                    error:_ ->
+                        acc_errs(S_in,{[],?MODULE,
 				       {substitutionGroup_error,Head,SG}});
-		    S_out -> S_out
-		end
+                    exit:_ ->
+                        acc_errs(S_in,{[],?MODULE,
+				       {substitutionGroup_error,Head,SG}})
+                end
 	end,
     foldl(TypeCheck,S,SGMembers).
 cmp_substGr_types(Head,SG,S) ->
     {HeadElement,S2} = load_object({element,Head},S),
     {MemberElement,S3} = load_object({element,SG},S2),
-    case catch derived_or_equal(MemberElement#schema_element.type,
-				HeadElement#schema_element.type,
-				[],S3) of
-	S4=#xsd_state{} ->
-	    S4;
-	_ ->
+    try
+        derived_or_equal(MemberElement#schema_element.type,
+                         HeadElement#schema_element.type,
+                         [],S3)
+    catch
+	_:_ ->
 	    acc_errs(S3,{[],?MODULE,{internal_error,derived_or_equal,
 				     MemberElement#schema_element.type,
 				     HeadElement#schema_element.type}})
     end.
 check_cyclic_defs(S=#xsd_state{circularity_disallowed=CA}) ->
     Set = sofs:relation_to_family(sofs:relation(CA)),
-    case catch sofs:family_to_digraph(Set, [acyclic]) of
-	{'EXIT',{cyclic,_}} ->
-	    acc_errs(S,{[],?MODULE,{cyclic_definition,CA}});
+    try sofs:family_to_digraph(Set, [acyclic]) of
 	DG ->
 	    digraph:delete(DG),
 	    S
-    end.
+    catch
+        error:cyclic ->
+	    acc_errs(S,{[],?MODULE,{cyclic_definition,CA}})
+        end.
 
 
 
 derived_or_equal(Type,Type,_Block,S) ->
     S;
 derived_or_equal([MemberTypeRef],[HeadTypeRef],Block,S) ->
-    %% HeadType has to be a 
+    %% HeadType has to be a
     {HeadType,_} = resolve(HeadTypeRef,S),
     {MemberType,_} = resolve(MemberTypeRef,S),
     derived_or_equal_types(MemberType,HeadType,schema,Block,S).
 derived_or_equal_types(MemT,{anyType,_},Env,Block,S) ->
     case MemT of
-	#schema_simple_type{content=Cntnt} ->	    
+	#schema_simple_type{content=Cntnt} ->
 	    is_derivation_blocked(Env,Block,Cntnt,S);
 	#schema_complex_type{content=Cntnt} ->
 	    is_derivation_blocked(Env,Block,Cntnt,S);
@@ -3733,7 +3823,7 @@ derived_or_equal_types(MemT=#schema_complex_type{name=Mem,base_type=MemBase},
     is_derivation_blocked(Env,Block,MemT#schema_complex_type.content,S);
 derived_or_equal_types(MemT,HeadT,_Env,_Block,S) ->
     acc_errs(S,{[],?MODULE,{type_of_element_not_derived,MemT,HeadT}}).
-    
+
 is_derivation_blocked(schema,_,_,S) ->
     S;
 is_derivation_blocked(instance,['#all'],Derivation,S) ->
@@ -3787,12 +3877,12 @@ cmp_SG_name(_,_,_) ->
     false.
 
 %% Namespace: [{not,NS} | NS]
-%% 
+%%
 cmp_any_namespace({_,_,EIINS},Namespace,_S) ->
     case member(EIINS,Namespace) of
 	true ->
 	    true;
-	_ -> 
+	_ ->
 	    case keysearch(EIINS,2,Namespace) of
 		{value,{'not',EIINS}} ->
 		    false;
@@ -3810,10 +3900,10 @@ is_optional({element,{_,{0,_}}},_S) ->
     true;
 is_optional({any,{_,{0,_},_}},_S) ->
     true;
-is_optional({MG,{_CM,{0,_}}},_S) 
+is_optional({MG,{_CM,{0,_}}},_S)
   when MG =:= all; MG =:= sequence; MG =:= choice  ->
     true;
-is_optional({MG,{CM,_Occ}},S) 
+is_optional({MG,{CM,_Occ}},S)
   when MG =:= all; MG =:= sequence; MG =:= choice  ->
     case member(false,[is_optional(Y,S)||Y<-CM]) of
 	true ->
@@ -3829,15 +3919,17 @@ is_optional(G={group,_},S) ->
 	{#schema_group{content=[CM]},_} ->
 	    is_optional(CM,S)
     end;
+is_optional(optional_text,_) ->
+    true;
 is_optional(_,_) ->
     false.
-    
-    
+
+
 
 acc_errs(S=#xsd_state{errors=Errs},ErrMsg) ->
     S#xsd_state{errors=[ErrMsg|Errs]}.
 
-%% invoked with an element/XML-node and a name of the 
+%% invoked with an element/XML-node and a name of the
 error_path([H|_T],Top) when H==#xmlElement{};H==#xmlText{} ->
     error_path(H,Top);
 error_path([_H|T],Top) ->
@@ -3859,7 +3951,7 @@ error_path(Nodes,_,_) ->
 
 mk_xpath_path(Nodes) ->
     Slash =
-	fun([H1,H2|T],Fun,Acc) -> Fun([H2|T],Fun,["/",H1|Acc]); 
+	fun([H1,H2|T],Fun,Acc) -> Fun([H2|T],Fun,["/",H1|Acc]);
 	   ([H1],_,Acc) -> [H1|Acc];
 	   ([],_,Acc) -> Acc
 	end,
@@ -3965,7 +4057,7 @@ resolve(E,S) ->
     load_object(E,S).
 
 %% explicit_type checks whether the instance element is of an explicit
-%% type pointed out by xsi:type. A type refernced by xsi:type must be
+%% type pointed out by xsi:type. A type referenced by xsi:type must be
 %% the same as, or derived from the instance element's type. Concluded
 %% from 3.4.6 section "Schema Component Constraint: Type Derivation OK
 %% (Complex)".
@@ -4006,25 +4098,28 @@ merge_derived_types(Type1,Type2,Mode,S) ->
 merge_derived_types(Type,Type,_Blocks,_Mode,S) ->
     {Type,S};
 merge_derived_types(XSDType,InstType,Blocks,Mode,S) ->
-    case catch merge_derived_types2(XSDType,InstType,Blocks,Mode,S) of
-	{'EXIT',Reason} ->
-	    {InstType,acc_errs(S,{[],?MODULE,{internal_error,merge_derived_types,Reason}})};
+    try merge_derived_types2(XSDType,InstType,Blocks,Mode,S) of
 	{error,S2} ->
 	    {InstType,S2};
 	{MergedType,S2} ->
 	    _ = save_merged_type(MergedType,S2),
 	    {MergedType,S2}
+    catch
+	error:Reason:StackTrace ->
+	    {InstType,acc_errs(S,{[],?MODULE,{internal_error,merge_derived_types,{Reason, StackTrace}}})};
+	exit:Reason ->
+	    {InstType,acc_errs(S,{[],?MODULE,{internal_error,merge_derived_types,Reason}})}
     end.
 
 merge_derived_types2(XSDType=#schema_complex_type{},
 		    InstType=#schema_complex_type{},Blocks,Mode,S) ->
     %% InstType is the type of the instance element that may reference
-    %% a type that is an extension/restriction of the XSDType. 
+    %% a type that is an extension/restriction of the XSDType.
     %% Alternatively XSDType is the base type and InstType the derived
     %% type or XSDType is the original type that is redefined into
     %% InstType.
-    %% 
-    %% complexType can turn into: 
+    %%
+    %% complexType can turn into:
     %%        simpleContent | complexContent
     %% simpleContent -> restriction
     %% complexContent -> restriction | extension
@@ -4035,7 +4130,7 @@ merge_derived_types2(XSDType=#schema_complex_type{},
     %% and InstType
    case InstType#schema_complex_type.content of
        [{extension,{BaseTypeName,CM}}] ->
-	   {ExtendedAtts,S2} = 
+	   {ExtendedAtts,S2} =
 	       extend_attributes(XSDType#schema_complex_type.attributes,
 				 InstType#schema_complex_type.attributes,
 				 BaseTypeName,CM,Mode,
@@ -4077,7 +4172,7 @@ merge_derived_types2(XSDType=#schema_simple_type{},
        [{restriction,{BaseTypeName,CM}}] ->
 	    case compare_base_types(BaseTypeName,XSDType,S) of
 		ok ->
-		    
+
 		    {NewContent,S2}=
 			restrict_simple_type(XSDType#schema_simple_type.content,CM,
 				      BaseTypeName,S),
@@ -4097,7 +4192,7 @@ merge_derived_types2(XSDType=#schema_simple_type{content=XSDContent},
 	[{extension,{BaseTypeName,CM}}] ->
 	    case compare_base_types(BaseTypeName,XSDType,S) of
 		ok ->
-		    {NewContent,S2} = 
+		    {NewContent,S2} =
 			if CM==[] -> {XSDContent,S};
 			   true -> extend_type(XSDContent,CM,S)
 			end,
@@ -4155,7 +4250,7 @@ merge_derived_types2({simpleType,BuiltInType},
 	     allowed_derivation(restriction,Blocks,S)};
 	Other ->
 	    {error,acc_errs(S,{[],?MODULE,{unexpected_content,Other,InstType}})}
-    end;    
+    end;
 merge_derived_types2(XSDType,InstType,Blocks,Mode,S) ->
     case {variety_type(XSDType,S),variety_type(InstType,S)} of
 	{XSDType,InstType} ->
@@ -4275,7 +4370,7 @@ restrict_type([{extension,{_Type,CM1}}],[],_TypeName,Acc,S) ->
 restrict_type(BaseRest,[ST={simpleType,_Name}|RestrRest],TypeName,Acc,S) ->
     %% context 1 or 2
     restrict_type(BaseRest,RestrRest,TypeName,[ST|Acc],S);
-restrict_type([BaseCM|BaseRest],[{SeqCho,{CM,Occ}}|RestrRest],TypeName,Acc,S) 
+restrict_type([BaseCM|BaseRest],[{SeqCho,{CM,Occ}}|RestrRest],TypeName,Acc,S)
   when SeqCho == sequence; SeqCho == choice ->
     %% context 3
     case BaseCM of
@@ -4342,7 +4437,7 @@ check_element_presence([{element,{Name,_}}|CM],BCM) ->
 check_element_presence([_C|CM],BCM) ->
     check_element_presence(CM,BCM).
 
-check_element_presence2(Name,BCM) -> 
+check_element_presence2(Name,BCM) ->
     check_element_presence2(Name,BCM,[]).
 check_element_presence2({LocalName,_,NS},[{element,{{LocalName,_,NS},_}}|BCM],Acc) ->
     {ok,reverse(Acc)++BCM};
@@ -4352,7 +4447,7 @@ check_element_presence2(_Name,[],_Acc) ->
     error.
 
 %% A check of the extended attribute should take place here.
-%% 
+%%
 extend_attributes(BaseAtts,[EA={attribute,Name}|ExtAtts],
 		  BaseTypeName,CM,Mode,S) ->
     NewAtts=key_replace_or_insert(Name,2,BaseAtts,EA),
@@ -4369,7 +4464,7 @@ extend_attributes(BaseAtts,[LocalWC={anyAttribute,_NS_PC}|ExtAtts],
 	[] -> {CompleteWC,S2};
 	_ ->
 	    if CompleteWC==LocalWC -> {BaseWC,S2};
-	       true -> 
+	       true ->
 		    {NS,S3} = attribute_wildcard_union(wc_ns(CompleteWC),
 						       wc_ns(BaseWC),S2),
 		    PC = wc_pc(CompleteWC),
@@ -4432,7 +4527,7 @@ wildcard_subset(BaseNS,NS,S) ->
 
 base_wildcard(BaseAtts) ->
     key1search(anyAttribute,BaseAtts,[]).
-    
+
 complete_wildcard(LocalWC,CM,S) ->
     case keysearch(attributeGroup,1,CM) of
 	{value,AttG={_,_Name}} ->
@@ -4450,7 +4545,7 @@ complete_wildcard(LocalWC,CM,S) ->
 	    end;
 	_ -> {LocalWC,S}
     end.
-					   
+
 wc_ns({anyAttribute,{NS,_}})->
     NS;
 wc_ns(_) ->
@@ -4514,7 +4609,7 @@ attribute_wildcard_intersection(O1,['##any'],S) -> {O1,S};
 attribute_wildcard_intersection([{'not',[absent]}],O2=[{'not',_}],S) -> {O2,S};
 attribute_wildcard_intersection(O1=[{'not',_}],[{'not',[absent]}],S) -> {O1,S};
 %% bullet 5
-attribute_wildcard_intersection([{'not',NS1}],[{'not',NS2}],S) -> 
+attribute_wildcard_intersection([{'not',NS1}],[{'not',NS2}],S) ->
     case [X||X<-NS1,member(X,NS2)] of
 	[] -> {[],acc_errs(S,{[],?MODULE,{wildcard_namespace_intersection_not_expressible,NS1,NS2}})};
 	NS3 -> {[{'not',NS3}],S}
@@ -4537,7 +4632,7 @@ toggle_ns(NS1,NS2=[{'not',_}]) ->
 toggle_ns(NS1,NS2) ->
     {NS1,NS2}.
 
-    
+
 deduce_derived_types([DT|DTs],S) ->
     deduce_derived_types(DTs,deduce_derived_type(DT,S,[]));
 deduce_derived_types([],S) ->
@@ -4547,7 +4642,7 @@ deduce_derived_types([],S) ->
 deduce_derived_type(DT={_Kind,TName},S,RefChain) ->
     %% check circular references
     case keymember(TName,2,RefChain) of
-	true -> 
+	true ->
 	    acc_errs(S,{[],?MODULE,{circular_reference_of_type,TName}});
 	_ ->
 	    deduce_derived_type2(DT,S,[DT|RefChain])
@@ -4613,7 +4708,7 @@ out_scope(Name,S=#xsd_state{scope=[Name|Rest]}) ->
     S#xsd_state{scope=Rest};
 out_scope(_Name,S) ->
     S.
-    
+
 name_scope({'_xmerl_no_name_',Scope,_NS},S) ->
     S#xsd_state{scope=Scope};
 name_scope({Name,Scope,_NS},S) ->
@@ -4717,7 +4812,7 @@ wildcard_namespace(E,S) ->
 	   end,
      [X||X <- map(Pred,ListOfVals),X=/=[]].
 
-processor_contents(Any) ->  
+processor_contents(Any) ->
     case get_attribute_value(processContents,Any,strict) of
 	V when is_list(V) -> list_to_atom(V);
 	A -> A
@@ -4752,7 +4847,7 @@ get_attribute_value(Key,#xmlElement{attributes=Atts},Default) ->
 
 %% qualify_NCName/2 returns a qualified name, QName, that has
 %% information of the name attribute and namespace of the XSD object.
-%% The object E has a name attribute with a NCName. The Namespace 
+%% The object E has a name attribute with a NCName. The Namespace
 %% part of the QName is from the targetNamespace attribute of the
 %% schema or the empty list.
 qualify_NCName(E=#xmlElement{},S) ->
@@ -4790,7 +4885,7 @@ local_name(Name) when is_list(Name) ->
 namestring2namelist(Str) ->
     split_by_whitespace(Str,[]).
 split_by_whitespace(Str,Acc) when is_list(Str),length(Str) > 0 ->
-    F = fun($ ) -> 
+    F = fun($ ) ->
 		false;
 	   (_) ->
 		true
@@ -4818,12 +4913,13 @@ qualified_name(Name,NS,Default,Scope) ->
     end.
 
 atom_if_shortasciilist(N) when is_list(N) ->
-    case catch list_to_atom(N) of
-	{'EXIT',_Reason} ->
+    try
+        list_to_atom(N)
+    catch
+	error:_ ->
 	    %% Reason may be system_limit if N is very long, it may be
 	    %% badarg ifN is a list of UTF characters.
-	    N;
-	AN -> AN
+	    N
     end;
 atom_if_shortasciilist(N) ->
     N.
@@ -4844,7 +4940,7 @@ namespace(Prefix,NS,Default) ->
 %% 1) use default namespace if defined, else.
 %% 2) if a parent is qualified use that namespace or
 %% 3) no namespace is applied
-mk_EII_QName(Name,#xmlElement{name=Me,namespace=NS,parents=P},S) 
+mk_EII_QName(Name,#xmlElement{name=Me,namespace=NS,parents=P},S)
   when is_list(Name) ->
     mk_EII_QName(list_to_atom(Name),
 		 #xmlElement{name=Me,namespace=NS,parents=P},S);
@@ -4878,8 +4974,8 @@ mk_EII_Att_QName(AttName,XMLEl,S) when is_list(AttName) ->
 mk_EII_Att_QName(AttName,XMLEl,S) ->
     NameStr = atom_to_list(AttName),
     {member($:,NameStr),mk_EII_QName(AttName,XMLEl,S)}.
-	
-	    
+
+
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% table access functions
@@ -4891,15 +4987,20 @@ create_tables(S) ->
     S.
 
 delete_table(#xsd_state{table=Tab}) ->
-    catch ets:delete(Tab).
+    try
+        ets:delete(Tab)
+    catch
+        error:Reason:StackTrace -> {'EXIT', {Reason, StackTrace}};
+        exit:Reason -> {'EXIT', Reason}
+    end.
 
-%% @hidden
+-doc hidden.
 print_table(#xsd_state{table=Tab}) ->
-    case catch ets:tab2list(Tab) of
-	Res when is_list(Res) ->
-	    Res;
-	{'EXIT',Reason} ->
-	    {error,{?MODULE,[],Reason}}
+    try
+        ets:tab2list(Tab)
+    catch
+	error:Reason:StackTrace ->
+	    {error,{?MODULE,[],{Reason, StackTrace}}}
     end;
 print_table(_) ->
     ok.
@@ -4909,15 +5010,15 @@ print_table(_) ->
 %    S;
 %% only simpleType asn complexType are temporary saved with
 %% three-tuple key. They are loaded and merged in redefine/2.
-save_object({Kind,Obj},S=#xsd_state{redefine=true}) 
+save_object({Kind,Obj},S=#xsd_state{redefine=true})
   when  Kind == simpleType; Kind == complexType ->
     save_in_table({Kind,redefine,object_name(Obj)},Obj,S);
-save_object({Kind,Obj},S=#xsd_state{redefine=true}) 
+save_object({Kind,Obj},S=#xsd_state{redefine=true})
   when Kind == group; Kind == attributeGroup ->
     save_in_table({Kind,object_name(Obj)},Obj,S);
 save_object({Kind,Obj},S) when Kind == simpleType; Kind == complexType ->
     save_unique_type({Kind,object_name(Obj)},Obj,S);
-save_object({Kind,Obj},S) 
+save_object({Kind,Obj},S)
   when Kind == attributeGroup; Kind == group ->
     save_uniquely({Kind,object_name(Obj)},Obj,S);
 save_object({Kind,Obj},S) ->
@@ -4984,7 +5085,7 @@ save_schema_element(CM,S=#xsd_state{elementFormDefault = EFD,
 %% 	    [];
 %% 	L -> %% All other schemas included in redefine
 %% 	    NameList = [X||{element,{X,_}}<-ElementList],
-%% 	    Contents = 
+%% 	    Contents =
 %% 		flatten([X||#schema{content=X}<-[get_schema_cm(Tab,Y)||Y<-L]]),
 %% 	    SortFun =
 %% 		fun({_,{A,_}},{_,{B,_}}) when A =< B ->
@@ -5003,13 +5104,27 @@ save_to_file(S=#xsd_state{tab2file=TF}) ->
 	true ->
 	    {ok,IO}=file:open(filename:rootname(S#xsd_state.schema_name)++".tab",
 			      [write]),
-	    io:format(IO,"~p~n",[catch ets:tab2list(S#xsd_state.table)]),
+            try
+                List = ets:tab2list(S#xsd_state.table),
+                io:format(IO,"~p~n",[List])
+            catch
+                E:Reason:Stacktrace ->
+                    logger:info("~p:save_to_file: ~p\n~p\n~p\n\n", [?MODULE, E, Reason, Stacktrace]),
+                    ok
+            end,
 	    ok = file:close(IO);
 	false ->
 	    ok;
 	IOFile ->
 	    {ok,IO}=file:open(IOFile,[write]),
-	    io:format(IO,"~p~n",[catch ets:tab2list(S#xsd_state.table)]),
+            try
+                List = ets:tab2list(S#xsd_state.table),
+                io:format(IO,"~p~n",[List])
+            catch
+                E:Reason:Stacktrace ->
+                    logger:info("~p:save_to_file: ~p\n~p\n~p\n\n", [?MODULE, E, Reason, Stacktrace]),
+                    ok
+            end,
 	    ok = file:close(IO)
     end.
 
@@ -5021,8 +5136,12 @@ resave_object({Kind,Obj},S) ->
     save_in_table({Kind,object_name(Obj)},Obj,S).
 
 save_in_table(Name,ElDef,S=#xsd_state{table=Tab}) ->
-    catch ets:insert(Tab,{Name,ElDef}),
-    S.
+    try
+        ets:insert(Tab,{Name,ElDef}),
+        S
+    catch
+        _:_ -> S
+    end.
 
 save_idc(key,IDConstr,S) ->
     save_key(IDConstr,S);
@@ -5080,7 +5199,7 @@ load_redefine_object({Kind,Name},S) ->
 
 load_object({element,{QN,Occ={Min,_}}},S) when is_integer(Min) ->
     case load_object({element,QN},S) of
-	{SE=#schema_element{},S1} -> {SE#schema_element{occurance=Occ},S1};
+	{SE=#schema_element{},S1} -> {SE#schema_element{occurrence=Occ},S1};
 	Other -> Other
     end;
 load_object({group,{QN,_Occ={Min,_}}},S) when is_integer(Min) ->
@@ -5089,7 +5208,7 @@ load_object(Key,S=#xsd_state{table=Tab}) ->
     case ets:lookup(Tab,Key) of
 	[{Key,Value}] ->
 	    {Value,S};
-	[] -> 
+	[] ->
 	    case ets:lookup(Tab,global_def(Key)) of
 		[{_,Value}] -> {Value,global_scope(S)};
 		Other -> {Other,S}
@@ -5115,7 +5234,7 @@ load_key(Name,S) ->
 		    []
 	    end
     end.
-	    
+
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% END table access functions
@@ -5145,7 +5264,7 @@ insert_substitutionGroup(#schema_element{name=Name,
 	{_,SGList} ->
 	    S#xsd_state{substitutionGroups=
 			keyreplace(SG,1,SGregister,{SG,[Name|SGList]})};
-	_ -> 
+	_ ->
 	    S#xsd_state{substitutionGroups=[{SG,[Name]}|SGregister]}
     end.
 
@@ -5153,7 +5272,7 @@ insert_substitutionGroup(#schema_element{name=Name,
 global_scope(S=#xsd_state{}) ->
     S#xsd_state{scope=[]}.
 
-global_def({Kind,{Local,_,NS}}) 
+global_def({Kind,{Local,_,NS}})
   when Kind==simpleType; Kind==complexType; Kind==group;
        Kind==attributeGroup; Kind==element; Kind==attribute;
        Kind==substitutionGroup;Kind==substitutionGroup_member->
@@ -5171,11 +5290,13 @@ get_schema_cm(Tab,Namespace) ->
     NSC = Schema#schema.content,
     Schema#schema{content=NSC++[X||X<-NoNamespaceC,member(X,NSC)==false]}.
 get_schema_cm1(Tab,Namespace) ->
-    case catch ets:lookup(Tab,{schema,Namespace}) of
+    try ets:lookup(Tab,{schema,Namespace}) of
 	[{_,H}] ->
 	    H;
 	_ ->
 	    #schema{}
+    catch
+        _:_ ->  #schema{}
     end.
 get_no_namespace_content(Tab) ->
     case get_schema_cm1(Tab,[]) of
@@ -5193,7 +5314,7 @@ is_simple_type(QName={_,_,_},S) ->
     case is_builtin_simple_type(QName) of
 	true ->
 	    true;
-	_ -> 
+	_ ->
 	    is_derived_simple_type(QName,S)
     end.
 
@@ -5238,10 +5359,10 @@ is_whitespace(_) ->
 fetch(URI,S) ->
     Split = filename:split(URI),
     Filename = fun([])->[];(X)->lists:last(X) end (Split),
-    Fullname = 
+    Fullname =
 	case Split of %% how about Windows systems?
 	    ["file:"|Name]-> %% absolute path, see RFC2396 sect 3
-		%% file:/dtd_name 
+		%% file:/dtd_name
 		filename:join(["/"|Name]);
 	    ["/"|Rest] when Rest /= [] ->
 		%% absolute path name
@@ -5365,7 +5486,7 @@ search_delete_all_el2(_ElName,[],_NoMatch) ->
 %% elements.
 search_delete_all_el2({Name,Scope,NS},
 		     [El={element,{{Name,ScopeCM,NS},_}}|Rest],
-		     NoMatch) 
+		     NoMatch)
   when Scope == ScopeCM; ScopeCM == [] ->
     {El,reverse(NoMatch)++Rest};
 search_delete_all_el2(ElName,[H|T],NoMatch) ->
@@ -5426,11 +5547,10 @@ add_key_once(Key,N,El,L) ->
 %% %%    ?dbg("mk_xml_path: Parents = ~p~n",[Parents]),
 %%     {filename:join([[io_lib:format("/~w(~w)",[X,Y])||{X,Y}<-Parents],Type]),Pos}.
 
-%% @spec format_error(Errors) -> Result
-%%       Errors     = tuple() | [tuple()]
-%%       Result       = string() | [string()]
-%% @doc Formats error descriptions to human readable strings.
-format_error(L) when is_list(L) -> 
+-doc "Format error descriptions to human readable strings.".
+-spec format_error(Reasons) -> io_lib:chars() when
+      Reasons :: [Reason :: term()] | Reason :: term().
+format_error(L) when is_list(L) ->
     [format_error(X)||X<-L];
 format_error({unexpected_rest,UR}) ->
     io_lib:format("XML: The following content of an element didn't validate by the provided schema, ~n~p.",[UR]);
@@ -5439,11 +5559,11 @@ format_error({unvalidated_rest,UR}) ->
 format_error({no_schemas_provided}) ->
     "Schema: Validator found no schema. A schema must be provided for validation.";
 format_error({internal_error,Reason}) ->
-    io_lib:format("An error occured that was unforeseen, due to ~p.",[Reason]);
+    io_lib:format("An error occurred that was unforeseen, due to ~p.",[Reason]);
 format_error({internal_error,Reason,Info}) ->
-    io_lib:format("An error occured that was unforeseen, due to ~p: ~p.",[Reason,Info]);
+    io_lib:format("An error occurred that was unforeseen, due to ~p: ~p.",[Reason,Info]);
 format_error({internal_error,Function,Info1,Info2}) ->
-    io_lib:format("An internal error occured in function ~p with args: ~p,~p.",[Function,Info1,Info2]);
+    io_lib:format("An internal error occurred in function ~p with args: ~p,~p.",[Function,Info1,Info2]);
 format_error({illegal_content,Reason,Kind}) ->
     io_lib:format("Schema: The schema violates the content model allowed for schemas.~nReason: ~p,~nkind of schema element: ~p.",[Reason,Kind]);
 format_error({no_match,Kind}) ->
@@ -5473,7 +5593,7 @@ format_error({no_element_expected_in_group,XML}) ->
 format_error({element_bad_match,E,Any,_Env}) ->
     io_lib:format("XML: XML element ~p didn't match into the namespace of schema type any ~p.",[E,Any]);
 format_error({match_failure,_XML,_CM,_S}) ->
-    "XML: A combination of XML element(s) and schema definitions that is not known has occured. The implementation doesn't support this structure.";
+    "XML: A combination of XML element(s) and schema definitions that is not known has occurred. The implementation doesn't support this structure.";
 format_error({cannot_contain_text,_XMLTxt,CMEl}) ->
     io_lib:format("XML: The schema structure: ~p doesn't allow text",[CMEl]);
 format_error({missing_mandatory_elements,MandatoryEls}) ->
@@ -5489,7 +5609,7 @@ format_error({element_not_in_all,ElName,E,_CM}) ->
 format_error({missing_mandatory_elements_in_all,MandatoryEls}) ->
     io_lib:format("XML: The schema elements ~p were missed in the XML file.",[MandatoryEls]);
 format_error({failed_validating,E,Any}) ->
-    io_lib:format("XML: The element ~p at location ~p failed validation. It should hav been matched by an any schema element ~p",[E#xmlElement.name,error_path(E,undefined),Any]);
+    io_lib:format("XML: The element ~p at location ~p failed validation. It should have been matched by an any schema element ~p",[E#xmlElement.name,error_path(E,undefined),Any]);
 format_error({schemaLocation_list_failure,Paths}) ->
     io_lib:format("XML: schemaLocation values consists of one or more pairs of URI references, separated by white space. The first is a namespace name the second a reference to a schema: ~p.",[Paths]);
 format_error({element_content_not_nil,XMLEl}) ->
@@ -5502,7 +5622,7 @@ format_error({default_and_fixed_attributes_mutual_exclusive,
 	      Name,Default,Fix}) ->
     io_lib:format("Schema: It is an error in the schema to assign values for both default and fix for an attribute. Attribute: ~p, default: ~p, fix: ~p.",[Name,Default,Fix]);
 format_error({schema_error,unexpected_object,_SA,_Err}) ->
-    "Schema: An unforeseen error case occured, maybee due to an unimplemented feature.";
+    "Schema: An unforeseen error case occurred, maybe due to an unimplemented feature.";
 format_error({attribute_not_defined_in_schema,Name}) ->
     io_lib:format("XML: The attribute ~p is not defined in the provided schema.",[Name]);
 format_error({disallowed_namespace,Namespace,NS,Name}) ->
@@ -5530,9 +5650,9 @@ format_error({key_value_not_unique,KS}) ->
 format_error({keyref_missed_matching_key,Refer}) ->
     io_lib:format("Schema: This keyref had no matching key ~p.",[Refer]);
 format_error({keyref_unexpected_object,_Other}) ->
-    "Schema: An unforeseen error case occured, unknown failure cause.";
+    "Schema: An unforeseen error case occurred, unknown failure cause.";
 format_error({cardinality_of_fields_not_equal,KR,K}) ->
-    io_lib:format("Schema: keyref and the corresponding key must have same cardinality of their fields. Missmatch in this case keyref: ~p, key: ~p.",[KR,K]);
+    io_lib:format("Schema: keyref and the corresponding key must have same cardinality of their fields. Mismatch in this case keyref: ~p, key: ~p.",[KR,K]);
 format_error({could_not_load_keyref,Name}) ->
     io_lib:format("Schema: The schema didn't define a keyref with the name ~p.",[Name]);
 format_error({reference_undeclared,Kind,Ref}) ->
@@ -5542,7 +5662,7 @@ format_error({cyclic_substitutionGroup,SGs}) ->
 format_error({substitutionGroup_error,Head,SG}) ->
     io_lib:format("Schema: Either of substitutionGroup members ~p or ~p is not defined in the provided schema.",[Head,SG]);
 format_error({cyclic_definition,CA}) ->
-    io_lib:format("Schema: A forbidden cicular definition was detected ~p.",[CA]);
+    io_lib:format("Schema: A forbidden circular definition was detected ~p.",[CA]);
 format_error({type_of_element_not_derived,MemT,HeadT}) ->
     io_lib:format("Schema: Type in substitutionGroup members should be simpleType or complexType. In this case ~p and ~p were found.",[MemT, HeadT]);
 format_error({derivation_blocked,BlockTag,Derivation}) ->
@@ -5553,7 +5673,7 @@ format_error({names_not_equal,QName1,QName2}) ->
 %%     io_lib:format("Types and/or names of base type ~p and derived type ~p doesn't fit.",[QName1,QName2]);
 format_error({illegal_content_in_extension,Ext}) ->
     io_lib:format("The extension content ~p didn't match the content model of the provided schema.",[Ext]);
-format_error({SeqCho,expected,Other,found}) 
+format_error({SeqCho,expected,Other,found})
   when SeqCho == sequence;SeqCho == choice ->
     io_lib:format("Schema: The restriction content ~p didn't match the content model of the provided schema, ~p was expected.",[SeqCho,Other]);
 format_error({does_not_support,F,in_restriction}) ->
@@ -5606,7 +5726,7 @@ format_error({mandatory_component_missing,S4SCMRest,Kind}) ->
     io_lib:format("Schema: After matching a ~p the schema should have had content ~p.",[Kind,S4SCMRest]);
 format_error(Err) ->
     io_lib:format("~p~n",[Err]).
-    
+
 %% format_error(ErrMsg,E,SchemaE,Env) ->
 %%     ?debug("format_error: ~p~n",[ErrMsg]),
 %%     {ErrMsg,format_error2(E,SchemaE,Env)}.

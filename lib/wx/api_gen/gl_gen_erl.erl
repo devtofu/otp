@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -32,15 +34,16 @@
 
 -import(lists, [foldl/3,foldr/3,reverse/1, keysearch/3, map/2, filter/2, max/1]).
 -import(gen_util, [lowercase/1, lowercase_all/1, uppercase/1, uppercase_all/1,
-		   open_write/1, open_write/2, close/0, erl_copyright/0, w/2,
-		   args/3, args/4, strip_name/2]).
+                   open_write/1, open_write/2, close/0, erl_gl_copyright/0, erl_copyright/0,
+                   w/2, args/3, args/4, strip_name/2]).
 
 
 -define(HTTP_TOP, "https://www.khronos.org/registry/OpenGL-Refpages/").
+-define(IS_INT(N), N > 47, N < 58).
 
 gl_defines(Defs) ->
     open_write("../include/gl.hrl"),
-    erl_copyright(),
+    erl_gl_copyright(),
     w("~n%% OPENGL DEFINITIONS~n~n", []),
     w("%% This file is generated DO NOT EDIT~n~n", []),
     [gen_define(Def) || Def=#def{} <- Defs],
@@ -49,7 +52,7 @@ gl_defines(Defs) ->
 
 glu_defines(Defs) ->
     open_write("../include/glu.hrl"),
-    erl_copyright(),
+    erl_gl_copyright(),
     w("~n%% GLU DEFINITIONS~n~n", []),
     w("%% This file is generated DO NOT EDIT~n~n", []),
     [gen_define(Def) || Def=#def{} <- Defs],
@@ -69,15 +72,15 @@ gen_define(#def{name="GLEXT_64_TYPES"++_, val=undefined, type=undefined}) ->
 
 gl_api(Fs, _GluNifs) ->
     open_write("../src/gen/gl.erl", [{encoding,utf8}]),
-    erl_copyright(),
+    erl_gl_copyright(),
     w("~n%% OPENGL API~n~n", []),
     w("%% This file is generated DO NOT EDIT~n~n", []),
-    w("%% @doc  Standard OpenGL api.~n", []),
-    w("%% See <a href=\""++ ?HTTP_TOP ++ "\">www.khronos.org</a>~n",[]),
-    w("%%~n", []),
     w("%% Booleans are represented by integers 0 and 1.~n~n", []),
 
-    w("-module(gl).~n~n",[]),
+    w("-module(gl).~n",[]),
+    put(current_module, "gl"),
+    gl_gen_doc:module_doc("gl"),
+    w("~n",[]),
     w("-compile([{inline, get_interface/0}]).~n", []),
 
     gen_types(gl),
@@ -85,28 +88,38 @@ gl_api(Fs, _GluNifs) ->
     Exp = fun(F) -> gen_export(F) end,
     ExportList = lists:map(Exp,Fs),
 
+    w("-ifdef(CAN_BUILD_DRIVER).~n",[]),
     w("-on_load(init_nif/0).~n",[]),
+    w("-else.~n",[]),
+    w("-export([init_nif/0]).~n",[]),
+    w("-endif.~n",[]),
     w("~n-export([~s]).~n~n", [args(fun(EF) -> EF end, ",", ExportList, 60)]),
-    w("-export([get_interface/0, rec/1, lookup_func/0]).\n",[]),
+    w("-export([get_interface/0, rec/1, lookup_func/1]).\n",[]),
+    w("-nifs([lookup_func_nif/1]).\n",[]),
     w("-define(nif_stub,nif_stub_error(?LINE)).~n", []),
-    w("%% @hidden~n", []),
+    w("-doc false.~n", []),
     w("nif_stub_error(Line) ->~n"
       "    erlang:nif_error({nif_not_loaded,module,?MODULE,line,Line}).\n\n",[]),
-    w("%% @hidden~n", []),
+    w("-doc false.~n", []),
     w("init_nif() ->~n", []),
     w("  Base = \"erl_gl\",\n"
       "  Priv = code:priv_dir(wx),\n"
-      "  SrcTree = filename:join(Priv,erlang:system_info(system_architecture)),\n"
+      "  Arch = case os:type() of\n"
+      "             {win32, _} -> win32;\n"
+      "             _ ->\n"
+      "                 erlang:system_info(system_architecture)\n"
+      "         end,\n"
+      "  SrcTree = filename:join(Priv,Arch),\n"
       "  NifFile = case filelib:is_dir(SrcTree) of\n"
       "                true -> filename:absname(filename:join(SrcTree, Base));\n"
       "                false -> filename:absname(filename:join(Priv, Base))\n"
       "            end,\n"
       "  erlang:load_nif(NifFile, 0).\n\n", []),
 
-    w("%% @hidden~n", []),
+    w("-doc false.~n", []),
     w("get_interface() ->~n", []),
     w("    wxe_util.  %% temporary~n~n", []),
-    w("%% @hidden~n", []),
+    w("-doc false.~n", []),
     w("rec(Op) ->~n", []),
     w("    receive~n", []),
     w("        {'_egl_result_', Res} -> Res;~n", []),
@@ -116,7 +129,10 @@ gl_api(Fs, _GluNifs) ->
     w("            error_logger:error_report([{gl, error}, {message, lists:flatten(Err)}]),~n", []),
     w("            rec(Op)~n", []),
     w("    end.~n~n", []),
-    w("lookup_func() -> ?nif_stub.\n\n",[]),
+    w("-doc false.~n", []),
+    w("lookup_func(functions) -> lookup_func_nif(1);\n",[]),
+    w("lookup_func(function_names) -> lookup_func_nif(2).\n\n",[]),
+    w("lookup_func_nif(_Func) -> ?nif_stub.\n\n",[]),
     w("~n", []),
     w("~n", []),
 
@@ -127,15 +143,14 @@ gl_api(Fs, _GluNifs) ->
 
 glu_api(Fs) ->
     open_write("../src/gen/glu.erl", [{encoding,utf8}]),
-    erl_copyright(),
+    erl_gl_copyright(),
     w("~n%% OPENGL UTILITY API~n~n", []),
     w("%% This file is generated DO NOT EDIT~n~n", []),
-    w("%% @doc  A part of the standard OpenGL Utility api.~n", []),
-    w("%% See <a href=\""++ ?HTTP_TOP ++ "\">www.khronos.org</a>~n",[]),
-    w("%%~n", []),
     w("%% Booleans are represented by integers 0 and 1.~n~n", []),
 
     w("-module(glu).~n",[]),
+    put(current_module, "glu"),
+    gl_gen_doc:module_doc("glu"),
     w("-compile(inline).~n", []),
 
     gen_types(glu),
@@ -146,12 +161,7 @@ glu_api(Fs) ->
     w("-import(gl, [get_interface/0, rec/1]).\n", []),
     w("~n%% API~n~n", []),
 
-    w("%% @doc General purpose polygon triangulation.~n",[]),
-    w("%% The first argument is the normal and the second a list of~n"
-      "%% vertex positions. Returned is a list of indecies of the vertices~n"
-      "%% and a binary (64bit native float) containing an array of~n"
-      "%% vertex positions, it starts with the vertices in Vs and~n"
-      "%% may contain newly created vertices in the end.~n", []),
+    gl_gen_doc:func_doc("gluTesselate", undefined),
 
     w("-spec tesselate(Normal, [Vs]) -> {Triangles, VertexPos}~n", []),
     w("                  when Normal :: vertex(), Vs :: vertex(),~n", []),
@@ -167,16 +177,34 @@ glu_api(Fs) ->
 
 gen_funcs(All=[F|_Fs]) when is_list(F) ->
     put(current_func,F),
+    gen_func_doc(F),
     gen_spec([get(A) || A <- All]),
     R = gen_func(get(F)),
     erase(current_func),
     R;
 gen_funcs(F) ->
     put(current_func,F),
+    gen_func_doc(F),
     gen_spec([get(F)]),
     R = gen_func(get(F)),
     erase(current_func),
     R.
+
+gen_func_doc(Name) ->
+    Func = get(Name),
+    DocName = doc_name(Name, Func#func.alt),
+    %% Get this function's own export string
+    MyExport = get({export_doc, Name}),
+    %% Get the canonical doc_ref for this doc_name
+    DocRef = get({doc_ref, DocName}),
+    case MyExport of
+        {Export, _} when DocRef =/= undefined, DocRef =/= Export ->
+            %% Another function holds the doc for this doc_name — emit equiv
+            gl_gen_doc:func_doc(Name, DocRef);
+        _ ->
+            %% We are the canonical holder — emit full doc
+            gl_gen_doc:func_doc(DocName, undefined)
+    end.
 
 gen_types(Where) ->
     case Where of
@@ -219,7 +247,8 @@ gen_export2(#func{name=Name,alt=Alt={vector,VecPos,Vec}}) ->
     Args = lists:filter(fun(Arg) -> func_arg(Arg) =/= skip end, As1),
     Export = erl_func_name(Name) ++ "/" ++ integer_to_list(length(Args) +1),
     DocN = doc_name(Name,Alt),
-    (get({doc_ref,DocN}) == undefined) andalso put({doc_ref, DocN}, Export),
+    %% Vector variants are the doc holders — always overwrite
+    put({doc_ref, DocN}, Export),
     Export;
 gen_export2(#func{name=Name,params=As0, alt=Alt}) ->
     Args = lists:filter(fun(Arg) -> func_arg(Arg) =/= skip end, As0),
@@ -229,10 +258,9 @@ gen_export2(#func{name=Name,params=As0, alt=Alt}) ->
     (get({doc_ref,DocN}) == undefined) andalso put({doc_ref, DocN}, Export),
     Export.
 
-gen_spec([#func{name=Name, params=Orig, alt={vector,VecPos,Vec}}]) ->
+gen_spec([#func{name=Name, alt={vector,VecPos,Vec}}]) ->
     #func{type=T,params=As} = get(Vec),
     {As1,As2} = lists:split(VecPos, As),
-    #arg{name=OrigName} = lists:last(Orig),
     SA1 = case spec_arg_types(As1) of [] -> []; E -> E++", " end,
     SA2 = spec_arg_types(As2),
     w("-spec ~s(~s{~s}) -> ~s.~n", [erl_func_name(Name), SA1, SA2, spec_return_types(T,As)]);
@@ -379,6 +407,8 @@ spec_arg_type2(T=#type{single={list, _Max}}) ->
     "[" ++ spec_arg_type3(T) ++ "]";
 spec_arg_type2(T=#type{single={list,_,_}}) ->
     "[" ++ spec_arg_type3(T) ++ "]";
+spec_arg_type2(T=#type{single={list,_,_,_}}) ->
+    "[" ++ spec_arg_type3(T) ++ "]";
 spec_arg_type2(T=#type{single={tuple_list,Sz}}) ->
     "[{" ++ args(fun spec_arg_type3/1, ",", lists:duplicate(Sz,T)) ++ "}]".
 
@@ -437,27 +467,74 @@ check_name("begin") -> "'begin'";
 check_name("end") -> "'end'";
 check_name(Other) -> Other.
 
+doc_name(N="gluUnProject4", _) -> N;
 doc_name(N="glGetBufferParameteriv", _) -> N;
+doc_name("glEnableVertexArrayAttrib", _) -> "glEnableVertexAttribArray";
+doc_name("glDisableVertexArrayAttrib", _) -> "glEnableVertexAttribArray";
+doc_name("glEndList",_) -> "glNewList";
 doc_name("glEnd"++What, _) -> "glBegin"++What;
+doc_name("glDisablei", _) -> "glEnable";
 doc_name("glDisable" ++ What, _) -> "glEnable" ++ What;
-doc_name("glPop" ++ What, _) -> "glPush" ++ What;
-doc_name("glGetBooleanv", _) -> "glGet";
-doc_name("glGetBooleani_v", _) -> "glGet";
-doc_name("glGetIntegerv", _) -> "glGet";
-doc_name("glGetIntegeri_v", _) -> "glGet";
-doc_name("glGetInteger64v", _) -> "glGet";
-doc_name("glGetInteger64i_v", _) -> "glGet";
-doc_name("glGetFloatv", _) -> "glGet";
-doc_name("glGetDoublev", _) -> "glGet";
-doc_name("glGetFloati_v", _) -> "glGet";
-doc_name("glGetDoublei_v", _) -> "glGet";
-doc_name("glUniformMatr" ++ _, _) -> "glUniform";
-doc_name("glTexSubImage" ++ _, _) -> "glTexSubImage";
+doc_name("glClearBuffer" ++ _, _) -> "glClearBuffer";
+doc_name("glCompressedTextureSubImage" ++ End, _) -> "glCompressedTexSubImage" ++ End;
 doc_name("glFramebufferText" ++ _, _) -> "glFramebufferTexture";
+doc_name("glFramebufferParameteri" ++ _, _) -> "glFramebufferParameteri";
+doc_name("glFlushMappedNamedBufferRange" ++ _, _) -> "glFlushMappedBufferRange";
+doc_name(N="glGetActiveUniformsiv", _) -> N;
+doc_name("glGetBoolean" ++ _, _) -> "glGet";
+doc_name("glGetInteger" ++ _, _) -> "glGet";
+doc_name("glGetFloat" ++ _, _) -> "glGet";
+doc_name("glGetDouble" ++ _, _) -> "glGet";
+doc_name("glGetBufferParameter" ++ _, _) -> "glGetBufferParameter";
+doc_name("glGetInternalformat" ++ _, _) -> "glGetInternalFormat";
+doc_name("glGetQueryObject" ++ _, _) -> "glGetQueryObject";
+doc_name("glGetQueryBuffer" ++ _, _) -> "glGetQueryObject";
+doc_name("glGetQueryIndexediv" ++ _, _) -> "glGetQueryIndexed";
+doc_name(N="glGetQuery" ++ _, _) -> N;
+doc_name("glGetVertexAttrib" ++ _, _) -> "glGetVertexAttrib";
+doc_name("glGenerateTextureMipmap",_) -> "glGenerateMipmap";
+doc_name("glMap" ++ [I,_], _) -> "glMap" ++ [I];
+doc_name("glMemoryBarrier" ++ _, _) -> "glMemoryBarrier";
+doc_name("glUniformMatr" ++ _, _) -> "glUniform";
+%%doc_name("glTexSubImage" ++ [I,, _) -> "glTexSubImage";
+doc_name("glPop" ++ What, _) -> "glPush" ++ What;
 doc_name("glProgramUniformMatr" ++ _, _) -> "glProgramUniform";
-doc_name(Name, {has_vector,_,_}) ->
+doc_name("glVertexArrayVertexBuffer" ++ S, _) -> "glBindVertexBuffer" ++ S;
+doc_name(N="glVertexArrayElementBuffer", _) -> N;
+doc_name("glVertexArray" ++ Rest, Alt) -> doc_name("glVertex"++Rest, Alt);
+doc_name("glVertexAttrib" ++ [_|"Format"], _) -> "glVertexAttribFormat";
+doc_name("glVertexAttrib" ++ [_|"Pointer"], _) -> "glVertexAttribFormat";
+doc_name("glVertexAttribL" ++ _, _) -> "glVertexAttrib";
+doc_name("glTexture" ++ Rest, _) ->
+    case Rest of
+        "Barrier" -> "glTextureBarrier";
+        "View" -> "glTextureView";
+         _ -> "glTex" ++ Rest
+    end;
+doc_name(Name, Alt) ->
+    WithoutLast = ["glBlendFunc", "glColorMask", "glClearDepth",
+                   "glCreateShaderProgram", "glDepthRangeArray",
+                   "glEdgeFlag", "glIsEnabled", "glTexEnv",
+                   "glViewportArray", "glScissorArray", "glScissorIndexed"
+                  ],
+    [Last|RevName] = lists:reverse(Name),
+    case lists:member(Last, [$i,$f,$v]) of
+        true ->
+            New = lists:reverse(RevName),
+            case lists:member(New, WithoutLast) of
+                true -> New;
+                false -> doc_name2(Name,Alt)
+            end;
+        false ->
+            doc_name2(Name,Alt)
+    end.
+
+doc_name2(Name, Alt) ->
+    doc_name_last(Name,Alt).
+
+doc_name_last(Name, {has_vector,_,_}) ->
     strip_hard(reverse(Name));
-doc_name(Name, _) ->
+doc_name_last(Name, _) ->
     reverse(strip(reverse(Name))).
 
 strip_hard(Rev) ->
@@ -467,57 +544,59 @@ strip_hard(Rev) ->
     end.
 
 strip("BRA"++R) -> "BRA"++strip(R);
-strip([$v,$b,$u,$N,N|R]) when N > 47, N < 58 ->R;
-strip([$v,$i,$u,$N,N|R]) when N > 47, N < 58 ->R;
-strip([$v,$s,$u,$N,N|R]) when N > 47, N < 58 ->R;
-strip([$v,$b,$N,N|R]) when N > 47, N < 58 -> R;
-strip([$v,$i,$N,N|R]) when N > 47, N < 58 -> R;
-strip([$v,$s,$N,N|R]) when N > 47, N < 58 -> R;
-strip([$v,$d,$N,N|R]) when N > 47, N < 58 -> R;
-strip([$v,$f,$N,N|R]) when N > 47, N < 58 -> R;
-strip([$b,$u,$N,N|R]) when N > 47, N < 58 -> R;
-strip([$v,$b,$I,N|R]) when N > 47, N < 58 -> R;
-strip([$v,$i,$I,N|R]) when N > 47, N < 58 -> R;
-strip([$v,$s,$I,N|R]) when N > 47, N < 58 -> R;
-strip([$v,$d,$I,N|R]) when N > 47, N < 58 -> R;
-strip([$v,$f,$I,N|R]) when N > 47, N < 58 -> R;
-strip([$b,$u,$I,N|R]) when N > 47, N < 58 -> R;
+strip([$v,$b,$u,$N,N|R]) when ?IS_INT(N) ->R;
+strip([$v,$i,$u,$N,N|R]) when ?IS_INT(N) ->R;
+strip([$v,$s,$u,$N,N|R]) when ?IS_INT(N) ->R;
+strip([$v,$b,$N,N|R]) when ?IS_INT(N) -> R;
+strip([$v,$i,$N,N|R]) when ?IS_INT(N) -> R;
+strip([$v,$s,$N,N|R]) when ?IS_INT(N) -> R;
+strip([$v,$d,$N,N|R]) when ?IS_INT(N) -> R;
+strip([$v,$f,$N,N|R]) when ?IS_INT(N) -> R;
+strip([$b,$u,$N,N|R]) when ?IS_INT(N) -> R;
+strip([$v,$b,$I,N|R]) when ?IS_INT(N) -> R;
+strip([$v,$i,$I,N|R]) when ?IS_INT(N) -> R;
+strip([$v,$s,$I,N|R]) when ?IS_INT(N) -> R;
+strip([$v,$d,$I,N|R]) when ?IS_INT(N) -> R;
+strip([$v,$f,$I,N|R]) when ?IS_INT(N) -> R;
+strip([$b,$u,$I,N|R]) when ?IS_INT(N) -> R;
 
-strip([$v,$b,$u,N,$I|R]) when N > 47, N < 58 ->R;
-strip([$v,$i,$u,N,$I|R]) when N > 47, N < 58 ->R;
-strip([$v,$s,$u,N,$I|R]) when N > 47, N < 58 ->R;
-strip([$v,$b,N,$I|R]) when N > 47, N < 58 -> R;
-strip([$v,$i,N,$I|R]) when N > 47, N < 58 -> R;
-strip([$v,$s,N,$I|R]) when N > 47, N < 58 -> R;
-strip([$v,$d,N,$I|R]) when N > 47, N < 58 -> R;
-strip([$v,$f,N,$I|R]) when N > 47, N < 58 -> R;
+strip([$v,$b,$u,N,$I|R]) when ?IS_INT(N) ->R;
+strip([$v,$i,$u,N,$I|R]) when ?IS_INT(N) ->R;
+strip([$v,$s,$u,N,$I|R]) when ?IS_INT(N) ->R;
+strip([$v,$b,N,$I|R]) when ?IS_INT(N) -> R;
+strip([$v,$i,N,$I|R]) when ?IS_INT(N) -> R;
+strip([$v,$s,N,$I|R]) when ?IS_INT(N) -> R;
+strip([$v,$d,N,$I|R]) when ?IS_INT(N) -> R;
+strip([$v,$f,N,$I|R]) when ?IS_INT(N) -> R;
 
-strip([$v,$b,$u,N|R]) when N > 47, N < 58 ->R;
-strip([$v,$i,$u,N|R]) when N > 47, N < 58 ->R;
-strip([$v,$s,$u,N|R]) when N > 47, N < 58 ->R;
-strip([$v,$b,N|R]) when N > 47, N < 58 -> R;
-strip([$v,$i,N|R]) when N > 47, N < 58 -> R;
-strip([$v,$s,N|R]) when N > 47, N < 58 -> R;
-strip([$v,$d,N|R]) when N > 47, N < 58 -> R;
-strip([$v,$f,N|R]) when N > 47, N < 58 -> R;
+strip([$v,$b,$u,N|R]) when ?IS_INT(N) ->R;
+strip([$v,$i,$u,N|R]) when ?IS_INT(N) ->R;
+strip([$v,$s,$u,N|R]) when ?IS_INT(N) ->R;
+strip([$v,$b,N|R]) when ?IS_INT(N) -> R;
+strip([$v,$i,N|R]) when ?IS_INT(N) -> R;
+strip([$v,$s,N|R]) when ?IS_INT(N) -> R;
+strip([$v,$d,N|R]) when ?IS_INT(N) -> R;
+strip([$v,$f,N|R]) when ?IS_INT(N) -> R;
 
-strip([$b,$u,N,$I|R]) when N > 47, N < 58 ->R;
-strip([$i,$u,N,$I|R]) when N > 47, N < 58 ->R;
-strip([$s,$u,N,$I|R]) when N > 47, N < 58 ->R;
-strip([$b,N,$I|R]) when N > 47, N < 58 -> R;
-strip([$i,N,$I|R]) when N > 47, N < 58 -> R;
-strip([$s,N,$I|R]) when N > 47, N < 58 -> R;
-strip([$d,N,$I|R]) when N > 47, N < 58 -> R;
-strip([$f,N,$I|R]) when N > 47, N < 58 -> R;
+strip([$b,$u,N,$I|R]) when ?IS_INT(N) ->R;
+strip([$i,$u,N,$I|R]) when ?IS_INT(N) ->R;
+strip([$s,$u,N,$I|R]) when ?IS_INT(N) ->R;
+strip([$b,N,$I|R]) when ?IS_INT(N) -> R;
+strip([$i,N,$I|R]) when ?IS_INT(N) -> R;
+strip([$s,N,$I|R]) when ?IS_INT(N) -> R;
+strip([$d,N,$I|R]) when ?IS_INT(N) -> R;
+strip([$f,N,$I|R]) when ?IS_INT(N) -> R;
 
-strip([$b,$u,N|R]) when N > 47, N < 58 ->R;
-strip([$i,$u,N|R]) when N > 47, N < 58 ->R;
-strip([$s,$u,N|R]) when N > 47, N < 58 ->R;
-strip([$b,N|R]) when N > 47, N < 58 -> R;
-strip([$i,N|R]) when N > 47, N < 58 -> R;
-strip([$s,N|R]) when N > 47, N < 58 -> R;
-strip([$d,N|R]) when N > 47, N < 58 -> R;
-strip([$f,N|R]) when N > 47, N < 58 -> R;
+strip([$b,$u,N|R]) when ?IS_INT(N) ->R;
+strip([$i,$u,N|R]) when ?IS_INT(N) ->R;
+strip([$s,$u,N|R]) when ?IS_INT(N) ->R;
+strip([$b,N|R]) when ?IS_INT(N) -> R;
+strip([$i,N|R]) when ?IS_INT(N) -> R;
+strip([$s,N|R]) when ?IS_INT(N) -> R;
+strip([$d,N|R]) when ?IS_INT(N) -> R;
+strip([$f,N|R]) when ?IS_INT(N) -> R;
+
+strip([$v,$i,$u,$I|R])  -> R;
 
 strip([$v,$b,$u|R])  -> R;
 strip([$v,$i,$u|R])  -> R;
@@ -529,7 +608,10 @@ strip([$v,$s|R])     -> R;
 strip([$v,$d|R])     -> R;
 strip([$v,$f|R])     -> R;
 
-strip(R = "delban" ++ _) -> R;
+strip(R = "delban" ++ _) -> R;  % E|enabled
+strip(R = "dexedn" ++ _) -> R;  % I|indexed
+strip(R = "decnatsn" ++ _) -> R;  % I|instanced
+
 strip([$d,$e|R]) -> [$e|R];
 strip([$f,$e|R]) -> [$e|R];
 strip([$i,$e|R]) -> [$e|R];
@@ -554,9 +636,9 @@ strip([$d,$n|R]) -> [$n|R];
 strip([$I|R]) -> R;
 strip([$L|R]) -> R;
 strip([$v,R]) -> R;
-strip([N|R]) when N > 47, N < 58 -> R;
-strip([_|R="tceRlg"]) -> R;
-strip([_|R="thgiLlg"]) -> R;
+strip([N|R]) when ?IS_INT(N) -> R;
+strip([_|R="tceRlg"]) -> R;   % glRect*
+strip([_|R="thgiLlg"]) -> R;  % glLight*
 strip(R) -> R.
 
 strip2([$b,$u|R])  -> R;

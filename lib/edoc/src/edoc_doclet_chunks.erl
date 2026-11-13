@@ -1,7 +1,16 @@
 %% =====================================================================
-%% Licensed under the Apache License, Version 2.0 (the "License"); you may
-%% not use this file except in compliance with the License. You may obtain
-%% a copy of the License at <http://www.apache.org/licenses/LICENSE-2.0>
+%% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0 OR LGPL-2.1-or-later
+%%
+%% Copyright Ericsson AB 2025-2026. All Rights Reserved.
+%% Copyright 2019-2021 Radek Szymczyszyn
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
 %%
 %% Unless required by applicable law or agreed to in writing, software
 %% distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,7 +28,8 @@
 %% above, a recipient may use your version of this file under the terms of
 %% either the Apache License or the LGPL.
 %%
-%% @copyright 2019-2021 Radek Szymczyszyn
+%% %CopyrightEnd%
+%%
 %% @author Radek Szymczyszyn <lavrin@gmail.com>
 %% @end
 %% =====================================================================
@@ -43,7 +53,7 @@
 -import(edoc_report, [report/2]).
 
 %% @headerfile "../include/edoc_doclet.hrl"
--include("../include/edoc_doclet.hrl").
+-include_lib("edoc/include/edoc_doclet.hrl").
 
 -define(DEFAULT_FILE_SUFFIX, ".chunk").
 -define(CHUNKS_DIR, "chunks").
@@ -89,11 +99,8 @@ gen(Sources, _App, Modules, Ctxt) ->
 
 sources(Sources, Dir, Modules, Env, Options) ->
     Suffix = proplists:get_value(file_suffix, Options, ?DEFAULT_FILE_SUFFIX),
-    Private = proplists:get_bool(private, Options),
-    Hidden = proplists:get_bool(hidden, Options),
     {Ms, E} = lists:foldl(fun (Src, {Set, Error}) ->
-				  source(Src, Dir, Suffix, Env, Set,
-					 Private, Hidden, Error, Options)
+				  source(Src, Dir, Suffix, Env, Set, Error, Options)
 			  end,
 			  {sets:new(), false}, Sources),
     {[M || M <- Modules, sets:is_element(M, Ms)], E}.
@@ -104,10 +111,16 @@ sources(Sources, Dir, Modules, Env, Options) ->
 %% Add its name to the set if it was successful.
 %% Errors are just flagged at this stage,
 %% allowing all source files to be processed even if some of them fail.
-source({_M, Name, Path}, Dir, Suffix, Env, OkSet, _Private, _Hidden, ErrorFlag, Options) ->
+source({_M, Name, Path}, Dir, Suffix, Env, OkSet, ErrorFlag, Options0) ->
     File = filename:join(Path, Name),
     try
-	{_Module, Doc, Entries} = edoc:get_doc(File, Env, [return_entries, private, hidden | Options]),
+	%% Without these opts the entries returned by EDoc core (`edoc_extract:source1/5') won't have
+	%% all the necessary data to generate chunks.
+	RequiredChunkOpts = [return_entries],
+	Options = ([{show_private, proplists:get_bool(private, Options0)}]
+		   ++ RequiredChunkOpts
+		   ++ Options0),
+	{_Module, Doc, Entries} = edoc:get_doc(File, Env, Options),
 	Chunk = edoc:layout(Doc, [{entries, Entries}, {source, Name} | Options]),
 	WriteOptions = [{encoding, utf8}],
 	ok = write_file(Chunk, Dir, chunk_file_name(Name, Suffix), WriteOptions),

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2009-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2009-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,12 +23,15 @@
 %%
 
 -module(ssh_shell).
+-moduledoc false.
+
+-compile([{nowarn_deprecated_function, [{erlang,exit,2}]}]).
 
 -include("ssh.hrl").
 -include("ssh_connect.hrl").
 
 %%% As this is an user interactive client it behaves like a daemon
-%%% channel inspite of it being a client. 
+%%% channel in spite of it being a client. 
 -behaviour(ssh_server_channel).
 
 %% ssh_server_channel callbacks

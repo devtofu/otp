@@ -1,0 +1,256 @@
+# %CopyrightBegin%
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 2024-2026. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# %CopyrightEnd%
+
+name: Build Erlang/OTP (Windows)
+run-name: "[${{ inputs.base_branch }}] Build Erlang/OTP (Windows)"
+
+on:
+  workflow_call:
+    inputs:
+      base_branch:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# NOTE: This job should only be executed on the callee with `needs: pack`
+jobs:
+  build-windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        # The OpenSSL installer hashes are published by
+        # https://github.com/slproweb/opensslhashes.
+        include:
+          - arch: x64
+            runs-on: windows-2025
+            wsl_packages: make autoconf unzip
+            wx_nmake_args: TARGET_CPU=amd64 DIR_SUFFIX_CPU=
+            openssl_installer: Win64OpenSSL
+            openssl_sha256: 5fe338c81d62515df7292f16542a0eef2a29db3efc023cd5a8c08ec3c97027ae
+            artifact: otp_win32_installer
+          - arch: arm64
+            runs-on: windows-11-arm
+            wsl_packages: make unzip wget
+            wx_nmake_args: TARGET_CPU=ARM64
+            openssl_installer: Win64ARMOpenSSL
+            openssl_sha256: 9c22cbd16c9f3238e4a0a7cad93c4d4e796f2f778193ef462f7ef70a4b52d31d
+            artifact: otp_win_arm64_installer
+    defaults:
+      run:
+        shell: wsl-bash {0}
+    env:
+      OPENSSL_VERSION: 3.5.9
+      WXWIDGETS_VERSION: 3.2.6
+      UBUNTU_ROOTFS_URL: https://cloud-images.ubuntu.com/wsl/releases/noble/current/ubuntu-noble-wsl-arm64-wsl.rootfs.tar.gz
+    name: Build Erlang/OTP (Windows ${{ matrix.arch }})
+    runs-on: ${{ matrix.runs-on }}
+    permissions:
+      contents: read   # actions/cache (restore/save wxWidgets cache)
+      actions:  write  # actions/download-artifact + actions/upload-artifact
+    steps:
+      - uses: Vampire/setup-wsl@4c48163d9f981914dd8caa0fc335fe19cca5bff4 # v7.2.0
+        if: matrix.arch == 'x64'
+        with:
+          distribution: Ubuntu-18.04
+
+      # The windows-11-arm runners have no nested virtualization, so WSL2 does
+      # not work (error 0x80370102). WSL1 does, but the Ubuntu distributions
+      # that Vampire/setup-wsl installs are x64, so we import an arm64 Ubuntu
+      # rootfs ourselves and create a wsl-bash wrapper for the steps below.
+      - name: Install WSL1 + Ubuntu arm64
+        if: matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          Start-Process wsl -ArgumentList '--install','--no-distribution'
+          $ok = $false
+          for ($i = 0; $i -lt 60; $i++) {
+            wsl --set-default-version 1 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+            Start-Sleep -Seconds 5
+          }
+          if (-not $ok) { wsl --status; throw "WSL did not become available" }
+          curl.exe -sSL -o "$env:RUNNER_TEMP\ubuntu-arm64.tar.gz" "$env:UBUNTU_ROOTFS_URL"
+          New-Item -ItemType Directory -Force -Path C:\wsl | Out-Null
+          wsl --import Ubuntu C:\wsl\Ubuntu "$env:RUNNER_TEMP\ubuntu-arm64.tar.gz" --version 1
+          wsl --set-default Ubuntu
+          wsl -- uname -a
+          # The runner writes the step script with CRLF line endings, so strip the CRs before running it.
+          Set-Content -Path C:\wsl\wsl-bash.bat -Value '@echo off' -Encoding ascii
+          Add-Content -Path C:\wsl\wsl-bash.bat -Value 'wsl.exe --distribution Ubuntu --user root --exec bash -c "f=$(wslpath ''%~1''); tr -d ''\r'' < $f > $f.lf; exec bash --noprofile --norc -eo pipefail $f.lf"' -Encoding ascii
+          Add-Content -Path $env:GITHUB_PATH -Value 'C:\wsl'
+
+      - name: Install WSL dependencies
+        run: apt update && apt install -y ${{ matrix.wsl_packages }}
+
+      - name: Install NSIS
+        if: matrix.arch == 'x64'
+        shell: cmd
+        run: |
+          choco install nsis --version 3.11.0
+
+      # Do not use Chocolatey here. The runner already contains OpenSSL and a
+      # package install can leave headers and static libraries from different
+      # versions in C:\OpenSSL-Win64. Downloading the upstream installer lets
+      # us verify its checksum and install into a clean, predictable directory.
+      - name: Install OpenSSL
+        shell: powershell
+        env:
+          OPENSSL_INSTALLER: ${{ matrix.openssl_installer }}
+          OPENSSL_SHA256: ${{ matrix.openssl_sha256 }}
+        run: |
+          $version = $env:OPENSSL_VERSION.Replace('.', '_')
+          $file = "$($env:OPENSSL_INSTALLER)-$version.exe"
+          $installer = Join-Path $env:RUNNER_TEMP $file
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest `
+              "https://slproweb.com/download/$file" `
+              -OutFile $installer
+          $actualHash = (Get-FileHash $installer -Algorithm SHA256).Hash
+          $actualHash = $actualHash.ToLowerInvariant()
+          if ($actualHash -ne $env:OPENSSL_SHA256) {
+              throw "Unexpected OpenSSL installer hash: $actualHash"
+          }
+          $arguments = @(
+              '/VERYSILENT',
+              '/SUPPRESSMSGBOXES',
+              '/NORESTART',
+              '/SP-',
+              '/DIR=C:\OpenSSL-Win64'
+          )
+          $process = Start-Process $installer -ArgumentList $arguments `
+              -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+              throw "OpenSSL installer failed with exit code $($process.ExitCode)"
+          }
+          
+          $installedVersion = & C:\OpenSSL-Win64\bin\openssl.exe version
+          $expectedVersion = [regex]::Escape($env:OPENSSL_VERSION)
+          if ($installedVersion -notmatch "^OpenSSL $expectedVersion ") {
+              throw "Unexpected OpenSSL version: $installedVersion"
+          }
+
+      - name: Identify the runner image
+        id: image
+        env:
+          WSLENV: GITHUB_OUTPUT/p:ImageOS
+        run: echo "os=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache wxWidgets
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: wxWidgets
+          # The cached directory is a built wxWidgets that bakes in WebView2 and setup.h edits,
+          # plus the build command -- all defined in this workflow.
+          #
+          # We hash the workflow file so any change to those build-affecting inputs
+          # invalidates the cache (otherwise it would be silently skipped by the cache-hit on the build steps).
+          key: wxWidgets-${{ env.WXWIDGETS_VERSION }}-${{ steps.image.outputs.os }}-${{ matrix.arch }}-${{ hashFiles('.github/workflows/reusable-build-windows.yaml') }}
+
+      # actions/cache on Windows sometimes does not set cache-hit even though there was one. Setting it manually.
+      - name: Set wxWidgets cache
+        id: wxwidgets-cache
+        env:
+          WSLENV: GITHUB_OUTPUT/p
+        run: |
+          if [ -d wxWidgets ]; then
+            echo "cache-hit=true" >> $GITHUB_OUTPUT
+          else
+            echo "cache-hit=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download wxWidgets
+        if: steps.wxwidgets-cache.outputs.cache-hit != 'true'
+        run: |
+          wget https://github.com/wxWidgets/wxWidgets/releases/download/v${{ env.WXWIDGETS_VERSION }}/wxWidgets-${{ env.WXWIDGETS_VERSION }}.zip
+          unzip wxWidgets-${{ env.WXWIDGETS_VERSION }}.zip -d wxWidgets
+          sed -i -r -e 's/wxUSE_POSTSCRIPT +0/wxUSE_POSTSCRIPT 1/' wxWidgets/include/wx/msw/setup.h
+          sed -i -r -e 's/wxUSE_WEBVIEW_EDGE +0/wxUSE_WEBVIEW_EDGE 1/' wxWidgets/include/wx/msw/setup.h
+
+      - name: Install WebView2
+        if: steps.wxwidgets-cache.outputs.cache-hit != 'true'
+        shell: cmd
+        run: |
+          cd wxWidgets\\3rdparty
+          nuget install Microsoft.Web.WebView2 -Version 1.0.705.50 -Source https://api.nuget.org/v3/index.json
+          rename Microsoft.Web.WebView2.1.0.705.50 webview2
+
+      - name: Build wxWidgets
+        if: steps.wxwidgets-cache.outputs.cache-hit != 'true'
+        shell: cmd
+        run: |
+          cd wxWidgets\\build\\msw
+          SET VSWHERE="%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          FOR /F "delims=" %%P IN ('%VSWHERE% -latest -property installationPath') DO (
+            SET "VCVARSALL=%%P\VC\Auxiliary\Build\vcvarsall.bat"
+          )
+          call "%VCVARSALL%" ${{ matrix.arch }}
+          nmake ${{ matrix.wx_nmake_args }} BUILD=release SHARED=0 -f makefile.vc
+
+      - name: Download source archive
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: otp_prebuilt
+
+      # Extract natively on NTFS. WSL tar is much slower here because every
+      # created file crosses the WSL/Windows filesystem boundary.
+      - name: Extract source archive
+        shell: powershell
+        run: tar.exe -xzf otp_src.tar.gz
+
+      - name: Compile Erlang
+        run: |
+          WXDIR="$PWD/wxWidgets"
+          cd otp
+          export PATH="/mnt/c/Program Files (x86)/NSIS/bin":$PATH
+          export ERL_TOP=`pwd`
+          export MAKEFLAGS=-j$(($(nproc) + 2))
+          export ERLC_USE_SERVER=true
+          export ERTS_SKIP_DEPEND=true
+          eval `./otp_build env_win32 ${{ matrix.arch }}`
+          ./otp_build configure --with-wxdir="$WXDIR" \
+             --with-ssl=/mnt/c/OpenSSL-Win64 --disable-dynamic-ssl-lib
+
+          ## Check that the only message from lib/*/CONF_INFO is the static openssl 3 one
+          if cat erts/CONF_INFO ||
+             grep -v -e '^[[:space:]]*$' \
+                     -e '^Static linking with OpenSSL 3.0 \*MAY\* require special configuring of the cryptolib\.$' \
+                     lib/*/CONF_INFO ||
+             cat lib/*/SKIP ||
+             cat lib/SKIP-APPLICATIONS; then
+             exit 1
+          fi
+
+          ./otp_build boot -a
+          ./bin/win32/erl.exe -noshell -eval 'io:format("~s~n~p~n~p~n", [erlang:system_info(system_version), erlang:system_info(system_architecture), crypto:info_lib()]), halt().'
+          ./otp_build release -a
+          ./otp_build debuginfo_win32
+          ./otp_build installer_win32
+
+      - name: Upload installer
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ matrix.artifact }}
+          path: otp/release/win32/otp*.exe
+          # Fail the build if installer_win32 produced no installer;
+          # the default 'warn' would let a build that shipped nothing
+          # pass as green (there is no in-CI consumer to catch it).
+          if-no-files-found: error

@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2018. All Rights Reserved.
-%% Copyright 2020 Facebook, Inc. and its affiliates.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright 2020-2024 Facebook, Inc. and its affiliates.
+%% Copyright Ericsson AB 1996-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,6 +21,7 @@
 %% %CopyrightEnd%
 
 -module(sys_messages).
+-moduledoc false.
 
 -export([format_messages/4, list_errors/3]).
 
@@ -118,17 +121,27 @@ quote_source_2(Bin, Enc, StartLine, StartCol, EndLine, EndCol, Ctx) ->
                         Before ++ [{0, "..."}] ++ After
                 end,
             Lines2 = decorate(Lines1, StartLine, StartCol, EndLine, EndCol),
-            [[fmt_line(L, Text) || {L, Text} <- Lines2], $\n]
+            [[fmt_line(L, Text) || {L, Text} <:- Lines2], $\n]
     end.
 
 line_prefix() ->
     "% ".
 
 fmt_line(L, Text) ->
-    [line_prefix(), io_lib:format("~4.ts| ", [line_to_txt(L)]), Text, "\n"].
+    {LineText, LineTextLength} = line_to_txt(L),
+    [line_prefix(),
+     io_lib:format("~*.ts| ", [LineTextLength, LineText]),
+     Text, "\n"].
 
-line_to_txt(0) -> "";
-line_to_txt(L) -> integer_to_list(L).
+line_to_txt(L) ->
+    LineText = integer_to_list(abs(L)),
+    Length = max(4, length(LineText)),
+    if
+        L < 0 ->
+            {"", Length};
+        true ->
+            {LineText, Length}
+    end.
 
 decorate([{Line, Text} = L | Ls], StartLine, StartCol, EndLine, EndCol) when
   Line =:= StartLine, EndLine =:= StartLine ->
@@ -147,8 +160,8 @@ decorate([], _StartLine, _StartCol, _EndLine, _EndCol) ->
 %% don't produce empty decoration lines
 decorate("", L, Ls, StartLine, StartCol, EndLine, EndCol) ->
     [L | decorate(Ls, StartLine, StartCol, EndLine, EndCol)];
-decorate(Text, L, Ls, StartLine, StartCol, EndLine, EndCol) ->
-    [L, {0, Text} | decorate(Ls, StartLine, StartCol, EndLine, EndCol)].
+decorate(Text, {Line, _} = L, Ls, StartLine, StartCol, EndLine, EndCol) ->
+    [L, {-Line, Text} | decorate(Ls, StartLine, StartCol, EndLine, EndCol)].
 
 %% End typically points to the first position after the actual region.
 %% If End = Start, we adjust it to Start+1 to mark at least one character

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2004-2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2004-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -28,7 +30,10 @@
 -export([all/0, suite/0,groups/0,init_per_group/2,end_per_group/2,
 	 init_per_testcase/2,end_per_testcase/2,
 	 init_per_suite/1,end_per_suite/1,
-	 errors/1,record_test/1,eval_once/1]).
+         errors/1,record_test/1,eval_once/1,
+         nested_in_guard/1, gh10057/1]).
+
+-export([debug/0]).
 
 suite() ->
     [{ct_hooks,[ts_install_cth]},
@@ -48,7 +53,7 @@ end_per_group(_GroupName, Config) ->
 
 
 cases() -> 
-    [errors, record_test, eval_once].
+    [errors, record_test, eval_once, nested_in_guard, gh10057].
 
 init_per_testcase(_Case, Config) ->
     test_lib:interpret(?MODULE),
@@ -228,7 +233,37 @@ record_test(Config) when is_list(Config) ->
     [x,[],{a,b}] = [X || X <- MyList,
 			 begin not is_record(X, foo) or
 				   is_reference(X) end],
+
+    {_R, 2} = check_bindings(#foo{}, 4),
+
+    [a,b,c,d] = record_info(fields, foo),
+    5 = record_info(size, foo),
+    Foo2 = id(#foo{a=v1, b=true, c=false, d=v4}),
+    2 = #foo.a,
+    #foo.a = 2,
+    5 = #foo.d,
+    #foo.d = 5,
+    v1 = Foo2#foo.a,
+    v4 = Foo2#foo.d,
+
+    ?FalseGuard(Foo2#foo.a == baz),
+    ?FalseGuard(Foo2#foo.c),
+    ?FalseGuard(Foo2#foo.a),
+
+    ?TrueGuard(Foo2#foo.b),
+    ?TrueGuard(Foo2#foo.d == v4),
+
+    ?FalseGuard(element(#foo.d, Foo2) == baz),
+    ?FalseGuard(element(#foo.d, Foo2)),
+    ?FalseGuard(element(#foo.c, Foo2)),
+
+    ?TrueGuard(element(#foo.a, Foo2) == v1),
+    ?TrueGuard(element(#foo.b, Foo2)),
     ok.
+
+check_bindings(R0, Int) ->
+    R = R0#foo{a=(X=Int div 2)},
+    {R, X}.
 
 eval_once(Config) when is_list(Config) ->
     once(fun(GetRec) ->
@@ -263,4 +298,48 @@ once(Test, Record) ->
     end,
     Result.
 
-id(I) -> I.
+nested_in_guard(_Config) ->
+    B = #bar{d = []},
+    F = #foo{a = B},
+
+    ok = do_nested_in_guard(#foo{a=#bar{d=[]}}),
+    not_ok = do_nested_in_guard(#foo{a=#bar{}}),
+    not_ok = do_nested_in_guard(#foo{a={no_bar,a,b,c,d}}),
+    not_ok = do_nested_in_guard(#foo{a={bar,a}}),
+    not_ok = do_nested_in_guard(42),
+    not_ok = do_nested_in_guard(#bar{}),
+    not_ok = do_nested_in_guard([]),
+
+    ok.
+
+-define(is_foo(X), (((X#foo.a)#bar.d == []))).
+
+do_nested_in_guard(F) ->
+    if
+        ?is_foo(F) ->
+            ok;
+        true ->
+            not_ok
+    end.
+
+gh10057(_Config) ->
+    N = #foo{b = #bar{c = '$expecting_key'}},
+    do_gh10057(N, ss),
+    ok.
+
+do_gh10057(#foo{b = #bar{c = '$expecting_key'} = B} = N, Key) ->
+    N#foo{a = {map, Key},b = B#bar{c = Key}}.
+
+id(I) ->
+    I.
+
+debug() ->
+    %% Used for interactive debugger to see that step and next behaves
+    %% decent
+    _A00 = #foo{},
+    A0 = #foo{a=d1, c=d3},
+    A1  = A0#foo{a=1},
+    A2 = A1#foo{a=A1#foo.a+1, b=1, d=id(1)},
+    A2#foo{a=1,
+           b=2,
+           c=3}.

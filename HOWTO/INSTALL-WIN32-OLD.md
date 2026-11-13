@@ -1,3 +1,26 @@
+<!--
+%%
+%% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2020-2025. All Rights Reserved.
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%
+%% %CopyrightEnd%
+-->
+
 How to Build Erlang/OTP on Windows
 ==================================
 
@@ -47,7 +70,7 @@ to make the Erlang/OTP distribution for Windows better. Please submit
 any suggestions or patches to our [git project] [2] to let
 them find their way into the next version of Erlang. If making changes
 to the build system (like makefiles etc) please bear in mind that the
-same makefiles are used on Unix/VxWorks, so that your changes
+same makefiles are used on Unix, so that your changes
 don't break other platforms. That of course goes for C-code too; system
 specific code resides in the `$ERL_TOP/erts/emulator/sys/win32` and
 `$ERL_TOP/erts/etc/win32` directories mostly. The
@@ -728,7 +751,7 @@ Lets get into more detail:
 2.  `$ ./otp_build boot -a` - This uses the bootstrap directory (shipped
     with the source, `$ERL_TOP/bootstrap`) to build a complete OTP
     system. When this is done you can run erl from within the source tree; 
-    just type `$ERL_TOP/bin/erl` and you whould have the prompt. 
+    just type `$ERL_TOP/bin/erl` and you would have the prompt. 
 
 3.  `$ ./otp_build release -a` - Builds a commercial release tree from the
     source tree. The default is to put it in `$ERL_TOP/release/win32`. You can

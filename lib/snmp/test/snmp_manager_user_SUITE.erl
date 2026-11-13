@@ -1,7 +1,9 @@
 %% 
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2004-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2004-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -195,18 +197,23 @@ init_per_testcase(Case, Config) when is_list(Config) ->
 
     snmp_test_global_sys_monitor:reset_events(),
     
+    ?IPRINT("init_per_testcase -> ensure (snmp) manager not running"),
+    Mod      = snmpm_supervisor,
+    Stopper = fun() -> Mod:stop() end,
+    ?ENSURE_NOT_RUNNING(Mod, Stopper, 1000),
+
     SuiteTopDir = ?config(snmp_suite_top_dir, Config),
     CaseTopDir  = filename:join(SuiteTopDir, atom_to_list(Case)),
-    ?line ok    = file:make_dir(CaseTopDir),
+    ok    = file:make_dir(CaseTopDir),
     ?IPRINT("init_per_testcase -> CaseTopDir: ~p", [CaseTopDir]),
     MgrTopDir   = filename:join(CaseTopDir, "manager/"),
-    ?line ok    = file:make_dir(MgrTopDir),
+    ok    = file:make_dir(MgrTopDir),
     MgrConfDir  = filename:join(MgrTopDir, "conf/"),
-    ?line ok    = file:make_dir(MgrConfDir),
+    ok    = file:make_dir(MgrConfDir),
     MgrDbDir    = filename:join(MgrTopDir, "db/"),
-    ?line ok    = file:make_dir(MgrDbDir),
+    ok    = file:make_dir(MgrDbDir),
     MgrLogDir   = filename:join(MgrTopDir,   "log/"),
-    ?line ok    = file:make_dir(MgrLogDir),
+    ok    = file:make_dir(MgrLogDir),
 
     Config1 = [{case_top_dir,     CaseTopDir},
                {manager_dir,      MgrTopDir},
@@ -262,24 +269,24 @@ simple_register_and_unregister1(Conf) when is_list(Conf) ->
 
     Id = make_ref(), 
 
-    ?line Pid = start_user(),
+    Pid = start_user(),
 
-    ?line [] = Users1 = which_users(),
+    [] = Users1 = which_users(),
     ?IPRINT("Users1: ~p", [Users1]),
     
-    ?line ok = register_user(Pid, Id),
+    ok = register_user(Pid, Id),
 
-    ?line [Id] = Users2 = which_users(),
+    [Id] = Users2 = which_users(),
     ?IPRINT("Users2: ~p", [Users2]),
     
-    ?line ok = unregister_user(Pid),
+    ok = unregister_user(Pid),
 
-    ?line [] = Users3 = which_users(),
+    [] = Users3 = which_users(),
     ?IPRINT("Users3: ~p", [Users3]),
     
-    ?line stop_user(Pid),
+    stop_user(Pid),
 
-    ?line ok = snmpm:stop(),
+    ok = snmpm:stop(),
 
     ?IPRINT("end"),
     ok.
@@ -314,15 +321,15 @@ simple_register_and_unregister2(Conf) when is_list(Conf) ->
     Id1 = make_ref(), 
     Id2 = make_ref(), 
 
-    ?line Pid = start_user(),
+    Pid = start_user(),
 
-    ?line [] = Users1 = which_users(),
+    [] = Users1 = which_users(),
     ?IPRINT("Users1: ~p", [Users1]),
     
-    ?line ok = register_user(Pid, Id1),
-    ?line ok = register_user(Pid, Id2),
+    ok = register_user(Pid, Id1),
+    ok = register_user(Pid, Id2),
 
-    ?line Users2 = case which_users() of
+    Users2 = case which_users() of
 		       [Id1, Id2] = U1 ->
 			   U1;
 		       [Id2, Id1] = U2 ->
@@ -333,15 +340,15 @@ simple_register_and_unregister2(Conf) when is_list(Conf) ->
     ?IPRINT("Users2: ~p", [Users2]),
 
     
-    ?line ok = unregister_user(Pid, Id1),
-    ?line ok = unregister_user(Pid, Id2),
+    ok = unregister_user(Pid, Id1),
+    ok = unregister_user(Pid, Id2),
 
-    ?line [] = Users3 = which_users(),
+    [] = Users3 = which_users(),
     ?IPRINT("Users3: ~p", [Users3]),
     
-    ?line stop_user(Pid),
+    stop_user(Pid),
 
-    ?line ok = snmpm:stop(),
+    ok = snmpm:stop(),
 
     ?IPRINT("end"),
     ok.
@@ -376,16 +383,16 @@ simple_register_and_unregister3(Conf) when is_list(Conf) ->
     Id1 = make_ref(), 
     Id2 = make_ref(), 
 
-    ?line Pid1 = start_user(),
-    ?line Pid2 = start_user(),
+    Pid1 = start_user(),
+    Pid2 = start_user(),
 
-    ?line [] = Users1 = which_users(),
+    [] = Users1 = which_users(),
     ?IPRINT("Users1: ~p", [Users1]),
     
-    ?line ok = register_user(Pid1, Id1),
-    ?line ok = register_user(Pid2, Id2),
+    ok = register_user(Pid1, Id1),
+    ok = register_user(Pid2, Id2),
 
-    ?line Users2 = case which_users() of
+    Users2 = case which_users() of
 		       [Id1, Id2] = U1 ->
 			   U1;
 		       [Id2, Id1] = U2 ->
@@ -396,16 +403,16 @@ simple_register_and_unregister3(Conf) when is_list(Conf) ->
     ?IPRINT("Users2: ~p", [Users2]),
 
     
-    ?line ok = unregister_user(Pid1, Id1),
-    ?line ok = unregister_user(Pid2, Id2),
+    ok = unregister_user(Pid1, Id1),
+    ok = unregister_user(Pid2, Id2),
 
-    ?line [] = Users3 = which_users(),
+    [] = Users3 = which_users(),
     ?IPRINT("Users3: ~p", [Users3]),
     
-    ?line stop_user(Pid1),
-    ?line stop_user(Pid2),
+    stop_user(Pid1),
+    stop_user(Pid2),
 
-    ?line ok = snmpm:stop(),
+    ok = snmpm:stop(),
 
     ?IPRINT("end"),
     ok.
@@ -432,29 +439,29 @@ register_and_crash1(Conf) when is_list(Conf) ->
             {config, [{verbosity, trace}, {dir, ConfDir}, {db_dir, DbDir}]}],
  
     ?IPRINT("try starting manager"),
-    ?line ok = snmpm:start_link(Opts),
+    ok = snmpm:start_link(Opts),
  
     ?SLEEP(1000),
 
     Id = make_ref(), 
 
-    ?line Pid = start_user(),
+    Pid = start_user(),
 
-    ?line [] = Users1 = which_users(),
+    [] = Users1 = which_users(),
     ?IPRINT("Users1: ~p", [Users1]),
     
-    ?line ok = register_user(Pid, Id),
+    ok = register_user(Pid, Id),
 
-    ?line [Id] = Users2 = which_users(),
+    [Id] = Users2 = which_users(),
     ?IPRINT("Users2: ~p", [Users2]),
 
-    ?line ok = simulate_crash(Pid),
+    ok = simulate_crash(Pid),
 
-    ?line [Id] = Users3 = which_users(),
+    [Id] = Users3 = which_users(),
     ?IPRINT("Users3: ~p", [Users3]),
     
     ?IPRINT("stop manager"),
-    ?line ok = snmpm:stop(),
+    ok = snmpm:stop(),
 
     ?IPRINT("end"),
     ok.
@@ -482,22 +489,22 @@ register_and_crash2(Conf) when is_list(Conf) ->
             {config, [{verbosity, trace}, {dir, ConfDir}, {db_dir, DbDir}]}],
  
     ?IPRINT("try starting manager"),
-    ?line ok = snmpm:start_link(Opts),
+    ok = snmpm:start_link(Opts),
  
     ?SLEEP(1000),
 
     Id1 = make_ref(), 
     Id2 = make_ref(), 
 
-    ?line Pid = start_user(),
+    Pid = start_user(),
 
-    ?line [] = Users1 = which_users(),
+    [] = Users1 = which_users(),
     ?IPRINT("Users1: ~p", [Users1]),
     
-    ?line ok = register_user(Pid, Id1),
-    ?line ok = register_user(Pid, Id2),
+    ok = register_user(Pid, Id1),
+    ok = register_user(Pid, Id2),
 
-    ?line Users2 = case which_users() of
+    Users2 = case which_users() of
 		       [Id1, Id2] = U1 ->
 			   U1;
 		       [Id2, Id1] = U2 ->
@@ -507,9 +514,9 @@ register_and_crash2(Conf) when is_list(Conf) ->
 		   end,
     ?IPRINT("Users2: ~p", [Users2]),
 
-    ?line ok = simulate_crash(Pid),
+    ok = simulate_crash(Pid),
 
-    ?line Users3 = case which_users() of
+    Users3 = case which_users() of
 		       [Id1, Id2] = U3 ->
 			   U3;
 		       [Id2, Id1] = U4 ->
@@ -520,7 +527,7 @@ register_and_crash2(Conf) when is_list(Conf) ->
     ?IPRINT("Users3: ~p", [Users3]),
     
     ?IPRINT("stop manager"),
-    ?line ok = snmpm:stop(),
+    ok = snmpm:stop(),
 
     ?IPRINT("end"),
     ok.
@@ -609,31 +616,31 @@ simple_register_monitor_and_unregister1(Conf) when is_list(Conf) ->
     Id = make_ref(), 
 
     ?IPRINT("start user"),
-    ?line Pid = start_user(),
+    Pid = start_user(),
 
     ?IPRINT("get users (=0)"),
-    ?line [] = Users1 = which_users(),
+    [] = Users1 = which_users(),
     ?IPRINT("Users1: ~p", [Users1]),
     
     ?IPRINT("register monitored user"),
-    ?line ok = register_user_monitor(Pid, Id),
+    ok = register_user_monitor(Pid, Id),
 
     ?IPRINT("get users (=1)"),
-    ?line [Id] = Users2 = which_users(),
+    [Id] = Users2 = which_users(),
     ?IPRINT("Users2: ~p", [Users2]),
     
     ?IPRINT("unregister monitored user"),
-    ?line unregister_user(Pid),
+    unregister_user(Pid),
 
     ?IPRINT("get users (=0)"),
-    ?line [] = Users3 = which_users(),
+    [] = Users3 = which_users(),
     ?IPRINT("Users3: ~p", [Users3]),
     
     ?IPRINT("start user"),
-    ?line stop_user(Pid),
+    stop_user(Pid),
 
     ?IPRINT("stop manager"),
-    ?line ok = snmpm:stop(),
+    ok = snmpm:stop(),
 
     ?IPRINT("end"),
     ok.
@@ -669,15 +676,15 @@ simple_register_monitor_and_unregister2(Conf) when is_list(Conf) ->
     Id1 = make_ref(), 
     Id2 = make_ref(), 
 
-    ?line Pid = start_user(),
+    Pid = start_user(),
 
-    ?line [] = Users1 = which_users(),
+    [] = Users1 = which_users(),
     ?IPRINT("Users1: ~p", [Users1]),
     
-    ?line ok = register_user_monitor(Pid, Id1),
-    ?line ok = register_user_monitor(Pid, Id2),
+    ok = register_user_monitor(Pid, Id1),
+    ok = register_user_monitor(Pid, Id2),
 
-    ?line Users2 = case which_users() of
+    Users2 = case which_users() of
 		       [Id1, Id2] = U1 ->
 			   U1;
 		       [Id2, Id1] = U2 ->
@@ -687,15 +694,15 @@ simple_register_monitor_and_unregister2(Conf) when is_list(Conf) ->
 		   end,
     ?IPRINT("Users2: ~p", [Users2]),
     
-    ?line ok = unregister_user(Pid, Id1),
-    ?line ok = unregister_user(Pid, Id2),
+    ok = unregister_user(Pid, Id1),
+    ok = unregister_user(Pid, Id2),
 
-    ?line [] = Users3 = which_users(),
+    [] = Users3 = which_users(),
     ?IPRINT("Users3: ~p", [Users3]),
     
-    ?line stop_user(Pid),
+    stop_user(Pid),
 
-    ?line ok = snmpm:stop(),
+    ok = snmpm:stop(),
 
     ?IPRINT("end"),
     ok.
@@ -732,15 +739,15 @@ simple_register_monitor_and_unregister3(Conf) when is_list(Conf) ->
     Id1 = make_ref(), 
     Id2 = make_ref(), 
 
-    ?line Pid = start_user(),
+    Pid = start_user(),
 
-    ?line [] = Users1 = which_users(),
+    [] = Users1 = which_users(),
     ?IPRINT("Users1: ~p", [Users1]),
     
-    ?line ok = register_user(Pid, Id1),
-    ?line ok = register_user_monitor(Pid, Id2),
+    ok = register_user(Pid, Id1),
+    ok = register_user_monitor(Pid, Id2),
 
-    ?line Users2 = case which_users() of
+    Users2 = case which_users() of
 		       [Id1, Id2] = U1 ->
 			   U1;
 		       [Id2, Id1] = U2 ->
@@ -750,14 +757,14 @@ simple_register_monitor_and_unregister3(Conf) when is_list(Conf) ->
 		   end,
     ?IPRINT("Users2: ~p", [Users2]),
     
-    ?line unregister_user(Pid),
+    unregister_user(Pid),
 
-    ?line [] = Users3 = which_users(),
+    [] = Users3 = which_users(),
     ?IPRINT("Users3: ~p", [Users3]),
     
-    ?line stop_user(Pid),
+    stop_user(Pid),
 
-    ?line ok = snmpm:stop(),
+    ok = snmpm:stop(),
 
     ?IPRINT("end"),
     ok.
@@ -784,31 +791,31 @@ register_monitor_and_crash1(Conf) when is_list(Conf) ->
             {config, [{verbosity, trace}, {dir, ConfDir}, {db_dir, DbDir}]}],
  
     ?IPRINT("try starting manager"),
-    ?line ok = snmpm:start_link(Opts),
+    ok = snmpm:start_link(Opts),
  
     ?SLEEP(1000),
 
     Id = make_ref(), 
 
-    ?line Pid = start_user(),
+    Pid = start_user(),
 
-    ?line [] = Users1 = which_users(),
+    [] = Users1 = which_users(),
     ?IPRINT("Users1: ~p", [Users1]),
     
-    ?line ok = register_user_monitor(Pid, Id),
+    ok = register_user_monitor(Pid, Id),
 
-    ?line [Id] = Users2 = which_users(),
+    [Id] = Users2 = which_users(),
     ?IPRINT("Users2: ~p", [Users2]),
 
-    ?line ok = simulate_crash(Pid),
+    ok = simulate_crash(Pid),
 
     ?SLEEP(1000),
 
-    ?line [] = Users3 = which_users(),
+    [] = Users3 = which_users(),
     ?IPRINT("Users3: ~p", [Users3]),
     
     ?IPRINT("stop manager"),
-    ?line ok = snmpm:stop(),
+    ok = snmpm:stop(),
 
     ?IPRINT("end"),
     ok.
@@ -837,22 +844,22 @@ register_monitor_and_crash2(Conf) when is_list(Conf) ->
             {config, [{verbosity, trace}, {dir, ConfDir}, {db_dir, DbDir}]}],
  
     ?IPRINT("try starting manager"),
-    ?line ok = snmpm:start_link(Opts),
+    ok = snmpm:start_link(Opts),
  
     ?SLEEP(1000),
 
     Id1 = make_ref(), 
     Id2 = make_ref(), 
 
-    ?line Pid = start_user(),
+    Pid = start_user(),
 
-    ?line [] = Users1 = which_users(),
+    [] = Users1 = which_users(),
     ?IPRINT("Users1: ~p", [Users1]),
     
-    ?line ok = register_user_monitor(Pid, Id1),
-    ?line ok = register_user_monitor(Pid, Id2),
+    ok = register_user_monitor(Pid, Id1),
+    ok = register_user_monitor(Pid, Id2),
 
-    ?line Users2 = case which_users() of
+    Users2 = case which_users() of
 		       [Id1, Id2] = U1 ->
 			   U1;
 		       [Id2, Id1] = U2 ->
@@ -862,15 +869,15 @@ register_monitor_and_crash2(Conf) when is_list(Conf) ->
 		   end,
     ?IPRINT("Users2: ~p", [Users2]),
 
-    ?line ok = simulate_crash(Pid),
+    ok = simulate_crash(Pid),
 
     ?SLEEP(1000),
 
-    ?line [] = Users3 = which_users(),
+    [] = Users3 = which_users(),
     ?IPRINT("Users3: ~p", [Users3]),
     
     ?IPRINT("stop manager"),
-    ?line ok = snmpm:stop(),
+    ok = snmpm:stop(),
 
     ?IPRINT("end"),
     ok.
@@ -919,22 +926,22 @@ register_monitor_and_crash3(Conf) when is_list(Conf) ->
             {config,     [{verbosity, trace}, {dir, ConfDir}, {db_dir, DbDir}]}],
  
     ?IPRINT("try starting manager"),
-    ?line ok = snmpm:start_link(Opts),
+    ok = snmpm:start_link(Opts),
  
     ?SLEEP(1000),
 
     Id1 = make_ref(), 
     Id2 = make_ref(), 
 
-    ?line Pid = start_user(),
+    Pid = start_user(),
 
-    ?line [] = Users1 = which_users(),
+    [] = Users1 = which_users(),
     ?IPRINT("Users1: ~p", [Users1]),
     
-    ?line ok = register_user(Pid, Id1),
-    ?line ok = register_user_monitor(Pid, Id2),
+    ok = register_user(Pid, Id1),
+    ok = register_user_monitor(Pid, Id2),
 
-    ?line Users2 = case which_users() of
+    Users2 = case which_users() of
 		       [Id1, Id2] = U1 ->
 			   U1;
 		       [Id2, Id1] = U2 ->
@@ -944,15 +951,15 @@ register_monitor_and_crash3(Conf) when is_list(Conf) ->
 		   end,
     ?IPRINT("Users2: ~p", [Users2]),
 
-    ?line ok = simulate_crash(Pid),
+    ok = simulate_crash(Pid),
 
     ?SLEEP(1000),
 
-    ?line [Id1] = Users3 = which_users(),
+    [Id1] = Users3 = which_users(),
     ?IPRINT("Users3: ~p", [Users3]),
     
     ?IPRINT("stop manager"),
-    ?line ok = snmpm:stop(),
+    ok = snmpm:stop(),
 
     ?IPRINT("end"),
     ok.
@@ -981,7 +988,7 @@ register_monitor_and_crash4(Conf) when is_list(Conf) ->
             {config, [{verbosity, trace}, {dir, ConfDir}, {db_dir, DbDir}]}],
  
     ?IPRINT("start manager"),
-    ?line ok = snmpm:start_link(Opts),
+    ok = snmpm:start_link(Opts),
  
     ?SLEEP(1000),
 
@@ -989,16 +996,16 @@ register_monitor_and_crash4(Conf) when is_list(Conf) ->
     Id2 = make_ref(), 
 
     ?IPRINT("start user processes"),
-    ?line Pid1 = start_user(),
-    ?line Pid2 = start_user(),
+    Pid1 = start_user(),
+    Pid2 = start_user(),
 
-    ?line [] = Users1 = which_users(),
+    [] = Users1 = which_users(),
     ?IPRINT("Users1: ~p", [Users1]),
     
-    ?line ok = register_user_monitor(Pid1, Id1),
-    ?line ok = register_user_monitor(Pid2, Id2),
+    ok = register_user_monitor(Pid1, Id1),
+    ok = register_user_monitor(Pid2, Id2),
 
-    ?line Users2 = case which_users() of
+    Users2 = case which_users() of
 		       [Id1, Id2] = U1 ->
 			   U1;
 		       [Id2, Id1] = U2 ->
@@ -1008,17 +1015,17 @@ register_monitor_and_crash4(Conf) when is_list(Conf) ->
 		   end,
     ?IPRINT("Users2: ~p", [Users2]),
 
-    ?line ok = simulate_crash(Pid1),
+    ok = simulate_crash(Pid1),
 
     ?SLEEP(1000),
 
-    ?line [Id2] = Users3 = which_users(),
+    [Id2] = Users3 = which_users(),
     ?IPRINT("Users3: ~p", [Users3]),
     
-    ?line stop_user(Pid2),
+    stop_user(Pid2),
 
     ?IPRINT("stop manager"),
-    ?line ok = snmpm:stop(),
+    ok = snmpm:stop(),
 
     ?IPRINT("end"),
     ok.
@@ -1049,7 +1056,7 @@ register_monitor_and_crash5(Conf) when is_list(Conf) ->
             {config, [{verbosity, trace}, {dir, ConfDir}, {db_dir, DbDir}]}],
  
     ?IPRINT("start manager"),
-    ?line ok = snmpm:start_link(Opts),
+    ok = snmpm:start_link(Opts),
  
     ?SLEEP(1000),
 
@@ -1057,14 +1064,14 @@ register_monitor_and_crash5(Conf) when is_list(Conf) ->
     Id2 = tomat, %% make_ref(), 
 
     ?IPRINT("start user processes"),
-    ?line Pid1 = start_user(),
-    ?line Pid2 = start_user(),
+    Pid1 = start_user(),
+    Pid2 = start_user(),
 
-    ?line [] = Users1 = which_users(),
+    [] = Users1 = which_users(),
     ?IPRINT("Users1: ~p", [Users1]),
     
-    ?line ok = register_user_monitor(Pid1, Id1),
-    ?line ok = register_user_monitor(Pid2, Id2),
+    ok = register_user_monitor(Pid1, Id1),
+    ok = register_user_monitor(Pid2, Id2),
 
     LocalHost = snmp_test_lib:localhost(),
 
@@ -1078,16 +1085,16 @@ register_monitor_and_crash5(Conf) when is_list(Conf) ->
     Port2       = 5002,
     EngineId2   = "agentEngineId-2",
 
-    ?line ok = register_agent(Pid1, 
+    ok = register_agent(Pid1,
 			      Id1, TargetName1, [{address,   Address1},
 						 {port,      Port1},
 						 {engine_id, EngineId1}]),
-    ?line ok = register_agent(Pid2, 
+    ok = register_agent(Pid2,
 			      Id2, TargetName2, [{address,   Address2},
 						 {port,      Port2},
 						 {engine_id, EngineId2}]),
 
-    ?line Users2 = case which_users() of
+    Users2 = case which_users() of
 		       [Id1, Id2] = U1 ->
 			   U1;
 		       [Id2, Id1] = U2 ->
@@ -1098,7 +1105,7 @@ register_monitor_and_crash5(Conf) when is_list(Conf) ->
     ?IPRINT("Users2: ~p", [Users2]),
 
     ?IPRINT("verify all agent(s): expect 2"),
-    ?line Agents1 = case which_agents() of
+    Agents1 = case which_agents() of
 			[TargetName1, TargetName2] = A1 ->
 			    A1;
 			[TargetName2, TargetName1] = A2 ->
@@ -1108,21 +1115,21 @@ register_monitor_and_crash5(Conf) when is_list(Conf) ->
 		   end,
     ?IPRINT("Agents1: ~p", [Agents1]),
 
-    ?line ok = simulate_crash(Pid1),
+    ok = simulate_crash(Pid1),
 
     ?IPRINT("wait some time"),
     ?SLEEP(1000),
 
-    ?line [Id2] = Users3 = which_users(),
+    [Id2] = Users3 = which_users(),
     ?IPRINT("Users3: ~p", [Users3]),
     
-    ?line [TargetName2] = Agents2 = which_agents(),
+    [TargetName2] = Agents2 = which_agents(),
     ?IPRINT("Agents2: ~p", [Agents2]),
     
-    ?line stop_user(Pid2),
+    stop_user(Pid2),
 
     ?IPRINT("stop manager"),
-    ?line ok = snmpm:stop(),
+    ok = snmpm:stop(),
 
     ?IPRINT("end"),
     ok.
@@ -1212,20 +1219,20 @@ otp7902(Conf) when is_list(Conf) ->
  
     ?SLEEP(1000),
 
-    ?line [] = Users1 = which_users(),
+    [] = Users1 = which_users(),
     ?IPRINT("Users1: ~p", [Users1]),
     
-    ?line ok = snmp_manager_user_old:start(),
+    ok = snmp_manager_user_old:start(),
 
-    ?line [_] = Users2 = which_users(),
+    [_] = Users2 = which_users(),
     ?IPRINT("Users2: ~p", [Users2]),
     
-    ?line ok = snmp_manager_user_old:stop(),
+    ok = snmp_manager_user_old:stop(),
 
-    ?line [] = Users3 = which_users(),
+    [] = Users3 = which_users(),
     ?IPRINT("Users3: ~p", [Users3]),
     
-    ?line ok = snmpm:stop(),
+    ok = snmpm:stop(),
 
     ?IPRINT("end"),
     ok.
@@ -1291,7 +1298,7 @@ which_agents() ->
 
 
 write_manager_conf(Dir) ->
-    Port = "5000",
+    Port = "0",
     MMS  = "484",
     EngineID = "\"mgrEngine\"",
     Str = lists:flatten(
@@ -1307,7 +1314,7 @@ write_manager_conf(Dir, Str) ->
 
 
 write_conf_file(Dir, File, Str) ->
-    ?line {ok, Fd} = file:open(filename:join(Dir, File), write),
-    ?line ok = io:format(Fd, "~s", [Str]),
+    {ok, Fd} = file:open(filename:join(Dir, File), write),
+    ok = io:format(Fd, "~s", [Str]),
     file:close(Fd).
 

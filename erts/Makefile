@@ -1,7 +1,9 @@
 # 
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 2006-2020. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 2006-2025. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -38,20 +40,26 @@ all: $(if $(FLAVOR),$(FLAVOR),$(PRIMARY_FLAVOR))
 
 .PHONY: docs
 docs:
-	$(V_at)( cd doc/src && $(MAKE) $@ )
+	$(V_at)( cd doc && $(MAKE) $@ )
 
-.PHONY: debug opt lcnt clean
-debug opt lcnt clean:
+.PHONY: debug opt lcnt clean test
+$(TYPES) clean:
 	$(V_at)for d in emulator $(ERTSDIRS); do \
 		if test -d $$d; then \
 			( cd $$d && $(MAKE) $@ ) || exit $$?; \
 		fi ; \
 	done
-	(cd preloaded/src && $(MAKE) ../ebin/erts.app)
+	(cd preloaded/src && $(MAKE) ../../ebin/erts.app)
+
+
+.PHONY: test
+test:
+	TEST_NEEDS_RELEASE=true TYPE=$(TYPE) \
+	  $(ERL_TOP)/make/test_target_script.sh $(ERL_TOP)
 
 .PHONY: $(FLAVORS)
 $(FLAVORS):
-	$(V_at)for type in $(TYPES); do \
+	$(V_at)for type in $(DEFAULT_TYPES); do \
 		( $(MAKE) FLAVOR=$@ $$type ) || exit $$?; \
 	done
 
@@ -80,20 +88,22 @@ local_setup:
 		cp $(ERL_TOP)/bin/$(TARGET)/erlc.exe $(ERL_TOP)/bin/erlc.exe; \
 		cp $(ERL_TOP)/bin/$(TARGET)/erl.exe $(ERL_TOP)/bin/erl.exe; \
 		cp $(ERL_TOP)/bin/$(TARGET)/erl_call.exe $(ERL_TOP)/bin/erl_call.exe; \
-		cp $(ERL_TOP)/bin/$(TARGET)/werl.exe $(ERL_TOP)/bin/werl.exe; \
 		cp $(ERL_TOP)/bin/$(TARGET)/escript.exe $(ERL_TOP)/bin/escript.exe; \
-	 	chmod 755 $(ERL_TOP)/bin/erl.exe $(ERL_TOP)/bin/erlc.exe \
-			 $(ERL_TOP)/bin/werl.exe; \
+	 	chmod 755 $(ERL_TOP)/bin/erl.exe $(ERL_TOP)/bin/erlc.exe; \
 		make_local_ini.sh $(ERL_TOP); \
 		cp $(ERL_TOP)/bin/erl.ini $(ERL_TOP)/bin/$(TARGET)/erl.ini; \
 	else \
+	cd etc/unix && $(MAKE); \
 	sed	-e "s;%FINAL_ROOTDIR%;$(ERL_TOP);"   \
 		-e "s;erts-.*/bin;bin/$(TARGET);"    \
 		-e "s;EMU=.*;EMU=beam$(TYPEMARKER);" \
+		-e "s;%DYN_ERL_PATH%;$(TARGET)/dyn_erl;" \
+		-e "s;%DYN_ROOTDIR_BASE_EXT%;;" \
 	        $(ERL_TOP)/erts/etc/unix/erl.src.src > $(ERL_TOP)/bin/erl; \
 	sed	-e "s;%SRC_ROOTDIR%;$(ERL_TOP);"   \
 		-e "s;%TARGET%;$(TARGET);"    \
 		-e "s;%VSN%;$(VSN);"    \
+		-e "s;%DYN_ERL_PATH%;$(TARGET)/dyn_erl;" \
 	        $(ERL_TOP)/erts/etc/unix/cerl.src > $(ERL_TOP)/bin/cerl; \
 		cp $(ERL_TOP)/bin/$(TARGET)/erl_call $(ERL_TOP)/bin/erl_call; \
 		cp $(ERL_TOP)/bin/$(TARGET)/dialyzer $(ERL_TOP)/bin/dialyzer; \
@@ -141,7 +151,7 @@ makefiles:
 .PHONY: release
 release:
 ifeq ($(TYPE),)
-	for t in $(TYPES); do \
+	for t in $(DEFAULT_TYPES); do \
 	  ( cd emulator && $(MAKE) release TYPE=$$t ) || exit $$?; \
 	done
 else
@@ -159,10 +169,4 @@ endif
 
 .PHONY: release_docs
 release_docs:
-	$(V_at)( cd doc/src && $(MAKE) $@ )
-
-.PHONY: xmllint
-xmllint:
-	$(MAKE) -C doc/src $@
-
-include $(ERL_TOP)/make/app_targets.mk
+	$(V_at)( cd doc && $(MAKE) $@ )

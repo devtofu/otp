@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -24,9 +26,14 @@
 %%% Tests the trace BIF.
 %%%
 
--export([all/0, suite/0, init_per_testcase/2, end_per_testcase/2,
+-export([all/0, suite/0, groups/0,
+         init_per_suite/1, end_per_suite/1,
+         init_per_group/2, end_per_group/2,
+         init_per_testcase/2, end_per_testcase/2,
          link_receive_call_correlation/0,
-         receive_trace/1, link_receive_call_correlation/1, self_send/1,
+         receive_trace/1, receive_trace_non_fetching_receiver/1,
+         receive_trace_priority_messages/1,
+         link_receive_call_correlation/1, self_send/1,
 	 timeout_trace/1, send_trace/1,
 	 procs_trace/1, dist_procs_trace/1, procs_new_trace/1,
 	 suspend/1, suspend_exit/1, suspender_exit/1,
@@ -35,53 +42,104 @@
 	 set_on_spawn/1, set_on_first_spawn/1, cpu_timestamp/1,
 	 set_on_link/1, set_on_first_link/1,
 	 system_monitor_args/1, more_system_monitor_args/1,
+	 system_monitor_badargs/1,
 	 system_monitor_long_gc_1/1, system_monitor_long_gc_2/1, 
 	 system_monitor_large_heap_1/1, system_monitor_large_heap_2/1,
-	 system_monitor_long_schedule/1,
+	 system_monitor_long_schedule/1, system_monitor_long_message_queue/1,
+         system_monitor_long_message_queue_ignore/1,
 	 bad_flag/1, trace_delivered/1, trap_exit_self_receive/1,
          trace_info_badarg/1, erl_704/1, ms_excessive_nesting/1]).
 
+-nifs([slow_nif/0]).
+
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
 %%% Internal exports
 -export([process/1]).
+
+-undef(line).
+-define(line, erlang:display(?LINE)).
 
 suite() ->
     [{ct_hooks,[ts_install_cth]},
      {timetrap, {minutes, 1}}].
 
-all() -> 
-    [cpu_timestamp, receive_trace, link_receive_call_correlation,
-     self_send, timeout_trace,
+all() ->
+    trace_sessions:all().
+
+groups() ->
+    trace_sessions:groups(testcases()).
+
+testcases() ->
+    [cpu_timestamp, receive_trace, receive_trace_non_fetching_receiver,
+     receive_trace_priority_messages,
+     link_receive_call_correlation, self_send, timeout_trace,
      send_trace, procs_trace, dist_procs_trace, suspend,
      suspend_exit, suspender_exit,
      suspend_system_limit, suspend_opts, suspend_waiting,
      new_clear, existing_clear, tracer_die, set_on_spawn,
      set_on_first_spawn, set_on_link, set_on_first_link,
      system_monitor_args,
+     system_monitor_badargs,
      more_system_monitor_args, system_monitor_long_gc_1,
      system_monitor_long_gc_2, system_monitor_large_heap_1,
      system_monitor_long_schedule,
-     system_monitor_large_heap_2, bad_flag, trace_delivered,
+     system_monitor_large_heap_2, system_monitor_long_message_queue,
+     system_monitor_long_message_queue_ignore,
+     bad_flag, trace_delivered,
      trap_exit_self_receive, trace_info_badarg, erl_704,
      ms_excessive_nesting].
 
-init_per_testcase(_Case, Config) ->
-    [{receiver,spawn(fun receiver/0)}|Config].
+init_per_suite(Config) ->
+    trace_sessions:init_per_suite(Config, ?MODULE).
+
+end_per_suite(Config) ->
+    trace_sessions:end_per_suite(Config).
+
+
+init_per_group(Group, Config) ->
+    trace_sessions:init_per_group(Group, Config).
+
+end_per_group(Group, Config) ->
+    trace_sessions:end_per_group(Group, Config).
+
+init_per_testcase(_Case, Config0) ->
+    Config1 = [{receiver,spawn(fun receiver/0)}|Config0],
+    trace_sessions:init_per_testcase(Config1).
 
 end_per_testcase(_Case, Config) ->
     Receiver = proplists:get_value(receiver, Config),
     unlink(Receiver),
     exit(Receiver, die),
-    ok.
+
+    (erts_test_utils:ept_check_leaked_nodes(Config)
+     andalso
+     trace_sessions:end_per_testcase(Config)).
+
+erlang_trace(A,B,C) ->
+    trace_sessions:erlang_trace(A,B,C).
+
+erlang_trace_pattern(A,B,C) ->
+    trace_sessions:erlang_trace_pattern(A,B,C).
+
+erlang_trace_info(A,B) ->
+    trace_sessions:erlang_trace_info(A,B).
+
+erlang_system_monitor() ->
+    trace_sessions:erlang_system_monitor().
+erlang_system_monitor(A) ->
+    trace_sessions:erlang_system_monitor(A).
+erlang_system_monitor(A,B) ->
+    trace_sessions:erlang_system_monitor(A,B).
 
 %% No longer testing anything, just reporting whether cpu_timestamp
 %% is enabled or not.
 cpu_timestamp(Config) when is_list(Config) ->
     %% Test whether cpu_timestamp is implemented on this platform.
-    Works = try erlang:trace(all, true, [cpu_timestamp]) of
+    Works = try erlang_trace(all, true, [cpu_timestamp]) of
                 _ ->
-                    erlang:trace(all, false, [cpu_timestamp]),
+                    erlang_trace(all, false, [cpu_timestamp]),
                     true
             catch
                 error:badarg -> false
@@ -98,7 +156,7 @@ receive_trace(Config) when is_list(Config) ->
     Receiver = proplists:get_value(receiver, Config),
 
     %% Trace the process; make sure that we receive the trace messages.
-    1 = erlang:trace(Receiver, true, ['receive']),
+    1 = erlang_trace(Receiver, true, ['receive']),
     Hello = {hello, world},
     Receiver ! Hello,
     {trace, Receiver, 'receive', Hello} = receive_first_trace(),
@@ -130,8 +188,7 @@ receive_trace(Config) when is_list(Config) ->
 		       {true, true}]),
 
     %% Remote messages
-    OtherName = atom_to_list(?MODULE)++"_receive_trace",
-    {ok, OtherNode} = start_node(OtherName),
+    {ok, Peer, OtherNode} = ?CT_PEER(),
     RemoteProc = spawn_link(OtherNode, ?MODULE, process, [self()]),
     io:format("RemoteProc = ~p ~n", [RemoteProc]),
 
@@ -179,30 +236,30 @@ receive_trace(Config) when is_list(Config) ->
     F2(NN, {true, true}),
 
     unlink(RemoteProc),
-    true = stop_node(OtherNode),
+    peer:stop(Peer),
 
     %% Timeout
     Receiver ! {set_timeout, 10},
     {trace, Receiver, 'receive', {set_timeout, 10}} = receive_first_trace(),
     {trace, Receiver, 'receive', timeout} = receive_first_trace(),
-    erlang:trace_pattern('receive', [{[clock_service,undefined,timeout], [], []}], []),
+    erlang_trace_pattern('receive', [{[clock_service,undefined,timeout], [], []}], []),
     Receiver ! {set_timeout, 7},
     {trace, Receiver, 'receive', timeout} = receive_first_trace(),
-    erlang:trace_pattern('receive', true, []),
+    erlang_trace_pattern('receive', true, []),
 
     %% Another process should not be able to trace Receiver.
     process_flag(trap_exit, true),
-    Intruder = fun_spawn(fun() -> erlang:trace(Receiver, true, ['receive']) end),
+    Intruder = fun_spawn(fun() -> erlang_trace(Receiver, true, ['receive']) end),
     {'EXIT', Intruder, {badarg, _}} = receive_first(),
 
     %% Untrace the process; we should not receive anything.
-    1 = erlang:trace(Receiver, false, ['receive']),
+    1 = erlang_trace(Receiver, false, ['receive']),
     Receiver ! {hello, there},
     Receiver ! any_garbage,
     receive_nothing(),
 
     %% Verify restrictions in matchspec for 'receive'
-    F3 = fun (Pat) -> {'EXIT', {badarg,_}} = (catch erlang:trace_pattern('receive', Pat, [])) end,
+    F3 = fun (Pat) -> ?assertError(badarg, erlang_trace_pattern('receive', Pat, [])) end,
     WC = ['_','_','_'],
     F3([{WC,[],[{message, {process_dump}}]}]),
     F3([{WC,[{is_seq_trace}],[]}]),
@@ -217,6 +274,107 @@ receive_trace(Config) when is_list(Config) ->
     F3([{WC,[],[{caller}]}]),
     F3([{WC,[],[{silent,true}]}]),
 
+    ok.
+
+receive_trace_non_fetching_receiver(Config) when is_list(Config) ->
+    receive_trace_non_fetching_receiver_test(node()),
+    {ok, Peer, Node} = ?CT_PEER(),
+    receive_trace_non_fetching_receiver_test(Node),
+    peer:stop(Peer),
+    ok.
+
+receive_trace_non_fetching_receiver_test(Node) ->
+    Msgs = lists:map(fun (N) -> {msg, N} end, lists:seq(1, 20)),
+
+    Receiver = spawn_link(fun () -> receive after infinity -> ok end end),
+    Sender = spawn_link(Node, fun Sender() ->
+                                      receive Msg -> Receiver ! Msg end,
+                                      Sender()
+                              end),
+
+    1 = erlang_trace(Receiver, true, ['receive']),
+
+    lists:foreach(fun (Msg) ->
+                          Tmo = rand:uniform(101) - 1,
+                          receive after Tmo -> ok end,
+                          Sender ! Msg
+                  end, Msgs),
+
+    lists:foreach(fun (Msg) ->
+                          {trace, Receiver, 'receive', Msg}
+                              = receive_first_trace()
+                        end, Msgs),
+
+    {messages, Msgs} = process_info(Receiver, messages),
+
+    TrapExit = process_flag(trap_exit, true),
+    exit(Receiver, kill),
+    exit(Sender, kill),
+    receive {'EXIT', Receiver, _} -> ok end,
+    receive {'EXIT', Sender, _} -> ok end,
+    _ = process_flag(trap_exit, TrapExit),
+    ok.
+
+receive_trace_priority_messages(Config) when is_list(Config) ->
+    receive_trace_priority_messages_test(node()),
+    {ok, Peer, Node} = ?CT_PEER(),
+    receive_trace_priority_messages_test(Node),
+    peer:stop(Peer),
+    ok.
+
+receive_trace_priority_messages_test(Node) ->
+    Tester = self(),
+
+    PrioReceiver = spawn_link(fun () ->
+                                      Tester ! {self(), alias([priority])},
+                                      receive after infinity -> ok end
+                              end),
+    PriorityAlias = receive
+                        {PrioReceiver, PrioAlias} ->
+                            PrioAlias
+                    end,
+
+    1 = erlang_trace(PrioReceiver, true, ['receive']),
+
+    Msgs = [{msg, 1}, {prio_msg, 1}, {msg, 2}, {prio_msg, 2}, {msg, 3},
+            {msg, 4}, {prio_msg, 3}, {prio_msg, 4}, {msg, 5}, {prio_msg, 5},
+            {msg, 6}, {msg, 7}, {msg, 8}, {prio_msg, 6}, {prio_msg, 7}],
+
+    ok = erpc:call(Node,
+                   fun () ->
+                           lists:foreach(
+                             fun (Msg) ->
+                                     Tmo = rand:uniform(101) - 1,
+                                     receive after Tmo -> ok end,
+                                     case Msg of
+                                         {msg, _} ->
+                                             PrioReceiver ! Msg;
+                                         {prio_msg, _} ->
+                                             erlang:send(PriorityAlias, Msg,
+                                                         [priority])
+                                     end
+                             end, Msgs),
+                           ok
+                   end),
+
+    lists:foreach(fun (Msg) ->
+                          {trace, PrioReceiver, 'receive', Msg}
+                              = receive_first_trace()
+                  end, Msgs),
+
+    MsgQ = lists:sort(fun ({X, XA}, {X, XB}) ->
+                              XA =< XB;
+                          ({prio_msg, _}, {msg, _}) ->
+                              true;
+                          ({msg, _}, {prio_msg, _}) ->
+                              false
+                      end, Msgs),
+
+    {messages, MsgQ} = process_info(PrioReceiver, messages),
+
+    unlink(PrioReceiver),
+    exit(PrioReceiver, kill),
+    false = is_process_alive(PrioReceiver),
     ok.
 
 %% Tests that receive of a message always happens before a call with
@@ -234,8 +392,8 @@ link_receive_call_correlation(Config) when is_list(Config) ->
     process_flag(trap_exit, true),
 
     %% Trace the process; make sure that we receive the trace messages.
-    1 = erlang:trace(Receiver, true, ['receive', procs, call, timestamp, scheduler_id]),
-    1 = erlang:trace_pattern({?MODULE, receive_msg, '_'}, [], [local]),
+    1 = erlang_trace(Receiver, true, ['receive', procs, call, timestamp, scheduler_id]),
+    1 = erlang_trace_pattern({?MODULE, receive_msg, '_'}, [], [local]),
 
     Num = 100,
 
@@ -382,7 +540,7 @@ self_send(Config) when is_list(Config) ->
     end,
     Self = self(),
     SelfSender = fun_spawn(Fun, [Fun, Self]),
-    erlang:trace(SelfSender, true, ['receive', 'send']),
+    erlang_trace(SelfSender, true, ['receive', 'send']),
     SelfSender ! go_ahead,
     receive {trace, SelfSender, 'receive', go_ahead} -> ok end,
     receive {trace, SelfSender, 'receive', from_myself} -> ok end,
@@ -396,7 +554,7 @@ self_send(Config) when is_list(Config) ->
 %% Test that we can receive timeout traces.
 timeout_trace(Config) when is_list(Config) ->
     Process = fun_spawn(fun process/0),
-    1 = erlang:trace(Process, true, ['receive']),
+    1 = erlang_trace(Process, true, ['receive']),
     Process ! timeout_please,
     {trace, Process, 'receive', timeout_please} = receive_first_trace(),
     {trace, Process, 'receive', timeout} = receive_first_trace(),
@@ -411,7 +569,7 @@ send_trace(Config) when is_list(Config) ->
     Receiver = proplists:get_value(receiver, Config),
 
     %% Check that a message sent to another process is traced.
-    1 = erlang:trace(Sender, true, [send]),
+    1 = erlang_trace(Sender, true, [send]),
     F1 = fun (Pat) ->
 		 set_trace_pattern(send, Pat, []),
 		 Sender ! {send_please, Receiver, to_receiver},
@@ -456,8 +614,8 @@ send_trace(Config) when is_list(Config) ->
 		       false,
 		       [{['_','_'],[],[{message,false}]}],
 		       [{['_','_'],[],[{silent,true}]}]]),
-    erlang:trace_pattern(send, true, []),
-    erlang:trace(Sender, false, [silent]),
+    erlang_trace_pattern(send, true, []),
+    erlang_trace(Sender, false, [silent]),
 
     %% Check that a message sent to another registered process is traced.
     register(?MODULE,Receiver),
@@ -487,8 +645,8 @@ send_trace(Config) when is_list(Config) ->
 		       [{['_','_'],[],[{silent,true}]}]
 		      ]),
     unregister(?MODULE),
-    erlang:trace_pattern(send, true, []),
-    erlang:trace(Sender, false, [silent]),
+    erlang_trace_pattern(send, true, []),
+    erlang_trace(Sender, false, [silent]),
 
     %% Check that a message sent to this process is traced.
     F5 = fun (Pat) ->
@@ -520,41 +678,41 @@ send_trace(Config) when is_list(Config) ->
 
     %% Check that a message sent to unknown registrated process is traced.
     BadargSender = fun_spawn(fun sender/0),
-    1 = erlang:trace(BadargSender, true, [send]),
+    1 = erlang_trace(BadargSender, true, [send]),
     unlink(BadargSender),
     BadargSender ! {send_please, not_registered, to_unknown},
     {trace, BadargSender, send, to_unknown, not_registered} = receive_first_trace(),
     receive_nothing(),
 
     %% Another process should not be able to trace Sender.
-    Intruder = fun_spawn(fun() -> erlang:trace(Sender, true, [send]) end),
+    Intruder = fun_spawn(fun() -> erlang_trace(Sender, true, [send]) end),
     {'EXIT', Intruder, {badarg, _}} = receive_first(),
 
     %% Untrace the sender process and make sure that we receive no more
     %% trace messages.
-    1 = erlang:trace(Sender, false, [send]),
+    1 = erlang_trace(Sender, false, [send]),
     Sender ! {send_please, Receiver, to_receiver},
     Sender ! {send_please, self(), to_myself_again},
     receive to_myself_again -> ok end,
     receive_nothing(),
     
-    {'EXIT',{badarg,_}} = (catch erlang:trace_pattern(send, true, [global])),
-    {'EXIT',{badarg,_}} = (catch erlang:trace_pattern(send, true, [local])),
-    {'EXIT',{badarg,_}} = (catch erlang:trace_pattern(send, true, [meta])),
-    {'EXIT',{badarg,_}} = (catch erlang:trace_pattern(send, true, [{meta,self()}])),
-    {'EXIT',{badarg,_}} = (catch erlang:trace_pattern(send, true, [call_count])),
-    {'EXIT',{badarg,_}} = (catch erlang:trace_pattern(send, true, [call_time])),
-    {'EXIT',{badarg,_}} = (catch erlang:trace_pattern(send, restart, [])),
-    {'EXIT',{badarg,_}} = (catch erlang:trace_pattern(send, pause, [])),
-    {'EXIT',{badarg,_}} = (catch erlang:trace_pattern(send, [{['_','_'],[],[{caller}]}], [])),
+    ?assertError(badarg, erlang_trace_pattern(send, true, [global])),
+    ?assertError(badarg, erlang_trace_pattern(send, true, [local])),
+    ?assertError(badarg, erlang_trace_pattern(send, true, [meta])),
+    ?assertError(badarg, erlang_trace_pattern(send, true, [{meta,self()}])),
+    ?assertError(badarg, erlang_trace_pattern(send, true, [call_count])),
+    ?assertError(badarg, erlang_trace_pattern(send, true, [call_time])),
+    ?assertError(badarg, erlang_trace_pattern(send, restart, [])),
+    ?assertError(badarg, erlang_trace_pattern(send, pause, [])),
+    ?assertError(badarg, erlang_trace_pattern(send, [{['_','_'],[],[{caller}]}], [])),
 
     %% Done.
     ok.
 
 set_trace_pattern(_, no, _) -> 0;
 set_trace_pattern(MFA, Pat, Flg) ->
-    R = erlang:trace_pattern(MFA, Pat, Flg),
-    {match_spec, Pat} = erlang:trace_info(MFA, match_spec),
+    R = erlang_trace_pattern(MFA, Pat, Flg),
+    {match_spec, Pat} = erlang_trace_info(MFA, match_spec),
     R.
 
 %% Test trace(Pid, How, [procs]).
@@ -568,7 +726,7 @@ procs_trace(Config) when is_list(Config) ->
     Proc2 = spawn(?MODULE, process, [Self]),
     io:format("Proc2 = ~p ~n", [Proc2]),
     %%
-    1 = erlang:trace(Proc1, true, [procs, set_on_first_spawn]),
+    1 = erlang_trace(Proc1, true, [procs, set_on_first_spawn]),
     MFA = {?MODULE, process, [Self]},
     %%
     %% spawn, link
@@ -637,7 +795,7 @@ procs_trace(Config) when is_list(Config) ->
     receive_nothing(),
     %%
     %% exit (not linked to tracing process)
-    1 = erlang:trace(Proc2, true, [procs]),
+    1 = erlang_trace(Proc2, true, [procs]),
     Reason2 = make_ref(),
     Proc2 ! {exit_please, Reason2},
     {trace, Proc2, exit, Reason2} = receive_first_trace(),
@@ -647,8 +805,7 @@ procs_trace(Config) when is_list(Config) ->
 
 dist_procs_trace(Config) when is_list(Config) ->
     ct:timetrap({seconds, 15}),
-    OtherName = atom_to_list(?MODULE)++"_dist_procs_trace",
-    {ok, OtherNode} = start_node(OtherName),
+    {ok, Peer, OtherNode} = ?CT_PEER(),
     Self = self(),
     process_flag(trap_exit, true),
     %%
@@ -657,7 +814,7 @@ dist_procs_trace(Config) when is_list(Config) ->
     Proc2 = spawn(OtherNode, ?MODULE, process, [Self]),
     io:format("Proc2 = ~p ~n", [Proc2]),
     %%
-    1 = erlang:trace(Proc1, true, [procs]),
+    1 = erlang_trace(Proc1, true, [procs]),
     MFA = {?MODULE, process, [Self]},
     %%
     %% getting_unlinked by exit()
@@ -695,7 +852,7 @@ dist_procs_trace(Config) when is_list(Config) ->
 
     %%
     %% exit (with registered name, due to link)
-    Name = list_to_atom(OtherName),
+    Name = list_to_atom(hd(string:lexemes(atom_to_list(OtherNode), "@"))),
     Reason2 = make_ref(),
     Proc1 ! {link_please, Proc2},
     {trace, Proc1, link, Proc2} = receive_first_trace(),
@@ -708,8 +865,7 @@ dist_procs_trace(Config) when is_list(Config) ->
     receive_nothing(),
     %%
     %% Done.
-    true = stop_node(OtherNode),
-    ok.
+    peer:stop(Peer).
 
 %% Test trace(new, How, [procs]).
 procs_new_trace(Config) when is_list(Config) ->
@@ -719,7 +875,7 @@ procs_new_trace(Config) when is_list(Config) ->
     Proc1 = spawn_link(?MODULE, process, [Self]),
     io:format("Proc1 = ~p ~n", [Proc1]),
     %%
-    0 = erlang:trace(new, true, [procs]),
+    0 = erlang_trace(new, true, [procs]),
 
     MFA = {?MODULE, process, [Self]},
     %%
@@ -750,7 +906,7 @@ set_on_spawn(Config) when is_list(Config) ->
     %% Create and trace a process with the set_on_spawn flag.
     %% Make sure it is traced.
     Father_SOS = fun_spawn(fun process/0),
-    1 = erlang:trace(Father_SOS, true, [send, set_on_spawn]),
+    1 = erlang_trace(Father_SOS, true, [send, set_on_spawn]),
     true = is_send_traced(Father_SOS, Listener, sos_father),
 
     %% Have the process spawn of two children and test that they
@@ -774,7 +930,7 @@ set_on_first_spawn(Config) when is_list(Config) ->
     %% Create and trace a process with the set_on_first_spawn flag.
     %% Make sure it is traced.
     Parent = fun_spawn(fun process/0),
-    1 = erlang:trace(Parent, true, [send, set_on_first_spawn]),
+    1 = erlang_trace(Parent, true, [send, set_on_first_spawn]),
     is_send_traced(Parent, Listener, sos_father),
 
     %% Have the process spawn off three children and test that the
@@ -794,7 +950,7 @@ set_on_link(_Config) ->
     %% Create and trace a process with the set_on_link flag.
     %% Make sure it is traced.
     Father_SOL = fun_spawn(fun process/0),
-    1 = erlang:trace(Father_SOL, true, [send, set_on_link]),
+    1 = erlang_trace(Father_SOL, true, [send, set_on_link]),
     true = is_send_traced(Father_SOL, Listener, sol_father),
 
     %% Have the process spawn of two children and test that they
@@ -818,7 +974,7 @@ set_on_first_link(_Config) ->
     %% Create and trace a process with the set_on_first_spawn flag.
     %% Make sure it is traced.
     Parent = fun_spawn(fun process/0),
-    1 = erlang:trace(Parent, true, [send, set_on_first_link]),
+    1 = erlang_trace(Parent, true, [send, set_on_first_link]),
     is_send_traced(Parent, Listener, sol_father),
 
     %% Have the process spawn off three children and test that the
@@ -836,61 +992,65 @@ set_on_first_link(_Config) ->
 system_monitor_args(Config) when is_list(Config) ->
     Self = self(),
     %%
-    OldMonitor = erlang:system_monitor(undefined),
-    undefined = erlang:system_monitor(Self, [{long_gc,0}]),
-    MinT = case erlang:system_monitor() of
+    OldMonitor = erlang_system_monitor(undefined),
+    undefined = erlang_system_monitor(Self, [{long_gc,0}]),
+    MinT = case erlang_system_monitor() of
                {Self,[{long_gc,T}]} when is_integer(T), T > 0 -> T;
-               Other1 -> test_server:fault(Other1)
+               Other1 -> ct:fail(Other1)
            end,
-    {Self,[{long_gc,MinT}]} = erlang:system_monitor(),
+    {Self,[{long_gc,MinT}]} = erlang_system_monitor(),
     {Self,[{long_gc,MinT}]} = 
-    erlang:system_monitor({Self,[{large_heap,0}]}),
-    MinN = case erlang:system_monitor() of
+    erlang_system_monitor({Self,[{large_heap,0}]}),
+    MinN = case erlang_system_monitor() of
                {Self,[{large_heap,N}]} when is_integer(N), N > 0 -> N;
-               Other2 -> test_server:fault(Other2)
+               Other2 -> ct:fail(Other2)
            end,
-    {Self,[{large_heap,MinN}]} = erlang:system_monitor(),
+    {Self,[{large_heap,MinN}]} = erlang_system_monitor(),
     {Self,[{large_heap,MinN}]} = 
-    erlang:system_monitor(Self, [busy_port]),
-    {Self,[busy_port]} = erlang:system_monitor(),
+        erlang_system_monitor(Self,[{long_message_queue, {100,101}}]),
+    {Self,[{long_message_queue,{100,101}}]} = erlang_system_monitor(),
+    {Self,[{long_message_queue,{100,101}}]} =
+        erlang_system_monitor(Self, [busy_port]),
+    {Self,[busy_port]} = erlang_system_monitor(),
     {Self,[busy_port]} = 
-    erlang:system_monitor({Self,[busy_dist_port]}),
-    {Self,[busy_dist_port]} = erlang:system_monitor(),
+    erlang_system_monitor({Self,[busy_dist_port]}),
+    {Self,[busy_dist_port]} = erlang_system_monitor(),
     All = lists:sort([busy_port,busy_dist_port,
-                      {long_gc,1},{large_heap,65535}]),
-    {Self,[busy_dist_port]} = erlang:system_monitor(Self, All),
-    {Self,A1} = erlang:system_monitor(),
+                      {long_gc,1},{large_heap,65535},{long_message_queue,{99,100}}]),
+    {Self,[busy_dist_port]} = erlang_system_monitor(Self, All),
+    {Self,A1} = erlang_system_monitor(),
     All = lists:sort(A1),
-    {Self,A1} = erlang:system_monitor(Self, []),
+    {Self,A1} = erlang_system_monitor(Self, []),
     Pid = spawn(fun () -> receive {Self,die} -> exit(die) end end),
     Mref = erlang:monitor(process, Pid),
-    undefined = erlang:system_monitor(Pid, All),
-    {Pid,A2} = erlang:system_monitor(),
+    undefined = erlang_system_monitor(Pid, All),
+    {Pid,A2} = erlang_system_monitor(),
     All = lists:sort(A2),
     Pid ! {Self,die},
     receive {'DOWN',Mref,_,_,_} -> ok end,
-    undefined = erlang:system_monitor(OldMonitor),
+    undefined = erlang_system_monitor(OldMonitor),
     erlang:yield(),
-    OldMonitor = erlang:system_monitor(),
-    %%
-    {'EXIT',{badarg,_}} = (catch erlang:system_monitor(atom)),
-    {'EXIT',{badarg,_}} = (catch erlang:system_monitor({})),
-    {'EXIT',{badarg,_}} = (catch erlang:system_monitor({1})),
-    {'EXIT',{badarg,_}} = (catch erlang:system_monitor({1,2,3})),
-    {'EXIT',{badarg,_}} = 
-    (catch erlang:system_monitor({Self,atom})),
-    {'EXIT',{badarg,_}} = 
-    (catch erlang:system_monitor(atom, atom)),
-    {'EXIT',{badarg,_}} = 
-    (catch erlang:system_monitor({Self,[busy_port|busy_dist_port]})),
-    {'EXIT',{badarg,_}} = 
-    (catch erlang:system_monitor(Self, [{long_gc,-1}])),
-    {'EXIT',{badarg,_}} = 
-    (catch erlang:system_monitor({Self,[{long_gc,atom}]})),
-    {'EXIT',{badarg,_}} = 
-    (catch erlang:system_monitor(Self,[{large_heap,-1}])),
-    {'EXIT',{badarg,_}} = 
-    (catch erlang:system_monitor({Self,[{large_heap,atom}]})),
+    OldMonitor = erlang_system_monitor(),
+    ok.
+
+
+system_monitor_badargs(Config) when is_list(Config) ->
+    Self = self(),
+    ?assertError(badarg, erlang:system_monitor(atom)),
+    ?assertError(badarg, erlang:system_monitor({})),
+    ?assertError(badarg, erlang:system_monitor({1})),
+    ?assertError(badarg, erlang:system_monitor({1,2,3})),
+    ?assertError(badarg, erlang:system_monitor({Self,atom})),
+    ?assertError(badarg, erlang:system_monitor(atom, atom)),
+    ?assertError(badarg, erlang:system_monitor({Self,[busy_port|busy_dist_port]})),
+    ?assertError(badarg, erlang:system_monitor(Self, [{long_gc,-1}])),
+    ?assertError(badarg, erlang:system_monitor({Self,[{long_gc,atom}]})),
+    ?assertError(badarg, erlang:system_monitor(Self,[{large_heap,-1}])),
+    ?assertError(badarg, erlang:system_monitor({Self,[{large_heap,atom}]})),
+    ?assertError(badarg, erlang:system_monitor(Self,[{long_message_queue, {100,100}}])),
+    ?assertError(badarg, erlang:system_monitor(Self,[{long_message_queue, {-1,1}}])),
+    ?assertError(badarg, erlang:system_monitor(Self,[{long_message_queue, {0,-1}}])),
+    ?assertError(badarg, erlang:system_monitor(Self,[{long_message_queue, {-1,0}}])),
     ok.
 
 
@@ -908,14 +1068,14 @@ try_l(Val) ->
     Arbitrary1 = 77777,
     Arbitrary2 = 88888,
 
-    erlang:system_monitor(undefined),
+    erlang_system_monitor(undefined),
 
-    undefined = erlang:system_monitor(Self, [{long_gc,Val},{large_heap,Arbitrary1}]),
+    undefined = erlang_system_monitor(Self, [{long_gc,Val},{large_heap,Arbitrary1}]),
 
-    {Self,Comb0} = erlang:system_monitor(Self, [{long_gc,Arbitrary2},{large_heap,Val}]),
+    {Self,Comb0} = erlang_system_monitor(Self, [{long_gc,Arbitrary2},{large_heap,Val}]),
     [{large_heap,Arbitrary1},{long_gc,Val}] = lists:sort(Comb0),
 
-    {Self,Comb1} = erlang:system_monitor(undefined),
+    {Self,Comb1} = erlang_system_monitor(undefined),
     [{large_heap,Val},{long_gc,Arbitrary2}] = lists:sort(Comb1).
 
 monitor_sys(Parent) ->
@@ -936,24 +1096,35 @@ monitor_sys(Parent) ->
 start_monitor() ->
     Parent = self(),
     Mpid = spawn_link(fun() -> monitor_sys(Parent) end),
-    erlang:system_monitor(Mpid,[{long_schedule,100}]),
+    erlang_system_monitor(Mpid,[{long_schedule,100}]),
     erlang:yield(), % Need to be rescheduled for the trace to take
     ok.
 
 %% Tests erlang:system_monitor(Pid, [{long_schedule,Time}])
 system_monitor_long_schedule(Config) when is_list(Config) ->
     Path = proplists:get_value(data_dir, Config),
+    case erlang:load_nif(filename:join(Path,"trace_SUITE"), []) of
+        ok -> ok;
+        {error, {reload,_}} -> ok
+    end,
     erl_ddll:start(),
-    case (catch load_driver(Path, slow_drv)) of
+    try load_driver(Path, slow_drv) of
         ok ->
             do_system_monitor_long_schedule();
         _Error ->
             {skip, "Unable to load slow_drv (windows or no usleep()?)"}
+    catch
+        _Error ->
+            {skip, "Unable to load slow_drv (windows or no usleep()?)"}
     end.
+
+slow_nif() ->
+    erlang:nif_error("NIF not loaded").
+
 do_system_monitor_long_schedule() ->
     start_monitor(),
-    Port = open_port({spawn_driver,slow_drv}, []),
-    "ok" = erlang:port_control(Port,0,[]),
+
+    slow_nif(),
     Self = self(),
     receive
         {Self,L} when is_list(L) ->
@@ -961,6 +1132,8 @@ do_system_monitor_long_schedule() ->
     after 1000 ->
             ct:fail(no_trace_of_pid)
     end,
+
+    Port = open_port({spawn_driver,slow_drv}, []),
     "ok" = erlang:port_control(Port,1,[]),
     receive
         {Port,LL} when is_list(LL) ->
@@ -969,7 +1142,7 @@ do_system_monitor_long_schedule() ->
             ct:fail(no_trace_of_port)
     end,
     port_close(Port),
-    erlang:system_monitor(undefined),
+    erlang_system_monitor(undefined),
     ok.
 
 
@@ -1032,11 +1205,11 @@ system_monitor_long_gc_2(Config) when is_list(Config) ->
 long_gc(LoadFun, ExpectMonMsg) ->
     Self = self(),
     Time = 1,
-    OldMonitor = erlang:system_monitor(Self, [{long_gc,Time}]),
+    OldMonitor = erlang_system_monitor(Self, [{long_gc,Time}]),
     Pid = LoadFun(),
     Ref = erlang:trace_delivered(Pid),
     receive {trace_delivered, Pid, Ref} -> ok end,
-    {Self,[{long_gc,Time}]} = erlang:system_monitor(OldMonitor),
+    {Self,[{long_gc,Time}]} = erlang_system_monitor(OldMonitor),
     case {long_gc_check(Pid, Time, undefined), ExpectMonMsg} of
         {ok, true} when Pid =/= Self ->
             ok;
@@ -1120,11 +1293,11 @@ large_heap(LoadFun, ExpectMonMsg) ->
     Size = 65535,
     Self = self(),
     NewMonitor = {Self,[{large_heap,Size}]},
-    OldMonitor = erlang:system_monitor(NewMonitor),
+    OldMonitor = erlang_system_monitor(NewMonitor),
     Pid = LoadFun(Size),
     Ref = erlang:trace_delivered(Pid),
     receive {trace_delivered, Pid, Ref} -> ok end,
-    {Self,[{large_heap,Size}]} = erlang:system_monitor(OldMonitor),
+    {Self,[{large_heap,Size}]} = erlang_system_monitor(OldMonitor),
     case {large_heap_check(Pid, Size, undefined), ExpectMonMsg} of
         {ok, true} when Pid =/= Self ->
             ok;
@@ -1170,6 +1343,93 @@ large_heap_check(Pid, Size, Result) ->
     after 0 ->
               Result
     end.
+
+
+system_monitor_long_message_queue(Config) when is_list(Config) ->
+    Self = self(),
+    SMonPrxy = spawn_link(fun () -> smon_lmq_proxy(Self) end),
+    erlang_system_monitor(SMonPrxy,[{long_message_queue, {50,100}}]),
+    erlang:yield(),
+    lists:foreach(fun (_) -> self() ! hello end, lists:seq(1, 100)),
+    receive {monitor,Self,long_message_queue,true} -> ok
+    after 5000 -> ct:fail(missing_on_message)
+    end,
+
+    lists:foreach(fun (_) -> self() ! hello end, lists:seq(1, 10)),
+    receive {monitor,Self,long_message_queue,_} = Msg0 -> ct:fail({unexpected_message, Msg0})
+    after 1000 -> ok
+    end,
+
+    lists:foreach(fun (_) -> receive hello -> ok end end, lists:seq(1, 50)),
+    receive {monitor,Self,long_message_queue,_} = Msg1 -> ct:fail({unexpected_message, Msg1})
+    after 1000 -> ok
+    end,
+
+    lists:foreach(fun (_) -> self() ! hello end, lists:seq(1, 50)),
+    receive {monitor,Self,long_message_queue,_} = Msg2 -> ct:fail({unexpected_message, Msg2})
+    after 1000 -> ok
+    end,
+
+    lists:foreach(fun (_) -> receive hello -> ok end end, lists:seq(1, 60)),
+    receive {monitor,Self,long_message_queue,false} -> ok
+    after 5000 -> ct:fail(missing_off_message)
+    end,
+
+    lists:foreach(fun (_) -> self() ! hello end, lists:seq(1, 100)),
+    receive {monitor,Self,long_message_queue,true} -> ok
+    after 5000 -> ct:fail(missing_on_message)
+    end,
+
+    lists:foreach(fun (_) -> receive hello -> ok end end, lists:seq(1, 100)),
+    receive {monitor,Self,long_message_queue,false} -> ok
+    after 5000 -> ct:fail(missing_off_message)
+    end,
+
+    lists:foreach(fun (_) -> receive hello -> ok end end, lists:seq(1, 50)),
+    {message_queue_len, 0} = process_info(self(), message_queue_len),
+
+    unlink(SMonPrxy),
+    exit(SMonPrxy, kill),
+    false = is_process_alive(SMonPrxy),
+
+    erlang_system_monitor(undefined),
+    ok.
+
+smon_lmq_proxy(To) ->
+    receive Msg -> To ! Msg end,
+    smon_lmq_proxy(To).
+
+system_monitor_long_message_queue_ignore(Config) when is_list(Config) ->
+    %%
+    %% Ensure that messages are delivered and monitored even if a
+    %% process ignores the message queue while continuesly executing.
+    %%
+    erlang_system_monitor(self(),[{long_message_queue, {50,100}}]),
+    Pid = spawn_opt(fun ignore_messages_working/0, [{priority,low}, link]),
+    lists:foreach(fun (_) -> Pid ! hello end, lists:seq(1, 50)),
+    receive {monitor,Pid,long_message_queue,_} = Msg0 -> ct:fail({unexpected_message, Msg0})
+    after 1000 -> ok
+    end,
+
+    lists:foreach(fun (_) -> Pid ! hello end, lists:seq(1, 50)),
+    receive {monitor,Pid,long_message_queue,true} -> ok
+    after 5000 -> ct:fail(missing_on_message)
+    end,
+
+    unlink(Pid),
+    exit(Pid, kill),
+    false = is_process_alive(Pid),
+
+    erlang_system_monitor(undefined),
+
+    ok.
+
+ignore_messages_working() ->
+    _ = id(lists:seq(1, 10000)),
+    ignore_messages_working().
+
+id(X) ->
+    X.
 
 seq(N, M) ->
     seq(N, M, []).
@@ -1256,11 +1516,10 @@ do_suspend_exit(N) ->
         fun () ->
                 suspend_exit_work(Work div 2),
                 Parent ! {doing_suspend, self()},
-                case catch erlang:suspend_process(Suspendee) of
-                    {'EXIT', _} ->
-                        ok;
+                try erlang:suspend_process(Suspendee) of
                     true ->
                         erlang:resume_process(Suspendee)
+                catch _:_ -> ok
                 end
         end),
     receive
@@ -1291,7 +1550,7 @@ chk_suspended(P, Bool, Line) ->
 suspender_exit(Config) when is_list(Config) ->
     ct:timetrap({minutes, 3}),
     P1 = spawn_link(fun () -> receive after infinity -> ok end end),
-    {'EXIT', _} = (catch erlang:resume_process(P1)),
+    ?assertError(_, erlang:resume_process(P1)),
     {P2, M2} = spawn_monitor(
                  fun () ->
                          ?CHK_SUSPENDED(P1, false),
@@ -1419,20 +1678,20 @@ suspend_until_system_limit(P, N, M) ->
                _ ->
                    M+1
            end,
-    case catch erlang:suspend_process(P) of
+    try erlang:suspend_process(P) of
         true ->
             suspend_until_system_limit(P, N+1, NewM);
-        {'EXIT', R} when R == system_limit;
-                         element(1, R) == system_limit ->
-            io:format("system limit at ~p~n", [N]),
-            resume_from_system_limit(P, N, 0);
         Error ->
             ct:fail(Error)
+    catch
+        error:system_limit ->
+            io:format("system limit at ~p~n", [N]),
+            resume_from_system_limit(P, N, 0)
     end.
 
 resume_from_system_limit(P, 0, _) ->
     ?CHK_SUSPENDED(P, false),
-    {'EXIT', _} = (catch erlang:resume_process(P)),
+    ?assertError(_, erlang:resume_process(P)),
     ok;
 resume_from_system_limit(P, N, M) ->
     NewM = case M of
@@ -1513,24 +1772,29 @@ suspend_opts(Config) when is_list(Config) ->
     SI = repeat_acc(SF, TC, #susp_info{}),
     erlang:suspend_process(Tok, [asynchronous]),
     %% Verify that it eventually suspends
-    WaitTime0 = 10,
-    WaitTime1 = case {erlang:system_info(debug_compiled),
-                      erlang:system_info(lock_checking)} of
-                    {false, false} ->
-                        WaitTime0;
-                    {false, true} ->
-                        WaitTime0*5;
-                    _ ->
-                        WaitTime0*10
-                end,
-    WaitTime = case {erlang:system_info(schedulers_online),
-                     erlang:system_info(logical_processors)} of
-                   {Schdlrs, CPUs} when is_integer(CPUs),
-                                        Schdlrs =< CPUs ->
-                       WaitTime1;
-                   _ ->
-                       WaitTime1*10
-               end,
+    WaitTime0 = 20,
+    WaitTime1 = WaitTime0 *
+        case erlang:system_info(emu_type) of
+            debug -> 2;
+            gcov -> 2;
+            asan -> 2;
+            valgrind -> 10;
+            _ -> 1
+        end,
+    WaitTime2 = WaitTime1 *
+        case erlang:system_info(lock_checking) of
+            true -> 5;
+            false -> 1
+        end,
+    WaitTime = WaitTime2 *
+        case {erlang:system_info(schedulers_online),
+              erlang:system_info(logical_processors)} of
+            {Schdlrs, CPUs} when is_integer(CPUs),
+                                 Schdlrs =< CPUs ->
+                1;
+            _ ->
+                10
+        end,
     receive after WaitTime -> ok end,
     1 = suspend_count(Tok),
     erlang:suspend_process(Tok, [asynchronous]),
@@ -1612,37 +1876,37 @@ suspend_waiting(Config) when is_list(Config) ->
     ok.
 
 
-%% Test that erlang:trace(new, true, ...) is cleared when tracer dies.
+%% Test that trace(new, true, ...) is cleared when tracer dies.
 new_clear(Config) when is_list(Config) ->
     Tracer = proplists:get_value(receiver, Config),
 
-    0 = erlang:trace(new, true, [send, {tracer, Tracer}]),
-    {flags, [send]} = erlang:trace_info(new, flags),
-    {tracer, Tracer} = erlang:trace_info(new, tracer),
+    0 = erlang_trace(new, true, [send, {tracer, Tracer}]),
+    {flags, [send]} = erlang_trace_info(new, flags),
+    {tracer, Tracer} = erlang_trace_info(new, tracer),
     Mref = erlang:monitor(process, Tracer),
     true = exit(Tracer, done),
     receive
         {'DOWN',Mref,_,_,_} -> ok
     end,
-    {flags, []} = erlang:trace_info(new, flags),
-    {tracer, []} = erlang:trace_info(new, tracer),
+    {flags, []} = erlang_trace_info(new, flags),
+    {tracer, []} = erlang_trace_info(new, tracer),
     ok.
 
 
 
-%% Test that erlang:trace(all, false, ...) works without tracer.
+%% Test that trace(all, false, ...) works without tracer.
 existing_clear(Config) when is_list(Config) ->
     Self = self(),
 
     Tracer = proplists:get_value(receiver, Config),
-    N = erlang:trace(existing, true, [send, {tracer, Tracer}]),
-    {flags, [send]} = erlang:trace_info(Self, flags),
-    {tracer, Tracer} = erlang:trace_info(Self, tracer),
-    M = erlang:trace(all, false, [all]),
+    N = erlang_trace(existing, true, [send, {tracer, Tracer}]),
+    {flags, [send]} = erlang_trace_info(Self, flags),
+    {tracer, Tracer} = erlang_trace_info(Self, tracer),
+    M = erlang_trace(all, false, [all]),
     io:format("Started trace on ~p processes and stopped on ~p~n", 
               [N, M]),
-    {flags, []} = erlang:trace_info(Self, flags),
-    {tracer, []} = erlang:trace_info(Self, tracer),
+    {flags, []} = erlang_trace_info(Self, flags),
+    {tracer, []} = erlang_trace_info(Self, tracer),
     M = N, % Used to be N + 1, but from 19.0 the tracer is also traced
 
     ok.
@@ -1654,25 +1918,25 @@ tracer_die(Config) when is_list(Config) ->
 
     Tracer = spawn_link(fun receiver/0),
     timer:sleep(1),
-    N = erlang:trace(existing, true, [send, {tracer, Tracer}]),
-    {flags, [send]} = erlang:trace_info(Proc, flags),
-    {tracer, Tracer} = erlang:trace_info(Proc, tracer),
+    N = erlang_trace(existing, true, [send, {tracer, Tracer}]),
+    {flags, [send]} = erlang_trace_info(Proc, flags),
+    {tracer, Tracer} = erlang_trace_info(Proc, tracer),
     unlink(Tracer),
     exit(Tracer, die),
 
     Tracer2 = spawn_link(fun receiver/0),
     timer:sleep(1),
-    N = erlang:trace(existing, true, [send, {tracer, Tracer2}]),
-    {flags, [send]} = erlang:trace_info(Proc, flags),
-    {tracer, Tracer2} = erlang:trace_info(Proc, tracer),
+    N = erlang_trace(existing, true, [send, {tracer, Tracer2}]),
+    {flags, [send]} = erlang_trace_info(Proc, flags),
+    {tracer, Tracer2} = erlang_trace_info(Proc, tracer),
     unlink(Tracer2),
     exit(Tracer2, die),
 
     Tracer3 = spawn_link(fun receiver/0),
     timer:sleep(1),
-    1 = erlang:trace(Proc, true, [send, {tracer, Tracer3}]),
-    {flags, [send]} = erlang:trace_info(Proc, flags),
-    {tracer, Tracer3} = erlang:trace_info(Proc, tracer),
+    1 = erlang_trace(Proc, true, [send, {tracer, Tracer3}]),
+    {flags, [send]} = erlang_trace_info(Proc, flags),
+    {tracer, Tracer3} = erlang_trace_info(Proc, tracer),
     unlink(Tracer3),
     exit(Tracer3, die),
 
@@ -1681,21 +1945,16 @@ tracer_die(Config) when is_list(Config) ->
 %% Test that an invalid flag cause badarg
 bad_flag(Config) when is_list(Config) ->
     %% A bad flag could deadlock the SMP emulator in erts-5.5
-    {'EXIT', {badarg, _}} = (catch erlang:trace(new,
-                                                true,
-                                                [not_a_valid_flag])),
+    ?assertError(badarg, erlang_trace(new, true, [not_a_valid_flag])),
 
     %% Leaks of {tracer,_} in OTP 23.2
     Pid = spawn(fun() -> receive die -> ok end end),
-    1 = erlang:trace(Pid, true, [{tracer, self()},
+    1 = erlang_trace(Pid, true, [{tracer, self()},
                                  {tracer, self()}]),
     Pid ! die,
-    {'EXIT', {badarg, _}} =
-        (catch erlang:trace(new, true, [{tracer, self()}
-                                        | improper])),
-    {'EXIT', {badarg, _}} =
-        (catch erlang:trace(new, true, [{tracer, self()},
-                                        not_a_valid_flag])),
+    ?assertError(badarg, erlang_trace(new, true, [{tracer, self()} | improper])),
+    ?assertError(badarg, erlang_trace(new, true, [{tracer, self()},
+                                                  not_a_valid_flag])),
     ok.
 
 %% Test erlang:trace_delivered/1
@@ -1708,7 +1967,7 @@ trace_delivered(Config) when is_list(Config) ->
                         receive Go -> gone end,
                         tok_trace_loop(Parent, 0, TokLoops)
                 end),
-    1 = erlang:trace(Tok, true, [procs]),
+    1 = erlang_trace(Tok, true, [procs]),
     Mon = erlang:monitor(process, Tok),
     NoOfTraceMessages = 4*TokLoops + 1,
     io:format("Expect a total of ~p trace messages~n",
@@ -1724,11 +1983,11 @@ trace_delivered(Config) when is_list(Config) ->
 
 %% This testcase checks that receive trace works on exit signal messages
 %% when the sender of the exit signal is the process itself.
-trap_exit_self_receive(Config) ->
+trap_exit_self_receive(Config) when is_list(Config) ->
     Parent = self(),
     Proc = spawn_link(fun() -> process(Parent) end),
 
-    1 = erlang:trace(Proc, true, ['receive']),
+    1 = erlang_trace(Proc, true, ['receive']),
     Proc ! {trap_exit_please, true},
     {trace, Proc, 'receive', {trap_exit_please, true}} = receive_first_trace(),
 
@@ -1748,13 +2007,13 @@ trap_exit_self_receive(Config) ->
     ok.
 
 trace_info_badarg(Config) when is_list(Config) ->
-    catch erlang:trace_info({a,b,c},d),
+    try erlang_trace_info({a,b,c},d) catch _:_ -> ok end,
     ok.
 
 %% An incoming suspend monitor down wasn't handled
 %% correct when the local monitor half had been
 %% removed with an emulator crash as result.
-erl_704(Config) ->
+erl_704(Config) when is_list(Config) ->
     erl_704_test(100).
 
 erl_704_test(0) ->
@@ -1763,7 +2022,7 @@ erl_704_test(N) ->
     P = spawn(fun () -> receive infinity -> ok end end),
     erlang:suspend_process(P),
     exit(P, kill),
-    (catch erlang:resume_process(P)),
+    try erlang:resume_process(P) catch _:_ -> ok end,
     erl_704_test(N-1).
 
 ms_excessive_nesting(Config) when is_list(Config) ->
@@ -1774,7 +2033,7 @@ ms_excessive_nesting(Config) when is_list(Config) ->
     %% (hmm...) nesting
     MS = [{['$1'], [MkMSCond(MkMSCond, 100)], []}],
     io:format("~p~n", [erlang:match_spec_test([1], MS, trace)]),
-    _ = erlang:trace_pattern({?MODULE, '_', '_'}, MS, []),
+    _ = erlang_trace_pattern({?MODULE, '_', '_'}, MS, []),
     %% Now test a match spec using excessive nesting. This
     %% used to seg-fault the emulator due to recursion
     %% beyond the end of the C-stack.
@@ -1786,7 +2045,7 @@ ms_excessive_nesting(Config) when is_list(Config) ->
     ENMS = [{['$1'], [MkMSCond(MkMSCond, 1000000)], []}],
     io:format("~p~n", [erlang:match_spec_test([1], ENMS, trace)]),
     try
-        _ = erlang:trace_pattern({?MODULE, '_', '_'}, ENMS, []),
+        _ = erlang_trace_pattern({?MODULE, '_', '_'}, ENMS, []),
         {comment, "compiled"}
     catch
         error:system_limit ->
@@ -1826,6 +2085,8 @@ tok_trace_loop(Parent, N, M) ->
 receive_first() ->
     receive
         Any -> Any
+    after 1000 ->
+            timeout
     end.
 
 %% Waits for and returns the first message in the message queue.
@@ -1833,6 +2094,8 @@ receive_first() ->
 receive_first_trace() ->
     receive
 	Any when element(1,Any) =:= trace; element(1,Any) =:= trace_ts -> Any
+    after 1000 ->
+            timeout
     end.
 
 %% Ensures that there is no message in the message queue.
@@ -1942,16 +2205,6 @@ fun_spawn(Fun) ->
 
 fun_spawn(Fun, Args) ->
     spawn_link(erlang, apply, [Fun, Args]).
-
-
-start_node(Name) ->
-    Pa = filename:dirname(code:which(?MODULE)),
-    Cookie = atom_to_list(erlang:get_cookie()),
-    test_server:start_node(Name, slave,
-                           [{args, "-setcookie " ++ Cookie ++" -pa " ++ Pa}]).
-
-stop_node(Node) ->
-    test_server:stop_node(Node).
 
 
 wait_for_empty_runq(DeadLine) ->

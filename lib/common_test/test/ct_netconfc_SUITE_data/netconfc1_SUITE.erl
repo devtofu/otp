@@ -1,7 +1,9 @@
 %%--------------------------------------------------------------------
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2013-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2013-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -31,6 +33,7 @@
 -include_lib("common_test/src/ct_netconfc.hrl").
 -include("netconfc_test_lib.hrl").
 
+-compile(nowarn_export_all).
 -compile(export_all).
 
 suite() ->
@@ -43,69 +46,64 @@ suite() ->
      }].
 
 all() ->
-    case os:find_executable("ssh") of
-	false ->
-	    {skip, "SSH not installed on host"};
-	_ ->
-	    [hello,
-	     hello_from_server_first,
-	     hello_named,
-	     hello_configured,
-	     hello_configured_extraopts,
-	     hello_required,
-	     hello_required_exists,
-	     hello_global_pwd,
-	     hello_no_session_id,
-	     hello_incomp_base_vsn,
-	     hello_no_base_cap,
-	     hello_no_caps,
-	     no_server_hello,
-	     no_client_hello,
-	     get_session_id,
-	     get_capabilities,
-	     faulty_user,
-	     faulty_passwd,
-	     faulty_port,
-	     no_host,
-	     no_port,
-	     invalid_opt,
-	     timeout_close_session,
-	     get,
-	     get_a_lot,
-	     timeout_get,
-	     flush_timeout_get,
-	     get_xpath,
-	     get_config,
-	     get_config_xpath,
-	     edit_config,
-	     edit_config_opt_params,
-	     copy_config,
-	     delete_config,
-	     lock,
-	     unlock,
-	     kill_session,
-	     get_no_such_client,
-	     action,
-	     send_any_rpc,
-	     send_any,
-	     hide_password,
-	     not_proper_xml,
-	     prefixed_namespace,
-	     receive_chunked_data,
-	     timeout_receive_chunked_data,
-	     close_while_waiting_for_chunked_data,
-	     connection_crash,
-	     get_event_streams,
-	     create_subscription,
-	     receive_one_event,
-	     receive_multiple_events,
-	     receive_event_and_rpc,
-	     receive_event_and_rpc_in_chunks,
-             multiple_channels,
-             kill_session_same_connection
-	    ]
-    end.
-
+    [hello,
+     hello_from_server_first,
+     hello_named,
+     hello_configured,
+     hello_configured_extraopts,
+     hello_required,
+     hello_required_exists,
+     hello_global_pwd,
+     hello_no_session_id,
+     hello_incomp_base_vsn,
+     hello_no_base_cap,
+     hello_no_caps,
+     no_server_hello,
+     no_client_hello,
+     get_session_id,
+     get_capabilities,
+     faulty_user,
+     faulty_passwd,
+     faulty_port,
+     no_host,
+     no_port,
+     invalid_opt,
+     timeout_close_session,
+     get,
+     get_a_lot,
+     timeout_get,
+     flush_timeout_get,
+     get_xpath,
+     get_config,
+     get_config_xpath,
+     edit_config,
+     edit_config_opt_params,
+     copy_config,
+     delete_config,
+     lock,
+     unlock,
+     kill_session,
+     get_no_such_client,
+     action,
+     send_any_rpc,
+     send_any,
+     hide_password,
+     not_proper_xml,
+     prefixed_namespace,
+     receive_chunked_data,
+     timeout_receive_chunked_data,
+     close_while_waiting_for_chunked_data,
+     connection_crash,
+     get_event_streams,
+     create_subscription,
+     receive_one_event,
+     receive_two_events,
+     receive_multiple_events,
+     receive_event_and_rpc,
+     receive_event_and_rpc_in_chunks,
+     multiple_channels,
+     kill_session_same_connection
+    ].
 
 groups() ->
     [].
@@ -141,7 +139,7 @@ init_per_suite(Config) ->
 end_per_suite(Config) ->
     ?NS:stop(?config(netconf_server,Config)),
     ssh:stop(),
-    crypto:stop(),
+    application:stop(crypto),
     Config.
 
 hello(Config) ->
@@ -183,7 +181,7 @@ hello_configured_extraopts() ->
     [{require, netconf1}].
 hello_configured_extraopts(Config) ->
     SshDir = ?config(ssh_dir,Config),
-    %% Test that the cofiguration overwrites the ExtraOpts parameter
+    %% Test that the configuration overwrites the ExtraOpts parameter
     %% to ct_netconfc:open/2.
     {ok,Client} = open_configured_success(netconf1,SshDir,[{password,"faulty"}]),
     ?NS:expect_do_reply('close-session',close,ok),
@@ -979,31 +977,43 @@ create_subscription(Config) ->
     ok.
 
 receive_one_event(Config) ->
+    receive_events(Config, 1, []).
+
+receive_two_events(Config) ->
+    receive_events(Config, 2, [{receiver, self()}, {receiver, self()}]).
+
+receive_events(Config, N, Opts) ->
     SshDir = ?config(ssh_dir,Config),
-    {ok,Client} = open_success(SshDir),
+    {ok,Client} = open_success(SshDir, Opts),
     ?NS:expect_reply({'create-subscription',[stream]},ok),
     ?ok = ct_netconfc:create_subscription(Client),
 
     ?NS:hupp({send_events,1}),
 
-    receive
-	%% Matching ?NS:make_msg({event,_})
-	{notification,?NETCONF_NOTIF_NAMESPACE_ATTR,
-	 [{eventTime,[],[_Time]},
-	  {event,[{xmlns,"http://my.namespaces.com/event"}],
-	   [{severity,_,_},
-	    {description,_,_}]}]} ->
-	    ok;
-	Other ->
-	    ct:fail({got_unexpected_while_waiting_for_event, Other})
-    after 3000 ->
-	    ct:fail(timeout_waiting_for_event)
-    end,
+    receive_events(N),
 
     ?NS:expect_do_reply('close-session',close,ok),
     ?ok = ct_netconfc:close_session(Client),
 
     ok.
+
+receive_events(0) ->
+    ok;
+receive_events(N) ->
+    receive
+        {notification,?NETCONF_NOTIF_NAMESPACE_ATTR,
+         [{eventTime,[],[_Time]},
+          {event,[{xmlns,"http://my.namespaces.com/event"}],
+           [{severity,_,_},
+            {description,_,_}]}]} ->
+            ok;
+        Other ->
+            ct:fail({got_unexpected_while_waiting_for_event, Other})
+    after 3000 ->
+            ct:fail(timeout_waiting_for_event)
+    end,
+    receive_events(N-1).
+
 
 receive_multiple_events(Config) ->
     SshDir = ?config(ssh_dir,Config),
@@ -1260,7 +1270,7 @@ open_success(Dir) ->
     open_success(Dir,[]).
 
 %% Open a netconf session which is not specified in a config file, and
-%% give som extra options in addition to the test defaults.
+%% give some extra options in addition to the test defaults.
 open_success(Dir,ExtraOpts) when is_list(Dir), is_list(ExtraOpts) ->
     ?NS:hello(1), % tell server to send hello with session id 1
     ?NS:expect(hello), % tell server to expect a hello message from client

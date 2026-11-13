@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2011-2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2011-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -27,7 +29,7 @@
 
 %-------------------------------------------------------------------------
 connection_string() ->
-    case test_server:os_type() of
+    case os:type() of
 	{unix, linux} ->
 	    "DSN=MySQL;Database=odbctest;Uid=odbctest;Pwd=gurka;CHARSET=utf8;SSTMT=SET NAMES 'utf8';";
 	{unix, sunos} ->

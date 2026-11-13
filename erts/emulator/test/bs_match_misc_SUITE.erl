@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2000-2020. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2000-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(bs_match_misc_SUITE).
@@ -24,9 +26,11 @@
 	 kenneth/1,encode_binary/1,native/1,happi/1,
 	 size_var/1,wiger/1,x0_context/1,huge_float_field/1,
 	 writable_binary_matched/1,otp_7198/1,unordered_bindings/1,
-	 float_middle_endian/1,unsafe_get_binary_reuse/1, fp16/1]).
+	 float_middle_endian/1,unsafe_get_binary_reuse/1, fp16/1,
+         bad_bs_match/1]).
 
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
 suite() ->
     [{ct_hooks,[ts_install_cth]},
@@ -37,7 +41,8 @@ all() ->
      kenneth, encode_binary, native, happi, size_var, wiger,
      x0_context, huge_float_field, writable_binary_matched,
      otp_7198, unordered_bindings, float_middle_endian,
-     unsafe_get_binary_reuse, fp16].
+     unsafe_get_binary_reuse, fp16,
+     bad_bs_match].
 
 
 %% Test matching of bound variables.
@@ -76,8 +81,12 @@ t_float(Config) when is_list(Config) ->
     fcmp(F, match_float(<<1:13,F:32/float,127:3>>, 32, 13)),
     fcmp(F, match_float(<<1:13,F:64/float,127:3>>, 64, 13)),
 
-    {'EXIT',{{badmatch,_},_}} = (catch match_float(<<0,0>>, 8, 0)),
-    {'EXIT',{{badmatch,_},_}} = (catch match_float(<<0,0>>, 16#7fffffff, 0)),
+    ?assertError({badmatch,_}, match_float(<<0,0>>, 8, 0)),
+    ?assertError({badmatch,_}, match_float(<<0,0>>, 16#7fffffff, 0)),
+    NaN = <<0:1,31:5,42:10>>,
+    ?assertError({badmatch,_}, match_float(NaN, 16, 0)),
+    Inf = <<0:1,31:5,0:10>>,
+    ?assertError({badmatch,_}, match_float(Inf, 16, 0)),
 
     ok.
 
@@ -89,7 +98,7 @@ float_middle_endian(Config) when is_list(Config) ->
     ok.
 
 
-fcmp(0.0, 0.0) -> ok;
+fcmp(F1, F2) when F1 == 0.0, F2 == 0.0 -> ok;
 fcmp(F1, F2) when (F1 - F2) / F2 < 0.0000001 -> ok.
     
 match_float(Bin0, Fsz, I) ->
@@ -148,7 +157,7 @@ sean(Config) when is_list(Config) ->
     small = sean1(<<4>>),
     small = sean1(<<4,5>>),
     small = sean1(<<4,5,6>>),
-    {'EXIT',{function_clause,_}} = (catch sean1(<<4,5,6,7>>)),
+    ?assertError(function_clause, sean1(<<4,5,6,7>>)),
     ok.
 
 sean1(<<B/binary>>) when byte_size(B) < 4 -> small;
@@ -291,11 +300,15 @@ native(Config) when is_list(Config) ->
 native_big() ->
     <<37.33:64/native-float>> = <<37.33:64/big-float>>,
     <<3974:16/native-integer>> = <<3974:16/big-integer>>,
+    <<$W/native-utf16>> = id(<<0,$W>>),
+    <<$W/native-utf32>> = id(<<0,0,0,$W>>),
     {comment,"Big endian"}.
 
 native_little() ->
     <<37869.32343:64/native-float>> = <<37869.32343:64/little-float>>,
     <<7974:16/native-integer>> = <<7974:16/little-integer>>,
+    <<$W/native-utf16>> = id(<<$W,0>>),
+    <<$W/native-utf32>> = id(<<$W,0,0,0>>),
     {comment,"Little endian"}.
 
 happi(Config) when is_list(Config) ->
@@ -329,7 +342,7 @@ size_var(Config) when is_list(Config) ->
     {<<45,46,47>>,<<48>>} = split_2(<<16:8,3:16,45,46,47,48>>),
     
     {<<45,46>>,<<47>>} = split(2, <<2:16,45,46,47>>),
-    {'EXIT',{function_clause,_}} = (catch split(42, <<2:16,45,46,47>>)),
+    ?assertError(function_clause, split(42, <<2:16,45,46,47>>)),
 
     <<"cdef">> = skip(<<2:8,"abcdef">>),
     
@@ -575,8 +588,6 @@ unsafe_get_binary_reuse(Config) when is_list(Config) ->
 ubgr_1(<<_CP/utf8, Rest/binary>>) -> id(Rest);
 ubgr_1(_) -> false.
 
-id(I) -> I.
-
 -define(FP16(EncodedInt, Float),
         (fun(NlInt, NlFloat) ->
                   <<F1:16/float>> = <<NlInt:16>>,
@@ -634,3 +645,30 @@ fp16(_Config) ->
     ?FP16(16#4000, 2),
     ?FP16(16#4000, 2.0),
     ok.
+
+bad_bs_match(_Config) ->
+    Lines = ["-module(bad_bs_match).",
+             "-export([f/1]).",
+             "f(<<X:16,_/binary>>) -> X."],
+    {Forms,_} =
+        lists:mapfoldl(fun(Line, L0) ->
+                               {ok,Tokens,L} = erl_scan:string(Line ++ "\n", L0),
+                               {ok,Form} = erl_parse:parse_form(Tokens),
+                               {Form,L}
+                       end, 1, Lines),
+    {ok,Mod,Beam0} = compile:forms(Forms, [binary]),
+
+    %% Introduce a non-existing sub command of the bs_match instruction.
+    Beam = binary:replace(Beam0, <<"ensure_at_least">>, <<"future_cool_cmd">>),
+    true = Beam0 =/= Beam,
+
+    %% There should be an error when attempting to load this BEAM
+    %% file, not a runtime crash.
+    {error,badfile} = code:load_binary(Mod, "", Beam),
+
+    ok.
+
+
+%%% Common utilities.
+id(I) -> I.
+

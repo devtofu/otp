@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2002-2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2002-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -1474,7 +1476,7 @@ timestamp(Config) when is_list(Config) ->
     {updated, _} = odbc:param_query(Ref,"INSERT INTO " ++ Table ++  "(FIELD) values(?)",
 				    [{sql_timestamp,Data}]),
     
-    %%% Crate list or database table rows 
+    %%% Create list or database table rows 
     TimeStamps = lists:map(fun(Value) -> {Value} end, Data),
    
     {selected,_, TimeStamps} = odbc:sql_query(Ref, "SELECT * FROM " ++ Table).

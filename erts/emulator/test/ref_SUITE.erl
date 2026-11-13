@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1999-2018. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1999-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -39,7 +41,7 @@ init_per_testcase(Func, Config) when is_atom(Func), is_list(Config) ->
     [{testcase, Func}|Config].
 
 end_per_testcase(Func, Config) when is_atom(Func), is_list(Config) ->
-    ok.
+    erts_test_utils:ept_check_leaked_nodes(Config).
 
 all() -> 
     [wrap_1, compare_list, compare_ets, internal_size, external_size].
@@ -132,7 +134,7 @@ external_size(Config) when is_list(Config) ->
     %% matches what the documentation say in the advanced chapter of the
     %% efficiency guide. Note that the values in the efficiency guide
     %% also add the word referencing the heap structure.
-    {ok, Node} = start_node(Config),
+    {ok, Peer, Node} = ?CT_PEER(),
 
     %% Ordinary external reference
     ORef = check_external_size(erpc:call(Node, fun () -> make_ref() end)),
@@ -145,7 +147,7 @@ external_size(Config) when is_list(Config) ->
     io:format("PRef = ~p~n", [PRef]),
 
 
-    stop_node(Node),
+    peer:stop(Peer),
     ok.
 
 check_external_size(Ref) when is_reference(Ref) ->
@@ -165,25 +167,3 @@ check_external_size(Ref) when is_reference(Ref) ->
                     error({internal_ref_size_out_of_range, Sz})
             end
     end.
-
-%% Internal stuff...
-
-make_nodename(Config) when is_list(Config) ->
-    list_to_atom(atom_to_list(?MODULE)
-                 ++ "-"
-                 ++ atom_to_list(proplists:get_value(testcase, Config))
-                 ++ "-"
-                 ++ integer_to_list(erlang:system_time(second))
-                 ++ "-"
-                 ++ integer_to_list(erlang:unique_integer([positive]))).
-    
-start_node(Config) ->
-    start_node(Config, "").
-
-start_node(Config, Args) when is_list(Config) ->
-    Pa = filename:dirname(code:which(?MODULE)),
-    Name = make_nodename(Config),
-    test_server:start_node(Name, slave, [{args, "-pa "++Pa++" "++Args}]).
-
-stop_node(Node) ->
-    test_server:stop_node(Node).

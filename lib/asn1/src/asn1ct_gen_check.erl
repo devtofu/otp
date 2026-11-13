@@ -2,7 +2,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2014-2017. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2014-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,6 +23,7 @@
 %%
 
 -module(asn1ct_gen_check).
+-moduledoc false.
 -export([emit/4]).
 
 -import(asn1ct_gen, [emit/1]).
@@ -167,8 +170,8 @@ do_seq_set(#gen{pack=map}=Gen, Cs0, Default) ->
                             end, Cs),
     case AllLiterals of
 	true ->
-            L = [{Name,Lit} || {Name,{literal,Lit}} <- Cs],
-	    {literal,maps:from_list(L)};
+            M = #{Name => Lit || {Name,{literal,Lit}} <- Cs},
+            {literal,M};
 	false ->
 	    Key = {Cs,Default},
 	    DoGen = fun(Fd, Name) ->

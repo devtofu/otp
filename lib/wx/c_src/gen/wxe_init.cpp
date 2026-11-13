@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2008-2021. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2008-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -5895,17 +5897,17 @@ void WxeApp::init_consts(wxeMetaCommand& event) {
 #else
     { enif_make_atom(rt.env,"wxKeyCode"), "wxk_MEDIA_PLAY_PAUSE", WXE_ATOM_undefined },
 #endif
-#if wxCHECK_VERSION(3,1,0)
+#if wxCHECK_VERSION(3,2,0)
     { enif_make_atom(rt.env,"wxKeyCode"), "wxk_LAUNCH_MAIL", rt.make_int(WXK_LAUNCH_MAIL) },
 #else
     { enif_make_atom(rt.env,"wxKeyCode"), "wxk_LAUNCH_MAIL", WXE_ATOM_undefined },
 #endif
-#if wxCHECK_VERSION(3,1,0)
+#if wxCHECK_VERSION(3,2,0)
     { enif_make_atom(rt.env,"wxKeyCode"), "wxk_LAUNCH_APP1", rt.make_int(WXK_LAUNCH_APP1) },
 #else
     { enif_make_atom(rt.env,"wxKeyCode"), "wxk_LAUNCH_APP1", WXE_ATOM_undefined },
 #endif
-#if wxCHECK_VERSION(3,1,0)
+#if wxCHECK_VERSION(3,2,0)
     { enif_make_atom(rt.env,"wxKeyCode"), "wxk_LAUNCH_APP2", rt.make_int(WXK_LAUNCH_APP2) },
 #else
     { enif_make_atom(rt.env,"wxKeyCode"), "wxk_LAUNCH_APP2", WXE_ATOM_undefined },
@@ -6664,6 +6666,12 @@ void WxeApp::init_consts(wxeMetaCommand& event) {
     { enif_make_atom(rt.env,"wxStandardID"), "wxID_MDI_WINDOW_PREV", rt.make_int(wxID_MDI_WINDOW_PREV) },
     { enif_make_atom(rt.env,"wxStandardID"), "wxID_MDI_WINDOW_NEXT", rt.make_int(wxID_MDI_WINDOW_NEXT) },
     { enif_make_atom(rt.env,"wxStandardID"), "wxID_MDI_WINDOW_LAST", rt.make_int(wxID_MDI_WINDOW_LAST) },
+    { enif_make_atom(rt.env,"wxStandardID"), "wxID_OSX_MENU_FIRST", rt.make_int(wxID_OSX_MENU_FIRST) },
+    { enif_make_atom(rt.env,"wxStandardID"), "wxID_OSX_HIDE", rt.make_int(wxID_OSX_HIDE) },
+    { enif_make_atom(rt.env,"wxStandardID"), "wxID_OSX_HIDEOTHERS", rt.make_int(wxID_OSX_HIDEOTHERS) },
+    { enif_make_atom(rt.env,"wxStandardID"), "wxID_OSX_SHOWALL", rt.make_int(wxID_OSX_SHOWALL) },
+    { enif_make_atom(rt.env,"wxStandardID"), "wxID_OSX_SERVICES", rt.make_int(wxID_OSX_SERVICES) },
+    { enif_make_atom(rt.env,"wxStandardID"), "wxID_OSX_MENU_LAST", rt.make_int(wxID_OSX_MENU_LAST) },
     { enif_make_atom(rt.env,"wxStandardID"), "wxID_FILEDLGG", rt.make_int(wxID_FILEDLGG) },
     { enif_make_atom(rt.env,"wxStandardID"), "wxID_FILECTRL", rt.make_int(wxID_FILECTRL) },
     { enif_make_atom(rt.env,"wxStandardID"), "wxID_HIGHEST", rt.make_int(wxID_HIGHEST) },

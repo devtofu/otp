@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2017-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2017-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,10 +20,15 @@
 %% %CopyrightEnd%
 %%
 -module(logger_olp).
+-moduledoc false.
 -behaviour(gen_server).
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
 
 -include("logger_olp.hrl").
 -include("logger_internal.hrl").
+
+-compile([{nowarn_deprecated_function, [{erlang,exit,2}]}]).
 
 %% API
 -export([start_link/4, load/2, info/1, reset/1, stop/1, restart/1,
@@ -173,7 +180,7 @@ init([Name,Module,Args,Options]) ->
     put(olp_ref,OlpRef),
     try Module:init(Args) of
         {ok,CBState} ->
-            set_mode(ModeRef, async),
+            set_mode(ModeRef, async, undefined),
             T0 = ?timestamp(),
             proc_lib:init_ack({ok,self(),OlpRef}),
             %% Storing options in state to avoid copying
@@ -193,11 +200,11 @@ init([Name,Module,Args,Options]) ->
             gen_server:enter_loop(?MODULE, [], State);
         Error ->
             unregister(Name),
-            proc_lib:init_ack(Error)
+            proc_lib:init_fail(Error, {exit,normal})
     catch
-        _:Error ->
+        _:Reason ->
             unregister(Name),
-            proc_lib:init_ack(Error)
+            proc_lib:init_fail({error,Reason}, {exit,normal})
     end.
 
 %% This is the synchronous load event.
@@ -260,11 +267,11 @@ handle_cast(Msg, #{module:=Module, cb_state:=CBState} = State) ->
             {stop, Reason, State#{cb_state=>CBState1}}
     end.
 
-handle_info(timeout, #{mode_ref:=ModeRef} = State) ->
+handle_info(timeout, #{mode_ref:=ModeRef,mode:=Mode} = State) ->
     State1 = notify(idle,State),
-    State2 = maybe_notify_mode_change(async,State1),
+    State2 = maybe_notify_mode_change(async,Mode,State1),
     {noreply, State2#{idle => true,
-                      mode => set_mode(ModeRef, async),
+                      mode => set_mode(ModeRef, async, Mode),
                       burst_msg_count => 0}};
 handle_info(Msg, #{module := Module, cb_state := CBState} = State) ->
     case try_callback_call(Module,handle_info,[Msg, CBState]) of
@@ -343,7 +350,7 @@ do_load(Msg, CallOrCast, State) ->
 
 %% this function is called by do_load/3 after an overload check
 %% has been performed, where QLen > FlushQLen
-flush(T1, State=#{id := _Name, last_load_ts := _T0, mode_ref := ModeRef}) ->
+flush(T1, State=#{id := _Name, last_load_ts := _T0, mode_ref := ModeRef, mode := Mode}) ->
     %% flush load messages in the mailbox (a limited number in order
     %% to not cause long delays)
     NewFlushed = flush_load(?FLUSH_MAX_N),
@@ -362,9 +369,9 @@ flush(T1, State=#{id := _Name, last_load_ts := _T0, mode_ref := ModeRef}) ->
 
     State2 = ?update_max_time(?diff_time(T1,_T0),State1),
     State3 = ?update_max_qlen(QLen1,State2),
-    State4 = maybe_notify_mode_change(async,State3),
+    State4 = maybe_notify_mode_change(async,Mode,State3),
     {dropped,?update_other(flushed,FLUSHED,NewFlushed,
-                           State4#{mode => set_mode(ModeRef,async),
+                           State4#{mode => set_mode(ModeRef,async,Mode),
                                    last_qlen => QLen1,
                                    last_load_ts => T1})}.
 
@@ -473,7 +480,7 @@ check_load(State = #{id:=_Name, mode_ref := ModeRef, mode := Mode,
                      sync_mode_qlen := SyncModeQLen,
                      drop_mode_qlen := DropModeQLen,
                      flush_qlen := FlushQLen}) ->
-    {_,Mem} = process_info(self(), memory),
+    Mem = maybe_self_memory(State),
     ?observe(_Name,{max_mem,Mem}),
     {_,QLen} = process_info(self(), message_queue_len),
     ?observe(_Name,{max_qlen,QLen}),
@@ -493,19 +500,37 @@ check_load(State = #{id:=_Name, mode_ref := ModeRef, mode := Mode,
                 %% be dropped on the client side (never sent to
                 %% the olp process).
                 IncDrops = if Mode == drop -> 0; true -> 1 end,
-                {set_mode(ModeRef, drop), IncDrops,0};
+                {set_mode(ModeRef, drop, Mode), IncDrops,0};
             QLen >= SyncModeQLen ->
-                {set_mode(ModeRef, sync), 0,0};
+                {set_mode(ModeRef, sync, Mode), 0,0};
             true ->
-                {set_mode(ModeRef, async), 0,0}
+                {set_mode(ModeRef, async, Mode), 0,0}
         end,
     State1 = ?update_other(drops,DROPS,_NewDrops,State),
     State2 = ?update_max_qlen(QLen,State1),
     State3 = ?update_max_mem(Mem,State2),
-    State4 = maybe_notify_mode_change(Mode1,State3),
+    State4 = maybe_notify_mode_change(Mode1,Mode,State3),
     {Mode1, QLen, Mem,
      ?update_other(flushes,FLUSHES,_NewFlushes,
                    State4#{last_qlen => QLen})}.
+
+%% Calling process_info(self(), memory) is linear on the size of the message queue,
+%% which is an extremely bad thing to do in high load situations, so only do that
+%% if the value actually is required.
+-ifdef(OBSERVER_MOD). % does ?observe/2 use Mem
+maybe_self_memory(_State) -> do_self_memory().
+-else.
+-ifdef(SAVE_STATS). % does ?update_max_mem/2 use Mem
+maybe_self_memory(_State) -> do_self_memory().
+-else.
+maybe_self_memory(#{overload_kill_enable := KillIfOL}) -> % does kill_if_choked/3 use Mem
+    KillIfOL andalso do_self_memory(). % deliberate non-number if unused
+-endif.
+-endif.
+
+do_self_memory() ->
+  {_, Mem} = process_info(self(), memory),
+  Mem.
 
 limit_burst(#{burst_limit_enable := false}=State) ->
      {true,State};
@@ -575,16 +600,18 @@ overload_levels_ok(Options) ->
 
 get_mode(Ref) -> persistent_term:get(Ref, async).
 
-set_mode(Ref, M) ->
-    true = is_atom(M), persistent_term:put(Ref, M), M.
+set_mode(_Ref, NewMode, OldMode) when NewMode =:= OldMode -> NewMode;
+set_mode(Ref, NewMode, _OldMode) when is_atom(NewMode) ->
+    persistent_term:put(Ref, NewMode), 
+    NewMode.
 
-maybe_notify_mode_change(drop,#{mode:=Mode0}=State)
-  when Mode0=/=drop ->
-    notify({mode_change,Mode0,drop},State);
-maybe_notify_mode_change(Mode1,#{mode:=drop}=State)
-  when Mode1==async; Mode1==sync ->
-    notify({mode_change,drop,Mode1},State);
-maybe_notify_mode_change(_,State) ->
+maybe_notify_mode_change(drop,OldMode,State)
+  when OldMode=/=drop ->
+    notify({mode_change,OldMode,drop},State);
+maybe_notify_mode_change(NewMode,drop,State)
+  when NewMode==async; NewMode==sync ->
+    notify({mode_change,drop,NewMode},State);
+maybe_notify_mode_change(_,_,State) ->
     State.
 
 notify(Note,#{module:=Module,cb_state:=CBState}=State) ->

@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 1996-2020. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 1996-2025. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,7 +16,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * %CopyrightEnd%
  */
  
@@ -134,7 +136,7 @@
  * will be triggered at once. The circular list of the slot will
  * be moved to the 'sentinel' field while bumping these timers
  * as when bumping an ordinary wheel slot. A yielding bump
- * operation and cancelation of timers is handled the same way
+ * operation and cancellation of timers is handled the same way
  * as if the timer was in a wheel slot.
  *
  * -- Searching for Next Timeout --
@@ -613,7 +615,22 @@ find_next_timeout(ErtsSchedulerData *esdp, ErtsTimerWheel *tiw)
     }
 
 done: {
-        ErtsMonotonicTime min_timeout;
+        ErtsMonotonicTime min_timeout, timeout_pos_limit;
+
+        timeout_pos_limit = tiw->pos + ERTS_CLKTCKS_WEEK;
+        if (min_timeout_pos > timeout_pos_limit) {
+            /*
+             * We never expose a timeout larger than a week in order to avoid
+             * issues with primitives that have a limited maximum timeout
+             * time (for example, poll() with a timeout in milliseconds passed
+             * in a variable of type 'int' which is around 3,5 weeks). The
+             * overhead, in case all timers are very far in the future, will
+             * be that the scheduler once a week will have to check if we got
+             * any timeouts closer in time than a week...
+             */
+            min_timeout_pos = timeout_pos_limit;
+            true_min_timeout = 0;
+        }
 
         min_timeout = ERTS_CLKTCKS_TO_MONOTONIC(min_timeout_pos);
         tiw->next_timeout_pos = min_timeout_pos;

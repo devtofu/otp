@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2007-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2007-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -22,18 +24,19 @@
 %%----------------------------------------------------------------------
 %% Purpose: Handles an ssl connection, e.i. both the setup
 %% e.i. SSL-Handshake, SSL-Alert and SSL-Cipher protocols and delivering
-%% data to the application. All data on the connectinon is received and 
-%% sent according to the SSL-record protocol.  
+%% data to the application. All data on the connectinon is received and
+%% sent according to the SSL-record protocol.
 %% %%----------------------------------------------------------------------
 
 -module(ssl_alert).
-
+-moduledoc false.
+-feature(maybe_expr, enable).
 -include("ssl_alert.hrl").
 -include("ssl_record.hrl").
 -include("ssl_internal.hrl").
 
--export([decode/1, 
-         own_alert_format/4, 
+-export([decode/1,
+         own_alert_format/4,
          alert_format/4,
          reason_code/4]).
 
@@ -44,7 +47,7 @@
 %%--------------------------------------------------------------------
 -spec decode(binary()) -> [#alert{}] | #alert{}.
 %%
-%% Description: Decode alert(s), will return a singel own alert if peer
+%% Description: Decode alert(s), will return a single own alert if peer
 %% sends garbage or too many warning alerts.
 %%--------------------------------------------------------------------
 decode(Bin) ->
@@ -96,26 +99,37 @@ alert_format(ProtocolName, Role, StateName, Alert) ->
 alert_prefix_format(ProtocolName, Role, StateName) ->
     {"~s ~p: In state ~p", [ProtocolName, Role, StateName]}.
 
-own_alert_format(#alert{reason = Reason} = Alert) ->   
+own_alert_format(#alert{reason = Reason} = Alert) ->
     Txt = own_alert_txt(Alert),
     case Reason of
-        undefined ->            
+        undefined ->
             {" ~s\n", [Txt]};
         Reason ->
             {" ~s\n - ~p", [Txt, Reason]}
     end.
-own_alert_format_depth(#alert{reason = Reason} = Alert) ->   
+own_alert_format_depth(#alert{reason = Reason} = Alert) ->
     Txt = own_alert_txt(Alert),
     case Reason of
-        undefined ->            
+        undefined ->
             {" ~s\n", [Txt]};
         Reason ->
             {" ~s\n ~P", [Txt, Reason, ?DEPTH]}
     end.
 
-own_alert_txt(#alert{level = Level, description = Description, where = #{line := Line, file := Mod}, role = Role}) ->
-    "at " ++ Mod ++ ":" ++ integer_to_list(Line) ++ " generated " ++ string:uppercase(atom_to_list(Role)) ++ " ALERT: " ++
-        level_txt(Level) ++ description_txt(Description).
+own_alert_txt(#alert{level = Level, description = Description,
+                     where = #{line := Line, file := Mod} = Where,
+                     role = Role}) ->
+    DefaultLeft = "at " ++ Mod ++ ":" ++ integer_to_list(Line),
+    DefaultRight = " generated " ++ string:uppercase(atom_to_list(Role)) ++ " ALERT: " ++
+        level_txt(Level) ++ description_txt(Description),
+    maybe
+        debug ?= get(log_level),
+        {current_stacktrace, Stacktrace} ?= maps:get(st, Where, undefined),
+        DefaultLeft ++ io_lib:format("~n~p~n", [Stacktrace]) ++ DefaultRight
+    else
+        _ ->
+            DefaultLeft ++ DefaultRight
+    end.
 
 alert_format(Alert) ->
     Txt = alert_txt(Alert),
@@ -155,8 +169,6 @@ description_txt(?DECRYPTION_FAILED_RESERVED) ->
     "Decryption Failed Reserved";
 description_txt(?RECORD_OVERFLOW) ->
     "Record Overflow";
-description_txt(?DECOMPRESSION_FAILURE) ->
-    "Decompression Failure";
 description_txt(?HANDSHAKE_FAILURE) ->
     "Handshake Failure";
 description_txt(?NO_CERTIFICATE_RESERVED) ->
@@ -196,7 +208,7 @@ description_txt(?USER_CANCELED) ->
 description_txt(?NO_RENEGOTIATION) ->
     "No Renegotiation";
 description_txt(?MISSING_EXTENSION) ->
-    "Missing extension";
+    "Missing Extension";
 description_txt(?UNSUPPORTED_EXTENSION) ->
     "Unsupported Extension";
 description_txt(?CERTIFICATE_UNOBTAINABLE) ->
@@ -210,9 +222,9 @@ description_txt(?BAD_CERTIFICATE_HASH_VALUE) ->
 description_txt(?UNKNOWN_PSK_IDENTITY) ->
     "Unknown Psk Identity";
 description_txt(?CERTIFICATE_REQUIRED) ->
-    "Certificate required";
+    "Certificate Required";
 description_txt(?NO_APPLICATION_PROTOCOL) ->
-    "No application protocol";
+    "No Application Protocol";
 description_txt(Enum) ->
     lists:flatten(io_lib:format("unsupported/unknown alert: ~p", [Enum])).
 
@@ -226,8 +238,6 @@ description_atom(?DECRYPTION_FAILED_RESERVED) ->
     decryption_failed_reserved;
 description_atom(?RECORD_OVERFLOW) ->
     record_overflow;
-description_atom(?DECOMPRESSION_FAILURE) ->
-    decompression_failure;
 description_atom(?HANDSHAKE_FAILURE) ->
     handshake_failure;
 description_atom(?NO_CERTIFICATE_RESERVED) ->

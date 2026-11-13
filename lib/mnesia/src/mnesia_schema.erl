@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -27,6 +29,7 @@
 %% used by mnesia:start() to initialize the entire schema.
 
 -module(mnesia_schema).
+-moduledoc false.
 
 -export([
          add_backend_type/2,
@@ -558,6 +561,7 @@ read_disc_schema(Keep, IgnoreFallback) ->
             end
     end.
 
+-dialyzer({no_opaque_union, [do_read_disc_schema/2]}).
 do_read_disc_schema(Fname, Keep) ->
     T =
         case Keep of
@@ -957,13 +961,13 @@ get_ext_types_disc_() ->
             []
     end.
 
-%% Convert attribute name to integer if neccessary
+%% Convert attribute name to integer if necessary
 attr_tab_to_pos(_Tab, Pos) when is_integer(Pos) ->
     Pos;
 attr_tab_to_pos(Tab, Attr) ->
     attr_to_pos(Attr, val({Tab, attributes})).
 
-%% Convert attribute name to integer if neccessary
+%% Convert attribute name to integer if necessary
 attr_to_pos({_} = P, _) -> P;
 attr_to_pos(Pos, _Attrs) when is_integer(Pos) ->
     Pos;
@@ -1024,14 +1028,14 @@ verify_cstruct(#cstruct{} = Cs) ->
 
 expand_index_attrs(#cstruct{index = Ix, attributes = Attrs,
 			    name = Tab} = Cs) ->
-    Prefered = prefered_index_types(Cs),
-    expand_index_attrs(Ix, Tab, Attrs, Prefered).
+    Preferred = prefered_index_types(Cs),
+    expand_index_attrs(Ix, Tab, Attrs, Preferred).
 
-expand_index_attrs(Ix, Tab, Attrs, Prefered) ->
+expand_index_attrs(Ix, Tab, Attrs, Preferred) ->
     lists:map(fun(P) when is_integer(P); is_atom(P) ->
-		      {attr_to_pos(P, Attrs), Prefered};
+		      {attr_to_pos(P, Attrs), Preferred};
 		 ({A} = P) when is_atom(A) ->
-		      {P, Prefered};
+		      {P, Preferred};
 		 ({P, Type}) ->
 		      {attr_to_pos(P, Attrs), Type};
 		 (_Other) ->
@@ -1186,7 +1190,7 @@ assert_correct_cstruct(Cs) when is_record(Cs, cstruct) ->
     verify(true, mnesia_snmp_hook:check_ustruct(Snmp),
 	   {badarg, Tab, {snmp, Snmp}}),
 
-    CheckProp = fun(Prop) when is_tuple(Prop), size(Prop) >= 1 -> ok;
+    CheckProp = fun(Prop) when tuple_size(Prop) >= 1 -> ok;
 		   (Prop) ->
 			mnesia:abort({bad_type, Tab,
 				      {user_properties, [Prop]}})
@@ -1352,7 +1356,7 @@ check_active([], _Expl, _Tab) ->
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% Function for definining an external backend type
+%% Function for defining an external backend type
 
 add_backend_type(Name, Module) ->
     case schema_transaction(fun() -> do_add_backend_type(Name, Module) end) of
@@ -1779,7 +1783,10 @@ remove_node_from_tabs([Tab|Rest], Node) ->
 		     remove_node_from_tabs(Rest, Node)];
 		_Ns ->
 		    Cs3 = verify_cstruct(Cs2),
-		    get_tid_ts_and_lock(Tab, write),
+                    case ?catch_val({Tab, active_replicas}) of
+                        [] -> ok;
+                        _ -> get_tid_ts_and_lock(Tab, write)
+                    end,
 		    [{op, del_table_copy, ram_copies, Node, vsn_cs2list(Cs3)}|
 		     remove_node_from_tabs(Rest, Node)]
 	    end
@@ -2126,7 +2133,7 @@ make_change_table_majority(Tab, Majority) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-write_table_property(Tab, Prop) when is_tuple(Prop), size(Prop) >= 1 ->
+write_table_property(Tab, Prop) when tuple_size(Prop) >= 1 ->
     schema_transaction(fun() -> do_write_table_property(Tab, Prop) end);
 write_table_property(Tab, Prop) ->
     {aborted, {bad_type, Tab, Prop}}.
@@ -2466,11 +2473,15 @@ prepare_op(Tid, {op, add_table_copy, Storage, Node, TabDef}, _WaitFor) ->
 		_  ->
 		    ok
 	    end,
-	    %% Tables are created by mnesia_loader get_network code
-	    insert_cstruct(Tid, Cs, true),
+
 	    case mnesia_controller:get_network_copy(Tid, Tab, Cs) of
 		{loaded, ok} ->
+                    %% Tables are created by mnesia_loader get_network code
+                    insert_cstruct(Tid, Cs, true),
+                    mnesia_controller:i_have_tab(Tab, Cs),
 		    {true, optional};
+                {not_loaded, {not_active, schema, Node}} ->
+                    mnesia:abort({node_not_running, Node});
 		{not_loaded, ErrReason} ->
 		    Reason = {system_limit, Tab, {Node, ErrReason}},
 		    mnesia:abort(Reason)
@@ -2807,7 +2818,7 @@ transform_objs(Fun, Tab, RecName, Key, A, Storage, Type, Acc) ->
 transform_obj(Tab, RecName, Key, Fun, [Obj|Rest], NewArity, Type, Ws, Ds) ->
     NewObj = Fun(Obj),
     if
-        size(NewObj) /= NewArity ->
+        tuple_size(NewObj) /= NewArity ->
             exit({"Bad arity", Obj, NewObj});
 	NewObj == Obj ->
 	    transform_obj(Tab, RecName, Key, Fun, Rest, NewArity, Type, Ws, Ds);
@@ -2836,6 +2847,7 @@ undo_prepare_commit(Tid, Commit) ->
 	[] ->
 	    ignore;
 	Ops ->
+            verbose("undo prepare: ~w:~n ~p~n", [Tid, Ops]),
 	    %% Catch to allow failure mnesia_controller may not be started
 	    ?SAFE(mnesia_controller:release_schema_commit_lock()),
 	    undo_prepare_ops(Tid, Ops)
@@ -3093,7 +3105,7 @@ ext_real_suffixes(Ext) ->
 		    [M || {_,M} <- Ext])
     catch
         error:E ->
-            verbose("Cant find real ext suffixes (~tp)~n", [E]),
+            verbose("Can't find real ext suffixes (~tp)~n", [E]),
             []
     end.
 
@@ -3102,7 +3114,7 @@ ext_tmp_suffixes(Ext) ->
 		    [M || {_,M} <- Ext])
     catch
         error:E ->
-            verbose("Cant find tmp ext suffixes (~tp)~n", [E]),
+            verbose("Can't find tmp ext suffixes (~tp)~n", [E]),
             []
     end.
 
@@ -3396,8 +3408,7 @@ do_merge_schema(LockTabs0) ->
 		    RemoteRunning = mnesia_lib:intersect(New ++ Old, RemoteRunning1),
 		    if
 			RemoteRunning /= RemoteRunning1 ->
-			    mnesia_lib:error("Mnesia on ~p could not connect to node(s) ~p~n",
-					     [node(), RemoteRunning1 -- RemoteRunning]),
+                            warn_user_connect_failed(RemoteRunning1 -- RemoteRunning),
 			    mnesia:abort({node_not_running, RemoteRunning1 -- RemoteRunning});
 			true -> ok
 		    end,
@@ -3438,6 +3449,22 @@ do_merge_schema(LockTabs0) ->
 	    not_merged
     end.
 
+warn_user_connect_failed(Missing) ->
+    Tag = {user_warned, do_schema_merge},
+    case ?catch_val(Tag) of
+        {'EXIT', _} ->
+            mnesia_lib:error("Mnesia on ~p could not connect to node(s) ~p~n",
+                             [node(), Missing]),
+            mnesia_lib:set(Tag, 1);
+        N when N rem 2000 =:= 0 ->  %% ~10 min
+            mnesia_lib:error("Mnesia on ~p could not connect to node(s) ~p~n",
+                             [node(), Missing]),
+            mnesia_lib:set(Tag, N+1);
+        N ->
+            mnesia_lib:set(Tag, N+1)
+    end.
+
+
 fetch_cstructs(Node) ->
     rpc:call(Node, mnesia_controller, get_remote_cstructs, []).
 
@@ -3457,7 +3484,7 @@ do_make_merge_schema(Node, NeedsConv, RemoteCs = #cstruct{name = schema}) ->
     Masters = mnesia_recover:get_master_nodes(schema),
     HasRemoteMaster = lists:member(Node, Masters),
     HasLocalMaster = lists:member(node(), Masters),
-    Force = HasLocalMaster or HasRemoteMaster,
+    Force = HasLocalMaster orelse HasRemoteMaster,
     %% What is the storage types opinions?
     StCsLocal   = mnesia_lib:cs_to_storage_type(node(), Cs),
     StRcsLocal  = mnesia_lib:cs_to_storage_type(node(), RemoteCs),
@@ -3537,7 +3564,7 @@ do_make_merge_schema(Node, NeedsConv, RemoteCs = #cstruct{}) ->
     Masters = mnesia_recover:get_master_nodes(schema),
     HasRemoteMaster = lists:member(Node, Masters),
     HasLocalMaster = lists:member(node(), Masters),
-    Force = HasLocalMaster or HasRemoteMaster,
+    Force = HasLocalMaster orelse HasRemoteMaster,
     case ?catch_val({Tab, cstruct}) of
 	{'EXIT', _} ->
 	    %% A completely new table, created while Node was down
@@ -3654,7 +3681,13 @@ change_storage_type(N, disc_copies, Cs) ->
     Cs#cstruct{disc_copies = mnesia_lib:uniq(Nodes)};
 change_storage_type(N, disc_only_copies, Cs) ->
     Nodes = [N | Cs#cstruct.disc_only_copies],
-    Cs#cstruct{disc_only_copies = mnesia_lib:uniq(Nodes)}.
+    Cs#cstruct{disc_only_copies = mnesia_lib:uniq(Nodes)};
+change_storage_type(N, {ext, Alias, Mod}, Cs) ->
+    Key = {Alias, Mod},
+    {_, Nodes0} = lists:keyfind(Key, 1, Cs#cstruct.external_copies),
+    Nodes = mnesia_lib:uniq([N | Nodes0]),
+    ExternalCopies = lists:keyreplace(Key, 1, Cs#cstruct.external_copies, {Key, Nodes}),
+    Cs#cstruct{external_copies = ExternalCopies}.
 
 %% BUGBUG: Verify match of frag info; equalit demanded for all but add_node
 
@@ -3736,7 +3769,7 @@ verify_merge(RemoteCs) ->
 
 announce_im_running([N | Ns], SchemaCs) ->
     {L1, L2} = mnesia_recover:connect_nodes([N]),
-    case lists:member(N, L1) or lists:member(N, L2) of
+    case lists:member(N, L1) orelse lists:member(N, L2) of
 	true ->
 	    mnesia_lib:add({current, db_nodes}, N),
 	    mnesia_controller:add_active_replica(schema, N, SchemaCs);

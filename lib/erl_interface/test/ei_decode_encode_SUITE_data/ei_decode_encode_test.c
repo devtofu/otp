@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 2004-2020. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2004-2025. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,11 +16,12 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * %CopyrightEnd%
  */
 
 #include "ei_runner.h"
+#include <string.h>
 
 /*
  * Purpose: Read pids, funs and others without real meaning on the C side 
@@ -291,6 +294,7 @@ void decode_encode(struct Type** tv, int nobj)
     ei_x_new(&arg);
     for (i=0; i<nobj; i++) {
 	struct Type* t = tv[i];
+        int small_port = 0;
 
 	MESSAGE("ei_decode_%s, arg is type %s", t->name, t->type);
 
@@ -355,9 +359,17 @@ void decode_encode(struct Type** tv, int nobj)
 	    }
 	}
 	if (size1 != size2) {
-	    MESSAGE("size1 = %d, size2 = %d\n",size1,size2);
-	    fail("decode and encode size differs when buf is NULL");
-	    return;
+            if (strcmp(t->type, "erlang_port") == 0
+                && size1 == size2 + 4
+                && objv[oix].u.port.id <= 0x0fffffff /* 28 bits */) {
+                /* old encoding... */
+                small_port = !0;
+            }
+            else {
+                MESSAGE("size1 = %d, size2 = %d\n",size1,size2);
+                fail("decode and encode size differs when buf is NULL");
+                return;
+            }
 	}
 	MESSAGE("ei_encode_%s, arg is type %s", t->name, t->type);
 	size3 = 0;
@@ -371,9 +383,11 @@ void decode_encode(struct Type** tv, int nobj)
 	    return;
 	}
 	if (size1 != size3) {
-	    MESSAGE("size1 = %d, size2 = %d\n",size1,size3);
-	    fail("decode and encode size differs");
-	    return;
+            if (!small_port || size2 != size3) {
+                MESSAGE("size1 = %d, size3 = %d\n",size1,size3);
+                fail("decode and encode size differs");
+                return;
+            }
 	}
 
 	MESSAGE("ei_x_encode_%s, arg is type %s", t->name, t->type);
@@ -394,7 +408,7 @@ void decode_encode(struct Type** tv, int nobj)
 	}
 
 	inp += size1;
-	outp += size1;
+	outp += size2;
 
 	if (objv[oix].nterms) { /* container term */
 	    if (++oix >= sizeof(objv)/sizeof(*objv))

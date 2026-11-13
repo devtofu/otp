@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,34 +20,99 @@
 %% %CopyrightEnd%
 %%
 -module(lists).
+-moduledoc """
+List processing functions.
+
+This module contains functions for list processing.
+
+Unless otherwise stated, all functions assume that position numbering starts
+at 1. That is, the first element of a list is at position 1.
+
+Two terms `T1` and `T2` compare equal if `T1 == T2` evaluates to `true`. They
+match if `T1 =:= T2` evaluates to `true`.
+
+Whenever an _ordering function_{: #ordering_function } `F` is expected as
+argument, it is assumed that the following properties hold of `F` for all x, y,
+and z:
+
+- If x `F` y and y `F` x, then x = y (`F` is antisymmetric).
+- If x `F` y and y `F` z, then x `F` z (`F` is transitive).
+- x `F` y or y `F` x (`F` is total).
+
+An example of a typical ordering function is less than or equal to: `=</2`.
+""".
 
 -compile({no_auto_import,[max/2]}).
 -compile({no_auto_import,[min/2]}).
 
--export([append/2, append/1, subtract/2, reverse/1,
-	 nth/2, nthtail/2, prefix/2, suffix/2, droplast/1, last/1,
-	 seq/2, seq/3, sum/1, duplicate/2, min/1, max/1, sublist/2, sublist/3,
-	 delete/2,
-	 unzip/1, unzip3/1, zip/2, zip3/3, zipwith/3, zipwith3/4,
-	 sort/1, merge/1, merge/2, rmerge/2, merge3/3, rmerge3/3,
-	 usort/1, umerge/1, umerge3/3, umerge/2, rumerge3/3, rumerge/2,
-	 concat/1, flatten/1, flatten/2, flatlength/1,
-	 keydelete/3, keyreplace/4, keytake/3, keystore/4,
-	 keysort/2, keymerge/3, rkeymerge/3, rukeymerge/3, 
-	 ukeysort/2, ukeymerge/3, keymap/3]).
-
--export([merge/3, rmerge/3, sort/2, umerge/3, rumerge/3, usort/2]).
-
--export([all/2,any/2,map/2,flatmap/2,foldl/3,foldr/3,filter/2,
-	 partition/2,zf/2,filtermap/2,
-	 mapfoldl/3,mapfoldr/3,foreach/2,takewhile/2,dropwhile/2,
-         search/2, splitwith/2,split/2,
-	 join/2]).
-
-%%% BIFs
+%% BIFs (implemented in the runtime system).
 -export([keyfind/3, keymember/3, keysearch/3, member/2, reverse/2]).
 
+%% Miscellaneous list functions that don't take funs as
+%% arguments. Please keep in alphabetical order.
+-export([append/1, append/2, concat/1,
+         delete/2, droplast/1, duplicate/2,
+         enumerate/1, enumerate/2, enumerate/3,
+         flatlength/1, flatten/1, flatten/2,
+         join/2, last/1, min/1, max/1,
+         nth/2, nthtail/2,
+         prefix/2, reverse/1, seq/2, seq/3,
+         split/2, sublist/2, sublist/3,
+         subtract/2, suffix/2, sum/1,
+         uniq/1, unzip/1, unzip3/1,
+         zip/2, zip/3, zip3/3, zip3/4]).
+
+%% Functions taking a list of tuples and a position within the tuple.
+-export([keydelete/3, keyreplace/4, keymap/3,
+         keytake/3, keystore/4]).
+
+%% Sort functions that operate on list of tuples.
+-export([keymerge/3, keysort/2, ukeymerge/3, ukeysort/2]).
+
+%% Sort and merge functions.
+-export([merge/1, merge/2, merge/3, merge3/3,
+         sort/1, sort/2,
+         umerge/1, umerge/2, umerge/3, umerge3/3,
+         usort/1, usort/2]).
+
+%% Functions that take fun arguments (high-order functions). Please
+%% keep in alphabetical order.
+-export([all/2, any/2, dropwhile/2,
+         filter/2, filtermap/2, flatmap/2,
+         foldl/3, foldr/3, foreach/2,
+         map/2, mapfoldl/3, mapfoldr/3,
+         partition/2, search/2,
+         splitwith/2, takewhile/2, uniq/2,
+         zipwith/3, zipwith/4, zipwith3/4, zipwith3/5]).
+
+%% Undocumented old name for filtermap
+-export([zf/2]).
+-deprecated([{zf,2,"use filtermap/2 instead"}]).
+
+%% Undocumented and unused merge functions for lists sorted in reverse
+%% order. They are exported so that the fundamental building blocks
+%% for the sort functions can be tested. (Removing them would save
+%% very little because they are thin wrappers calling helper functions
+%% used by the documented sort functions.)
+-export([rkeymerge/3, rmerge/2, rmerge/3, rmerge3/3,
+         rukeymerge/3, rumerge/2, rumerge/3, rumerge3/3]).
+
 %% Shadowed by erl_bif_types: lists:keyfind/3
+-doc """
+Searches the list of tuples `TupleList` for a tuple whose `N`th element compares
+equal to `Key`.
+
+Returns `Tuple` if such a tuple is found; otherwise, returns `false`.
+
+## Examples
+
+```erlang
+1> lists:keyfind(b, 1, [{a,10}, {b,20}, {c,30}]).
+{b,20}
+2> lists:keyfind(unknown, 1, [{a,10}, {b,20}, {c,30}]).
+false
+```
+""".
 -spec keyfind(Key, N, TupleList) -> Tuple | false when
       Key :: term(),
       N :: pos_integer(),
@@ -56,6 +123,19 @@ keyfind(_, _, _) ->
     erlang:nif_error(undef).
 
 %% Shadowed by erl_bif_types: lists:keymember/3
+-doc """
+Returns `true` if `TupleList` contains a tuple whose `N`th element compares
+equal to `Key`; otherwise, returns `false`.
+
+## Examples
+
+```erlang
+1> lists:keymember(b, 1, [{a,10}, {b,20}, {c,30}]).
+true
+2> lists:keymember(unknown, 1, [{a,10}, {b,20}, {c,30}]).
+false
+```
+""".
 -spec keymember(Key, N, TupleList) -> boolean() when
       Key :: term(),
       N :: pos_integer(),
@@ -66,6 +146,18 @@ keymember(_, _, _) ->
     erlang:nif_error(undef).
 
 %% Shadowed by erl_bif_types: lists:keysearch/3
+-doc """
+Searches the list of tuples `TupleList` for a tuple whose `N`th element compares
+equal to `Key`.
+
+Returns `{value, Tuple}` if such a tuple is found; otherwise, returns
+`false`.
+
+> #### Note {: .info }
+>
+> This function is retained for backward compatibility. Function `keyfind/3` is
+> easier to use and more efficient.
+""".
 -spec keysearch(Key, N, TupleList) -> {value, Tuple} | false when
       Key :: term(),
       N :: pos_integer(),
@@ -76,6 +168,18 @@ keysearch(_, _, _) ->
     erlang:nif_error(undef).
 
 %% Shadowed by erl_bif_types: lists:member/2
+-doc """
+Returns `true` if `Elem` matches some element of `List`; otherwise, returns `false`.
+
+## Examples
+
+```erlang
+1> lists:member(2, [1,2,3]).
+true
+2> lists:member(nope, [1,2,3]).
+false
+```
+""".
 -spec member(Elem, List) -> boolean() when
       Elem :: T,
       List :: [T],
@@ -85,6 +189,17 @@ member(_, _) ->
     erlang:nif_error(undef).
 
 %% Shadowed by erl_bif_types: lists:reverse/2
+-doc """
+Returns a list containing the elements of `List1` in reverse order,
+with tail `Tail` appended.
+
+## Examples
+
+```erlang
+1> lists:reverse([1, 2, 3, 4], [a, b, c]).
+[4,3,2,1,a,b,c]
+```
+""".
 -spec reverse(List1, Tail) -> List2 when
       List1 :: [T],
       Tail :: term(),
@@ -96,17 +211,19 @@ reverse(_, _) ->
 
 %%% End of BIFs
 
-%% member(X, L) -> (true | false)
-%%  test if X is a member of the list L
-%%  Now a BIF!
+-doc """
+Returns a new list, `List3`, consisting of the elements of
+`List1`, followed by the elements of `List2`.
 
-%member(X, [X|_]) -> true;
-%member(X, [_|Y]) ->
-%	member(X, Y);
-%member(X, []) -> false.
+## Examples
 
-%% append(X, Y) appends lists X and Y
+```erlang
+1> lists:append("abc", "def").
+"abcdef"
+```
 
+`lists:append(A, B)` is equivalent to `A ++ B`.
+""".
 -spec append(List1, List2) -> List3 when
       List1 :: [T],
       List2 :: [T],
@@ -115,8 +232,16 @@ reverse(_, _) ->
 
 append(L1, L2) -> L1 ++ L2.
 
-%% append(L) appends the list of lists L
+-doc """
+Returns a list in which all sublists of `ListOfLists` have been concatenated.
 
+## Examples
+
+```erlang
+1> lists:append([[1, 2, 3], [a, b], [4, 5, 6]]).
+[1,2,3,a,b,4,5,6]
+```
+""".
 -spec append(ListOfLists) -> List1 when
       ListOfLists :: [List],
       List :: [T],
@@ -127,8 +252,20 @@ append([E]) -> E;
 append([H|T]) -> H ++ append(T);
 append([]) -> [].
 
-%% subtract(List1, List2) subtract elements in List2 form List1.
+-doc """
+Returns a new list, `List3`, which is a copy of `List1` with the
+following modification: for each element in `List2`, its first
+occurrence in `List1` is removed.
 
+## Examples
+
+```erlang
+1> lists:subtract("123212", "212").
+"312"
+```
+
+`lists:subtract(A, B)` is equivalent to `A -- B`.
+""".
 -spec subtract(List1, List2) -> List3 when
       List1 :: [T],
       List2 :: [T],
@@ -137,8 +274,16 @@ append([]) -> [].
 
 subtract(L1, L2) -> L1 -- L2.
 
-%% reverse(L) reverse all elements in the list L. reverse/2 is now a BIF!
+-doc """
+Returns a list containing the elements in `List1` in reverse order.
 
+## Examples
+
+```erlang
+1> lists:reverse([1,2,3]).
+[3,2,1]
+```
+""".
 -spec reverse(List1) -> List2 when
       List1 :: [T],
       List2 :: [T],
@@ -153,14 +298,17 @@ reverse([A, B]) ->
 reverse([A, B | L]) ->
     lists:reverse(L, [B, A]).
 
-%reverse([H|T], Y) ->
-%    reverse(T, [H|Y]);
-%reverse([], X) -> X.
 
+-doc """
+Returns the `N`th element of `List`.
 
-%% nth(N, L) returns the N`th element of the list L
-%% nthtail(N, L) returns the N`th tail of the list L
+## Examples
 
+```erlang
+1> lists:nth(3, [a, b, c, d, e]).
+c
+```
+""".
 -spec nth(N, List) -> Elem when
       N :: pos_integer(),
       List :: [T,...],
@@ -168,22 +316,65 @@ reverse([A, B | L]) ->
       T :: term().
 
 nth(1, [H|_]) -> H;
-nth(N, [_|T]) when N > 1 ->
-    nth(N - 1, T).
+nth(N, [_|_]=L) when is_integer(N), N > 1 ->
+    nth_1(N, L).
 
+nth_1(1, [H|_]) -> H;
+nth_1(N, [_|T]) ->
+    nth_1(N - 1, T).
+
+-doc """
+Returns the `N`th tail of `List`, meaning the sublist of `List`
+starting at `N+1` and continuing to the end of the list.
+
+## Examples
+
+```erlang
+1> lists:nthtail(3, [a, b, c, d, e]).
+[d,e]
+2> tl(tl(tl([a, b, c, d, e]))).
+[d,e]
+3> lists:nthtail(0, [a, b, c, d, e]).
+[a,b,c,d,e]
+4> lists:nthtail(5, [a, b, c, d, e]).
+[]
+```
+""".
 -spec nthtail(N, List) -> Tail when
       N :: non_neg_integer(),
-      List :: [T,...],
+      List :: [T],
       Tail :: [T],
       T :: term().
 
+nthtail(0, []) -> [];
+nthtail(0, [_|_]=L) -> L;
 nthtail(1, [_|T]) -> T;
-nthtail(N, [_|T]) when N > 1 ->
-    nthtail(N - 1, T);
-nthtail(0, L) when is_list(L) -> L.
+nthtail(N, [_|_]=L) when is_integer(N), N > 1 ->
+    nthtail_1(N, L).
 
-%% prefix(Prefix, List) -> (true | false)
+nthtail_1(1, [_|T]) -> T;
+nthtail_1(N, [_|T]) ->
+    nthtail_1(N - 1, T).
 
+-doc """
+Returns `true` if `List1` is a prefix of `List2`; otherwise, returns `false`.
+
+A prefix of a list is the first part of the list, starting from the
+beginning and stopping at any point.
+
+## Examples
+
+```erlang
+1> lists:prefix("abc", "abcdef").
+true
+2> lists:prefix("def", "abcdef").
+false
+3> lists:prefix([], "any list").
+true
+4> lists:prefix("abc", "abc").
+true
+```
+""".
 -spec prefix(List1, List2) -> boolean() when
       List1 :: [T],
       List2 :: [T],
@@ -194,8 +385,25 @@ prefix([X|PreTail], [X|Tail]) ->
 prefix([], List) when is_list(List) -> true;
 prefix([_|_], List) when is_list(List) -> false.
 
-%% suffix(Suffix, List) -> (true | false)
+-doc """
+Returns `true` if `List1` is a suffix of `List2`; otherwise, returns `false`.
 
+A suffix of a list is the last part of the list, starting from any position
+and going all the way to the end.
+
+## Examples
+
+```erlang
+1> lists:suffix("abc", "abcdef").
+false
+2> lists:suffix("def", "abcdef").
+true
+3> lists:suffix([], "any list").
+true
+4> lists:suffix("abc", "abc").
+true
+```
+""".
 -spec suffix(List1, List2) -> boolean() when
       List1 :: [T],
       List2 :: [T],
@@ -205,21 +413,52 @@ suffix(Suffix, List) ->
     Delta = length(List) - length(Suffix),
     Delta >= 0 andalso nthtail(Delta, List) =:= Suffix.
 
-%% droplast(List) returns the list dropping its last element
+-doc """
+Drops the last element of a `List`.
 
+The list must be non-empty; otherwise, the function raises a
+`function_clause` exception.
+
+## Examples
+
+```erlang
+1> lists:droplast([1]).
+[]
+2> lists:droplast([1,2,3]).
+[1,2]
+3> lists:droplast([]).
+** exception error: no function clause matching lists:droplast([])
+```
+""".
+-doc(#{since => <<"OTP 17.0">>}).
 -spec droplast(List) -> InitList when
       List :: [T, ...],
       InitList :: [T],
       T :: term().
 
-%% This is the simple recursive implementation
+%% This is the simple recursive implementation.
 %% reverse(tl(reverse(L))) is faster on average,
 %% but creates more garbage.
 droplast([_T])  -> [];
 droplast([H|T]) -> [H|droplast(T)].
 
-%% last(List) returns the last element in a list.
+-doc """
+Returns the last element in `List`.
 
+The list must be non-empty; otherwise, the function raises a
+`function_clause` exception.
+
+## Examples
+
+```erlang
+1> lists:last([1]).
+1
+2> lists:last([1,2,3]).
+3
+3> lists:last([]).
+** exception error: no function clause matching lists:last([])
+```
+""".
 -spec last(List) -> Last when
       List :: [T,...],
       Last :: T,
@@ -230,45 +469,77 @@ last([E|Es]) -> last(E, Es).
 last(_, [E|Es]) -> last(E, Es);
 last(E, []) -> E.
 
-%% seq(Min, Max) -> [Min,Min+1, ..., Max]
-%% seq(Min, Max, Incr) -> [Min,Min+Incr, ..., Max]
-%%  returns the sequence Min..Max
-%%  Min <= Max and Min and Max must be integers
-
+-doc(#{equiv => seq(From, To, 1)}).
 -spec seq(From, To) -> Seq when
       From :: integer(),
       To :: integer(),
       Seq :: [integer()].
 
 seq(First, Last)
-    when is_integer(First), is_integer(Last), First-1 =< Last -> 
+  when is_integer(First), is_integer(Last), First-1 =< Last ->
     seq_loop(Last-First+1, Last, []).
 
 seq_loop(N, X, L) when N >= 4 ->
-     seq_loop(N-4, X-4, [X-3,X-2,X-1,X|L]);
+    seq_loop(N-4, X-4, [X-3,X-2,X-1,X|L]);
 seq_loop(N, X, L) when N >= 2 ->
-     seq_loop(N-2, X-2, [X-1,X|L]);
+    seq_loop(N-2, X-2, [X-1,X|L]);
 seq_loop(1, X, L) ->
-     [X|L];
+    [X|L];
 seq_loop(0, _, L) ->
      L.
 
+-doc """
+Returns a sequence of integers that starts with `From` and contains the
+successive results of adding `Incr` to the previous element, until `To` is
+reached or passed (in the latter case, `To` is not an element of the sequence).
+
+`Incr` defaults to 1.
+
+Failures:
+
+- If `To < From - Incr` and `Incr > 0`.
+- If `To > From - Incr` and `Incr < 0`.
+- If `Incr =:= 0` and `From =/= To`.
+
+The following equalities hold for all sequences:
+
+```erlang
+length(lists:seq(From, To)) =:= To - From + 1
+length(lists:seq(From, To, Incr)) =:= (To - From + Incr) div Incr
+```
+
+## Examples
+
+```erlang
+1> lists:seq(1, 10).
+[1,2,3,4,5,6,7,8,9,10]
+2> lists:seq(1, 20, 3).
+[1,4,7,10,13,16,19]
+3> lists:seq(1, 0, 1).
+[]
+4> lists:seq(10, 6, 4).
+[]
+5> lists:seq(1, 1, 0).
+[1]
+```
+""".
 -spec seq(From, To, Incr) -> Seq when
       From :: integer(),
       To :: integer(),
       Incr :: integer(),
       Seq :: [integer()].
 
-seq(First, Last, Inc) 
-    when is_integer(First), is_integer(Last), is_integer(Inc) -> 
-    if
-        Inc > 0, First - Inc =< Last;
-        Inc < 0, First - Inc >= Last ->
-            N = (Last - First + Inc) div Inc,
-            seq_loop(N, Inc*(N-1)+First, Inc, []);
-        Inc =:= 0, First =:= Last ->
-            seq_loop(1, First, Inc, [])
-    end.
+seq(First, Last, Inc)
+    when is_integer(First), is_integer(Last), is_integer(Inc),
+        (Inc > 0 andalso First - Inc =< Last) orelse
+        (Inc < 0 andalso First - Inc >= Last) ->
+    N = (Last - First + Inc) div Inc,
+    seq_loop(N, Inc * (N - 1) + First, Inc, []);
+seq(Same, Same, 0) when is_integer(Same) ->
+    [Same];
+seq(First, Last, Inc) ->
+    error(badarg, [First, Last, Inc],
+          [{error_info, #{module => erl_stdlib_errors}}]).
 
 seq_loop(N, X, D, L) when N >= 4 ->
      Y = X-D, Z = Y-D, W = Z-D,
@@ -281,8 +552,18 @@ seq_loop(1, X, _, L) ->
 seq_loop(0, _, _, L) ->
      L.
 
-%% sum(L) returns the sum of the elements in L
+-doc """
+Returns the sum of the elements in `List`.
 
+## Examples
+
+```erlang
+1> lists:sum([]).
+0
+2> lists:sum([1,2,3]).
+6
+```
+""".
 -spec sum(List) -> number() when
       List :: [number()].
 
@@ -291,9 +572,16 @@ sum(L)          -> sum(L, 0).
 sum([H|T], Sum) -> sum(T, Sum + H);
 sum([], Sum)    -> Sum.
 
-%% duplicate(N, X) -> [X,X,X,.....,X]  (N times)
-%%   return N copies of X
+-doc """
+Returns a list containing `N` copies of term `Elem`.
 
+## Examples
+
+```erlang
+1> lists:duplicate(5, xx).
+[xx,xx,xx,xx,xx]
+```
+""".
 -spec duplicate(N, Elem) -> List when
       N :: non_neg_integer(),
       Elem :: T,
@@ -305,8 +593,19 @@ duplicate(N, X) when is_integer(N), N >= 0 -> duplicate(N, X, []).
 duplicate(0, _, L) -> L;
 duplicate(N, X, L) -> duplicate(N-1, X, [X|L]).
 
-%% min(L) -> returns the minimum element of the list L
+-doc """
+Returns the first element of `List` that compares less than or equal to all
+other elements of `List`.
 
+## Examples
+
+```erlang
+1> lists:min([17,19,7,55]).
+7
+2> lists:min([]).
+** exception error: no function clause matching lists:min([])
+```
+""".
 -spec min(List) -> Min when
       List :: [T,...],
       Min :: T,
@@ -318,8 +617,19 @@ min([H|T], Min) when H < Min -> min(T, H);
 min([_|T], Min)              -> min(T, Min);
 min([],    Min)              -> Min. 
 
-%% max(L) -> returns the maximum element of the list L
+-doc """
+Returns the first element of `List` that compares greater than or equal to all
+other elements of `List`.
 
+## Examples
+
+```erlang
+1> lists:max([17,19,7,55]).
+55
+2> lists:max([]).
+** exception error: no function clause matching lists:max([])
+```
+""".
 -spec max(List) -> Max when
       List :: [T,...],
       Max :: T,
@@ -331,9 +641,23 @@ max([H|T], Max) when H > Max -> max(T, H);
 max([_|T], Max)              -> max(T, Max);
 max([],    Max)              -> Max.
 
-%% sublist(List, Start, Length)
-%%  Returns the sub-list starting at Start of length Length.
+-doc """
+Returns the sublist of `List1` starting at `Start` and with no more than `Len`
+elements.
 
+It is not an error for `Start+Len` to exceed the length of the list.
+
+## Examples
+
+```erlang
+1> lists:sublist([1,2,3,4], 2, 2).
+[2,3]
+2> lists:sublist([1,2,3,4], 2, 5).
+[2,3,4]
+3> lists:sublist([1,2,3,4], 5, 2).
+[]
+```
+""".
 -spec sublist(List1, Start, Len) -> List2 when
       List1 :: [T],
       List2 :: [T],
@@ -348,6 +672,22 @@ sublist([], S, _L) when is_integer(S), S >= 2 ->
 sublist([_H|T], S, L) when is_integer(S), S >= 2 ->
     sublist(T, S-1, L).
 
+-doc """
+Returns the sublist of `List1` starting at position 1 and with no more than `Len`
+elements.
+
+It is not an error for `Len` to exceed the length of the list, in which
+case the whole list is returned.
+
+## Examples
+
+```erlang
+1> lists:sublist([1,2,3,4,5], 2).
+[1,2]
+2> lists:sublist([1,2,3,4,5], 99).
+[1,2,3,4,5]
+```
+""".
 -spec sublist(List1, Len) -> List2 when
       List1 :: [T],
       List2 :: [T],
@@ -364,9 +704,19 @@ sublist_2(_, 0) ->
 sublist_2(List, L) when is_list(List), L > 0 ->
     [].
 
-%% delete(Item, List) -> List'
-%%  Delete the first occurrence of Item from the list L.
+-doc """
+Returns a copy of `List1` where the first element matching `Elem` is removed, if
+there is such an element.
 
+## Examples
+
+```erlang
+1> lists:delete(b, [a,b,c]).
+[a,c]
+2> lists:delete(x, [a,b,c]).
+[a,b,c]
+```
+""".
 -spec delete(Elem, List1) -> List2 when
       Elem :: T,
       List1 :: [T],
@@ -378,9 +728,7 @@ delete(Item, [H|Rest]) ->
     [H|delete(Item, Rest)];
 delete(_, []) -> [].
 
-%% Return [{X0, Y0}, {X1, Y1}, ..., {Xn, Yn}] for lists [X0, X1, ...,
-%% Xn] and [Y0, Y1, ..., Yn].
-
+-doc(#{equiv => zip(List1, List2, fail)}).
 -spec zip(List1, List2) -> List3 when
       List1 :: [A],
       List2 :: [B],
@@ -388,12 +736,83 @@ delete(_, []) -> [].
       A :: term(),
       B :: term().
 
-zip([X | Xs], [Y | Ys]) -> [{X, Y} | zip(Xs, Ys)];
-zip([], []) -> [].
+zip(Xs, Ys) -> zip(Xs, Ys, fail).
 
-%% Return {[X0, X1, ..., Xn], [Y0, Y1, ..., Yn]}, for a list [{X0, Y0},
-%% {X1, Y1}, ..., {Xn, Yn}].
+-doc """
+"Zips" two lists into one list of two-tuples, where the first element of each
+tuple is taken from the first list and the second element is taken from the
+corresponding element in the second list.
 
+The `How` parameter specifies the behavior if the given lists are of different
+lengths.
+
+- **`fail`** - The call will fail if the given lists are not of equal length.
+  This is the default.
+
+- **`trim`** - Surplus elements from the longer list will be ignored.
+
+  ## Examples
+
+  ```erlang
+  1> lists:zip([a, b], [1, 2, 3], trim).
+  [{a,1},{b,2}]
+  2> lists:zip([a, b, c], [1, 2], trim).
+  [{a,1},{b,2}]
+  ```
+
+- **`{pad, Defaults}`** - The shorter list will be padded to the length of the
+  longer list, using the respective elements from the given `Defaults` tuple.
+
+  ## Examples
+
+  ```erlang
+  1> lists:zip([a, b], [1, 2, 3], {pad, {x, 0}}).
+  [{a,1},{b,2},{x,3}]
+  2> lists:zip([a, b, c], [1, 2], {pad, {x, 0}}).
+  [{a,1},{b,2},{c,0}]
+  ```
+""".
+-doc(#{since => <<"OTP 26.0">>}).
+-spec zip(List1, List2, How) -> List3 when
+      List1 :: [A],
+      List2 :: [B],
+      List3 :: [{A | DefaultA, B | DefaultB}],
+      A :: term(),
+      B :: term(),
+      How :: 'fail' | 'trim' | {'pad', {DefaultA, DefaultB}},
+      DefaultA :: term(),
+      DefaultB :: term().
+
+zip([X | Xs], [Y | Ys], How) ->
+    [{X, Y} | zip(Xs, Ys, How)];
+zip([], [], fail) ->
+    [];
+zip([], [], trim) ->
+    [];
+zip([], [], {pad, {_, _}}) ->
+    [];
+zip([_ | _], [], trim) ->
+    [];
+zip([], [_ | _], trim) ->
+    [];
+zip([], [_ | _]=Ys, {pad, {X, _}}) ->
+    [{X, Y} || Y <- Ys];
+zip([_ | _]=Xs, [], {pad, {_, Y}}) ->
+    [{X, Y} || X <- Xs].
+
+
+-doc """
+"Unzips" a list of two-tuples into two lists, where the first list contains the
+first element of each tuple, and the second list contains the second element of
+each tuple.
+
+## Examples
+
+```erlang
+1> lists:unzip([{1, a}, {2, b}]).
+{[1,2],[a,b]}
+```
+""".
 -spec unzip(List1) -> {List2, List3} when
       List1 :: [{A, B}],
       List2 :: [A],
@@ -406,9 +825,7 @@ unzip(Ts) -> unzip(Ts, [], []).
 unzip([{X, Y} | Ts], Xs, Ys) -> unzip(Ts, [X | Xs], [Y | Ys]);
 unzip([], Xs, Ys) -> {reverse(Xs), reverse(Ys)}.
 
-%% Return [{X0, Y0, Z0}, {X1, Y1, Z1}, ..., {Xn, Yn, Zn}] for lists [X0,
-%% X1, ..., Xn], [Y0, Y1, ..., Yn] and [Z0, Z1, ..., Zn].
-
+-doc(#{equiv => zip3(List1, List2, List3, fail)}).
 -spec zip3(List1, List2, List3) -> List4 when
       List1 :: [A],
       List2 :: [B],
@@ -418,12 +835,74 @@ unzip([], Xs, Ys) -> {reverse(Xs), reverse(Ys)}.
       B :: term(),
       C :: term().
 
-zip3([X | Xs], [Y | Ys], [Z | Zs]) -> [{X, Y, Z} | zip3(Xs, Ys, Zs)];
-zip3([], [], []) -> [].
+zip3(Xs, Ys, Zs) -> zip3(Xs, Ys, Zs, fail).
 
-%% Return {[X0, X1, ..., Xn], [Y0, Y1, ..., Yn], [Z0, Z1, ..., Zn]}, for
-%% a list [{X0, Y0, Z0}, {X1, Y1, Z1}, ..., {Xn, Yn, Zn}].
+-doc """
+"Zips" three lists into one list of three-tuples, where the first element of
+each tuple is taken from the first list, the second element is taken from the
+corresponding element in the second list, and the third element is taken from
+the corresponding element in the third list.
 
+For a description of the `How` parameter, see `zip/3`.
+
+## Examples
+
+```erlang
+1> lists:zip3([a], [1, 2, 3], [17, 19], trim).
+[{a,1,17}]
+2> lists:zip3([a], [1, 2, 3], [17, 19], {pad, {z, 0, 0}}).
+[{a,1,17}, {z,2,19}, {z,3,0}]
+```
+""".
+-doc(#{since => <<"OTP 26.0">>}).
+-spec zip3(List1, List2, List3, How) -> List4 when
+      List1 :: [A],
+      List2 :: [B],
+      List3 :: [C],
+      List4 :: [{A | DefaultA, B | DefaultB, C | DefaultC}],
+      A :: term(),
+      B :: term(),
+      C :: term(),
+      How :: 'fail' | 'trim' | {'pad', {DefaultA, DefaultB, DefaultC}},
+      DefaultA :: term(),
+      DefaultB :: term(),
+      DefaultC :: term().
+
+zip3([X | Xs], [Y | Ys], [Z | Zs], How) ->
+    [{X, Y, Z} | zip3(Xs, Ys, Zs, How)];
+zip3([], [], [], fail) ->
+    [];
+zip3([], [], [], trim) ->
+    [];
+zip3(Xs, Ys, Zs, trim) when is_list(Xs), is_list(Ys), is_list(Zs) ->
+    [];
+zip3([], [], [], {pad, {_, _, _}}) ->
+    [];
+zip3([], [], [_ |_]=Zs, {pad, {X, Y, _}}) ->
+    [{X, Y, Z} || Z <- Zs];
+zip3([], [_ | _]=Ys, [], {pad, {X, _, Z}}) ->
+    [{X, Y, Z} || Y <- Ys];
+zip3([_ | _]=Xs, [], [], {pad, {_, Y, Z}}) ->
+    [{X, Y, Z} || X <- Xs];
+zip3([], [Y | Ys], [Z | Zs], {pad, {X, _, _}} = How) ->
+    [{X, Y, Z} | zip3([], Ys, Zs, How)];
+zip3([X | Xs], [], [Z | Zs], {pad, {_, Y, _}} = How) ->
+    [{X, Y, Z} | zip3(Xs, [], Zs, How)];
+zip3([X | Xs], [Y | Ys], [], {pad, {_, _, Z}} = How) ->
+    [{X, Y, Z} | zip3(Xs, Ys, [], How)].
+
+-doc """
+"Unzips" a list of three-tuples into three lists, where the first list contains
+the first element of each tuple, the second list contains the second element of
+each tuple, and the third list contains the third element of each tuple.
+
+## Examples
+
+```erlang
+1> lists:unzip3([{a, 1, 2}, {b, 777, 999}]).
+{[a,b],[1,777],[2,999]}
+```
+""".
 -spec unzip3(List1) -> {List2, List3, List4} when
       List1 :: [{A, B, C}],
       List2 :: [A],
@@ -440,9 +919,7 @@ unzip3([{X, Y, Z} | Ts], Xs, Ys, Zs) ->
 unzip3([], Xs, Ys, Zs) ->
     {reverse(Xs), reverse(Ys), reverse(Zs)}.
 
-%% Return [F(X0, Y0), F(X1, Y1), ..., F(Xn, Yn)] for lists [X0, X1, ...,
-%% Xn] and [Y0, Y1, ..., Yn].
-
+-doc(#{equiv => zipwith(Combine, List1, List2, fail)}).
 -spec zipwith(Combine, List1, List2) -> List3 when
       Combine :: fun((X, Y) -> T),
       List1 :: [X],
@@ -452,12 +929,57 @@ unzip3([], Xs, Ys, Zs) ->
       Y :: term(),
       T :: term().
 
-zipwith(F, [X | Xs], [Y | Ys]) -> [F(X, Y) | zipwith(F, Xs, Ys)];
-zipwith(F, [], []) when is_function(F, 2) -> [].
+zipwith(F, Xs, Ys) -> zipwith(F, Xs, Ys, fail).
 
-%% Return [F(X0, Y0, Z0), F(X1, Y1, Z1), ..., F(Xn, Yn, Zn)] for lists
-%% [X0, X1, ..., Xn], [Y0, Y1, ..., Yn] and [Z0, Z1, ..., Zn].
+-doc """
+Combines the elements of two lists into a single list using the `Combine` fun.
 
+For each pair `X, Y` of list elements from the two lists, the element
+in the result list is `Combine(X, Y)`.
+
+For a description of the `How` parameter, see `zip/3`.
+
+[`zipwith(fun(X, Y) -> {X,Y} end, List1, List2)`](`zipwith/3`) is equivalent to
+[`zip(List1, List2)`](`zip/2`).
+
+## Examples
+
+```erlang
+1> lists:zipwith(fun(X, Y) -> X+Y end, [1,2,3], [4,5,6], fail).
+[5,7,9]
+```
+""".
+-doc(#{since => <<"OTP 26.0">>}).
+-spec zipwith(Combine, List1, List2, How) -> List3 when
+      Combine :: fun((X | DefaultX, Y | DefaultY) -> T),
+      List1 :: [X],
+      List2 :: [Y],
+      List3 :: [T],
+      X :: term(),
+      Y :: term(),
+      How :: 'fail' | 'trim' | {'pad', {DefaultX, DefaultY}},
+      DefaultX :: term(),
+      DefaultY :: term(),
+      T :: term().
+
+zipwith(F, [X | Xs], [Y | Ys], How) ->
+    [F(X, Y) | zipwith(F, Xs, Ys, How)];
+zipwith(F, [], [], fail) when is_function(F, 2) ->
+    [];
+zipwith(F, [], [], trim) when is_function(F, 2) ->
+    [];
+zipwith(F, [], [], {pad, {_, _}}) when is_function(F, 2) ->
+    [];
+zipwith(F, [_ | _], [], trim) when is_function(F, 2) ->
+    [];
+zipwith(F, [], [_ | _], trim) when is_function(F, 2) ->
+    [];
+zipwith(F, [], [_ | _]=Ys, {pad, {X, _}}) ->
+    [F(X, Y) || Y <- Ys];
+zipwith(F, [_ | _]=Xs, [], {pad, {_, Y}}) ->
+    [F(X, Y) || X <- Xs].
+
+-doc(#{equiv => zipwith3(Combine, List1, List2, List3, fail)}).
 -spec zipwith3(Combine, List1, List2, List3) -> List4 when
       Combine :: fun((X, Y, Z) -> T),
       List1 :: [X],
@@ -469,13 +991,91 @@ zipwith(F, [], []) when is_function(F, 2) -> [].
       Z :: term(),
       T :: term().
 
-zipwith3(F, [X | Xs], [Y | Ys], [Z | Zs]) ->
-    [F(X, Y, Z) | zipwith3(F, Xs, Ys, Zs)];
-zipwith3(F, [], [], []) when is_function(F, 3) -> [].
+zipwith3(F, Xs, Ys, Zs) -> zipwith3(F, Xs, Ys, Zs, fail).
 
-%% sort(List) -> L
-%%  sorts the list L
+-doc """
+Combines the elements of three lists into a single list using the
+`Combine` fun.
 
+For each triple `X, Y, Z` of list elements from the three lists, the
+element in the result list is `Combine(X, Y, Z)`.
+
+For a description of the `How` parameter, see `zip/3`.
+
+[`zipwith3(fun(X, Y, Z) -> {X,Y,Z} end, List1, List2, List3)`](`zipwith3/4`) is
+equivalent to [`zip3(List1, List2, List3)`](`zip3/3`).
+
+## Examples
+
+```erlang
+1> lists:zipwith3(fun(X, Y, Z) -> X+Y+Z end, [1,2,3], [4,5,6], [7,8,9], fail).
+[12,15,18]
+2> lists:zipwith3(fun(X, Y, Z) -> [X,Y,Z] end, [a,b,c], [x,y,z], [1,2,3], fail).
+[[a,x,1],[b,y,2],[c,z,3]]
+```
+""".
+-doc(#{since => <<"OTP 26.0">>}).
+-spec zipwith3(Combine, List1, List2, List3, How) -> List4 when
+      Combine :: fun((X | DefaultX, Y | DefaultY, Z | DefaultZ) -> T),
+      List1 :: [X],
+      List2 :: [Y],
+      List3 :: [Z],
+      List4 :: [T],
+      X :: term(),
+      Y :: term(),
+      Z :: term(),
+      How :: 'fail' | 'trim' | {'pad', {DefaultX, DefaultY, DefaultZ}},
+      DefaultX :: term(),
+      DefaultY :: term(),
+      DefaultZ :: term(),
+      T :: term().
+
+zipwith3(F, [X | Xs], [Y | Ys], [Z | Zs], How) ->
+    [F(X, Y, Z) | zipwith3(F, Xs, Ys, Zs, How)];
+zipwith3(F, [], [], [], fail) when is_function(F, 3) ->
+    [];
+zipwith3(F, [], [], [], trim) when is_function(F, 3) ->
+    [];
+zipwith3(F, Xs, Ys, Zs, trim) when is_function(F, 3), is_list(Xs), is_list(Ys), is_list(Zs) ->
+    [];
+zipwith3(F, [], [], [], {pad, {_, _, _}}) when is_function(F, 3) ->
+    [];
+zipwith3(F, [], [], [_ | _]=Zs, {pad, {X, Y, _}}) ->
+    [F(X, Y, Z) || Z <- Zs];
+zipwith3(F, [], [_ | _]=Ys, [], {pad, {X, _, Z}}) ->
+    [F(X, Y, Z) || Y <- Ys];
+zipwith3(F, [_ | _]=Xs, [], [], {pad, {_, Y, Z}}) ->
+    [F(X, Y, Z) || X <- Xs];
+zipwith3(F, [], [Y | Ys], [Z | Zs], {pad, {X, _, _}} = How) ->
+    [F(X, Y, Z) | zipwith3(F, [], Ys, Zs, How)];
+zipwith3(F, [X | Xs], [], [Z | Zs], {pad, {_, Y, _}} = How) ->
+    [F(X, Y, Z) | zipwith3(F, Xs, [], Zs, How)];
+zipwith3(F, [X | Xs], [Y | Ys], [], {pad, {_, _, Z}} = How) ->
+    [F(X, Y, Z) | zipwith3(F, Xs, Ys, [], How)].
+
+-doc """
+Returns a list containing the sorted elements of `List1`.
+
+The sort is stable.
+
+## Examples
+
+```erlang
+1> lists:sort([4,1,3,2]).
+[1,2,3,4]
+2> lists:sort([a,4,3,b,9]).
+[3,4,9,a,b]
+```
+Since the sort is stable, the relative order of elements that compare
+equal is not changed:
+
+```erlang
+1> lists:sort([1.0,1]).
+[1.0,1]
+2> lists:sort([1,1.0]).
+[1,1.0]
+```
+""".
 -spec sort(List1) -> List2 when
       List1 :: [T],
       List2 :: [T],
@@ -519,13 +1119,25 @@ sort_1(X, [Y | L], R) when X == Y ->
 sort_1(X, [Y | L], R) when X < Y ->
     split_1(X, Y, L, R, []);
 sort_1(X, [Y | L], R) ->
-    split_2(X, Y, L, R, []);
+    split_2(X, Y, L, [], [lists:reverse(R, [])]);
 sort_1(X, [], R) ->
     lists:reverse(R, [X]).
 
-%% merge(List) -> L
-%%  merges a list of sorted lists
+-doc """
+Returns the sorted list formed by merging all sublists of `ListOfLists`.
 
+All sublists must be sorted before evaluating this function.
+
+When two elements compare equal, the element from the sublist with the lowest
+position in `ListOfLists` is picked before the other element.
+
+## Examples
+
+```erlang
+1> lists:merge([[b,l,l], [g,k,q]]).
+[b,g,k,l,l,q]
+```
+""".
 -spec merge(ListOfLists) -> List1 when
       ListOfLists :: [List],
       List :: [T],
@@ -535,9 +1147,23 @@ sort_1(X, [], R) ->
 merge(L) ->
     mergel(L, []).
 
-%% merge3(X, Y, Z) -> L
-%%  merges three sorted lists X, Y and Z
+-doc """
+Returns the sorted list formed by merging `List1`, `List2`, and `List3`.
 
+All of `List1`, `List2`, and `List3` must be sorted before evaluating
+this function.
+
+When two elements compare equal, the element from `List1`, if there is such an
+element, is picked before the other element, otherwise the element from `List2`
+is picked before the element from `List3`.
+
+## Examples
+
+```erlang
+1> lists:merge3([a,o], [g,q], [j]).
+[a,g,j,o,q]
+```
+""".
 -spec merge3(List1, List2, List3) -> List4 when
       List1 :: [X],
       List2 :: [Y],
@@ -547,28 +1173,61 @@ merge(L) ->
       Y :: term(),
       Z :: term().
 
-merge3(L1, [], L3) ->
-   merge(L1, L3);
-merge3(L1, L2, []) ->
-   merge(L1, L2);
-merge3(L1, [H2 | T2], [H3 | T3]) ->
-   lists:reverse(merge3_1(L1, [], H2, T2, H3, T3), []).
+merge3([_|_]=L1, [H2 | T2], [H3 | T3]) ->
+   lists:reverse(merge3_1(L1, [], H2, T2, H3, T3), []);
+merge3([_|_]=L1, [_|_]=L2, []) ->
+    merge(L1, L2);
+merge3([_|_]=L1, [], [_|_]=L3) ->
+    merge(L1, L3);
+merge3([_|_]=L1, [], []) ->
+    L1;
+merge3([], [_|_]=L2, [_|_]=L3) ->
+    merge(L2, L3);
+merge3([], [_|_]=L2, []) ->
+    L2;
+merge3([], [], [_|_]=L3) ->
+    L3;
+merge3([], [], []) ->
+    [].
 
 %% rmerge3(X, Y, Z) -> L
 %%  merges three reversed sorted lists X, Y and Z
 
+-doc false.
 -spec rmerge3([X], [Y], [Z]) -> [(X | Y | Z)].
 
-rmerge3(L1, [], L3) ->
-   rmerge(L1, L3);
-rmerge3(L1, L2, []) ->
-   rmerge(L1, L2);
-rmerge3(L1, [H2 | T2], [H3 | T3]) ->
-   lists:reverse(rmerge3_1(L1, [], H2, T2, H3, T3), []).
+rmerge3([_|_]=L1, [H2 | T2], [H3 | T3]) ->
+   lists:reverse(rmerge3_1(L1, [], H2, T2, H3, T3), []);
+rmerge3([_|_]=L1, [_|_]=L2, []) ->
+    rmerge(L1, L2);
+rmerge3([_|_]=L1, [], [_|_]=L3) ->
+    rmerge(L1, L3);
+rmerge3([_|_]=L1, [], []) ->
+    L1;
+rmerge3([], [_|_]=L2, [_|_]=L3) ->
+    rmerge(L2, L3);
+rmerge3([], [_|_]=L2, []) ->
+    L2;
+rmerge3([], [], [_|_]=L3) ->
+    L3;
+rmerge3([], [], []) ->
+    [].
 
-%% merge(X, Y) -> L
-%%  merges two sorted lists X and Y
+-doc """
+Returns the sorted list formed by merging `List1` and `List2`.
 
+Both `List1` and `List2` must be sorted before evaluating this function.
+
+When two elements compare equal, the element from `List1` is picked before the
+element from `List2`.
+
+## Examples
+
+```erlang
+1> lists:merge([a,o], [b,x]).
+[a,b,o,x]
+```
+""".
 -spec merge(List1, List2) -> List3 when
       List1 :: [X],
       List2 :: [Y],
@@ -576,27 +1235,44 @@ rmerge3(L1, [H2 | T2], [H3 | T3]) ->
       X :: term(),
       Y :: term().
 
-merge(T1, []) ->
-    T1;
-merge(T1, [H2 | T2]) ->
-    lists:reverse(merge2_1(T1, H2, T2, []), []).
+merge([_|_]=T1, [H2 | T2]) ->
+    lists:reverse(merge2_1(T1, H2, T2, []), []);
+merge([_|_]=L1, []) ->
+    L1;
+merge([], [_|_]=L2) ->
+    L2;
+merge([], []) ->
+    [].
 
 %% rmerge(X, Y) -> L
 %%  merges two reversed sorted lists X and Y
 
 %% reverse(rmerge(reverse(A),reverse(B))) is equal to merge(I,A,B).
 
+-doc false.
 -spec rmerge([X], [Y]) -> [(X | Y)].
 
-rmerge(T1, []) ->
-    T1;
-rmerge(T1, [H2 | T2]) ->
-    lists:reverse(rmerge2_1(T1, H2, T2, []), []).
+rmerge([_|_]=T1, [H2 | T2]) ->
+    lists:reverse(rmerge2_1(T1, H2, T2, []), []);
+rmerge([_|_]=L1, []) ->
+    L1;
+rmerge([], [_|_]=L2) ->
+    L2;
+rmerge([], []) ->
+    [].
 
-%% concat(L) concatenate the list representation of the elements
-%%  in L - the elements in L can be atoms, numbers of strings.
-%%  Returns a list of characters.
+-doc """
+Concatenates the text representation of the elements of `Things`.
 
+The elements of `Things` can be atoms, integers, floats, or strings.
+
+## Examples
+
+```erlang
+1> lists:concat([doc, '/', file, '.', 3]).
+"doc/file.3"
+```
+""".
 -spec concat(Things) -> string() when
       Things :: [Thing],
       Thing :: atom() | integer() | float() | string().
@@ -609,10 +1285,16 @@ thing_to_list(X) when is_float(X)   -> float_to_list(X);
 thing_to_list(X) when is_atom(X)    -> atom_to_list(X);
 thing_to_list(X) when is_list(X)    -> X.	%Assumed to be a string
 
-%% flatten(List)
-%% flatten(List, Tail)
-%%  Flatten a list, adding optional tail.
+-doc """
+Returns a flattened version of `DeepList`.
 
+## Examples
+
+```erlang
+1> lists:flatten([a,[b,c,[d,e]],f]).
+[a,b,c,d,e,f]
+```
+""".
 -spec flatten(DeepList) -> List when
       DeepList :: [term() | DeepList],
       List :: [term()].
@@ -620,6 +1302,16 @@ thing_to_list(X) when is_list(X)    -> X.	%Assumed to be a string
 flatten(List) when is_list(List) ->
     do_flatten(List, []).
 
+-doc """
+Returns a flattened version of `DeepList` with tail `Tail` appended.
+
+## Examples
+
+```erlang
+1> lists:flatten([a,[b,c,[d,e]],f], [g,h,i]).
+[a,b,c,d,e,f,g,h,i]
+```
+""".
 -spec flatten(DeepList, Tail) -> List when
       DeepList :: [term() | DeepList],
       Tail :: [term()],
@@ -638,6 +1330,19 @@ do_flatten([], Tail) ->
 %% flatlength(List)
 %%  Calculate the length of a list of lists.
 
+-doc """
+Equivalent to [`length(flatten(DeepList))`](`length/1`), but more efficient.
+
+## Examples
+
+```erlang
+1> lists:flatlength([a,[b,c,[d,e]],f,[[g,h,i]]]).
+9
+2> lists:flatlength([[[]]]).
+0
+```
+
+""".
 -spec flatlength(DeepList) -> non_neg_integer() when
       DeepList :: [term() | DeepList].
 
@@ -664,23 +1369,20 @@ flatlength([], L) -> L.
 %% keymap(Function, Index, [Tuple])
 %% keymap(Function, ExtraArgs, Index, [Tuple])
 
-%keymember(K,N,L) when is_integer(N), N > 0 ->
-%    keymember3(K,N,L).
+-doc """
+Returns a copy of `TupleList1`, where the first occurrence of a tuple
+whose `N`th element compares equal to `Key` is removed, if there is
+such a tuple.
 
-%keymember3(Key, N, [T|Ts]) when element(N, T) == Key -> true;
-%keymember3(Key, N, [T|Ts]) ->
-%    keymember3(Key, N, Ts);
-%keymember3(Key, N, []) -> false.
+## Examples
 
-%keysearch(K, N, L) when is_integer(N), N > 0 ->
-%    keysearch3(K, N, L).
-
-%keysearch3(Key, N, [H|T]) when element(N, H) == Key ->
-%    {value, H};
-%keysearch3(Key, N, [H|T]) ->
-%    keysearch3(Key, N, T);
-%keysearch3(Key, N, []) -> false.
-
+```erlang
+1> lists:keydelete(c, 1, [{b,1}, {c,55}, {d,75}]).
+[{b,1},{d,75}]
+2> lists:keydelete(unknown, 1, [{b,1}, {c,55}, {d,75}]).
+[{b,1},{c,55},{d,75}]
+```
+""".
 -spec keydelete(Key, N, TupleList1) -> TupleList2 when
       Key :: term(),
       N :: pos_integer(),
@@ -696,6 +1398,20 @@ keydelete3(Key, N, [H|T]) ->
     [H|keydelete3(Key, N, T)];
 keydelete3(_, _, []) -> [].
 
+-doc """
+Returns a copy of `TupleList1` where the first occurrence of a tuple `T` whose
+`N`th element compares equal to `Key` is replaced with `NewTuple`, if there is
+such a tuple `T`.
+
+## Examples
+
+```erlang
+1> lists:keyreplace(c, 1, [{b,1}, {c,55}, {d,75}], {new,tuple}).
+[{b,1},{new,tuple},{d,75}]
+2> lists:keyreplace(unknown, 1, [{b,1}, {c,55}, {d,75}], {new,tuple}).
+[{b,1},{c,55},{d,75}]
+```
+""".
 -spec keyreplace(Key, N, TupleList1, NewTuple) -> TupleList2 when
       Key :: term(),
       N :: pos_integer(),
@@ -713,6 +1429,23 @@ keyreplace3(Key, Pos, [H|T], New) ->
     [H|keyreplace3(Key, Pos, T, New)];
 keyreplace3(_, _, [], _) -> [].
 
+-doc """
+Searches the list of tuples `TupleList1` for a tuple whose `N`th
+element compares equal to `Key`, returning `{value, Tuple,
+TupleList2}` if found, where `TupleList2` is a copy of `TupleList1`
+with the first occurrence of `Tuple` removed.
+
+Otherwise, returns `false` if no such tuple is found.
+
+## Examples
+
+```erlang
+1> lists:keytake(b, 1, [{a, 10}, {b, 23}, {c, 99}]).
+{value,{b,23},[{a, 10},{c, 99}]}
+2> lists:keytake(z, 1, [{a, 10}, {b, 23}, {c, 99}]).
+false
+```
+""".
 -spec keytake(Key, N, TupleList1) -> {value, Tuple, TupleList2} | false when
       Key :: term(),
       N :: pos_integer(),
@@ -729,6 +1462,20 @@ keytake(Key, N, [H|T], L) ->
     keytake(Key, N, T, [H|L]);
 keytake(_K, _N, [], _L) -> false.
 
+-doc """
+Returns a copy of `TupleList1` with the first tuple whose `N`th
+element compares equal to `Key` replaced by `NewTuple`, or with
+`[NewTuple]` appended if no such tuple exists.
+
+## Examples
+
+```erlang
+1> lists:keystore(b, 1, [{a, 10}, {b, 23}, {c, 99}], {bb, 1}).
+[{a, 10}, {bb, 1}, {c, 99}]
+2> lists:keystore(z, 1, [{a, 10}, {b, 23}, {c, 99}], {z, 2}).
+[{a, 10}, {b, 23}, {c, 99}, {z, 2}]
+```
+""".
 -spec keystore(Key, N, TupleList1, NewTuple) -> TupleList2 when
       Key :: term(),
       N :: pos_integer(),
@@ -747,6 +1494,20 @@ keystore2(Key, N, [H|T], New) ->
 keystore2(_Key, _N, [], New) ->
     [New].
 
+-doc """
+
+Returns a list of the elements in `TupleList1`, sorted by the `N`th
+element of each tuple.
+
+The sort is stable.
+
+## Examples
+
+```erlang
+1> lists:keysort(2, [{a, 99}, {b, 17}, {c, 50}, {d, 50}]).
+[{b,17},{c,50},{d,50},{a,99}]
+```
+""".
 -spec keysort(N, TupleList1) -> TupleList2 when
       N :: pos_integer(),
       TupleList1 :: [Tuple],
@@ -796,18 +1557,34 @@ keysort(I, L) when is_integer(I), I > 0 ->
 	    end
     end.
 
-keysort_1(I, X, EX, [Y | L], R) when X == Y ->
-    keysort_1(I, Y, EX, L, [X | R]);
 keysort_1(I, X, EX, [Y | L], R) ->
     case element(I, Y) of
-	EY when EX =< EY ->
+	EY when EX < EY ->
 	    keysplit_1(I, X, EX, Y, EY, L, R, []);
-	EY ->
-	    keysplit_2(I, X, EX, Y, EY, L, R, [])
+	EY when EX > EY ->
+	    keysplit_2(I, X, EX, Y, EY, L, [], [lists:reverse(R)]);
+        EY -> % EX == EY
+            keysort_1(I, Y, EY, L, [X | R])
     end;
 keysort_1(_I, X, _EX, [], R) ->
     lists:reverse(R, [X]).
 
+-doc """
+Returns the sorted list formed by merging `TupleList1` and `TupleList2`.
+
+The merge is performed on the `N`th element of each tuple. Both
+`TupleList1` and `TupleList2` must be key-sorted before evaluating
+this function. When the key elements of the two tuples compare equal,
+the tuple from `TupleList1` is picked before the tuple from
+`TupleList2`.
+
+## Examples
+
+```erlang
+1> lists:keymerge(2, [{b, 50}], [{c, 20}, {a, 50}]).
+[{c,20},{b,50},{a,50}]
+```
+""".
 -spec keymerge(N, TupleList1, TupleList2) -> TupleList3 when
       N :: pos_integer(),
       TupleList1 :: [T1],
@@ -817,31 +1594,53 @@ keysort_1(_I, X, _EX, [], R) ->
       T2 :: Tuple,
       Tuple :: tuple().
 
-keymerge(Index, T1, L2) when is_integer(Index), Index > 0 -> 
-    case L2 of
-	[] ->
-	    T1;
-	[H2 | T2] ->
-	    E2 = element(Index, H2),
-	    M = keymerge2_1(Index, T1, E2, H2, T2, []),
-	    lists:reverse(M, [])
-    end.
+keymerge(Index, L1, L2) when is_integer(Index), Index > 0 ->
+    keymerge_1(Index, L1, L2).
+
+keymerge_1(Index, [_|_]=T1, [H2 | T2]) -> 
+    E2 = element(Index, H2),
+    M = keymerge2_1(Index, T1, E2, H2, T2, []),
+    lists:reverse(M, []);
+keymerge_1(_Index, [_|_]=L1, []) ->
+    L1;
+keymerge_1(_Index, [], [_|_]=L2) ->
+    L2;
+keymerge_1(_Index, [], []) ->
+    [].
 
 %% reverse(rkeymerge(I,reverse(A),reverse(B))) is equal to keymerge(I,A,B).
 
+-doc false.
 -spec rkeymerge(pos_integer(), [X], [Y]) ->
 	[R] when X :: tuple(), Y :: tuple(), R :: tuple().
 
-rkeymerge(Index, T1, L2) when is_integer(Index), Index > 0 -> 
-    case L2 of
-	[] ->
-	    T1;
-	[H2 | T2] ->
-	    E2 = element(Index, H2),
-	    M = rkeymerge2_1(Index, T1, E2, H2, T2, []),
-	    lists:reverse(M, [])
-    end.
+rkeymerge(Index, L1, L2) when is_integer(Index), Index > 0 ->
+    rkeymerge_1(Index, L1, L2).
 
+rkeymerge_1(Index, [_|_]=T1, [H2 | T2]) -> 
+    E2 = element(Index, H2),
+    M = rkeymerge2_1(Index, T1, E2, H2, T2, []),
+    lists:reverse(M, []);
+rkeymerge_1(_Index, [_|_]=L1, []) ->
+    L1;
+rkeymerge_1(_Index, [], [_|_]=L2) ->
+    L2;
+rkeymerge_1(_Index, [], []) ->
+    [].
+
+-doc """
+Returns a sorted list of the elements in `TupleList1`, keeping only the
+first occurrence of tuples whose `N`th elements compare equal.
+
+Sorting is performed on the `N`th element of the tuples.
+
+## Examples
+
+```erlang
+1> lists:ukeysort(2, [{a, 27}, {d, 23}, {e, 23}]).
+[{d,23}, {a, 27}]
+```
+""".
 -spec ukeysort(N, TupleList1) -> TupleList2 when
       N :: pos_integer(),
       TupleList1 :: [Tuple],
@@ -911,6 +1710,23 @@ ukeysort_1(I, X, EX, [Y | L]) ->
 ukeysort_1(_I, X, _EX, []) ->
     [X].
 
+-doc """
+Returns the sorted list formed by merging `TupleList1` and `TupleList2`
+based on the `N`th element of each tuple.
+
+Both `TupleList1` and `TupleList2` must be key-sorted without
+duplicates before evaluating this function.
+
+When the `N`th elements of two tuples compare equal, the tuple
+from `TupleList1` is picked and the one from `TupleList2` is removed.
+
+## Examples
+
+```erlang
+1> lists:ukeymerge(1, [{a, 33}, {c, 15}], [{a, 59}, {d, 39}]).
+[{a,33},{c,15},{d,39}]
+```
+""".
 -spec ukeymerge(N, TupleList1, TupleList2) -> TupleList3 when
       N :: pos_integer(),
       TupleList1 :: [T1],
@@ -920,31 +1736,53 @@ ukeysort_1(_I, X, _EX, []) ->
       T2 :: Tuple,
       Tuple :: tuple().
 
-ukeymerge(Index, L1, T2) when is_integer(Index), Index > 0 ->
-    case L1 of
-	[] ->
-	    T2;
-	[H1 | T1] ->
-	    E1 = element(Index, H1),
-	    M = ukeymerge2_2(Index, T1, E1, H1, T2, []),
-	    lists:reverse(M, [])
-    end.
+ukeymerge(Index, L1, L2) when is_integer(Index), Index > 0 ->
+    ukeymerge_1(Index, L1, L2).
+
+ukeymerge_1(Index, [H1 | T1], [_|_]=T2) ->
+    E1 = element(Index, H1),
+    M = ukeymerge2_2(Index, T1, E1, H1, T2, []),
+    lists:reverse(M, []);
+ukeymerge_1(_Index, [_|_]=L1, []) ->
+    L1;
+ukeymerge_1(_Index, [], [_|_]=L2) ->
+    L2;
+ukeymerge_1(_Index, [], []) ->
+    [].
 
 %% reverse(rukeymerge(I,reverse(A),reverse(B))) is equal to ukeymerge(I,A,B).
 
+-doc false.
 -spec rukeymerge(pos_integer(), [X], [Y]) ->
 	[(X | Y)] when X :: tuple(), Y :: tuple().
 
-rukeymerge(Index, T1, L2) when is_integer(Index), Index > 0 ->
-    case L2 of
-	[] ->
-	    T1;
-	[H2 | T2] ->
-	    E2 = element(Index, H2),
-	    M = rukeymerge2_1(Index, T1, E2, T2, [], H2),
-	    lists:reverse(M, [])
-    end.
+rukeymerge(Index, L1, L2) when is_integer(Index), Index > 0 ->
+    rukeymerge_1(Index, L1, L2).
 
+rukeymerge_1(Index, [_|_]=T1, [H2 | T2]) ->
+    E2 = element(Index, H2),
+    M = rukeymerge2_1(Index, T1, E2, T2, [], H2),
+    lists:reverse(M, []);
+rukeymerge_1(_Index, [_|_]=L1, []) ->
+    L1;
+rukeymerge_1(_Index, [], [_|_]=L2) ->
+    L2;
+rukeymerge_1(_Index, [], []) ->
+    [].
+
+-doc """
+Returns a list of tuples where, for each tuple in `TupleList1`, the `N`th
+element `Term1` of the tuple has been replaced with the result of calling
+`Fun(Term1)`.
+
+## Examples
+
+```erlang
+1> Fun = fun(Atom) -> atom_to_list(Atom) end.
+2> lists:keymap(Fun, 2, [{name,jane,22},{name,lizzie,20},{name,lydia,15}]).
+[{name,"jane",22},{name,"lizzie",20},{name,"lydia",15}]
+```
+""".
 -spec keymap(Fun, N, TupleList1) -> TupleList2 when
       Fun :: fun((Term1 :: term()) -> Term2 :: term()),
       N :: pos_integer(),
@@ -957,8 +1795,84 @@ keymap(Fun, Index, [Tup|Tail]) ->
 keymap(Fun, Index, []) when is_integer(Index), Index >= 1, 
                             is_function(Fun, 1) -> [].
 
-%%% Suggestion from OTP-2948: sort and merge with Fun.
+-doc(#{equiv => enumerate(1, 1, List1)}).
+-doc(#{since => <<"OTP 25.0">>}).
+-spec enumerate(List1) -> List2 when
+      List1 :: [T],
+      List2 :: [{Index, T}],
+      Index :: integer(),
+      T :: term().
+enumerate(List1) ->
+    enumerate(1, 1, List1).
 
+-doc(#{equiv => enumerate(Index, 1, List1)}).
+-doc(#{since => <<"OTP 25.0">>}).
+-spec enumerate(Index, List1) -> List2 when
+      List1 :: [T],
+      List2 :: [{Index, T}],
+      Index :: integer(),
+      T :: term().
+enumerate(Index, List1) ->
+    enumerate(Index, 1, List1).
+
+-doc """
+Returns `List1` with each element `H` replaced by a tuple of form `{I, H}`, where
+`I` is the position of `H` in `List1`.
+
+The enumeration starts with `Index` and increases by `Step` in each
+step.
+
+That is, [`enumerate/3`](`enumerate/3`) behaves as if it were defined as
+follows:
+
+```erlang
+enumerate(I, S, List) ->
+  {List1, _ } = lists:mapfoldl(fun(T, Acc) -> {{Acc, T}, Acc+S} end, I, List),
+  List1.
+```
+
+The default values for `Index` and `Step` are both `1`.
+
+## Examples
+
+```erlang
+1> lists:enumerate([a,b,c]).
+[{1,a},{2,b},{3,c}]
+2> lists:enumerate(10, [a,b,c]).
+[{10,a},{11,b},{12,c}]
+3> lists:enumerate(0, -2, [a,b,c]).
+[{0,a},{-2,b},{-4,c}]
+```
+""".
+-doc(#{since => <<"OTP 26.0">>}).
+-spec enumerate(Index, Step, List1) -> List2 when
+      List1 :: [T],
+      List2 :: [{Index, T}],
+      Index :: integer(),
+      Step :: integer(),
+      T :: term().
+enumerate(Index, Step, List1) when is_integer(Index), is_integer(Step) ->
+    enumerate_1(Index, Step, List1).
+
+enumerate_1(Index, Step, [H|T]) ->
+    [{Index, H}|enumerate_1(Index + Step, Step, T)];
+enumerate_1(_Index, _Step, []) ->
+    [].
+
+-doc """
+Returns a list of the elements in `List1`, sorted according to the
+[ordering function](`m:lists#ordering_function`) `Fun`, where `Fun(A,
+B)` returns `true` if `A` compares less than or equal to `B` in the
+ordering; otherwise, it returns `false`.
+
+## Examples
+
+```erlang
+1> F = fun(A, B) -> tuple_size(A) =< tuple_size(B) end.
+2> lists:sort(F, [{a, b, c}, {x, y}, {q, w}]).
+[{x,y},{q,w},{a,b,c}]
+```
+""".
 -spec sort(Fun, List1) -> List2 when
       Fun :: fun((A :: T, B :: T) -> boolean()),
       List1 :: [T],
@@ -977,6 +1891,25 @@ sort(Fun, [X, Y | T]) ->
 	    fsplit_2(Y, X, Fun, T, [], [])
     end.
 
+-doc """
+Returns a sorted list formed by merging `List1` and `List2` based on `Fun`.
+
+Both `List1` and `List2` must be sorted according to the
+[ordering function](`m:lists#ordering_function`) `Fun` before evaluating this
+function.
+
+`Fun(A, B)` is to return `true` if `A` compares less than or equal to
+`B` in the ordering, otherwise `false`. When two elements compare equal, the
+element from `List1` is picked before the element from `List2`.
+
+## Examples
+
+```erlang
+1> F = fun(A, B) -> tuple_size(A) =< tuple_size(B) end.
+2> lists:merge(F, [{x, y}, {a, b, c}], [{q, w}]).
+[{x,y},{q,w},{a,b,c}]
+```
+""".
 -spec merge(Fun, List1, List2) -> List3 when
       Fun :: fun((A, B) -> boolean()),
       List1 :: [A],
@@ -985,20 +1918,51 @@ sort(Fun, [X, Y | T]) ->
       A :: term(),
       B :: term().
 
-merge(Fun, T1, [H2 | T2]) when is_function(Fun, 2) ->
+merge(Fun, L1, L2) when is_function(Fun, 2) ->
+    merge_1(Fun, L1, L2).
+
+merge_1(Fun, [_|_]=T1, [H2 | T2]) ->
     lists:reverse(fmerge2_1(T1, H2, Fun, T2, []), []);
-merge(Fun, T1, []) when is_function(Fun, 2) ->
-    T1.
+merge_1(_Fun, [_|_]=L1, []) ->
+    L1;
+merge_1(_Fun, [], [_|_]=L2) ->
+    L2;
+merge_1(_Fun, [], []) ->
+    [].
 
 %% reverse(rmerge(F,reverse(A),reverse(B))) is equal to merge(F,A,B).
 
+-doc false.
 -spec rmerge(fun((X, Y) -> boolean()), [X], [Y]) -> [(X | Y)].
 
-rmerge(Fun, T1, [H2 | T2]) when is_function(Fun, 2) ->
-    lists:reverse(rfmerge2_1(T1, H2, Fun, T2, []), []);
-rmerge(Fun, T1, []) when is_function(Fun, 2) ->
-    T1.
+rmerge(Fun, L1, L2) when is_function(Fun, 2) ->
+    rmerge_1(Fun, L1, L2).
 
+rmerge_1(Fun, [_|_]=T1, [H2 | T2]) ->
+    lists:reverse(rfmerge2_1(T1, H2, Fun, T2, []), []);
+rmerge_1(_Fun, [_|_]=L1, []) ->
+    L1;
+rmerge_1(_Fun, [], [_|_]=L2) ->
+    L2;
+rmerge_1(_Fun, [], []) ->
+    [].
+
+-doc """
+Returns a list containing the sorted elements of `List1` where all except the
+first element of the elements comparing equal according to the
+[ordering function](`m:lists#ordering_function`) `Fun` have been removed.
+
+`Fun(A, B)` is to return `true` if `A` compares less than or equal to `B` in the
+ordering, otherwise `false`.
+
+## Examples
+
+```erlang
+1> F = fun(A, B) -> tuple_size(A) =< tuple_size(B) end.
+2> lists:usort(F, [{a, b, c}, {x, y}, {q, w}]).
+[{x,y},{a,b,c}]
+```
+""".
 -spec usort(Fun, List1) -> List2 when
       Fun :: fun((T, T) -> boolean()),
       List1 :: [T],
@@ -1029,7 +1993,26 @@ usort_1(Fun, X, [Y | L]) ->
         false  ->
 	    ufsplit_2(Y, L, Fun, [X])
     end.
-                    
+
+-doc """
+
+Returns a sorted list by merging `List1` and `List2` using [ordering
+function](`m:lists#ordering_function`) `Fun`, assuming both lists are
+pre-sorted according to `Fun` and contain no duplicates.
+
+`Fun(A, B)` is to return `true` if `A` compares less than or equal to
+`B` in the ordering; otherwise, it should return `false`. When two
+elements compare equal, the element from `List1` is picked and the one
+from `List2` is removed.
+
+## Examples
+
+```erlang
+1> F = fun(A, B) -> tuple_size(A) =< tuple_size(B) end.
+2> lists:umerge(F, [{x, y}, {a, b, c}], [{q, w}, {x, y, z, w}]).
+[{x,y},{a,b,c},{x,y,z,w}]
+```
+""".
 -spec umerge(Fun, List1, List2) -> List3 when
       Fun :: fun((A, B) -> boolean()),
       List1 :: [A],
@@ -1038,23 +2021,52 @@ usort_1(Fun, X, [Y | L]) ->
       A :: term(),
       B :: term().
 
-umerge(Fun, [], T2) when is_function(Fun, 2) ->
-    T2;
-umerge(Fun, [H1 | T1], T2) when is_function(Fun, 2) ->
-    lists:reverse(ufmerge2_2(H1, T1, Fun, T2, []), []).
+umerge(Fun, L1, L2) when is_function(Fun, 2) ->
+    umerge_1(Fun, L1, L2).
+
+umerge_1(Fun, [H1 | T1], [_|_]=T2) ->
+    lists:reverse(ufmerge2_2(H1, T1, Fun, T2, []), []);
+umerge_1(_Fun, [_|_]=L1, []) ->
+    L1;
+umerge_1(_Fun, [], [_|_]=L2) ->
+    L2;
+umerge_1(_Fun, [], []) ->
+    [].
 
 %% reverse(rumerge(F,reverse(A),reverse(B))) is equal to umerge(F,A,B).
 
+-doc false.
 -spec rumerge(fun((X, Y) -> boolean()), [X], [Y]) -> [(X | Y)].
 
-rumerge(Fun, T1, []) when is_function(Fun, 2) ->
-    T1;
-rumerge(Fun, T1, [H2 | T2]) when is_function(Fun, 2) ->
-    lists:reverse(rufmerge2_1(T1, H2, Fun, T2, []), []).
+rumerge(Fun, L1, L2) when is_function(Fun, 2) ->
+    rumerge_1(Fun, L1, L2).
 
-%% usort(List) -> L
-%%  sorts the list L, removes duplicates
+rumerge_1(Fun, [_|_]=T1, [H2 | T2]) ->
+    lists:reverse(rufmerge2_1(T1, H2, Fun, T2, []), []);
+rumerge_1(_Fun, [_|_]=L1, []) ->
+    L1;
+rumerge_1(_Fun, [], [_|_]=L2) ->
+    L2;
+rumerge_1(_Fun, [], []) ->
+    [].
 
+-doc """
+Returns a sorted list of the elements of `List1`, keeping only the
+first occurrence of elements that compare equal.
+
+## Examples
+
+```erlang
+1> lists:usort([a,x,y,b,c,x,a]).
+[a,b,c,x,y]
+2> lists:usort([3,2,a,3,2,a,1,3,b,2,2,1]).
+[1,2,3,a,b]
+3> lists:usort([1.0,1]).
+[1.0]
+4> lists:usort([1,1.0]).
+[1]
+```
+""".
 -spec usort(List1) -> List2 when
       List1 :: [T],
       List2 :: [T],
@@ -1110,9 +2122,23 @@ usort_1(X, [Y | L]) ->
 usort_1(X, []) ->
     [X].
 
-%% umerge(List) -> L
-%%  merges a list of sorted lists without duplicates, removes duplicates
+-doc """
+Returns a sorted list formed by merging all sublists in `ListOfLists`,
+while removing duplicates.
 
+All sublists must be sorted and contain no duplicates before
+evaluating this function.
+
+When two elements compare equal, the element from the sublist with the
+lowest position in `ListOfLists` is picked and the other is removed.
+
+## Examples
+
+```erlang
+1> lists:umerge([[a,b], [a,d,e]]).
+[a,b,d,e]
+```
+""".
 -spec umerge(ListOfLists) -> List1 when
       ListOfLists :: [List],
       List :: [T],
@@ -1122,10 +2148,24 @@ usort_1(X, []) ->
 umerge(L) ->
     umergel(L).
 
-%% umerge3(X, Y, Z) -> L
-%%  merges three sorted lists X, Y and Z without duplicates, 
-%%  removes duplicates
+-doc """
+Returns the sorted list formed by merging `List1`, `List2`, and `List3`,
+while removing duplicates.
 
+All of `List1`, `List2`, and `List3` must be sorted and contain no
+duplicates before evaluating this function.
+
+When two elements compare equal, the element from
+`List1` is picked if there is such an element, otherwise the element from
+`List2` is picked, and the other is removed.
+
+## Examples
+
+```erlang
+1> lists:umerge3([a,b], [a,d,e], [b,f]).
+[a,b,d,e,f]
+```
+""".
 -spec umerge3(List1, List2, List3) -> List4 when
       List1 :: [X],
       List2 :: [Y],
@@ -1135,29 +2175,64 @@ umerge(L) ->
       Y :: term(),
       Z :: term().
 
-umerge3(L1, [], L3) ->
-   umerge(L1, L3);
-umerge3(L1, L2, []) ->
-   umerge(L1, L2);
-umerge3(L1, [H2 | T2], [H3 | T3]) ->
-   lists:reverse(umerge3_1(L1, [H2 | H3], T2, H2, [], T3, H3), []).
+umerge3([_|_]=L1, [H2 | T2], [H3 | T3]) ->
+    lists:reverse(umerge3_1(L1, [H2 | H3], T2, H2, [], T3, H3), []);
+umerge3([_|_]=L1, [_|_]=L2, []) ->
+    umerge(L1, L2);
+umerge3([_|_]=L1, [], [_|_]=L3) ->
+    umerge(L1, L3);
+umerge3([_|_]=L1, [], []) ->
+    L1;
+umerge3([], [_|_]=L2, [_|_]=L3) ->
+    umerge(L2, L3);
+umerge3([], [_|_]=L2, []) ->
+    L2;
+umerge3([], [], [_|_]=L3) ->
+    L3;
+umerge3([], [], []) ->
+    [].
 
 %% rumerge3(X, Y, Z) -> L
 %%  merges three reversed sorted lists X, Y and Z without duplicates,
 %%  removes duplicates
 
+-doc false.
 -spec rumerge3([X], [Y], [Z]) -> [(X | Y | Z)].
 
-rumerge3(L1, [], L3) ->
-   rumerge(L1, L3);
-rumerge3(L1, L2, []) ->
-   rumerge(L1, L2);
-rumerge3(L1, [H2 | T2], [H3 | T3]) ->
-   lists:reverse(rumerge3_1(L1, T2, H2, [], T3, H3),[]).
+rumerge3([_|_]=L1, [H2 | T2], [H3 | T3]) ->
+   lists:reverse(rumerge3_1(L1, T2, H2, [], T3, H3),[]);
+rumerge3([_|_]=L1, [_|_]=L2, []) ->
+    rumerge(L1, L2);
+rumerge3([_|_]=L1, [], [_|_]=L3) ->
+    rumerge(L1, L3);
+rumerge3([_|_]=L1, [], []) ->
+    L1;
+rumerge3([], [_|_]=L2, [_|_]=L3) ->
+    rumerge(L2, L3);
+rumerge3([], [_|_]=L2, []) ->
+    L2;
+rumerge3([], [], [_|_]=L3) ->
+    L3;
+rumerge3([], [], []) ->
+    [].
 
-%% umerge(X, Y) -> L
-%%  merges two sorted lists X and Y without duplicates, removes duplicates
+-doc """
+Returns the sorted list formed by merging `List1` and `List2`,
+while removing duplicates.
 
+Both `List1` and `List2` must be sorted and contain no duplicates
+before evaluating this function.
+
+When two elements compare equal, the element from `List1` is picked
+and the one from `List2` is removed.
+
+## Examples
+
+```erlang
+1> lists:umerge([a,b], [a,d,e]).
+[a,b,d,e]
+```
+""".
 -spec umerge(List1, List2) -> List3 when
       List1 :: [X],
       List2 :: [Y],
@@ -1165,10 +2240,14 @@ rumerge3(L1, [H2 | T2], [H3 | T3]) ->
       X :: term(),
       Y :: term().
 
-umerge([], T2) ->
-    T2;
-umerge([H1 | T1], T2) ->
-    lists:reverse(umerge2_2(T1, T2, [], H1), []).
+umerge([H1 | T1], [_|_]=T2) ->
+    lists:reverse(umerge2_2(T1, T2, [], H1), []);
+umerge([_|_]=L1, []) ->
+    L1;
+umerge([], [_|_]=L2) ->
+    L2;
+umerge([], []) ->
+    [].
 
 %% rumerge(X, Y) -> L
 %%  merges two reversed sorted lists X and Y without duplicates,
@@ -1176,12 +2255,17 @@ umerge([H1 | T1], T2) ->
 
 %% reverse(rumerge(reverse(A),reverse(B))) is equal to umerge(I,A,B).
 
+-doc false.
 -spec rumerge([X], [Y]) -> [(X | Y)].
 
-rumerge(T1, []) ->
-    T1;
-rumerge(T1, [H2 | T2]) ->
-    lists:reverse(rumerge2_1(T1, T2, [], H2), []).
+rumerge([_|_]=T1, [H2 | T2]) ->
+    lists:reverse(rumerge2_1(T1, T2, [], H2), []);
+rumerge([_|_]=L1, []) ->
+    L1;
+rumerge([], [_|_]=L2) ->
+    L2;
+rumerge([], []) ->
+    [].
 
 %% all(Predicate, List)
 %% any(Predicate, List)
@@ -1190,7 +2274,7 @@ rumerge(T1, [H2 | T2]) ->
 %% foldl(Function, First, List)
 %% foldr(Function, Last, List)
 %% filter(Predicate, List)
-%% zf(Function, List)
+%% filtermap(Function, List)
 %% mapfoldl(Function, First, List)
 %% mapfoldr(Function, Last, List)
 %% foreach(Function, List)
@@ -1198,40 +2282,96 @@ rumerge(T1, [H2 | T2]) ->
 %% dropwhile(Predicate, List)
 %% splitwith(Predicate, List)
 %%  for list programming. Function here is a 'fun'.
-%% 
-%%  The name zf is a joke!
 %%
 %%  N.B. Unless where the functions actually needs it only foreach/2/3,
 %%  which is meant to be used for its side effects, has a defined order
 %%  of evaluation.
-%%
-%%  There are also versions with an extra argument, ExtraArgs, which is a
-%%  list of extra arguments to each call.
 
+-doc """
+Returns `true` if `Pred(Elem)` returns `true` for all elements `Elem` in `List`;
+otherwise, returns `false`.
+
+## Examples
+
+```erlang
+1> IsEven = fun(N) -> N rem 2 =:= 0 end.
+2> lists:all(IsEven, [2,4,5]).
+false
+3> lists:all(IsEven, [2,4,6]).
+true
+```
+""".
 -spec all(Pred, List) -> boolean() when
       Pred :: fun((Elem :: T) -> boolean()),
       List :: [T],
       T :: term().
 
-all(Pred, [Hd|Tail]) ->
-    case Pred(Hd) of
-	true -> all(Pred, Tail);
-	false -> false
-    end;
-all(Pred, []) when is_function(Pred, 1) -> true. 
+all(Pred, List) when is_function(Pred, 1) ->
+    case List of
+        [Hd | Tail] ->
+            case Pred(Hd) of
+                true -> all_1(Pred, Tail);
+                false -> false
+            end;
+        [] -> true
+    end.
 
+all_1(Pred, [Hd | Tail]) ->
+    case Pred(Hd) of
+        true -> all_1(Pred, Tail);
+        false -> false
+    end;
+all_1(_Pred, []) ->
+    true.
+
+-doc """
+Returns `true` if `Pred(Elem)` returns `true` for at least one element `Elem` in
+`List`; otherwise, returns `false`.
+
+## Examples
+
+```erlang
+1> IsEven = fun(N) -> N rem 2 =:= 0 end.
+2> lists:any(IsEven, [3,5,7]).
+false
+3> lists:any(IsEven, [2,3,5,7]).
+true
+```
+""".
 -spec any(Pred, List) -> boolean() when
       Pred :: fun((Elem :: T) -> boolean()),
       List :: [T],
       T :: term().
 
-any(Pred, [Hd|Tail]) ->
-    case Pred(Hd) of
-	true -> true;
-	false -> any(Pred, Tail)
-    end;
-any(Pred, []) when is_function(Pred, 1) -> false. 
+any(Pred, List) when is_function(Pred, 1) ->
+    case List of
+        [Hd | Tail] ->
+            case Pred(Hd) of
+                true -> true;
+                false -> any_1(Pred, Tail)
+            end;
+        [] -> false
+    end.
 
+any_1(Pred, [Hd | Tail]) ->
+    case Pred(Hd) of
+        true -> true;
+        false -> any_1(Pred, Tail)
+    end;
+any_1(_Pred, []) ->
+    false.
+
+-doc """
+Takes a function from `A`s to `B`s and a list of `A`s, producing a list of
+`B`s by applying the function to each element in the list.
+
+## Examples
+
+```erlang
+1> lists:map(fun(N) -> N + 1 end, [1,2,3]).
+[2,3,4]
+```
+""".
 -spec map(Fun, List1) -> List2 when
       Fun :: fun((A) -> B),
       List1 :: [A],
@@ -1239,10 +2379,41 @@ any(Pred, []) when is_function(Pred, 1) -> false.
       A :: term(),
       B :: term().
 
-map(F, [H|T]) ->
-    [F(H)|map(F, T)];
-map(F, []) when is_function(F, 1) -> [].
+map(F, List) when is_function(F, 1) ->
+    case List of
+        [Hd | Tail] -> [F(Hd) | map_1(F, Tail)];
+        [] -> []
+    end.
 
+map_1(F, [Hd | Tail]) ->
+    [F(Hd) | map_1(F, Tail)];
+map_1(_F, []) ->
+    [].
+
+-doc """
+Takes a function from `A`s to lists of `B`s, and a list of `A`s (`List1`),
+producing a list of `B`s by applying the function to each element in `List1` and
+appending the resulting lists.
+
+That is, `flatmap` behaves as if it were defined as follows:
+
+```erlang
+flatmap(Fun, List1) ->
+    lists:append(lists:map(Fun, List1)).
+```
+
+## Examples
+
+```erlang
+1> lists:flatmap(fun(X)-> [X,X] end, [a,b,c]).
+[a,a,b,b,c,c]
+2> F = fun(N) when is_integer(N) -> [10 * N];
+          (_) -> []
+       end, ok.
+3> lists:flatmap(F, [1,2,a,b,c,3]).
+[10,20,30]
+```
+""".
 -spec flatmap(Fun, List1) -> List2 when
       Fun :: fun((A) -> [B]),
       List1 :: [A],
@@ -1250,10 +2421,36 @@ map(F, []) when is_function(F, 1) -> [].
       A :: term(),
       B :: term().
 
-flatmap(F, [Hd|Tail]) ->
-    F(Hd) ++ flatmap(F, Tail);
-flatmap(F, []) when is_function(F, 1) -> [].
+flatmap(F, List) when is_function(F, 1) ->
+    flatmap_1(F, List).
 
+flatmap_1(F, [Hd | Tail]) ->
+    case F(Hd) of
+        %% The two first clauses are an optimization.
+        [] -> flatmap_1(F, Tail);
+        [Elem] -> [Elem | flatmap_1(F, Tail)];
+        List -> List ++ flatmap_1(F, Tail)
+    end;
+flatmap_1(_F, []) ->
+    [].
+
+-doc """
+Calls `Fun(Elem, AccIn)` on successive elements `A` of `List`, starting with
+`AccIn` bound to `Acc0`.
+
+`Fun/2` must return a new accumulator, which is passed to the next
+call. The function returns the final value of the accumulator. `Acc0`
+is returned if the list is empty.
+
+## Examples
+
+```erlang
+1> lists:foldl(fun(X, Sum) -> X + Sum end, 0, [1,2,3,4,5]).
+15
+2> lists:foldl(fun(X, Prod) -> X * Prod end, 1, [1,2,3,4,5]).
+120
+```
+""".
 -spec foldl(Fun, Acc0, List) -> Acc1 when
       Fun :: fun((Elem :: T, AccIn) -> AccOut),
       Acc0 :: term(),
@@ -1263,10 +2460,33 @@ flatmap(F, []) when is_function(F, 1) -> [].
       List :: [T],
       T :: term().
 
-foldl(F, Accu, [Hd|Tail]) ->
-    foldl(F, F(Hd, Accu), Tail);
-foldl(F, Accu, []) when is_function(F, 2) -> Accu.
+foldl(F, Accu, List) when is_function(F, 2) ->
+    case List of
+        [Hd | Tail] -> foldl_1(F, F(Hd, Accu), Tail);
+        [] -> Accu
+    end.
 
+foldl_1(F, Accu, [Hd | Tail]) ->
+    foldl_1(F, F(Hd, Accu), Tail);
+foldl_1(_F, Accu, []) ->
+    Accu.
+
+-doc """
+Like `foldl/3`, but the list is traversed from right to left.
+
+## Examples
+
+```erlang
+1> P = fun(A, AccIn) -> [A|AccIn] end.
+2> lists:foldl(P, [], [1,2,3]).
+[3,2,1]
+3> lists:foldr(P, [], [1,2,3]).
+[1,2,3]
+```
+
+[`foldl/3`](`foldl/3`) is tail-recursive and is usually preferred to
+[`foldr/3`](`foldr/3`).
+""".
 -spec foldr(Fun, Acc0, List) -> Acc1 when
       Fun :: fun((Elem :: T, AccIn) -> AccOut),
       Acc0 :: term(),
@@ -1276,10 +2496,27 @@ foldl(F, Accu, []) when is_function(F, 2) -> Accu.
       List :: [T],
       T :: term().
 
-foldr(F, Accu, [Hd|Tail]) ->
-    F(Hd, foldr(F, Accu, Tail));
-foldr(F, Accu, []) when is_function(F, 2) -> Accu.
+foldr(F, Accu, List) when is_function(F, 2) ->
+    foldr_1(F, Accu, List).
 
+foldr_1(F, Accu, [Hd | Tail]) ->
+    F(Hd, foldr_1(F, Accu, Tail));
+foldr_1(_F, Accu, []) ->
+    Accu.
+
+-doc """
+Returns a list of elements `Elem` in `List1` for which `Pred(Elem)`
+returns `true`.
+
+## Examples
+
+```erlang
+1> IsEven = fun(N) -> N rem 2 =:= 0 end.
+2> lists:filter(IsEven, [1,2,3,4,5]).
+[2,4]
+```
+
+""".
 -spec filter(Pred, List1) -> List2 when
       Pred :: fun((Elem :: T) -> boolean()),
       List1 :: [T],
@@ -1289,9 +2526,22 @@ foldr(F, Accu, []) when is_function(F, 2) -> Accu.
 filter(Pred, List) when is_function(Pred, 1) ->
     [ E || E <- List, Pred(E) ].
 
-%% Equivalent to {filter(F, L), filter(NotF, L)}, if NotF = 'fun(X) ->
-%% not F(X) end'.
+-doc """
+Partitions `List` into two lists: the first containing elements for
+which `Pred(Elem)` returns `true`, and the second containing elements
+for which `Pred(Elem)` returns `false`.
 
+## Examples
+
+```erlang
+1> lists:partition(fun(A) -> A rem 2 =:= 1 end, [1,2,3,4,5,6,7]).
+{[1,3,5,7],[2,4,6]}
+2> lists:partition(fun(A) -> is_atom(A) end, [a,b,1,c,d,2,3,4,e]).
+{[a,b,c,d,e],[1,2,3,4]}
+```
+
+For a different way to partition a list, see `splitwith/2`.
+""".
 -spec partition(Pred, List) -> {Satisfying, NotSatisfying} when
       Pred :: fun((Elem :: T) -> boolean()),
       List :: [T],
@@ -1299,17 +2549,51 @@ filter(Pred, List) when is_function(Pred, 1) ->
       NotSatisfying :: [T],
       T :: term().
 
-partition(Pred, L) ->
-    partition(Pred, L, [], []).
+partition(Pred, L) when is_function(Pred, 1) ->
+    partition_1(Pred, L, [], []).
 
-partition(Pred, [H | T], As, Bs) ->
+partition_1(Pred, [H | T], As, Bs) ->
     case Pred(H) of
-	true -> partition(Pred, T, [H | As], Bs);
-	false -> partition(Pred, T, As, [H | Bs])
+        true -> partition_1(Pred, T, [H | As], Bs);
+        false -> partition_1(Pred, T, As, [H | Bs])
     end;
-partition(Pred, [], As, Bs) when is_function(Pred, 1) ->
+partition_1(_Pred, [], As, Bs) ->
     {reverse(As), reverse(Bs)}.
 
+-doc """
+Calls `Fun(Elem)` on successive elements `Elem` of `List1` to update or
+remove elements from `List1`.
+
+`Fun/1` must return either a Boolean or a tuple `{true, Value}`. The
+function returns the list of elements for which `Fun` returns a new
+value, with `true` being equivalent to `{true, Elem}`.
+
+That is, `filtermap` behaves as if it were defined as follows:
+
+```erlang
+filtermap(Fun, List1) ->
+    lists:flatmap(fun(Elem) ->
+                          case Fun(Elem) of
+                              false -> [];
+                              true -> [Elem];
+                              {true,Value} -> [Value]
+                          end
+                  end, List1).
+```
+
+## Examples
+
+```erlang
+1> lists:filtermap(fun(X) ->
+                           case X rem 2 of
+                               0 -> {true, X div 2};
+                               1 -> false
+                           end
+                   end, [1,2,3,4,5]).
+[1,2]
+```
+""".
+-doc(#{since => <<"OTP R16B01">>}).
 -spec filtermap(Fun, List1) -> List2 when
       Fun :: fun((Elem) -> boolean() | {'true', Value}),
       List1 :: [Elem],
@@ -1317,32 +2601,60 @@ partition(Pred, [], As, Bs) when is_function(Pred, 1) ->
       Elem :: term(),
       Value :: term().
 
-filtermap(F, [Hd|Tail]) ->
-    case F(Hd) of
-	true ->
-	    [Hd|filtermap(F, Tail)];
-	{true,Val} ->
-	    [Val|filtermap(F, Tail)];
-	false ->
-	    filtermap(F, Tail)
-    end;
-filtermap(F, []) when is_function(F, 1) -> [].
+filtermap(F, List) when is_function(F, 1) ->
+    filtermap_1(F, List).
 
+filtermap_1(F, [Hd|Tail]) ->
+    case F(Hd) of
+        true ->
+            [Hd | filtermap_1(F, Tail)];
+        {true,Val} ->
+            [Val | filtermap_1(F, Tail)];
+        false ->
+            filtermap_1(F, Tail)
+    end;
+filtermap_1(_F, []) ->
+    [].
+
+%%  The name zf was a joke. Kept for backwards compatibility only.
+-doc false.
 -spec zf(fun((T) -> boolean() | {'true', X}), [T]) -> [(T | X)].
 
 zf(F, L) ->
     filtermap(F, L).
 
+-doc """
+Calls `Fun(Elem)` for each element `Elem` in `List`, ignoring the return value.
+
+This function is used for its side effects and the evaluation order is
+defined to be the same as the order of the elements in the list.
+""".
 -spec foreach(Fun, List) -> ok when
       Fun :: fun((Elem :: T) -> term()),
       List :: [T],
       T :: term().
 
-foreach(F, [Hd|Tail]) ->
-    F(Hd),
-    foreach(F, Tail);
-foreach(F, []) when is_function(F, 1) -> ok.
+foreach(F, List) when is_function(F, 1) ->
+    foreach_1(F, List).
 
+foreach_1(F, [Hd | Tail]) ->
+    F(Hd),
+    foreach_1(F, Tail);
+foreach_1(_F, []) ->
+    ok.
+
+-doc """
+Combines the operations of `map/2` and `foldl/3` into one pass.
+
+## Examples
+
+Summing the elements in a list and double them at the same time:
+
+```erlang
+1> lists:mapfoldl(fun(X, Sum) -> {2*X, X+Sum} end, 0, [1,2,3,4,5]).
+{[2,4,6,8,10],15}
+```
+""".
 -spec mapfoldl(Fun, Acc0, List1) -> {List2, Acc1} when
       Fun :: fun((A, AccIn) -> {B, AccOut}),
       Acc0 :: term(),
@@ -1354,12 +2666,33 @@ foreach(F, []) when is_function(F, 1) -> ok.
       A :: term(),
       B :: term().
 
-mapfoldl(F, Accu0, [Hd|Tail]) ->
-    {R,Accu1} = F(Hd, Accu0),
-    {Rs,Accu2} = mapfoldl(F, Accu1, Tail),
-    {[R|Rs],Accu2};
-mapfoldl(F, Accu, []) when is_function(F, 2) -> {[],Accu}.
+mapfoldl(F, Accu, List) when is_function(F, 2) ->
+    mapfoldl_1(F, List, [], Accu).
 
+mapfoldl_1(F, [Hd | Tail], MapAcc, FoldAcc0) ->
+    {M, FoldAcc1} = F(Hd, FoldAcc0),
+    mapfoldl_1(F, Tail, [M | MapAcc], FoldAcc1);
+mapfoldl_1(_F, [], MapAcc, FoldAcc) ->
+    {reverse(MapAcc), FoldAcc}.
+
+-doc """
+Combines the operations of `map/2` and `foldr/3` into one pass.
+
+> #### Note {: .info }
+>
+> Unless the order in which the elements are accumulated is important,
+> prefer [`mapfoldl/3`](`mapfoldl/3`) as it is slightly more efficient.
+
+## Examples
+
+Doubling the elements in list and producing a list of squares at the
+same time:
+
+```erlang
+1> lists:mapfoldr(fun(X, Acc) -> {2*X, [X*X|Acc]} end, [], [1,2,3,4,5]).
+{[2,4,6,8,10],[1,4,9,16,25]}
+```
+""".
 -spec mapfoldr(Fun, Acc0, List1) -> {List2, Acc1} when
       Fun :: fun((A, AccIn) -> {B, AccOut}),
       Acc0 :: term(),
@@ -1371,51 +2704,127 @@ mapfoldl(F, Accu, []) when is_function(F, 2) -> {[],Accu}.
       A :: term(),
       B :: term().
 
-mapfoldr(F, Accu0, [Hd|Tail]) ->
-    {Rs,Accu1} = mapfoldr(F, Accu0, Tail),
-    {R,Accu2} = F(Hd, Accu1),
-    {[R|Rs],Accu2};
-mapfoldr(F, Accu, []) when is_function(F, 2) -> {[],Accu}.
+mapfoldr(F, Accu, List) when is_function(F, 2) ->
+    mapfoldr_1(F, reverse(List), [], Accu).
 
+mapfoldr_1(F, [Hd | Tail], MapAcc, FoldAcc0) ->
+    {M, FoldAcc1} = F(Hd, FoldAcc0),
+    mapfoldr_1(F, Tail, [M | MapAcc], FoldAcc1);
+mapfoldr_1(_F, [], MapAcc, FoldAcc) ->
+    {MapAcc, FoldAcc}.
+
+-doc """
+Takes elements `Elem` from `List1` while `Pred(Elem)` returns `true`,
+returning the longest prefix in which all elements satisfy the predicate.
+
+## Examples
+
+```erlang
+1> lists:takewhile(fun is_atom/1, [a,b,c,1,2,3,x,y,z]).
+[a,b,c]
+2> lists:takewhile(fun is_integer/1, [a,b,c,1,2,3,x,y,z]).
+[]
+```
+""".
 -spec takewhile(Pred, List1) -> List2 when
       Pred :: fun((Elem :: T) -> boolean()),
       List1 :: [T],
       List2 :: [T],
       T :: term().
 
-takewhile(Pred, [Hd|Tail]) ->
-    case Pred(Hd) of
-	true -> [Hd|takewhile(Pred, Tail)];
-	false -> []
-    end;
-takewhile(Pred, []) when is_function(Pred, 1) -> [].
+takewhile(Pred, List) when is_function(Pred, 1) ->
+    takewhile_1(Pred, List).
 
+takewhile_1(Pred, [Hd | Tail]) ->
+    case Pred(Hd) of
+        true -> [Hd | takewhile_1(Pred, Tail)];
+        false -> []
+    end;
+takewhile_1(_Pred, []) ->
+    [].
+
+-doc """
+Drops elements `Elem` from `List1` while `Pred(Elem)` returns `true`,
+and then returns the remaining list.
+
+## Examples
+
+```erlang
+1> lists:dropwhile(fun is_atom/1, [a,b,c,1,2,3,x,y,z]).
+[1,2,3,x,y,z]
+2> lists:dropwhile(fun is_integer/1, [a,b,c,1,2,3,x,y,z]).
+[a,b,c,1,2,3,x,y,z]
+```
+""".
 -spec dropwhile(Pred, List1) -> List2 when
       Pred :: fun((Elem :: T) -> boolean()),
       List1 :: [T],
       List2 :: [T],
       T :: term().
 
-dropwhile(Pred, [Hd|Tail]=Rest) ->
-    case Pred(Hd) of
-	true -> dropwhile(Pred, Tail);
-	false -> Rest
-    end;
-dropwhile(Pred, []) when is_function(Pred, 1) -> [].
+dropwhile(Pred, List) when is_function(Pred, 1) ->
+    dropwhile_1(Pred, List).
 
+dropwhile_1(Pred, [Hd | Tail]=Rest) ->
+    case Pred(Hd) of
+        true -> dropwhile_1(Pred, Tail);
+        false -> Rest
+    end;
+dropwhile_1(_Pred, []) ->
+    [].
+
+-doc """
+If there is a `Value` in `List` such that `Pred(Value)` returns `true`, returns
+`{value, Value}` for the first such `Value`; otherwise, returns `false`.
+
+## Examples
+
+```erlang
+1> lists:search(fun is_atom/1, [1,2,3,a,b,c]).
+{value,a}
+2> lists:search(fun(#{a := V}) -> V =:= 42 end,
+     [#{a => 1}, #{a => 42}, #{a => 100}]).
+{value,#{a => 42}}
+```
+""".
+-doc(#{since => <<"OTP 21.0">>}).
 -spec search(Pred, List) -> {value, Value} | false when
       Pred :: fun((T) -> boolean()),
       List :: [T],
       Value :: T.
 
-search(Pred, [Hd|Tail]) ->
+search(Pred, List) when is_function(Pred, 1) ->
+    search_1(Pred, List).
+
+search_1(Pred, [Hd | Tail]) ->
     case Pred(Hd) of
         true -> {value, Hd};
-        false -> search(Pred, Tail)
+        false -> search_1(Pred, Tail)
     end;
-search(Pred, []) when is_function(Pred, 1) ->
+search_1(_Pred, []) ->
     false.
 
+-doc """
+Partitions `List` into two lists according to `Pred`.
+
+[`splitwith/2`](`splitwith/2`) behaves as if it were defined as follows:
+
+```erlang
+splitwith(Pred, List) ->
+    {takewhile(Pred, List), dropwhile(Pred, List)}.
+```
+
+## Examples
+
+```erlang
+1> lists:splitwith(fun(A) -> A rem 2 =:= 1 end, [1,2,3,4,5,6,7]).
+{[1],[2,3,4,5,6,7]}
+2> lists:splitwith(fun(A) -> is_atom(A) end, [a,b,1,c,d,2,3,4,e]).
+{[a,b],[1,c,d,2,3,4,e]}
+```
+
+For a different way to partition a list, see `partition/2`.
+""".
 -spec splitwith(Pred, List) -> {List1, List2} when
       Pred :: fun((T) -> boolean()),
       List :: [T],
@@ -1424,16 +2833,27 @@ search(Pred, []) when is_function(Pred, 1) ->
       T :: term().
 
 splitwith(Pred, List) when is_function(Pred, 1) ->
-    splitwith(Pred, List, []).
+    splitwith_1(Pred, List, []).
 
-splitwith(Pred, [Hd|Tail], Taken) ->
+splitwith_1(Pred, [Hd|Tail], Taken) ->
     case Pred(Hd) of
-	true -> splitwith(Pred, Tail, [Hd|Taken]);
+	true -> splitwith_1(Pred, Tail, [Hd|Taken]);
 	false -> {reverse(Taken), [Hd|Tail]}
     end;
-splitwith(Pred, [], Taken) when is_function(Pred, 1) ->
+splitwith_1(_Pred, [], Taken) ->
     {reverse(Taken),[]}.
 
+-doc """
+Splits `List1` into `List2`, containing the first `N` elements, and
+`List3`, containing the rest.
+
+## Examples
+
+```erlang
+1> lists:split(3, [1,2,3,4,5,6,7]).
+{[1,2,3],[4,5,6,7]}
+```
+""".
 -spec split(N, List1) -> {List2, List3} when
       N :: non_neg_integer(),
       List1 :: [T],
@@ -1445,10 +2865,10 @@ split(N, List) when is_integer(N), N >= 0, is_list(List) ->
     case split(N, List, []) of
 	{_, _} = Result -> Result;
 	Fault when is_atom(Fault) ->
-	    erlang:error(Fault, [N,List])
+	    error(Fault, [N,List])
     end;
 split(N, List) ->
-    erlang:error(badarg, [N,List]).
+    error(badarg, [N,List]).
 
 split(0, L, R) ->
     {lists:reverse(R, []), L};
@@ -1457,6 +2877,23 @@ split(N, [H|T], R) ->
 split(_, [], _) ->
     badarg.
 
+-doc """
+Inserts `Sep` between each element in `List1`.
+
+Has no effect on an empty list or a singleton list.
+
+## Examples
+
+```erlang
+1> lists:join(x, [a,b,c]).
+[a,x,b,x,c]
+2> lists:join(x, [a]).
+[a]
+3> lists:join(x, []).
+[]
+```
+""".
+-doc(#{since => <<"OTP 19.0">>}).
 -spec join(Sep, List1) -> List2 when
       Sep :: T,
       List1 :: [T],
@@ -1468,6 +2905,75 @@ join(Sep, [H|T]) -> [H|join_prepend(Sep, T)].
 
 join_prepend(_Sep, []) -> [];
 join_prepend(Sep, [H|T]) -> [Sep,H|join_prepend(Sep,T)].
+
+
+-doc """
+Returns a list containing the elements of `List1` with duplicated elements
+removed (preserving the order of the elements).
+
+The first occurrence of each element is kept.
+
+## Examples
+
+```erlang
+1> lists:uniq([3, 3, 1, 2, 1, 2, 3]).
+[3,1,2]
+2> lists:uniq([a, a, 1, b, 2, a, 3]).
+[a, 1, b, 2, 3]
+```
+""".
+-doc(#{since => <<"OTP 25.0">>}).
+-spec uniq(List1) -> List2 when
+      List1 :: [T],
+      List2 :: [T],
+      T :: term().
+
+uniq(L) ->
+    uniq_1(L, #{}).
+
+uniq_1([X | Xs], M) ->
+    case is_map_key(X, M) of
+        true ->
+            uniq_1(Xs, M);
+        false ->
+            [X | uniq_1(Xs, M#{X => true})]
+    end;
+uniq_1([], _) ->
+    [].
+
+-doc """
+Returns a list containing the elements of `List1` without the elements for which
+`Fun` returned duplicate values (preserving the order of the elements).
+
+The first occurrence of each element is kept.
+
+## Examples
+
+```erlang
+1> lists:uniq(fun({X, _}) -> X end, [{b, 2}, {a, 1}, {c, 3}, {a, 2}]).
+[{b, 2}, {a, 1}, {c, 3}]
+```
+""".
+-doc(#{since => <<"OTP 25.0">>}).
+-spec uniq(Fun, List1) -> List2 when
+      Fun :: fun((T) -> any()),
+      List1 :: [T],
+      List2 :: [T],
+      T :: term().
+
+uniq(F, L) when is_function(F, 1) ->
+    uniq_2(L, F, #{}).
+
+uniq_2([X | Xs], F, M) ->
+    Key = F(X),
+    case is_map_key(Key, M) of
+        true ->
+            uniq_2(Xs, F, M);
+        false ->
+            [X | uniq_2(Xs, F, M#{Key => true})]
+    end;
+uniq_2([], _, _) ->
+    [].
 
 %%% =================================================================
 %%% Here follows the implementation of the sort functions.
@@ -1511,7 +3017,7 @@ split_1_1(X, Y, [Z | L], R, Rs, S) when Z >= Y ->
     split_1_1(Y, Z, L, [X | R], Rs, S);
 split_1_1(X, Y, [Z | L], R, Rs, S) when Z >= X ->
     split_1_1(Z, Y, L, [X | R], Rs, S);
-split_1_1(X, Y, [Z | L], R, Rs, S) when S =< Z ->
+split_1_1(X, Y, [Z | L], R, Rs, S) when Z >= S ->
     split_1(S, Z, L, [], [[Y, X | R] | Rs]);
 split_1_1(X, Y, [Z | L], R, Rs, S) ->
     split_1(Z, S, L, [], [[Y, X | R] | Rs]);
@@ -1519,48 +3025,48 @@ split_1_1(X, Y, [], R, Rs, S) ->
     rmergel([[S], [Y, X | R] | Rs], []).
 
 %% Descending.
-split_2(X, Y, [Z | L], R, Rs) when Z =< Y ->
+split_2(X, Y, [Z | L], R, Rs) when Y > Z ->
     split_2(Y, Z, L, [X | R], Rs);
-split_2(X, Y, [Z | L], R, Rs) when Z =< X ->
+split_2(X, Y, [Z | L], R, Rs) when X > Z ->
     split_2(Z, Y, L, [X | R], Rs);
 split_2(X, Y, [Z | L], [], Rs) ->
     split_2(X, Y, L, [Z], Rs);
 split_2(X, Y, [Z | L], R, Rs) ->
     split_2_1(X, Y, L, R, Rs, Z);
 split_2(X, Y, [], R, Rs) ->
-    mergel([[Y, X | R] | Rs], []).
+    mergel(lists:reverse(Rs, [[Y, X | R]]), []).
 
-split_2_1(X, Y, [Z | L], R, Rs, S) when Z =< Y ->
+split_2_1(X, Y, [Z | L], R, Rs, S) when Y > Z ->
     split_2_1(Y, Z, L, [X | R], Rs, S);
-split_2_1(X, Y, [Z | L], R, Rs, S) when Z =< X ->
+split_2_1(X, Y, [Z | L], R, Rs, S) when X > Z ->
     split_2_1(Z, Y, L, [X | R], Rs, S);
 split_2_1(X, Y, [Z | L], R, Rs, S) when S > Z ->
     split_2(S, Z, L, [], [[Y, X | R] | Rs]);
 split_2_1(X, Y, [Z | L], R, Rs, S) ->
     split_2(Z, S, L, [], [[Y, X | R] | Rs]);
 split_2_1(X, Y, [], R, Rs, S) ->
-    mergel([[S], [Y, X | R] | Rs], []).
+    mergel(lists:reverse(Rs, [[Y, X | R], [S]]), []).
 
 %% merge/1
 
-mergel([[] | L], Acc) ->
-    mergel(L, Acc);
-mergel([T1, [H2 | T2], [H3 | T3] | L], Acc) ->
-    mergel(L, [merge3_1(T1, [], H2, T2, H3, T3) | Acc]);
-mergel([T1, [H2 | T2]], Acc) ->
-    rmergel([merge2_1(T1, H2, T2, []) | Acc], []);
-mergel([L], []) ->
-    L;
-mergel([L], Acc) ->
-    rmergel([lists:reverse(L, []) | Acc], []);
 mergel([], []) ->
     [];
+mergel([[_|_]=L], []) ->
+    L;
 mergel([], Acc) ->
     rmergel(Acc, []);
-mergel([A, [] | L], Acc) ->
+mergel([[] | L], Acc) ->
+    mergel(L, Acc);
+mergel([[_|_]=L], Acc) ->
+    rmergel([lists:reverse(L, []) | Acc], []);
+mergel([[_|_]=A, [] | L], Acc) ->
     mergel([A | L], Acc);
-mergel([A, B, [] | L], Acc) ->
-    mergel([A, B | L], Acc).
+mergel([[_|_]=A, [_|_]=B, [] | L], Acc) ->
+    mergel([A, B | L], Acc);
+mergel([[_|_]=T1, [H2 | T2], [H3 | T3] | L], Acc) ->
+    mergel(L, [merge3_1(T1, [], H2, T2, H3, T3) | Acc]);
+mergel([[_|_]=T1, [H2 | T2]], Acc) ->
+    rmergel([merge2_1(T1, H2, T2, []) | Acc], []).
 
 rmergel([[H3 | T3], [H2 | T2], T1 | L], Acc) ->
     rmergel(L, [rmerge3_1(T1, [], H2, T2, H3, T3) | Acc]);
@@ -1776,28 +3282,28 @@ usplit_2_1(X, Y, [], R, Rs, S) ->
 umergel(L) ->
     umergel(L, [], asc).
 
-umergel([[] | L], Acc, O) ->
-    umergel(L, Acc, O);
-umergel([T1, [H2 | T2], [H3 | T3] | L], Acc, asc) ->
-    umergel(L, [umerge3_1(T1, [H2 | H3], T2, H2, [], T3, H3) | Acc], asc);
-umergel([[H3 | T3], [H2 | T2], T1 | L], Acc, desc) ->
-    umergel(L, [umerge3_1(T1, [H2 | H3], T2, H2, [], T3, H3) | Acc], desc);
-umergel([A, [] | L], Acc, O) ->
-    umergel([A | L], Acc, O);
-umergel([A, B, [] | L], Acc, O) ->
-    umergel([A, B | L], Acc, O);
-umergel([[H1 | T1], T2 | L], Acc, asc) ->
-    umergel(L, [umerge2_2(T1, T2, [], H1) | Acc], asc);
-umergel([T2, [H1 | T1] | L], Acc, desc) ->
-    umergel(L, [umerge2_2(T1, T2, [], H1) | Acc], desc);
-umergel([L], [], _O) ->
-    L;
-umergel([L], Acc, O) ->
-    rumergel([lists:reverse(L, []) | Acc], [], O);
 umergel([], [], _O) ->
     [];
+umergel([[_|_]=L], [], _O) ->
+    L;
 umergel([], Acc, O) ->
-    rumergel(Acc, [], O).
+    rumergel(Acc, [], O);
+umergel([[_|_]=L], Acc, O) ->
+    rumergel([lists:reverse(L, []) | Acc], [], O);
+umergel([[] | L], Acc, O) ->
+    umergel(L, Acc, O);
+umergel([[_|_]=A, [] | L], Acc, O) ->
+    umergel([A | L], Acc, O);
+umergel([[_|_]=A, [_|_]=B, [] | L], Acc, O) ->
+    umergel([A, B | L], Acc, O);
+umergel([[_|_]=T1, [H2 | T2], [H3 | T3] | L], Acc, asc) ->
+    umergel(L, [umerge3_1(T1, [H2 | H3], T2, H2, [], T3, H3) | Acc], asc);
+umergel([[H3 | T3], [H2 | T2], [_|_]=T1 | L], Acc, desc) ->
+    umergel(L, [umerge3_1(T1, [H2 | H3], T2, H2, [], T3, H3) | Acc], desc);
+umergel([[H1 | T1], [_|_]=T2 | L], Acc, asc) ->
+    umergel(L, [umerge2_2(T1, T2, [], H1) | Acc], asc);
+umergel([[_|_]=T2, [H1 | T1] | L], Acc, desc) ->
+    umergel(L, [umerge2_2(T1, T2, [], H1) | Acc], desc).
 
 rumergel([[H3 | T3], [H2 | T2], T1 | L], Acc, asc) ->
     rumergel(L, [rumerge3_1(T1, T2, H2, [], T3, H3) | Acc], asc);
@@ -2855,3 +4361,7 @@ rufmerge2_2(H1, T1, Fun, [], M, H2M) ->
             lists:reverse(T1, [H1, H2M | M])
     end.
 
+%%%
+%%% Don't place new functions here; place them before the
+%%% implementation of sort functions.
+%%%

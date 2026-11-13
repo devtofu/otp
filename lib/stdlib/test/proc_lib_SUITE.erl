@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0
 %% 
-%% Copyright Ericsson AB 1996-2019. All Rights Reserved.
+%% Copyright Ericsson AB 1996-2025. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -30,8 +32,11 @@
          sync_start_monitor/1, sync_start_monitor_link/1,
          sync_start_timeout/1, sync_start_link_timeout/1,
          sync_start_monitor_link_timeout/1,
-         spawn_opt/1, sp1/0, sp2/0, sp3/1, sp4/2, sp5/1, sp6/1, sp7/1,
-         sp8/1, sp9/1, sp10/1,
+         sync_start_big_mailbox/1,
+         sync_start_init_fail/1, sync_start_dictionary/1,
+         sync_start_crash_before_ack/1,
+         spawn_opt/1, sp1/0, sp1_with_label/0, sp2/0, sp3/1, sp4/2,
+         sp5/1, sp6/1, sp7/1, sp8/1, sp9/1, sp10/1, sp11/1, sp12/3, sp13/1,
          '\x{447}'/0, hibernate/1, stop/1, t_format/1, t_format_arbitrary/1]).
 -export([ otp_6345/1, init_dont_hang/1]).
 
@@ -53,6 +58,16 @@
 -include_lib("common_test/include/ct.hrl").
 -endif.
 
+-define(do_catch(__X), do_catch(fun() -> __X end)).
+
+do_catch(F) ->
+    try {ok, F()}
+    catch
+        throw:R -> {throw, R};
+        exit:R -> {exit, R};
+        error:R:S -> {error, R, S}
+    end.
+
 suite() -> [{ct_hooks,[ts_install_cth]}].
 
 all() -> 
@@ -64,7 +79,10 @@ groups() ->
      {sync_start, [], [sync_start_nolink, sync_start_link,
                        sync_start_monitor, sync_start_monitor_link,
                        sync_start_timeout, sync_start_link_timeout,
-                       sync_start_monitor_link_timeout]}].
+                       sync_start_monitor_link_timeout,
+                       sync_start_big_mailbox,
+                       sync_start_init_fail, sync_start_dictionary,
+                       sync_start_crash_before_ack]}].
 
 init_per_suite(Config) ->
     Config.
@@ -135,11 +153,18 @@ crash_1(_Config) ->
     ct:sleep(100),
     {?MODULE,sp2,[]} = proc_lib:initial_call(Pid4),
     {?MODULE,sp2,0} = proc_lib:translate_initial_call(Pid4),
+    {test, sp2} = proc_lib:get_label(Pid4),
+    %% Check this, if changed fix c.erl and runtime_tools
+    %% which uses the 'internal' dictionary name as an optimization.
+    {_, {test, sp2}} = process_info(Pid4, {dictionary, '$process_label'}),
+
     Pid4 ! die,
     Exp4 = [{initial_call,{?MODULE,sp2,[]}},
+            {process_label, {test, sp2}},
 	    {ancestors,[self()]},
 	    {error_info,{exit,die,{stacktrace}}}],
-    Links4 = [[{initial_call,{?MODULE,sp1,[]}},
+    Links4 = [[{initial_call,{?MODULE,sp1_with_label,[]}},
+               {process_label, {test, sp1_with_label}},
 	       {ancestors,[Pid4,self()]}]],
     analyse_crash(Pid4, Exp4, Links4),
 
@@ -376,17 +401,38 @@ spawn_opt(Config) when is_list(Config) ->
     FunMFArgs = proc_lib:initial_call(Pid1),
     FunMFArity = proc_lib:translate_initial_call(Pid1),
     Pid1 ! die,
+
+    %% Check modified initial_call
+
+    Pid2 = proc_lib:spawn_opt(fun() ->
+                                      put('$initial_call', undefined),
+                                      receive _ -> ok end
+                              end, [link]),
+    false = proc_lib:initial_call(Pid2),
+    {proc_lib, init_p, 5} = proc_lib:translate_initial_call(Pid2),
+    Dict2 = process_info(Pid2, [{dictionary, '$initial_call'}]),
+    false = proc_lib:initial_call(Dict2),
+    {proc_lib, init_p, 5} = proc_lib:translate_initial_call(Dict2),
+
+    Pid2 ! die,
     ok.
 
 
 sp1() ->
-    receive 
+    receive
 	die -> exit(die);
 	_ -> sp1()
     end.
 
+sp1_with_label() ->
+    ok = proc_lib:set_label({test, ?FUNCTION_NAME}),
+    sp1().
+
 sp2() ->
-    _Pid = proc_lib:spawn_link(?MODULE, sp1, []),
+    ok = proc_lib:set_label({test, ?FUNCTION_NAME}),
+    {test, ?FUNCTION_NAME} = proc_lib:get_label(self()),
+
+    _Pid = proc_lib:spawn_link(?MODULE, sp1_with_label, []),
     receive 
 	die -> exit(die);
 	_ -> sp1()
@@ -489,6 +535,115 @@ sp4(Parent, Tester) ->
 	go_on -> ok
     end,
     proc_lib:init_ack(Parent, self()).
+
+%% Start with a big message queue; nothing in it may be consumed or lost.
+sync_start_big_mailbox(Config) when is_list(Config) ->
+    process_flag(trap_exit, true),
+    N = 100000,
+    _ = [self() ! {junk, I} || I <- lists:seq(1, N)],
+    {message_queue_len, N} = process_info(self(), message_queue_len),
+
+    Pid1 = proc_lib:start(?MODULE, sp11, [self()]),
+    true = is_pid(Pid1),
+    {message_queue_len, N} = process_info(self(), message_queue_len),
+
+    Pid2 = proc_lib:start_link(?MODULE, sp11, [self()]),
+    true = is_pid(Pid2),
+    {message_queue_len, N} = process_info(self(), message_queue_len),
+
+    {error, big_nack} =
+        proc_lib:start_link(?MODULE, sp12,
+                            [self(), {error, big_nack}, {exit, normal}]),
+    {message_queue_len, N} = process_info(self(), message_queue_len),
+
+    {error, timeout} =
+        proc_lib:start_link(?MODULE, sp13, [self()], 100),
+    {message_queue_len, N} = process_info(self(), message_queue_len),
+
+    {error, big_crash} = proc_lib:start(?MODULE, sp13, [{crash, big_crash}]),
+    {message_queue_len, N} = process_info(self(), message_queue_len),
+
+    _ = [receive {junk, I} -> ok end || I <- lists:seq(1, N)],
+    {message_queue_len, 0} = process_info(self(), message_queue_len),
+
+    exit(Pid1, kill),
+    exit(Pid2, kill),
+    receive {'EXIT', Pid2, killed} -> ok end,
+    ok.
+
+sync_start_init_fail(Config) when is_list(Config) ->
+    process_flag(trap_exit, true),
+
+    {error, r1} = proc_lib:start(?MODULE, sp12,
+                                 [self(), {error, r1}, {exit, normal}]),
+    {message_queue_len, 0} = process_info(self(), message_queue_len),
+
+    {error, r2} = proc_lib:start_link(?MODULE, sp12,
+                                      [self(), {error, r2}, {exit, shutdown}]),
+    {message_queue_len, 0} = process_info(self(), message_queue_len),
+
+    {error, r3} = proc_lib:start(?MODULE, sp12,
+                                 [self(), {error, r3}, {error, r3}]),
+    {message_queue_len, 0} = process_info(self(), message_queue_len),
+
+    {{error, r4}, Mon} =
+        proc_lib:start_monitor(?MODULE, sp12,
+                               [self(), {error, r4}, {exit, normal}]),
+    receive
+        {'DOWN', Mon, process, _, normal} -> ok
+    after 1000 ->
+            ct:fail(no_down)
+    end,
+    {message_queue_len, 0} = process_info(self(), message_queue_len),
+    ok.
+
+sync_start_dictionary(Config) when is_list(Config) ->
+    Self = self(),
+    Pid = proc_lib:start(?MODULE, sp11, [self()]),
+    {dictionary, Dict} = process_info(Pid, dictionary),
+    io:format("~p~n", [Dict]),
+    false = lists:keymember('$proc_lib_start_tag', 1, Dict),
+    {'$ancestors', [Self|_]} = lists:keyfind('$ancestors', 1, Dict),
+    {?MODULE, sp11, ['Argument__1']} = proc_lib:initial_call(Pid),
+    {?MODULE, sp11, 1} = proc_lib:translate_initial_call(Pid),
+    {initial_call, {proc_lib, init_p, 5}} = process_info(Pid, initial_call),
+    exit(Pid, kill),
+    ok.
+
+sync_start_crash_before_ack(Config) when is_list(Config) ->
+    error_logger:add_report_handler(?MODULE, self()),
+    {error, before_ack} = proc_lib:start(?MODULE, sp13, [{crash, before_ack}]),
+    receive
+        {crash_report, Pid, [Crash, _Links]} ->
+            io:format("~p~n", [Crash]),
+            {pid, Pid} = lists:keyfind(pid, 1, Crash),
+            {error_info, {exit, before_ack, _}} =
+                lists:keyfind(error_info, 1, Crash),
+            {dictionary, Dict} = lists:keyfind(dictionary, 1, Crash),
+            {sp13, before_ack} = lists:keyfind(sp13, 1, Dict),
+            false = lists:keymember('$proc_lib_start_tag', 1, Dict)
+    after 5000 ->
+            ct:fail(no_crash_report)
+    end,
+    error_logger:delete_report_handler(?MODULE),
+    ok.
+
+sp11(Parent) ->
+    proc_lib:init_ack(Parent, self()),
+    receive
+        die -> exit(die)
+    end.
+
+sp12(Parent, Return, Exception) ->
+    proc_lib:init_fail(Parent, Return, Exception).
+
+sp13({crash, Reason}) ->
+    put(sp13, Reason),
+    exit(Reason);
+sp13(_Parent) ->
+    receive
+        die -> exit(die)
+    end.
 
 '\x{447}'() ->
     receive
@@ -644,7 +799,7 @@ stop(_Config) ->
     false = erlang:is_process_alive(Pid1),
 
     %% Process does not exit
-    {'EXIT',noproc} = (catch proc_lib:stop(Pid1)),
+    {exit, noproc} = ?do_catch(proc_lib:stop(Pid1)),
 
     %% Badly handled system message
     DieProc =
@@ -655,7 +810,7 @@ stop(_Config) ->
 		end
 	end,
     Pid2 = proc_lib:spawn(DieProc),
-    {'EXIT',{die,_}} = (catch proc_lib:stop(Pid2)),
+    {exit, {die, _}} = ?do_catch(proc_lib:stop(Pid2)), 
 
     %% Hanging process => timeout
     HangProc =
@@ -666,13 +821,13 @@ stop(_Config) ->
 		end
 	end,
     Pid3 = proc_lib:spawn(HangProc),
-    {'EXIT',timeout} = (catch proc_lib:stop(Pid3,normal,1000)),
+    {exit, timeout} = ?do_catch(proc_lib:stop(Pid3,normal,1000)),
 
     %% Ensure that a termination message is always sent to the
     %% target process and that it eventually terminates.
     Pid4 = proc_lib:spawn(HangProc),
     Ref4 = monitor(process, Pid4),
-    {'EXIT', timeout} = (catch proc_lib:stop(Pid4, normal, 0)),
+    {exit, timeout} = ?do_catch(proc_lib:stop(Pid4, normal, 0)),
     ok = receive
 	{'DOWN', Ref4, process, _, _} ->
 	    ok;
@@ -680,6 +835,18 @@ stop(_Config) ->
     after 6000 ->
 	timeout
     end,
+
+    %% Ensure that if process stops with same reason just as stop is called,
+    %% stop does not throw an exception.
+    PidNormalStop = proc_lib:spawn(fun() -> timer:sleep(1000) end),
+    ok = proc_lib:stop(PidNormalStop,normal,2000),
+    false = erlang:is_process_alive(PidNormalStop),
+    PidDieStop = proc_lib:spawn(fun() -> timer:sleep(1000), exit(die) end),
+    ok = proc_lib:stop(PidDieStop,die,2000),
+    false = erlang:is_process_alive(PidDieStop),
+    PidDieStopCrash = proc_lib:spawn(fun() -> timer:sleep(1000), exit(die) end),
+    {exit, {die, _}} = ?do_catch(proc_lib:stop(PidDieStopCrash,normal,2000)),
+    false = erlang:is_process_alive(PidDieStopCrash),
 
     %% Success case with other reason than 'normal'
     Pid5 = proc_lib:spawn(SysMsgProc),
@@ -689,7 +856,7 @@ stop(_Config) ->
     %% System message is handled, but process dies with other reason
     %% than the given (in system_terminate/4 below)
     Pid6 = proc_lib:spawn(SysMsgProc),
-    {'EXIT',{{badmatch,2},_Stacktrace}} = (catch proc_lib:stop(Pid6,crash,infinity)),
+    {exit, {{badmatch, 2}, _}} = ?do_catch(proc_lib:stop(Pid6,crash,infinity)),
     false = erlang:is_process_alive(Pid6),
 
     %% Local registered name
@@ -700,7 +867,7 @@ stop(_Config) ->
     false = erlang:is_process_alive(Pid7),
 
     %% Remote registered name
-    {ok,Node} = test_server:start_node(proc_lib_SUITE_stop,slave,[]),
+    {ok, Peer, Node} = ?CT_PEER(),
     Dir = filename:dirname(code:which(?MODULE)),
     rpc:call(Node,code,add_path,[Dir]),
     Pid8 = spawn(Node,SysMsgProc),
@@ -711,13 +878,13 @@ stop(_Config) ->
     false = rpc:call(Node,erlang,is_process_alive,[Pid8]),
 
     %% Local and remote registered name, but non-existing
-    {'EXIT',noproc} = (catch proc_lib:stop(to_stop)),
-    {'EXIT',noproc} = (catch proc_lib:stop({to_stop,Node})),
+    {exit, noproc} = ?do_catch(proc_lib:stop(to_stop)),
+    {exit, noproc} = ?do_catch(proc_lib:stop({to_stop,Node})),
 
-    true = test_server:stop_node(Node),
+    peer:stop(Peer),
 
     %% Remote registered name, but non-existing node
-    {'EXIT',{{nodedown,Node},_}} = (catch proc_lib:stop({to_stop,Node})),
+    {exit, {{nodedown, Node}, _}} = ?do_catch(proc_lib:stop({to_stop,Node})),
     ok.
 
 system_terminate(crash,_Parent,_Deb,_State) ->

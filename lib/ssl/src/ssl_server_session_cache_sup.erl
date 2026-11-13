@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2020-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2020-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,6 +25,7 @@
 %% Purpose: Supervisor for a listen options tracker
 %%----------------------------------------------------------------------
 -module(ssl_server_session_cache_sup).
+-moduledoc false.
 
 -behaviour(supervisor).
 
@@ -41,25 +44,20 @@
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
-start_child(Listner) ->
-    supervisor:start_child(?MODULE, [Listner | [ssl_config:pre_1_3_session_opts(server)]]).
-
+start_child(Listener) ->
+    supervisor:start_child(?MODULE, [Listener | [ssl_config:pre_1_3_session_opts(server)]]).
 
 %%%=========================================================================
 %%%  Supervisor callback
 %%%=========================================================================
-init(_O) ->
-    RestartStrategy = simple_one_for_one,
-    MaxR = 3,
-    MaxT = 3600,
-
-    Name = undefined, % As simple_one_for_one is used.
-    StartFunc = {ssl_server_session_cache, start_link, []},
-    Restart = transient, % Should be restarted only on abnormal termination
-    Shutdown = 4000,
-    Modules = [ssl_server_session_cache],
-    Type = worker,
-
-    ChildSpec = {Name, StartFunc, Restart, Shutdown, Type, Modules},
-    {ok, {{RestartStrategy, MaxR, MaxT}, [ChildSpec]}}.
-
+init(_) ->
+    SupFlags = #{strategy  => simple_one_for_one
+                },
+    ChildSpecs = [#{id       => undefined,
+                    start    => {ssl_server_session_cache, start_link, []},
+                    restart  => temporary,
+                    shutdown => 4000,
+                    modules  => [ssl_server_session_cache],
+                    type     => worker
+                   }],
+    {ok, {SupFlags, ChildSpecs}}.

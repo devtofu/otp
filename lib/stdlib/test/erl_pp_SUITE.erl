@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2006-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2006-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -48,13 +50,17 @@
 	  neg_indent/1,
 	  maps_syntax/1,
 	  format_options/1,
-          quoted_atom_types/1,
+          form_vars/1,
+	  quoted_atom_types/1,
+          native_records/1,
+          unicode_binary_attributes/1,
 
 	  otp_6321/1, otp_6911/1, otp_6914/1, otp_8150/1, otp_8238/1,
 	  otp_8473/1, otp_8522/1, otp_8567/1, otp_8664/1, otp_9147/1,
           otp_10302/1, otp_10820/1, otp_11100/1, otp_11861/1, pr_1014/1,
           otp_13662/1, otp_14285/1, otp_15592/1, otp_15751/1, otp_15755/1,
-          otp_16435/1]).
+          otp_16435/1, gh_5093/1,
+          eep49/1, eep58/1]).
 
 %% Internal export.
 -export([ehook/6]).
@@ -78,14 +84,18 @@ groups() ->
       [func, call, recs, try_catch, if_then, receive_after,
        bits, head_tail, cond1, block, case1, ops,
        messages, maps_syntax, quoted_atom_types,
-       format_options
+       format_options, form_vars, native_records
     ]},
-     {attributes, [], [misc_attrs, import_export, dialyzer_attrs]},
+     {attributes, [], [misc_attrs,
+                       import_export,
+                       dialyzer_attrs,
+                       unicode_binary_attributes]},
      {tickets, [],
       [otp_6321, otp_6911, otp_6914, otp_8150, otp_8238,
        otp_8473, otp_8522, otp_8567, otp_8664, otp_9147,
        otp_10302, otp_10820, otp_11100, otp_11861, pr_1014, otp_13662,
-       otp_14285, otp_15592, otp_15751, otp_15755, otp_16435]}].
+       otp_14285, otp_15592, otp_15751, otp_15755, otp_16435,
+       gh_5093, eep49, eep58]}].
 
 init_per_suite(Config) ->
     Config.
@@ -107,7 +117,7 @@ func(Config) when is_list(Config) ->
               -record(r3, {a = fun(_) -> #r1{} end(1), b}).
 
               t() ->
-                  fun(A) when record(A#r3.a, r1) -> 7 end(#r3{}).
+                  fun(A) when is_record(A#r3.a, r1) -> 7 end(#r3{}).
              ">>},
           {func_2,
            <<"-record(r1, {a,b}).
@@ -138,7 +148,7 @@ func(Config) when is_list(Config) ->
               -record(r3, {a = fun Id(_) -> #r1{} end(1), b}).
 
               t() ->
-                  fun Id(A) when record(A#r3.a, r1) -> 7 end(#r3{}).
+                  fun Id(A) when is_record(A#r3.a, r1) -> 7 end(#r3{}).
              ">>},
           {func_9,
            <<"-record(r1, {a,b}).
@@ -186,17 +196,17 @@ recs(Config) when is_list(Config) ->
                               2 end(2),
                   3 = fun(A) when (A#r2.a)#r1.a =:= 3 -> 3 end(#r2{a = #r1{a = 3}}),
                   ok = fun() ->
-                               F = fun(A) when record(A#r.a, r1) -> 4;
-                                      (A) when record(A#r1.a, r1) -> 5
+                               F = fun(A) when is_record(A#r.a, r1) -> 4;
+                                      (A) when is_record(A#r1.a, r1) -> 5
                                    end,
                                5 = F(#r1{a = #r1{}}),
                                4 = F(#r{a = #r1{}}),
                                ok
                        end(),
-                  3 = fun(A) when record(A#r1.a, r),
+                  3 = fun(A) when is_record(A#r1.a, r),
                                         (A#r1.a)#r.a > 3 -> 3
                       end(#r1{a = #r{a = 4}}),
-                  7 = fun(A) when record(A#r3.a, r1) -> 7 end(#r3{}),
+                  7 = fun(A) when is_record(A#r3.a, r1) -> 7 end(#r3{}),
                   [#r1{a = 2,b = 1}] =
                       fun() ->
                               [A || A <- [#r1{a = 1, b = 3},
@@ -225,7 +235,7 @@ recs(Config) when is_list(Config) ->
 
                   %% The test done twice (an effect of doing the test as soon as possible).
                   3 = fun(A) when A#r1.a > 3,
-                                  record(A, r1) -> 3
+                                  is_record(A, r1) -> 3
                       end(#r1{a = 5}),
 
                   ok = fun() ->
@@ -257,10 +267,6 @@ recs(Config) when is_list(Config) ->
                        end(),
 
                   %% No extra check added:
-                  a = fun(A) when record(A, r),
-                                  A#r.a =:= 1,
-                                  A#r.b =:= 2 ->a
-                      end(#r{a = 1, b = 2}),
                   a = fun(A) when erlang:is_record(A, r),
                                   A#r.a =:= 1,
                                   A#r.b =:= 2 -> a
@@ -577,6 +583,37 @@ format_options(Config) when is_list(Config) ->
 	    )
 	).
 
+form_vars(Config) when is_list(Config) ->
+    %% Check that erl_pp:legalize_vars/1 does its job.  If
+    %% legalize_vars/1 fails to convert variable names starting with a
+    %% lower case letter, the compiler will detect that `X` is an atom
+    %% and report that the `+` operation will fail. If legalize_vars/1
+    %% fails to generate unique variable names and just converts the
+    %% name to uppercase, the variable named `REC0` will be used in an
+    %% unsafe way.
+    String = <<"-module(erl_pp_test).
+                -export([f/1]).
+                -record(r, {a, b}).
+                f(#r{b = B} = C) ->
+                  receive
+	            B ->
+	              X = C#r.a,
+	              REC0 = X + X,
+	              REC0
+                    end.">>,
+    FileName = filename('erl_pp_test.erl', Config),
+    ok = file:write_file(FileName, String),
+    Opts = [binary,deterministic,nowarn_unused_record],
+    {ok, [], Forms} = compile:file(FileName, ['E'|Opts]),
+    Forms1 = lists:map(fun(F={function,_,_,_,_}) ->
+                               erl_pp:legalize_vars(F);
+                          (F) ->
+                               F
+                       end, Forms),
+    ok = file:write_file(FileName, [erl_pp:form(F) || F <- Forms1]),
+    {ok, _, _, []} = compile:file(FileName, [return|Opts]),
+    ok.
+
 misc_attrs(Config) when is_list(Config) ->
     ok = pp_forms(<<"-module(m). ">>),
     ok = pp_forms(<<"-module(m, [Aafjlksfjdlsjflsdfjlsdjflkdsfjlk,"
@@ -738,6 +775,20 @@ neg_indent(Config) when is_list(Config) ->
     "fun True() -> true end" = flat_expr(Fun3),
 
     ok.
+
+native_records(Config) ->
+    Ts = [{?FUNCTION_NAME,
+           ~"""
+           -record #a{x, y}.
+           m1(#a{x=X, y=Y}) -> X + Y.
+           m2(R) ->
+               #a{x=X, y=Y} = R,
+               X + Y.
+           c() -> #a{x=1, y=2}.
+           u(R) -> R#a{x=10}.
+           a(R) -> R#a.x.
+           """}],
+    compile(Config, Ts).
 
 
 %% OTP_6321. Bug fix of exprs().
@@ -1048,13 +1099,13 @@ otp_9147(Config) when is_list(Config) ->
 %% OTP-10302. Unicode characters scanner/parser.
 otp_10302(Config) when is_list(Config) ->
     Ts = [{uni_1,
-           <<"t() -> <<(<<\"abc\\x{aaa}\">>):3/binary>>.">>}
+           <<"t() -> <<(<<\"abc\\x{aaa}\"/utf8>>):3/binary>>.">>}
           ],
     compile(Config, Ts),
     ok = pp_expr(<<"$\\x{aaa}">>),
     ok = pp_expr(<<"\"1\\x{aaa}\"">>),
     ok = pp_expr(<<"<<<<\"hej\">>/binary>>">>),
-    ok = pp_expr(<<"<< <<\"1\\x{aaa}\">>/binary>>">>),
+    ok = pp_expr(<<"<< <<\"1\\x{aaa}\"/utf8>>/binary>>">>),
 
     U = [{encoding,unicode}],
 
@@ -1085,14 +1136,14 @@ unicode_hook({foo,E}, I, P, H) ->
 %% OTP-10820. Unicode filenames.
 otp_10820(Config) when is_list(Config) ->
     C1 = <<"%% coding: utf-8\n -module(any).">>,
-    ok = do_otp_10820(Config, C1, "+pc latin1"),
-    ok = do_otp_10820(Config, C1, "+pc unicode"),
+    ok = do_otp_10820(Config, C1, ["+pc", "latin1"]),
+    ok = do_otp_10820(Config, C1, ["+pc", "unicode"]),
     C2 = <<"%% coding: latin-1\n -module(any).">>,
-    ok = do_otp_10820(Config, C2, "+pc latin1"),
-    ok = do_otp_10820(Config, C2, "+pc unicode").
+    ok = do_otp_10820(Config, C2, ["+pc", "latin1"]),
+    ok = do_otp_10820(Config, C2, ["+pc", "unicode"]).
 
 do_otp_10820(Config, C, PC) ->
-    {ok,Node} = start_node(erl_pp_helper, "+fnu " ++ PC),
+    {ok,Peer,Node} = ?CT_PEER(["+fnu"] ++ PC),
     L = [915,953,959,973,957,953,954,959,957,964],
     FileName = filename(L++".erl", Config),
     ok = rpc:call(Node, file, write_file, [FileName, C]),
@@ -1100,7 +1151,7 @@ do_otp_10820(Config, C, PC) ->
                             [FileName, [return,'P',{outdir,?privdir}]]),
     PFileName = filename(L++".P", Config),
     {ok, Bin} = rpc:call(Node, file, read_file, [PFileName]),
-    true = test_server:stop_node(Node),
+    peer:stop(Peer),
     true = file_attr_is_string(binary_to_list(Bin)),
     ok.
 
@@ -1305,11 +1356,14 @@ otp_16435(_Config) ->
     CheckF("f() ->\n    << \n      (catch <<1:4>>) ||\n"
            "          A <- []\n    >>.\n"),
     CheckF("f() ->\n    [ \n     catch foo ||\n         A <- []\n    ].\n"),
-    CheckF("f() ->\n    1 = catch 1.\n"),
-    CheckF("f() ->\n    catch 1 = catch 1.\n"),
-    CheckF("f() ->\n    A = catch 1 / 0.\n"),
+    CheckF("f() ->\n    1 = (catch 1).\n"),
+    CheckF("f() ->\n    catch 1 = (catch 1).\n"),
+    CheckF("f() ->\n    A = (catch 1 / 0).\n"),
     CheckF("f() when erlang:float(3.0) ->\n    true.\n"),
     CheckF("f() ->\n    (catch 16)#{}.\n"),
+    CheckF("f() ->\n    (catch throw(false)) =/= true.\n"),
+    CheckF("f() ->\n    (catch throw(2)) + 1.\n"),
+    CheckF("f() ->\n    (catch throw(Pid)) ! stop.\n"),
 
     Check = fun(S) -> S = flat_parse_and_pp_expr(S, 0, []) end,
     Check("5 #r4.f1"),
@@ -1332,6 +1386,65 @@ otp_16435(_Config) ->
           "    _:_ ->\n"
           "        c\n"
           "end"),
+
+    ok.
+
+gh_5093(_Config) ->
+  assert_same("f() ->\n    -1.\n"),
+  assert_same("f() ->\n    +1.\n"),
+  assert_same("f() ->\n    +1.1.\n"),
+  assert_same("f() ->\n    +(+1).\n"),
+  assert_same("f(X) ->\n    -X.\n"),
+  assert_same("f(X) ->\n    +X.\n"),
+  assert_same("f(X, Y) ->\n    X + Y.\n"),
+  assert_same("f(X, Y) ->\n    X + +Y.\n"),
+  assert_same("f(X, Y) ->\n    X - Y.\n"),
+  ok.
+
+eep49(_Config) ->
+    assert_same("f() ->\n"
+                "    maybe ok ?= ok end.\n"),
+    assert_same("f() ->\n"
+                "    maybe\n"
+                "        ok ?= ok\n"
+                "    else\n"
+                "        {error, _} ->\n"
+                "            error\n"
+                "    end.\n"),
+    ok.
+
+eep58(_Config) ->
+    assert_same("lc_map(Map) ->\n"
+                "    [ \n"
+                "     {K, V} ||\n"
+                "         K := V <- Map\n"
+                "    ].\n"),
+
+    assert_same("bc_map(Map) ->\n"
+                "    << \n"
+                "      <<K:32,V:32>> ||\n"
+                "          K := V <- Map\n"
+                "    >>.\n"),
+
+    assert_same("mc(Map) ->\n"
+                "    #{ \n"
+                "      K => V + 1 ||\n"
+                "          K := V <- Map\n"
+                "    }.\n"),
+
+    ok.
+
+unicode_binary_attributes(_) ->
+    assert_same(~s'-doc(<<"">>).\n'),
+    assert_same(~s'-doc(<<"abc">>).\n'),
+    assert_same(~s'-doc(<<255>>).\n'),
+    assert_same(~s'-doc(<<"åäö"/utf8>>).\n', [{encoding,unicode}]),
+    assert_same(~s'-doc(<<"😀"/utf8>>).\n', [{encoding,unicode}]),
+    assert_same(~s'-doc(<<255>>).\n', [{encoding,unicode}]),
+
+    %% åäö in latin1 is not valid unicode, so it is printed as bytes.
+    assert_same(~s'-doc(<<229,228,246>>).\n', [{encoding,latin1}]),
+    assert_same(~s'-doc(<<240,159,152,128>>).\n', [{encoding,latin1}]),
 
     ok.
 
@@ -1389,9 +1502,11 @@ compile_file(Config, Test, Opts0) ->
     case compile:file(FileName, Opts) of
         {ok, _M, _Ws} ->
             {ok, filename:rootname(FileName)};
-        Error -> Error
+        Error ->
+            io:format("~ts\n", [Test]),
+            _ = compile:file(FileName, [report|Opts]),
+            Error
     end.
-
 flat_expr1(Expr0) ->
     Expr = erl_parse:new_anno(Expr0),
     lists:flatten(erl_pp:expr(Expr)).
@@ -1430,7 +1545,15 @@ parse_forms(Chars) ->
 parse_forms2([], _Cont, _Line, Forms) ->
     lists:reverse(Forms);
 parse_forms2(String, Cont0, Line, Forms) ->
-    case erl_scan:tokens(Cont0, String, Line) of
+    %% FIXME: When the experimental features EEP has been implemented, we should
+    %% dig out all keywords defined in all features.
+    ResWordFun =
+        fun('maybe') -> true;
+           ('else') -> true;
+           (Other) -> erl_scan:reserved_word(Other)
+        end,
+    Options = [{reserved_word_fun,ResWordFun}],
+    case erl_scan:tokens(Cont0, String, Line, Options) of
         {done, {ok, Tokens, EndLine}, Chars} ->
             {ok, Form} = erl_parse:parse_form(Tokens),
             parse_forms2(Chars, [], EndLine, [Form | Forms]);
@@ -1455,7 +1578,7 @@ pp_expr(List, Options) when is_list(List) ->
     if
         PP1 =:= PP2 -> % same line numbers
             case
-                (test_max_line(PP1) =:= ok) and (test_new_line(PPneg) =:= ok)
+                test_max_line(PP1) =:= ok andalso test_new_line(PPneg) =:= ok
             of
                 true ->
                     ok;
@@ -1514,7 +1637,12 @@ filename(Name, Config) ->
 fail() ->
     ct:fail(failed).
 
-%% +fnu means a peer node has to be started; slave will not do
-start_node(Name, Xargs) ->
-    PA = filename:dirname(code:which(?MODULE)),
-    test_server:start_node(Name, peer, [{args, "-pa " ++ PA ++ " " ++ Xargs}]).
+assert_same(Expected) ->
+    assert_same(Expected, []).
+
+assert_same(Expected, Options) when is_list(Expected) ->
+    Actual = unicode:characters_to_list(unicode:characters_to_binary(parse_and_pp_forms(Expected, Options))),
+    case Expected == Actual of
+      true -> ok;
+      false -> error({Expected, Actual})
+    end.

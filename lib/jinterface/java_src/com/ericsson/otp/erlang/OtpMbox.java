@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2000-2017. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2000-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -128,7 +130,7 @@ public class OtpMbox {
      * mailbox enables others to send messages without knowing the
      * {@link OtpErlangPid pid} of the mailbox. A mailbox can have at most one
      * name; if the mailbox already had a name, calling this method will
-     * supercede that name.
+     * supersede that name.
      * </p>
      *
      * @param aname

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,6 +20,7 @@
 %% %CopyrightEnd%
 %%
 -module(release_handler_1).
+-moduledoc false.
 
 %% External exports
 -export([eval_script/1, eval_script/5,
@@ -248,7 +251,7 @@ syntax_check_script([]) ->
 %%   {load_object_code, [Mod1, Mod2]},
 %%   % delete old version
 %%   {remove, {Mod1, brutal_purge}}, {remove, {Mod2, brutal_purge}},
-%%   % now, some procs migth be running prev current (now old) version
+%%   % now, some procs might be running prev current (now old) version
 %%   % kill them, and load new version
 %%   {load, {Mod1, brutal_purge}}, {load, {Mod2, brutal_purge}}
 %%   % now, there is one version of the code (new, current)
@@ -279,7 +282,7 @@ syntax_check_script([]) ->
 %%    If a process doesn't repsond - never mind.  It will be killed
 %%    later on (if a purge is performed).
 %%    Hmm, we must do something smart here... we should probably kill it,
-%%    but we cant, because its supervisor will restart it directly!  Maybe
+%%    but we can't, because its supervisor will restart it directly!  Maybe
 %%    we should keep a list of those, call supervisor:terminate_child()
 %%    when all others are suspended, and call sup:restart_child() when the
 %%    others are resumed.
@@ -313,11 +316,11 @@ eval({load_object_code, {Lib, LibVsn, Modules}}, EvalState) ->
 	    {NewBins, NewVsns} = 
 		lists:foldl(fun(Mod, {Bins, Vsns}) ->
 				    File = lists:concat([Mod, Ext]),
-				    FName = filename:join([LibDir, "ebin", File]),
-				    case erl_prim_loader:get_file(FName) of
-					{ok, Bin, FName2} ->
+				    FName = root_dir_relative_path(filename:join([LibDir, "ebin", File])),
+				    case erl_prim_loader:read_file(FName) of
+					{ok, Bin} ->
 					    NVsns = add_vsns(Mod, Bin, Vsns),
-					    {[{Mod, Bin, FName2} | Bins],NVsns};
+					    {[{Mod, Bin, FName} | Bins],NVsns};
 					error ->
 					    throw({error, {no_such_file,FName}})
 				    end
@@ -340,14 +343,15 @@ eval(point_of_no_return, EvalState) ->
 		   EvalState#eval_state.libdirs
 	   end,
     lists:foreach(fun({Lib, _LibVsn, LibDir}) ->
-			  Ebin = filename:join(LibDir,"ebin"),
+			  Ebin = root_dir_relative_path(filename:join(LibDir,"ebin")),
 			  code:replace_path(Lib, Ebin)
 		  end,
 		  Libs),
     EvalState;
 eval({load, {Mod, _PrePurgeMethod, PostPurgeMethod}}, EvalState) ->
     Bins = EvalState#eval_state.bins,
-    {value, {_Mod, Bin, File}} = lists:keysearch(Mod, 1, Bins),
+    {value, {_Mod, Bin, File1}} = lists:keysearch(Mod, 1, Bins),
+    File = root_dir_relative_path(File1),
     % load_binary kills all procs running old code
     % if soft_purge, we know that there are no such procs now
     {module,_} = code:load_binary(Mod, File, Bin),
@@ -479,7 +483,7 @@ get_opt(Tag, EvalState, Default) ->
 %% goes for processes that didn't respond to the suspend message.
 %%-----------------------------------------------------------------
 suspend(Mod, Procs, Timeout) ->
-    lists:zf(fun({_Sup, _Name, Pid, Mods}) -> 
+    lists:filtermap(fun({_Sup, _Name, Pid, Mods}) ->
 		     case lists:member(Mod, Mods) of
 			 true ->
 			     case catch sys_suspend(Pid, Timeout) of
@@ -521,7 +525,7 @@ sys_change_code(Pid, Mod, Vsn, Extra, Timeout) ->
     sys:change_code(Pid, Mod, Vsn, Extra, Timeout).
 
 stop(Mod, Procs) ->
-    lists:zf(fun({undefined, _Name, _Pid, _Mods}) ->
+    lists:filtermap(fun({undefined, _Name, _Pid, _Mods}) ->
 		     false;
 		({Sup, Name, _Pid, Mods}) -> 
 		     case lists:member(Mod, Mods) of
@@ -637,14 +641,19 @@ maybe_supervisor_which_children(Proc, Name, Pid) ->
             error(suspended_supervisor);
 
         running ->
-            case catch supervisor:which_children(Pid) of
+            try supervisor:which_children(Pid) of
                 Res when is_list(Res) ->
-                    Res;
-                Other ->
+                    Res
+            catch
+                exit:Reason when Reason =/= timeout andalso
+                                 not (is_tuple(Reason) andalso
+                                      element(1,Reason) =:= nodedown) ->
+                    [];
+                exit:Other ->
                     error_logger:error_msg("release_handler: ~p~nerror during"
                                            " a which_children call to ~p (~w)."
                                            " [State: running] Exiting ... ~n",
-                                           [Other, Name, Pid]),
+                                           [{'EXIT',Other}, Name, Pid]),
                     error(which_children_failed)
             end
     end.
@@ -768,14 +777,18 @@ replace_undefined(Vsn,_) -> Vsn.
 %% Returns: Vsn = term()
 %%-----------------------------------------------------------------
 get_current_vsn(Mod) ->
-    File = code:which(Mod),
-    case erl_prim_loader:get_file(File) of
-	{ok, Bin, _File2} ->
-	    get_vsn(Bin);
-	error ->
-	    %% This is the case when a new module is added, there will
-	    %% be no current version of it at the time of this call.
-	    undefined
+    case code:which(Mod) of
+        File when is_list(File) ->
+            case erl_prim_loader:read_file(File) of
+                {ok, Bin} ->
+                    get_vsn(Bin);
+                error ->
+                    undefined
+            end;
+        _ ->
+            %% This is the case when a new module is added, there will
+            %% be no current version of it at the time of this call.
+            undefined
     end.
 
 %%-----------------------------------------------------------------
@@ -799,3 +812,12 @@ get_vsn(Bin) ->
 		    Vsn
 	    end
     end.
+
+root_dir_relative_path(Pathname) ->
+    case filename:pathtype(Pathname) of
+        relative ->
+            filename:join(code:root_dir(), Pathname);
+        _ ->
+            Pathname
+    end.
+

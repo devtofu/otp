@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1998-2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1998-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -192,10 +194,10 @@ Interpret one module").
 	  "Start the debugger and interpret the modules [test, lists1, ordsets1]. Close the Interpret dialog. Set Attach on First Call and Attach on Break.").
 
 ?MAN_CASE(all_step3, "Click Step through all evaluation",
-	  "In the shell, call test:test1(). Use the Step button, the Process->Step menu item and the ctrl-s shortcut to step through the *entire* execution of the call. (Approx 36 steps). Then close the Attach window. The result printed in the shell should be: {\"peter\",[1,2,4,a,b,c],\"olin\"}").
+	  "In the shell, call test:test1(). Use the Step button, the Process->Step menu item and the Ctrl+S shortcut to step through the *entire* execution of the call. (Approx 36 steps). Then close the Attach window. The result printed in the shell should be: {\"peter\",[1,2,4,a,b,c],\"olin\"}").
 
 ?MAN_CASE(all_next3,"Click Next through all evaluation",
-	  "Again call test:test1() in the shell. This time Use the Next button,  the Process->Next menu and the ctrl-n shortcut to quickly step over the execution of the four lines in the test1-function. The result printed in the shell should be: {\"peter\",[1,2,4,a,b,c],\"olin\"}").
+	  "Again call test:test1() in the shell. This time Use the Next button,  the Process->Next menu and the Ctrl+N shortcut to quickly step over the execution of the four lines in the test1-function. The result printed in the shell should be: {\"peter\",[1,2,4,a,b,c],\"olin\"}").
 
 ?MAN_CASE(save3, "Save the debugger state",
 	  "Use File->Save Settings to save the debugger state with the name 'three.state'").
@@ -205,13 +207,13 @@ Interpret one module").
 
 
 ?MAN_CASE(finish3, "Finish the current function body",
-	  "Call the fucntion test:test1() from the shell. Press Finish to evaluate the remaining lines in the function. The result printed in the shell should be: {\"peter\",[1,2,4,a,b,c],\"olin\"}").
+	  "Call the function test:test1() from the shell. Press Finish to evaluate the remaining lines in the function. The result printed in the shell should be: {\"peter\",[1,2,4,a,b,c],\"olin\"}").
 
 ?MAN_CASE(killinit3,"Set up for killing and clearing processes",
 	  "Call test:test2() from the shell. Set a break point at the last line of test:test2. Click Continue. This should open three new attach windows. One for each spawn called in test:test2/0.   ").
 
 ?MAN_CASE(killone3, "Kill a process and clear it",
-	  "In one of the newly openend Attach windows: select Process->Kill. A message should appear above the Code Area in the Attach window. Use Windows->Monitor to verify that the Monitor window also shows that the process has been killed. In the Monitor window: select Edit->Clear. This should do two things: 1) close/remove the window of the killed process. 2) Remove the entry of the killed process from the monitor window.").
+	  "In one of the newly opened Attach windows: select Process->Kill. A message should appear above the Code Area in the Attach window. Use Windows->Monitor to verify that the Monitor window also shows that the process has been killed. In the Monitor window: select Edit->Clear. This should do two things: 1) close/remove the window of the killed process. 2) Remove the entry of the killed process from the monitor window.").
 
 ?MAN_CASE(killall3,"KIll all processes, and clear them",
 	  "In the Monitor window: Select Edit->Kill All. Verify that all processes have been killed (in their respective windows and in the monitor window). Windows will be raised as their processes die. Next select, Edit->Clear. All attach windows should now be closed. Their entris should also disappear from the monitor window. The shell should have reported: ** exited: killed **").
@@ -250,13 +252,13 @@ Interpret one module").
 %% SET 6 (Distribution)
 
 ?MAN_CASE(distsetup6,"Set up distribution",
-	  "Start two erlang systems [foo,bar] (with option -sname), make them aware of eachother using net_adm:ping/1. Start the debugger on foo. Interpret the modules [test, lists1, ordsets1]. Set attach on First call.  ").
+	  "Start two erlang systems [foo,bar] (with option -sname), make them aware of each other using net_adm:ping/1. Start the debugger on foo. Interpret the modules [test, lists1, ordsets1]. Set attach on First call.  ").
 
 
 
 
 ?MAN_CASE(all_step6, "Click Step through all evaluation",
-	  "In the bar shell, call test:test1().This should open an attach window. Use the Step button, the Process->Step menu item and the ctrl-s shortcut to step through the *entire* execution of the call. (Approx 36 steps). Then close the Attach window. The result printed in the bar shell should be: {\"peter\",[1,2,4,a,b,c],\"olin\"}").
+	  "In the bar shell, call test:test1().This should open an attach window. Use the Step button, the Process->Step menu item and the Ctrl+S shortcut to step through the *entire* execution of the call. (Approx 36 steps). Then close the Attach window. The result printed in the bar shell should be: {\"peter\",[1,2,4,a,b,c],\"olin\"}").
 
 ?MAN_CASE(all_next6,"Click Next through all evaluation",
-	  "Again, in the bar shell, call test:test1(). This time Use the Next button,  the Process->Next menu and the ctrl-n shortcut to quickly step over the execution of the four lines in the test1-function. The result printed in the shell should be: {\"peter\",[1,2,4,a,b,c],\"olin\"}").
+	  "Again, in the bar shell, call test:test1(). This time Use the Next button,  the Process->Next menu and the Ctrl+N shortcut to quickly step over the execution of the four lines in the test1-function. The result printed in the shell should be: {\"peter\",[1,2,4,a,b,c],\"olin\"}").

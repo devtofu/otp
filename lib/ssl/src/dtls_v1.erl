@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2013-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2013-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,22 +20,29 @@
 %% %CopyrightEnd%
 %%
 -module(dtls_v1).
+-moduledoc false.
 
 -include("ssl_cipher.hrl").
+-include("ssl_record.hrl").
 
--export([suites/1, all_suites/1, anonymous_suites/1,hmac_hash/3, ecc_curves/1, 
-         corresponding_tls_version/1, corresponding_dtls_version/1,
-         cookie_secret/0, cookie_timeout/0]).
+-export([suites/1,
+         all_suites/1,
+         anonymous_suites/1,
+         exclusive_suites/1,
+         exclusive_anonymous_suites/1,
+         hmac_hash/3,
+         corresponding_tls_version/1,
+         corresponding_dtls_version/1,
+         cookie_secret/0,
+         cookie_timeout/0]).
 
--define(COOKIE_BASE_TIMEOUT, 30000).
+-spec suites(ssl_record:ssl_version()) -> [ssl_cipher_format:cipher_suite()].
 
--spec suites(Minor:: 253|255) -> [ssl_cipher_format:cipher_suite()].
-
-suites(Minor) ->
+suites(Version) ->
     lists:filter(fun(Cipher) -> 
                          is_acceptable_cipher(ssl_cipher_format:suite_bin_to_map(Cipher)) 
                  end,
-                 tls_v1:suites(corresponding_minor_tls_version(Minor))).
+                 tls_v1:suites(corresponding_tls_version(Version))).
 all_suites(Version) ->
     lists:filter(fun(Cipher) -> 
                          is_acceptable_cipher(ssl_cipher_format:suite_bin_to_map(Cipher)) 
@@ -45,34 +54,40 @@ anonymous_suites(Version) ->
                          is_acceptable_cipher(ssl_cipher_format:suite_bin_to_map(Cipher)) 
                  end, 
                  ssl_cipher:anonymous_suites(corresponding_tls_version(Version))).
-                 
+
+exclusive_suites(Version) ->
+    lists:filter(fun(Cipher) ->
+                         is_acceptable_cipher(ssl_cipher_format:suite_bin_to_map(Cipher))
+                 end,
+                 tls_v1:exclusive_suites(corresponding_tls_version(Version))).
+
+exclusive_anonymous_suites(Version) ->
+    lists:filter(fun(Cipher) ->
+                         is_acceptable_cipher(ssl_cipher_format:suite_bin_to_map(Cipher))
+                 end,
+                 tls_v1:exclusive_anonymous_suites(corresponding_tls_version(Version))).
+
+
 hmac_hash(MacAlg, MacSecret, Value) ->
     tls_v1:hmac_hash(MacAlg, MacSecret, Value).
 
-ecc_curves({_Major, Minor}) ->
-    tls_v1:ecc_curves(corresponding_minor_tls_version(Minor)).
-
-corresponding_tls_version({254, Minor}) ->
-    {3, corresponding_minor_tls_version(Minor)}.
+corresponding_tls_version(?DTLS_1_0) ->
+    ?TLS_1_1;
+corresponding_tls_version(?DTLS_1_2) ->
+    ?TLS_1_2.
 
 cookie_secret() ->
     crypto:strong_rand_bytes(32).
 
 cookie_timeout() ->
-    %% Cookie will live for two timeouts periods
-    round(rand:uniform() * ?COOKIE_BASE_TIMEOUT/2).
-    
-corresponding_minor_tls_version(255) ->
-    2;
-corresponding_minor_tls_version(253) ->
-    3.
+    %% Minimum 10s, max 30s — ensures client always has time to respond
+    %% even on lossy networks with re-transmissions
+    10000 + rand:uniform(20000).
 
-corresponding_dtls_version({3, Minor}) -> 
-    {254, corresponding_minor_dtls_version(Minor)}.
+corresponding_dtls_version(?TLS_1_1) ->
+    ?DTLS_1_0;
+corresponding_dtls_version(?TLS_1_2) ->
+    ?DTLS_1_2.
 
-corresponding_minor_dtls_version(2) ->
-    255;
-corresponding_minor_dtls_version(3) ->
-    253.
 is_acceptable_cipher(Suite) ->
     not ssl_cipher:is_stream_ciphersuite(Suite).

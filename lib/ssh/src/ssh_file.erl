@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2005-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2005-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,6 +25,182 @@
 %%% Description: SSH file handling
 
 -module(ssh_file).
+-moduledoc """
+Default callback module for the client's and server's database operations in the
+ssh application
+
+This module is the default callback handler for the client's and the server's
+user and host "database" operations. All data, for instance key pairs, are
+stored in files in the normal file system. This page documents the files, where
+they are stored and configuration options for this callback module.
+
+The intention is to be compatible with the [OpenSSH](http://www.openssh.com)
+storage in files. Therefore it mimics directories and filenames of
+[OpenSSH](http://www.openssh.com).
+
+Ssh_file implements the `m:ssh_server_key_api` and the `m:ssh_client_key_api`.
+This enables the user to make an own interface using for example a database
+handler.
+
+Such another callback module could be used by setting the option
+[`key_cb`](`t:ssh:key_cb_common_option/0`) when starting a client or a server
+(with for example [ssh:connect](`ssh:connect/3`), [ssh:daemon](`ssh:daemon/2`)
+or [ssh:shell](`ssh:shell/1`) ).
+
+> #### Callbacks {: .info }
+>
+> The callback functions (`host_key/2`, `is_auth_key/3`, `user_key/2`,
+> `is_host_key/5`, `add_host_key/4`) are called by the SSH application
+> internally. They are documented here to show which files and options
+> the default implementation uses. See `m:ssh_server_key_api` and
+> `m:ssh_client_key_api` for the callback specifications.
+>
+> The public API functions are `decode/2`, `encode/2`, and
+> `extract_public_key/1`.
+
+## Files, directories and who uses them
+
+### Daemons
+
+Daemons uses all files stored in the [SYSDIR](`m:ssh_file#SYSDIR`) directory.
+
+Optionally, in case of `publickey` authorization, one or more of the remote
+user's public keys in the [USERDIR](`m:ssh_file#USERDIR`) directory are used.
+See the files [`USERDIR/authorized_keys`](`m:ssh_file#FILE-authorized_keys`) and
+[`USERDIR/authorized_keys2`](`m:ssh_file#FILE-authorized_keys2`).
+
+### Clients
+
+Clients uses all files stored in the [USERDIR](`m:ssh_file#USERDIR`) directory.
+
+### Directory contents
+
+- **[](){: #LOCALUSER } LOCALUSER**  
+  The user name of the OS process running the Erlang virtual machine (emulator).
+
+- **[](){: #SYSDIR } SYSDIR**  
+  This is the directory holding the server's files:
+
+  - [](){: #FILE-ssh_host_STAR_key } `ssh_host_dsa_key`{: #FILE-ssh_host_dsa_key
+    } \- private dss host key (optional)
+  - `ssh_host_rsa_key`{: #FILE-ssh_host_rsa_key } \- private rsa host key
+    (optional)
+  - `ssh_host_ecdsa_key`{: #FILE-ssh_host_ecdsa_key } \- private ecdsa host key
+    (optional)
+  - `ssh_host_ed25519_key`{: #FILE-ssh_host_ed25519_key } \- private eddsa host
+    key for curve 25519 (optional)
+  - `ssh_host_ed448_key`{: #FILE-ssh_host_ed448_key } \- private eddsa host key
+    for curve 448 (optional)
+  - `ssh_host_mldsa44_key`{: #FILE-ssh_host_mldsa44_key } \- private ML-DSA-44
+    host key in PKCS#8 PEM format (optional)
+  - `ssh_host_mldsa65_key`{: #FILE-ssh_host_mldsa65_key } \- private ML-DSA-65
+    host key in PKCS#8 PEM format (optional)
+  - `ssh_host_mldsa87_key`{: #FILE-ssh_host_mldsa87_key } \- private ML-DSA-87
+    host key in PKCS#8 PEM format (optional)
+
+  The classical key files can be generated with OpenSSH's `ssh-keygen`
+  command. ML-DSA keys use unencrypted PKCS#8 PEM; for example, OpenSSL 3.5
+  or later can generate an ML-DSA-65 key with
+  `openssl genpkey -algorithm ML-DSA-65 -out ssh_host_mldsa65_key`.
+
+  At least one host key must be defined. The default value of SYSDIR is
+  `/etc/ssh`{: ##/etc/ssh }.
+
+  For security reasons, this directory is normally accessible only to the root
+  user.
+
+  To change the SYSDIR, see the [system_dir](`t:system_dir_daemon_option/0`)
+  option.
+
+- **[](){: #USERDIR } USERDIR**  
+  This is the directory holding the files:
+
+  - `authorized_keys`{: #FILE-authorized_keys } and, as second alternative
+    `authorized_keys2`{: #FILE-authorized_keys2 } \- the user's public keys are
+    stored concatenated in one of those files.
+
+    It is composed of lines as for
+    [OpenSSH](https://man.openbsd.org/sshd#AUTHORIZED_KEYS_FILE_FORMAT):
+
+    ```text
+    (options)? keytype base64-encoded-key comment
+    ```
+
+    where
+
+    ```text
+    options :: option(,option)*
+    option :: % All options are skipped
+    keytype :: 'ssh-dsa'
+             | 'ssh-rsa'
+             | 'ssh-mldsa-44'
+             | 'ssh-mldsa-65'
+             | 'ssh-mldsa-87'
+             | 'ssh-ecdsa-nistp256'
+    	 | 'ssh-ecdsa-nistp384'
+             | 'ssh-ecdsa-nistp521'
+             | 'ssh-ed25519'
+    	 | 'ssh-ed448'
+    base64-encoded-key :: % The user's public key
+    comment :: % Comments are skipped
+    ```
+
+  - `known_hosts`{: #FILE-known_hosts } \- host keys from hosts visited
+    concatenated. The file is created and used by the client.
+
+    It is composed of lines as for
+    [OpenSSH](https://man.openbsd.org/sshd#SSH_KNOWN_HOSTS_FILE_FORMAT):
+
+    ```text
+    (option)? pattern(,pattern)* keytype key (comment)?
+    ```
+
+    where
+
+    ```text
+    option :: '@revoked'
+    pattern :: host | '[' host ']:' port
+    host :: ip-address | hostname | '*'
+    port :: portnumber | '*'
+    keytype :: 'ssh-dsa'
+             | 'ssh-rsa'
+             | 'ssh-mldsa-44'
+             | 'ssh-mldsa-65'
+             | 'ssh-mldsa-87'
+             | 'ssh-ecdsa-nistp256'
+    	 | 'ssh-ecdsa-nistp384'
+             | 'ssh-ecdsa-nistp521'
+             | 'ssh-ed25519'
+    	 | 'ssh-ed448'
+    key :: % encoded key from eg ssh_host_*.pub
+    ```
+
+  - [](){: #FILE-id_STAR } `id_dsa`{: #FILE-id_dsa } \- private dss user key
+    (optional)
+  - `id_rsa`{: #FILE-id_rsa } \- private rsa user key (optional)
+  - `id_ecdsa`{: #FILE-id_ecdsa } \- private ecdsa user key (optional)
+  - `id_ed25519`{: #FILE-id_ed25519 } \- private eddsa user key for curve 25519
+    (optional)
+  - `id_ed448`{: #FILE-id_ed448 } \- private eddsa user key for curve 448
+    (optional)
+  - `id_mldsa44`{: #FILE-id_mldsa44 } \- private ML-DSA-44 user key in
+    PKCS#8 PEM format (optional)
+  - `id_mldsa65`{: #FILE-id_mldsa65 } \- private ML-DSA-65 user key in
+    PKCS#8 PEM format (optional)
+  - `id_mldsa87`{: #FILE-id_mldsa87 } \- private ML-DSA-87 user key in
+    PKCS#8 PEM format (optional)
+
+  The classical key files can be generated with OpenSSH's `ssh-keygen`
+  command. ML-DSA keys use unencrypted PKCS#8 PEM; for example, OpenSSL 3.5
+  or later can generate an ML-DSA-65 key with
+  `openssl genpkey -algorithm ML-DSA-65 -out id_mldsa65`.
+
+  The default value of USERDIR is
+  `/home/`[`LOCALUSER`](`m:ssh_file#LOCALUSER`)`/.ssh`.
+
+  To change the USERDIR, see the [user_dir](`t:user_dir_common_option/0`) option
+""".
+-moduledoc(#{since => "OTP 21.2"}).
 
 -include_lib("public_key/include/public_key.hrl").
 -include_lib("kernel/include/file.hrl").
@@ -37,12 +215,21 @@
 -behaviour(ssh_server_key_api).
 -export([host_key/2, is_auth_key/3]).
 -export_type([system_dir_daemon_option/0]).
+-doc "Sets the [system directory](`m:ssh_file#SYSDIR`).".
+-doc(#{group => <<"Options">>}).
 -type system_dir_daemon_option()   :: {system_dir, string()}.
 
 %%%--------------------- client exports ---------------------------
 -behaviour(ssh_client_key_api).
 -export([is_host_key/5, user_key/2, add_host_key/4]).
 -export_type([pubkey_passphrase_client_options/0]).
+-doc """
+If the user's DSA, RSA or ECDSA key is protected by a passphrase, it can be
+supplied with those options.
+
+Note that EdDSA passhrases (Curves 25519 and 448) are not implemented.
+""".
+-doc(#{group => <<"Options">>}).
 -type pubkey_passphrase_client_options() ::   {dsa_pass_phrase,      string()}
                                             | {rsa_pass_phrase,      string()}
                                               %% Not yet implemented:                     | {ed25519_pass_phrase,  string()}
@@ -51,6 +238,7 @@
 
 %%%--------------------- utility exports ---------------------------
 -export([decode/2, encode/2]).
+-export([extract_public_key/1]).
 
 -define(ENCODED_LINE_LENGTH, 68).
 
@@ -59,11 +247,44 @@
               user_dir_fun_common_option/0
              ]).
 
+-doc "Sets the [user directory](`m:ssh_file#USERDIR`).".
+-doc(#{group => <<"Options">>}).
 -type user_dir_common_option()     :: {user_dir,  string()}.
+-doc(#{group => <<"Options">>}).
 -type user_dir_fun_common_option() :: {user_dir_fun, user2dir()}.
+-doc """
+Sets the [user directory](`m:ssh_file#USERDIR`) dynamically by evaluating the
+`user2dir` function.
+""".
+-doc(#{group => <<"Options">>}).
 -type user2dir() :: fun((RemoteUserName::string()) -> UserDir :: string()) .
 
+-doc """
+Make the handling of large files fast by setting `time`, but this will use more
+memory. The `space` variant shrinks the memory requirements, but with a higher
+time consumption.
+
+To set it, set the option `{key_cb, {ssh_file, [{optimize,TimeOrSpace}]}` in the
+call of [ssh:connect/3](`ssh:connect/3`), `ssh:daemon/2` or similar function
+call that initiates an ssh connection.
+""".
+-doc(#{group => <<"Options">>}).
 -type optimize_key_lookup() :: {optimize, time|space} .
+
+-doc "The key representation".
+-doc(#{group => <<"Options">>}).
+-type key() :: public_key:public_key() | public_key:private_key() .
+-doc(#{group => <<"Options">>}).
+-type experimental_openssh_key_v1_encode() ::
+        [{[{public_key:public_key(), public_key:private_key(), Comment::binary()} |
+           {public_key:private_key(), Comment::binary()}],
+          openssh_key_v1_attributes()}].
+-doc(#{group => <<"Options">>}).
+-type experimental_openssh_key_v1_decode() ::
+        [{key(), openssh_key_v1_attributes()}].
+-doc "Types for the experimental implementation of the `openssh_key_v1` format.".
+-doc(#{group => <<"Options">>}).
+-type openssh_key_v1_attributes() :: [{atom(),term()}].
 
 %%%================================================================
 %%%
@@ -71,6 +292,25 @@
 %%%
 
 %%%---------------- SERVER API ------------------------------------
+-doc """
+Implements `c:ssh_server_key_api:host_key/2`.
+
+**Options**
+
+- [system_dir](`t:system_dir_daemon_option/0`)
+
+**Files**
+
+- [`SYSDIR/ssh_host_rsa_key`](`m:ssh_file#FILE-ssh_host_rsa_key`)
+- [`SYSDIR/ssh_host_dsa_key`](`m:ssh_file#FILE-ssh_host_dsa_key`)
+- [`SYSDIR/ssh_host_ecdsa_key`](`m:ssh_file#FILE-ssh_host_ecdsa_key`)
+- [`SYSDIR/ssh_host_ed25519_key`](`m:ssh_file#FILE-ssh_host_ed25519_key`)
+- [`SYSDIR/ssh_host_ed448_key`](`m:ssh_file#FILE-ssh_host_ed448_key`)
+- [`SYSDIR/ssh_host_mldsa44_key`](`m:ssh_file#FILE-ssh_host_mldsa44_key`)
+- [`SYSDIR/ssh_host_mldsa65_key`](`m:ssh_file#FILE-ssh_host_mldsa65_key`)
+- [`SYSDIR/ssh_host_mldsa87_key`](`m:ssh_file#FILE-ssh_host_mldsa87_key`)
+""".
+-doc(#{since => <<"OTP 21.2">>, group => <<"Callback Implementations">>}).
 -spec host_key(Algorithm, Options) -> Result when
       Algorithm :: ssh:pubkey_alg(),
       Result :: {ok, public_key:private_key()} | {error, term()},
@@ -80,6 +320,23 @@ host_key(Algorithm, Opts) ->
     read_ssh_key_file(system, private, Algorithm, Opts).
 
 %%%................................................................
+-doc """
+Implements `c:ssh_server_key_api:is_auth_key/3`.
+
+**Options**
+
+- [user_dir_fun](`t:user_dir_fun_common_option/0`)
+- [user_dir](`t:user_dir_common_option/0`)
+
+**Files**
+
+- [`USERDIR/authorized_keys`](`m:ssh_file#FILE-authorized_keys`)
+- [`USERDIR/authorized_keys2`](`m:ssh_file#FILE-authorized_keys2`)
+
+This functions discards all options in the beginning of the lines of thoose
+files when reading them.
+""".
+-doc(#{since => <<"OTP 21.2">>, group => <<"Callback Implementations">>}).
 -spec is_auth_key(Key, User, Options) -> boolean() when
       Key :: public_key:public_key(),
       User :: string(),
@@ -96,6 +353,30 @@ is_auth_key(Key0, User, Opts) ->
         lookup_auth_keys(KeyType, Key, filename:join(Dir,"authorized_keys2"), Opts).
 
 %%%---------------- CLIENT API ------------------------------------
+-doc """
+Implements `c:ssh_client_key_api:user_key/2`.
+
+**Options**
+
+- [user_dir](`t:user_dir_common_option/0`)
+- [dsa_pass_phrase](`t:pubkey_passphrase_client_options/0`)
+- [rsa_pass_phrase](`t:pubkey_passphrase_client_options/0`)
+- [ecdsa_pass_phrase](`t:pubkey_passphrase_client_options/0`)
+
+Note that EdDSA passhrases (Curves 25519 and 448) are not implemented.
+
+**Files**
+
+- [`USERDIR/id_dsa`](`m:ssh_file#FILE-id_dsa`)
+- [`USERDIR/id_rsa`](`m:ssh_file#FILE-id_rsa`)
+- [`USERDIR/id_ecdsa`](`m:ssh_file#FILE-id_ecdsa`)
+- [`USERDIR/id_ed25519`](`m:ssh_file#FILE-id_ed25519`)
+- [`USERDIR/id_ed448`](`m:ssh_file#FILE-id_ed448`)
+- [`USERDIR/id_mldsa44`](`m:ssh_file#FILE-id_mldsa44`)
+- [`USERDIR/id_mldsa65`](`m:ssh_file#FILE-id_mldsa65`)
+- [`USERDIR/id_mldsa87`](`m:ssh_file#FILE-id_mldsa87`)
+""".
+-doc(#{since => <<"OTP 21.2">>, group => <<"Callback Implementations">>}).
 -spec user_key(Algorithm, Options) -> Result when
       Algorithm :: ssh:pubkey_alg(),
       Result :: {ok, public_key:private_key()} |
@@ -107,6 +388,20 @@ user_key(Algorithm, Opts) ->
 
 %%%................................................................
 %%% New style (with port number)
+-doc """
+Implements `c:ssh_client_key_api:is_host_key/5`.
+
+[](){: #is_host_key-4 }
+
+**Option**
+
+- [user_dir](`t:user_dir_common_option/0`)
+
+**File**
+
+- [`USERDIR/known_hosts`](`m:ssh_file#FILE-known_hosts`)
+""".
+-doc(#{since => <<"OTP 23.0">>, group => <<"Callback Implementations">>}).
 -spec is_host_key(Key, Host, Port, Algorithm, Options) -> Result when
       Key :: public_key:public_key(),
       Host :: inet:ip_address() | inet:hostname() | [inet:ip_address() | inet:hostname()],
@@ -125,6 +420,20 @@ is_host_key(Key0, Hosts0, Port, Algorithm, Opts) ->
     lookup_host_keys(Hosts, KeyType, Key, File, Opts).
 
 %%%----------------------------------------------------------------
+-doc """
+Implements `c:ssh_client_key_api:add_host_key/4`.
+
+[](){: #add_host_key-3 }
+
+**Option**
+
+- [user_dir](`t:user_dir_common_option/0`)
+
+**File**
+
+- [`USERDIR/known_hosts`](`m:ssh_file#FILE-known_hosts`)
+""".
+-doc(#{since => <<"OTP 23.0">>, group => <<"Callback Implementations">>}).
 -spec add_host_key(Host, Port, Key, Options) -> Result when 
       Host :: inet:ip_address() | inet:hostname()
             | [inet:ip_address() | inet:hostname()],
@@ -155,7 +464,18 @@ add_host_key(Hosts0, Port, Key, Opts) ->
 %%%---------------- UTILITY API -----------------------------------
 %%% In public key before OTP-24.0 as ssh_decode/2 and ssh_encode/2
 
--spec decode(SshBin, Type) -> Decoded
+-doc """
+Decodes an SSH file-binary.
+
+If `Type` is `public_key` the binary can be either an RFC4716 public key or an
+OpenSSH public key.
+
+> #### Note {: .info }
+>
+> The implementation of the `openssh_key_v1` format is still experimental.
+""".
+-doc(#{since => <<"OTP 24.0">>, group => <<"API">>}).
+-spec decode(SshBin, Type) -> Decoded | {error,term()}
                                   when SshBin :: binary(),
                                        Type :: ssh2_pubkey
                                              | public_key
@@ -164,21 +484,43 @@ add_host_key(Hosts0, Port, Key, Opts) ->
                                              | openssh_key_v1  % Experimental
                                              | known_hosts
                                              | auth_keys,
-                                       Decoded :: public_key:public_key()
-                                                | [{public_key:public_key(), [{headers,Attrs}]}]
-                                                | [{public_key:public_key(), [{comment,string()}]}]
-                                                | {error, term()},
-                                       Attrs :: {Key::string()|atom(), Value::string()}
-                                                .
+                                       Decoded :: Decoded_ssh2_pubkey
+                                                | Decoded_public
+                                                | Decoded_openssh
+                                                | Decoded_rfc4716
+                                                | Decoded_openssh_key_v1
+                                                | Decoded_known_hosts
+                                                | Decoded_auth_keys,
+
+                                       Decoded_ssh2_pubkey :: public_key:public_key(),
+                                       Decoded_public :: Decoded_rfc4716
+                                                       | Decoded_openssh_key_v1
+                                                       | Decoded_openssh,
+                                       Decoded_openssh :: [{public_key:public_key(), [{comment,string()}]}],
+                                       Decoded_rfc4716 :: [{key(), [{headers,Attrs}]}],
+                                       Decoded_openssh_key_v1 :: experimental_openssh_key_v1_decode(),
+                                       Decoded_known_hosts :: [{public_key:public_key(), [{comment,string()}
+                                                                                          | {hostnames,[string()]}]}],
+                                       Decoded_auth_keys :: [{public_key:public_key(), [{comment,string()}
+                                                                                        | {options,[string()]}]}],
+                                       Attrs :: {Key::string(), Value::string()} .
+
 decode(KeyBin, ssh2_pubkey) when is_binary(KeyBin) ->
     ssh_message:ssh2_pubkey_decode(KeyBin);
 
 decode(KeyBin, public_key) when is_binary(KeyBin) ->
-    Type = case KeyBin of
-               <<"-----BEGIN OPENSSH",_/binary>> -> openssh_key_v1;
-               <<"----",_/binary>> -> rfc4716_key;
-               _ -> openssh_key
-           end,
+    Matches = fun(Bin, Pattern, Type) ->
+                      case binary:match(Bin, Pattern) of
+                          nomatch -> false;
+                          _ -> Type
+                      end
+              end,
+    Type =
+        maybe
+            false ?= Matches(KeyBin, <<"\n-----BEGIN OPENSSH">>, openssh_key_v1),
+            false ?= Matches(KeyBin, <<"\n----">>, rfc4716_key),
+            openssh_key
+        end,
     decode(KeyBin, Type);
 
 decode(KeyBin, Type) when is_binary(KeyBin) andalso 
@@ -259,6 +601,7 @@ decode(Bin, auth_keys) when is_binary(Bin) ->
         [Options,_KeyType,KeyBin|Comment] <-
             case binary:match(L, [<<"ssh-rsa">>,
                                   <<"rsa-sha2-">>,
+                                  <<"ssh-mldsa-">>,
                                   <<"ssh-dss">>,
                                   <<"ecdsa-sha2-nistp">>,
                                   <<"ssh-ed">>
@@ -269,7 +612,7 @@ decode(Bin, auth_keys) when is_binary(Bin) ->
                     [ [[] | binary:split(L,<<" ">>,[global,trim_all])] ];
                 {Pos,Len} when is_integer(Pos), is_integer(Len) ->
                     [ [binary:split(binary:part(L,0,Pos-1), <<",">>,[global,trim_all]) |
-                       binary:split(binary:part(L,Pos,size(L)-Pos), <<" ">>, [global,trim_all])]
+                       binary:split(binary:part(L,Pos,byte_size(L)-Pos), <<" ">>, [global,trim_all])]
                     ]
             end
     ];
@@ -278,6 +621,14 @@ decode(_KeyBin, _Type) ->
     error(badarg).
 
 %%%----------------------------------------------------------------
+-doc """
+Encodes a list of SSH file entries (public keys and attributes) to a binary.
+
+> #### Note {: .info }
+>
+> The implementation of the `openssh_key_v1` format is still experimental.
+""".
+-doc(#{since => <<"OTP 24.0">>, group => <<"API">>}).
 -spec encode(InData, Type) -> binary() | {error,term()}
                                   when Type :: ssh2_pubkey
                                              | openssh_key
@@ -285,12 +636,23 @@ decode(_KeyBin, _Type) ->
                                              | openssh_key_v1  % Experimental
                                              | known_hosts
                                              | auth_keys,
-                                       InData :: public_key:public_key()
-                                               | [{public_key:public_key(), [{headers,Attrs}]}]
-                                               | [{public_key:public_key(), [{comment,string()}]}]
-                                               | {error, term()},
-                                       Attrs :: {Key::string()|atom(), Value::string()}
-                                                .
+                                       InData :: InData_ssh2_pubkey
+                                               | InData_openssh
+                                               | InData_rfc4716
+                                               | InData_openssh_key_v1
+                                               | InData_known_hosts
+                                               | InData_auth_keys,
+
+                                       InData_ssh2_pubkey :: public_key:public_key(),
+                                       InData_openssh :: [{public_key:public_key(), [{comment,string()}]}],
+                                       InData_rfc4716 :: [{key(), [{headers,Attrs}]}],
+                                       InData_openssh_key_v1 :: experimental_openssh_key_v1_encode(),
+                                       InData_known_hosts :: [{public_key:public_key(), [{comment,string()}
+                                                                                          | {hostnames,[string()]}]}],
+                                       InData_auth_keys :: [{public_key:public_key(), [{comment,string()}
+                                                                                        | {options,[string()]}]}],
+                                       Attrs :: {Key::string(), Value::string()} .
+
 encode(Key, ssh2_pubkey) ->
     ssh_message:ssh2_pubkey_encode(Key);
 
@@ -309,16 +671,12 @@ encode(KeyAttrs, Type) when Type==rfc4716_key ;
                  fun openssh_key_v1_encode/1}
         end,
     iolist_to_binary(
-      [
-       [Begin,
+      [[Begin,
         [rfc4716_encode_header(H) || H <- proplists:get_value(headers, Attrs, [])],
-        split_long_lines( base64:encode( F(Key) ) ),
+        split_long_lines(base64:encode(F(Key))),
         "\n",
-        End
-       ] ||
-          {Key,Attrs} <- KeyAttrs
-      ]
-     );
+        End] ||
+          {Key,Attrs} <- KeyAttrs]);
 
 encode(KeyAttrs, Type) when Type == known_hosts;
                             Type == auth_keys ;
@@ -352,6 +710,51 @@ encode(KeyAttrs, Type) when Type == known_hosts;
 
 encode(_KeyBin, _Type) ->
     error(badarg).
+
+%%%----------------------------------------------------------------
+
+-doc "Fetches the public key from a private key.".
+-doc(#{since => <<"OTP 25.0">>, group => <<"API">>}).
+-spec extract_public_key(PrivKey) -> PubKey
+                        when PrivKey :: public_key:private_key(),
+                              PubKey :: public_key:public_key().
+
+extract_public_key(#'RSAPrivateKey'{modulus = N, publicExponent = E}) ->
+    #'RSAPublicKey'{modulus = N, publicExponent = E};
+extract_public_key(#'DSAPrivateKey'{y = Y, p = P, q = Q, g = G}) ->
+    {Y,  #'Dss-Parms'{p=P, q=Q, g=G}};
+extract_public_key(#'ML-DSAPrivateKey'{algorithm = Algorithm, seed = Seed})
+  when is_binary(Seed), byte_size(Seed) > 0 ->
+    {Public, _} = crypto:generate_key(Algorithm, [], {seed, Seed}),
+    #'ML-DSAPublicKey'{algorithm = Algorithm, key = Public};
+extract_public_key(#'ML-DSAPrivateKey'{algorithm = Algorithm,
+                                       expandedkey = ExpandedKey})
+  when is_binary(ExpandedKey), byte_size(ExpandedKey) > 0 ->
+    {Public, _} = crypto:generate_key(Algorithm, [], ExpandedKey),
+    #'ML-DSAPublicKey'{algorithm = Algorithm, key = Public};
+extract_public_key(#'ECPrivateKey'{parameters = {namedCurve,OID},
+				   publicKey = Pub0, privateKey = Priv}) when
+      OID == ?'id-Ed25519' orelse
+      OID == ?'id-Ed448' ->
+    case {pubkey_cert_records:namedCurves(OID), Pub0} of
+        {Alg, asn1_NOVALUE} ->
+            %% If we're missing the public key, we can create it with
+            %% the private key.
+            {Pub, Priv} = crypto:generate_key(eddsa, Alg, Priv),
+            {#'ECPoint'{point=Pub}, {namedCurve,OID}};
+        {_Alg, Pub} ->
+            {#'ECPoint'{point=Pub}, {namedCurve,OID}}
+    end;
+extract_public_key(#'ECPrivateKey'{parameters = {namedCurve,OID},
+				   publicKey = Q}) when is_tuple(OID) ->
+    {#'ECPoint'{point=Q}, {namedCurve,OID}};
+extract_public_key(#{engine:=_, key_id:=_, algorithm:=Alg} = M) ->
+    case {Alg, crypto:privkey_to_pubkey(Alg, M)} of
+        {rsa, [E,N]} ->
+            #'RSAPublicKey'{modulus = N, publicExponent = E};
+        {dss, [P,Q,G,Y]} ->
+            {Y, #'Dss-Parms'{p=P, q=Q, g=G}}
+    end.
 
 %%%================================================================
 %%%
@@ -571,7 +974,7 @@ find_host_key(_, _, _, []) ->
 revoked_key(Hosts, KeyType, EncKey, [<<"@revoked ",RestLine/binary>> | Lines]) ->
     case binary:split(RestLine, <<" ">>, [global,trim_all]) of
         [Patterns, KeyType, EncKey|_Comment] ->
-            %% Very likeley to be a revoked key,
+            %% Very likely to be a revoked key,
             %% but does any of the hosts match the pattern?
             case host_match(Hosts, Patterns) of
                 true ->
@@ -665,12 +1068,12 @@ pos_match(H, P) ->
 
         {[Hh], [Ph,<<"*">>]} ->
             %% host [host]:*
-            Sz = size(Hh),
+            Sz = byte_size(Hh),
             Ph == <<"[", Hh:Sz/binary, "]">>;
 
         {[Hh], [Ph,<<"22">>]} ->
             %% host [host]:22
-            Sz = size(Hh),
+            Sz = byte_size(Hh),
             Ph == <<"[", Hh:Sz/binary, "]">>;
 
         _ ->
@@ -765,6 +1168,7 @@ read_ssh_key_file(Role, PrivPub, Algorithm, Opts) ->
     end.
 
 
+-doc false.
 -spec decode_ssh_file(PrivPub, Algorithm, Pem, Password) -> Result when
       PrivPub :: private | public,
       Algorithm :: ssh:pubkey_alg() | any,
@@ -798,16 +1202,14 @@ decode_ssh_file(PrivPub, Algorithm, Pem, Password) ->
             {error, key_decode_failed}
     end.
 
-
 decode_pem_keys(RawBin, Password) ->
-    PemLines = split_in_lines(
+    PemLines = split_in_nonempty_lines(
                  binary:replace(RawBin, [<<"\\\n">>,<<"\\\r\\\n">>],  <<"">>, [global])
                 ),
     decode_pem_keys(PemLines, Password, []).
+
 decode_pem_keys([], _, Acc) ->
     {ok,lists:reverse(Acc)};
-
-
 decode_pem_keys(PemLines, Password, Acc) ->
     %% Private Key
     try get_key_part(PemLines) of
@@ -874,6 +1276,9 @@ file_base_name(user,   'rsa-sha2-256'       ) -> "id_rsa";
 file_base_name(user,   'rsa-sha2-384'       ) -> "id_rsa";
 file_base_name(user,   'rsa-sha2-512'       ) -> "id_rsa";
 file_base_name(user,   'ssh-dss'            ) -> "id_dsa";
+file_base_name(user,   'ssh-mldsa-44'       ) -> "id_mldsa44";
+file_base_name(user,   'ssh-mldsa-65'       ) -> "id_mldsa65";
+file_base_name(user,   'ssh-mldsa-87'       ) -> "id_mldsa87";
 file_base_name(user,   'ssh-ed25519'        ) -> "id_ed25519";
 file_base_name(user,   'ssh-ed448'          ) -> "id_ed448";
 file_base_name(user,   'ssh-rsa'            ) -> "id_rsa";
@@ -884,6 +1289,9 @@ file_base_name(system, 'rsa-sha2-256'       ) -> "ssh_host_rsa_key";
 file_base_name(system, 'rsa-sha2-384'       ) -> "ssh_host_rsa_key";
 file_base_name(system, 'rsa-sha2-512'       ) -> "ssh_host_rsa_key";
 file_base_name(system, 'ssh-dss'            ) -> "ssh_host_dsa_key";
+file_base_name(system, 'ssh-mldsa-44'       ) -> "ssh_host_mldsa44_key";
+file_base_name(system, 'ssh-mldsa-65'       ) -> "ssh_host_mldsa65_key";
+file_base_name(system, 'ssh-mldsa-87'       ) -> "ssh_host_mldsa87_key";
 file_base_name(system, 'ssh-ed25519'        ) -> "ssh_host_ed25519_key";
 file_base_name(system, 'ssh-ed448'          ) -> "ssh_host_ed448_key";
 file_base_name(system, 'ssh-rsa'            ) -> "ssh_host_rsa_key";
@@ -987,6 +1395,7 @@ asn1_type(<<"RSA PUBLIC">>) -> 'RSAPublicKey';
 asn1_type(<<"DSA PRIVATE">>) -> 'DSAPrivateKey';
 asn1_type(<<"EC PRIVATE">>) -> 'ECPrivateKey';
 asn1_type(<<"OPENSSH PRIVATE">>) -> 'openssh-key-v1';
+asn1_type(<<"PRIVATE">>) -> 'PrivateKeyInfo';
 asn1_type(_) -> undefined.
 
 %%%================================================================
@@ -1004,12 +1413,10 @@ openssh_key_v1_decode(<<"openssh-key-v1",0,
                       >>, Pwd) ->
     openssh_key_v1_decode(Rest, N, Pwd, CipherName, KdfName, KdfOptions, N, []).
 
-
 openssh_key_v1_decode(<<?DEC_BIN(BinKey,_L1), Rest/binary>>, I,
                       Pwd, CipherName, KdfName, KdfOptions, N, PubKeyAcc) when I>0 ->
     PublicKey = ssh_message:ssh2_pubkey_decode(BinKey),
     openssh_key_v1_decode(Rest, I-1, Pwd, CipherName, KdfName, KdfOptions, N, [PublicKey|PubKeyAcc]);
-
 openssh_key_v1_decode(<<?DEC_BIN(Encrypted,_L)>>,
                       0, Pwd, CipherName, KdfName, KdfOptions, N, PubKeyAccRev) ->
     PubKeys = lists:reverse(PubKeyAccRev),
@@ -1018,18 +1425,12 @@ openssh_key_v1_decode(<<?DEC_BIN(Encrypted,_L)>>,
         openssh_key_v1_decode_priv_keys(Plain, N, N, [], [])
     of
         {PrivKeys, _Comments} ->
-            lists:map(fun({ {ed_pub,A,Pub}, {ed_pri,A,Pub,Pri0} }) ->
-                              Pri = binary:part(Pri0, {0,size(Pri0)-size(Pub)}),
-                              {{ed_pub,A,Pub}, {ed_pri,A,Pub,Pri}};
-                         (Pair) ->
-                              Pair
-                      end, lists:zip(PubKeys, PrivKeys))
-            %%                      end, lists:zip3(PubKeys, PrivKeys,_ Comments))
+            lists:zip(PubKeys, PrivKeys)
+            %% lists:zip3(PubKeys, PrivKeys,_ Comments))
     catch
         error:{decryption, DecryptError} ->
             error({decryption, DecryptError})
     end.
-
 
 openssh_key_v1_decode_priv_keys(Bin, I, N, KeyAcc, CmntAcc) when I>0 ->
     {PrivKey, <<?DEC_BIN(Comment,_Lc),Rest/binary>>} = ssh_message:ssh2_privkey_decode2(Bin),
@@ -1073,7 +1474,7 @@ check_padding(Bin, BlockSize) ->
     end.
 
 %%%----------------------------------------------------------------
-%% KeyPairs :: [ {Pub,Priv,Comment} | {ed_pri{_,_,_},Comment} ]
+%% KeyPairs :: [ {Pub,Priv,Comment} | {Priv,Comment} ]
 openssh_key_v1_encode(KeyPairs) ->
     CipherName = <<"none">>,
     BlockSize = ?NON_CRYPT_BLOCKSIZE, % Cipher dependent
@@ -1085,7 +1486,7 @@ openssh_key_v1_encode(KeyPairs) ->
                      CheckInt/binary,
                      (openssh_key_v1_encode_priv_keys_cmnts(KeyPairs))/binary>>,
     UnEncrypted = <<UnEncrypted0/binary,
-                    (pad(size(UnEncrypted0), BlockSize))/binary>>,
+                    (pad(byte_size(UnEncrypted0), BlockSize))/binary>>,
     Encrypted = encrypt_openssh_key_v1(UnEncrypted,  KdfName, KdfOptions, CipherName, ignore),
     <<"openssh-key-v1",0,
       ?STRING(CipherName),
@@ -1099,8 +1500,9 @@ openssh_key_v1_encode(KeyPairs) ->
 openssh_key_v1_encode_pub_keys(KeyPairs) ->
     openssh_key_v1_encode_pub_keys(KeyPairs, []).
 
-openssh_key_v1_encode_pub_keys([{{ed_pri,Alg,PubKey,_},_C}|Ks], Acc) ->
-    Bk = ssh_message:ssh2_pubkey_encode({ed_pub,Alg,PubKey}),
+openssh_key_v1_encode_pub_keys([{Priv = #'ECPrivateKey'{}, _Cmnt} | Ks], Acc) ->
+    Pub = extract_public_key(Priv),
+    Bk = ssh_message:ssh2_pubkey_encode(Pub),
     openssh_key_v1_encode_pub_keys(Ks, [<<?STRING(Bk)>>|Acc]);
 openssh_key_v1_encode_pub_keys([{K,_,_C}|Ks], Acc) ->
     Bk = ssh_message:ssh2_pubkey_encode(K),
@@ -1108,11 +1510,12 @@ openssh_key_v1_encode_pub_keys([{K,_,_C}|Ks], Acc) ->
 openssh_key_v1_encode_pub_keys([], Acc) ->
     list_to_binary(lists:reverse(Acc)).
 
+
 %%%----
 openssh_key_v1_encode_priv_keys_cmnts(KeyPairs) ->
     openssh_key_v1_encode_priv_keys_cmnts(KeyPairs, []).
 
-openssh_key_v1_encode_priv_keys_cmnts([{K={ed_pri,_,_,_},C} | Ks], Acc) ->
+openssh_key_v1_encode_priv_keys_cmnts([{K = #'ECPrivateKey'{}, C} | Ks], Acc) ->
     Bk = ssh_message:ssh2_privkey_encode(K),
     openssh_key_v1_encode_priv_keys_cmnts(Ks, [<<Bk/binary,?STRING(C)>>|Acc]);
 openssh_key_v1_encode_priv_keys_cmnts([{_,K,C}|Ks], Acc) ->

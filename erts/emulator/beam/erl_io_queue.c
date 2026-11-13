@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
+ *
+ * SPDX-License-Identifier: Apache-2.0
  * 
- * Copyright Ericsson AB 2017-2018. All Rights Reserved.
+ * Copyright Ericsson AB 2017-2025. All Rights Reserved.
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,18 +32,15 @@
 #include "erl_bits.h"
 #include "erl_io_queue.h"
 
-#define IOL2V_SMALL_BIN_LIMIT (ERL_ONHEAP_BIN_LIMIT * 4)
+static void free_binary(ErtsIOQBinary *b, bool driver);
+static ErtsIOQBinary *alloc_binary(size_t size, char *source, void **iov_base, bool driver);
 
-static void free_binary(ErtsIOQBinary *b, int driver);
-static ErtsIOQBinary *alloc_binary(Uint size, char *source, void **iov_base, int driver);
-
-void erts_ioq_init(ErtsIOQueue *q, ErtsAlcType_t alct, int driver)
+void erts_ioq_init(ErtsIOQueue *q, ErtsAlcType_t alct, bool driver)
 {
 
     ERTS_CT_ASSERT(offsetof(ErlNifIOVec,flags) == sizeof(ErtsIOVecCommon));
     ERTS_CT_ASSERT(sizeof(ErlIOVec) == sizeof(ErtsIOVecCommon));
     ERTS_CT_ASSERT(sizeof(size_t) == sizeof(ErlDrvSizeT));
-    ERTS_CT_ASSERT(sizeof(size_t) == sizeof(Uint));
 
     q->alct = alct;
     q->driver = driver;
@@ -72,7 +71,7 @@ void erts_ioq_clear(ErtsIOQueue *q)
     q->size = 0;
 }
 
-static void free_binary(ErtsIOQBinary *b, int driver)
+static void free_binary(ErtsIOQBinary *b, bool driver)
 {
     if (driver)
         driver_free_binary(&b->driver);
@@ -80,7 +79,7 @@ static void free_binary(ErtsIOQBinary *b, int driver)
         erts_bin_free(&b->nif);
 }
 
-static ErtsIOQBinary *alloc_binary(Uint size, char *source, void **iov_base, int driver)
+static ErtsIOQBinary *alloc_binary(size_t size, char *source, void **iov_base, bool driver)
 {
     if (driver) {
         ErlDrvBinary *bin = driver_alloc_binary(size);
@@ -99,13 +98,13 @@ static ErtsIOQBinary *alloc_binary(Uint size, char *source, void **iov_base, int
     }
 }
 
-Uint erts_ioq_size(ErtsIOQueue *q)
+size_t erts_ioq_size(const ErtsIOQueue *q)
 {
     return q->size;
 }
 
 /* expand queue to hold n elements in tail or head */
-static int expandq(ErtsIOQueue* q, int n, int tail)
+static int expandq(ErtsIOQueue *q, int n, int tail)
 /* tail: 0 if make room in head, make room in tail otherwise */
 {
     int h_sz;  /* room before header */
@@ -191,12 +190,12 @@ static int expandq(ErtsIOQueue* q, int n, int tail)
 }
 
 static
-int skip(ErtsIOVec* vec, Uint skipbytes,
+int skip(ErtsIOVec* vec, size_t skipbytes,
          SysIOVec **iovp, ErtsIOQBinary ***binvp,
-         Uint *lenp)
+         size_t *lenp)
 {
     int n;
-    Uint len;
+    size_t len;
     SysIOVec* iov;
     ErtsIOQBinary** binv;
 
@@ -230,11 +229,11 @@ int skip(ErtsIOVec* vec, Uint skipbytes,
 }
 
 /* Put elements from vec at q tail */
-int erts_ioq_enqv(ErtsIOQueue *q, ErtsIOVec *eiov, Uint skipbytes)
+int erts_ioq_enqv(ErtsIOQueue *q, ErtsIOVec *eiov, size_t skipbytes)
 {
     int n;
-    Uint len;
-    Uint size = eiov->common.size - skipbytes;
+    size_t len;
+    size_t size = eiov->common.size - skipbytes;
     SysIOVec *iov;
     ErtsIOQBinary** binv;
     ErtsIOQBinary*  b;
@@ -283,11 +282,11 @@ int erts_ioq_enqv(ErtsIOQueue *q, ErtsIOVec *eiov, Uint skipbytes)
 }
 
 /* Put elements from vec at q head */
-int erts_ioq_pushqv(ErtsIOQueue *q, ErtsIOVec* vec, Uint skipbytes)
+int erts_ioq_pushqv(ErtsIOQueue *q, ErtsIOVec* vec, size_t skipbytes)
 {
     int n;
-    Uint len;
-    Uint size = vec->common.size - skipbytes;
+    size_t len;
+    size_t size = vec->common.size - skipbytes;
     SysIOVec* iov;
     ErtsIOQBinary** binv;
     ErtsIOQBinary* b;
@@ -296,6 +295,7 @@ int erts_ioq_pushqv(ErtsIOQueue *q, ErtsIOVec* vec, Uint skipbytes)
 	return -1;
 
     ASSERT(vec->common.size >= skipbytes);
+
     if (vec->common.size <= skipbytes)
 	return 0;
 
@@ -314,16 +314,13 @@ int erts_ioq_pushqv(ErtsIOQueue *q, ErtsIOVec* vec, Uint skipbytes)
     while(n--) {
 	if ((len = iov->iov_len) > 0) {
 	    if ((b = *binv) == NULL) { /* special case create binary ! */
-                if (q->driver) {
-                    ErlDrvBinary *bin = driver_alloc_binary(len);
-                    if (!bin) return -1;
-                    sys_memcpy(bin->orig_bytes, iov->iov_base, len);
-                    b = (ErtsIOQBinary *)bin;
-                    q->v_head->iov_base = bin->orig_bytes;
-                }
-		*--q->b_head = b;
-		q->v_head--;
+                q->v_head--;
 		q->v_head->iov_len = len;
+
+                b = alloc_binary(len, iov->iov_base, (void**)&q->v_head->iov_base, q->driver);
+                if (!b) return -1;
+
+                *--q->b_head = b;
 	    }
 	    else {
                 if (q->driver)
@@ -346,9 +343,9 @@ int erts_ioq_pushqv(ErtsIOQueue *q, ErtsIOVec* vec, Uint skipbytes)
 ** Remove size bytes from queue head
 ** Return number of bytes that remain in queue
 */
-int erts_ioq_deq(ErtsIOQueue *q, Uint size)
+int erts_ioq_deq(ErtsIOQueue *q, size_t size)
 {
-    Uint len;
+    size_t len;
 
     if ((q == NULL) || (q->size < size))
 	return -1;
@@ -378,12 +375,11 @@ int erts_ioq_deq(ErtsIOQueue *q, Uint size)
     return 0;
 }
 
-
-Uint erts_ioq_peekqv(ErtsIOQueue *q, ErtsIOVec *ev) {
+size_t erts_ioq_peekqv(const ErtsIOQueue *q, ErtsIOVec *ev) {
     ASSERT(ev);
 
     if (! q) {
-	return (Uint) -1;
+        return (size_t ) -1;
     } else {
 	if ((ev->common.vsize = q->v_tail - q->v_head) == 0) {
 	    ev->common.size = 0;
@@ -398,7 +394,7 @@ Uint erts_ioq_peekqv(ErtsIOQueue *q, ErtsIOVec *ev) {
     }
 }
 
-SysIOVec* erts_ioq_peekq(ErtsIOQueue *q, int* vlenp)  /* length of io-vector */
+SysIOVec* erts_ioq_peekq(const ErtsIOQueue *q, int* vlenp) /* length of io-vector */
 {
 
     if (q == NULL) {
@@ -413,14 +409,14 @@ SysIOVec* erts_ioq_peekq(ErtsIOQueue *q, int* vlenp)  /* length of io-vector */
 /* Fills a possibly deep list of chars and binaries into vec
 ** Small characters are first stored in the buffer buf of length ln
 ** binaries found are copied and linked into msoh
-** Return  vector length on succsess,
+** Return  vector length on success,
 **        -1 on overflow
 **        -2 on type error
 */
 
 static ERTS_INLINE void
 io_list_to_vec_set_vec(SysIOVec **iov, ErtsIOQBinary ***binv,
-                       ErtsIOQBinary *bin, byte *ptr, Uint len,
+                       ErtsIOQBinary *bin, byte *ptr, size_t len,
                        int *vlen)
 {
     while (len > MAX_SYSIOVEC_IOVLEN) {
@@ -444,14 +440,14 @@ erts_ioq_iolist_to_vec(Eterm obj,	  /* io-list */
                        SysIOVec* iov,	  /* io vector */
                        ErtsIOQBinary** binv,       /* binary reference vector */
                        ErtsIOQBinary* cbin,        /* binary to store characters */
-                       Uint bin_limit,  /* small binaries limit */
+                       size_t bin_limit,  /* small binaries limit */
                        int driver)
 {
     DECLARE_ESTACK(s);
     Eterm* objp;
     byte *buf  = NULL;
-    Uint len = 0;
-    Uint csize  = 0;
+    size_t len = 0;
+    size_t csize  = 0;
     int vlen   = 0;
     byte* cptr;
 
@@ -481,7 +477,7 @@ erts_ioq_iolist_to_vec(Eterm obj,	  /* io-list */
 		*buf++ = unsigned_val(obj);
 		csize++;
 		len--;
-	    } else if (is_binary(obj)) {
+	    } else if (is_bitstring(obj)) {
 		ESTACK_PUSH(s, CDR(objp));
 		goto handle_binary;
 	    } else if (is_list(obj)) {
@@ -493,78 +489,60 @@ erts_ioq_iolist_to_vec(Eterm obj,	  /* io-list */
 	    obj = CDR(objp);
 	    if (is_list(obj))
 		goto L_iter_list; /* on tail */
-	    else if (is_binary(obj)) {
+	    else if (is_bitstring(obj)) {
 		goto handle_binary;
 	    } else if (!is_nil(obj)) {
 		goto L_type_error;
 	    }
-	} else if (is_binary(obj)) {
-	    Eterm real_bin;
-	    Uint offset;
-	    Eterm* bptr;
-	    Uint size;
-	    int bitoffs;
-	    int bitsize;
+	} else if (is_bitstring(obj)) {
+            ERTS_DECLARE_DUMMY(Eterm br_flags);
+            size_t size_in_bytes;
+            size_t offset, size;
+            byte *base;
+            BinRef *br;
 
-	handle_binary:
-	    size = binary_size(obj);
-	    ERTS_GET_REAL_BIN(obj, real_bin, offset, bitoffs, bitsize);
-	    ASSERT(bitsize == 0);
-	    bptr = binary_val(real_bin);
-	    if (*bptr == HEADER_PROC_BIN) {
-		ProcBin* pb = (ProcBin *) bptr;
-		if (bitoffs != 0) {
-		    if (len < size) {
-			goto L_overflow;
-		    }
-		    erts_copy_bits(pb->bytes+offset, bitoffs, 1,
-				   (byte *) buf, 0, 1, size*8);
-		    csize += size;
-		    buf += size;
-		    len -= size;
-		} else if (bin_limit && size < bin_limit) {
-		    if (len < size) {
-			goto L_overflow;
-		    }
-		    sys_memcpy(buf, pb->bytes+offset, size);
-		    csize += size;
-		    buf += size;
-		    len -= size;
-		} else {
-                    ErtsIOQBinary *qbin;
-		    if (csize != 0) {
-                        io_list_to_vec_set_vec(&iov, &binv, cbin,
-                                               cptr, csize, &vlen);
-			cptr = buf;
-			csize = 0;
-		    }
-		    if (pb->flags) {
-			erts_emasculate_writable_binary(pb);
-		    }
-                    if (driver)
-                        qbin = (ErtsIOQBinary*)Binary2ErlDrvBinary(pb->val);
-                    else
-                        qbin = (ErtsIOQBinary*)pb->val;
+        handle_binary:
+            ERTS_PIN_BITSTRING(obj, br_flags, br, base, offset, size);
+            ASSERT(TAIL_BITS(size) == 0);
 
-                    io_list_to_vec_set_vec(
-                        &iov, &binv, qbin,
-                        pb->bytes+offset, size, &vlen);
-		}
-	    } else {
-		ErlHeapBin* hb = (ErlHeapBin *) bptr;
-		if (len < size) {
-		    goto L_overflow;
-		}
-		copy_binary_to_buffer(buf, 0,
-				      ((byte *) hb->data)+offset, bitoffs,
-				      8*size);
-		csize += size;
-		buf += size;
-		len -= size;
-	    }
-	} else if (!is_nil(obj)) {
-	    goto L_type_error;
-	}
+            size_in_bytes = BYTE_SIZE(size);
+
+            if ((br == NULL) ||
+                BIT_OFFSET(offset) != 0 ||
+                (size_in_bytes < bin_limit)) {
+                if (len < size_in_bytes) {
+                    goto L_overflow;
+                }
+
+                copy_binary_to_buffer(buf, 0, base, offset, size);
+
+                csize += size_in_bytes;
+                buf += size_in_bytes;
+                len -= size_in_bytes;
+            } else {
+                ErtsIOQBinary *qbin;
+
+                if (csize != 0) {
+                    io_list_to_vec_set_vec(&iov, &binv, cbin,
+                                           cptr, csize, &vlen);
+                    cptr = buf;
+                    csize = 0;
+                }
+
+                if (driver) {
+                    qbin = (ErtsIOQBinary*)Binary2ErlDrvBinary(br->val);
+                } else {
+                    qbin = (ErtsIOQBinary*)br->val;
+                }
+
+                ASSERT(BIT_OFFSET(offset) == 0);
+                io_list_to_vec_set_vec(&iov, &binv, qbin,
+                                       &base[BYTE_OFFSET(offset)],
+                                       size_in_bytes, &vlen);
+            }
+        } else if (!is_nil(obj)) {
+            goto L_type_error;
+        }
     }
 
     if (csize != 0) {
@@ -584,25 +562,29 @@ erts_ioq_iolist_to_vec(Eterm obj,	  /* io-list */
 }
 
 static ERTS_INLINE int
-io_list_vec_count(Eterm obj, Uint *v_size,
-                  Uint *c_size, Uint *b_size, Uint *in_clist,
-                  Uint *p_v_size, Uint *p_c_size, Uint *p_in_clist,
-                  Uint blimit)
+io_list_vec_count(Eterm obj, size_t *v_size,
+                  size_t *c_size, size_t *b_size, size_t *in_clist,
+                  size_t *p_v_size, size_t *p_c_size, size_t *p_in_clist,
+                  size_t blimit)
 {
-    Uint size = binary_size(obj);
-    Eterm real;
-    ERTS_DECLARE_DUMMY(Uint offset);
-    int bitoffs;
-    int bitsize;
-    ERTS_GET_REAL_BIN(obj, real, offset, bitoffs, bitsize);
-    if (bitsize != 0) return 1;
-    if (thing_subtag(*binary_val(real)) == REFC_BINARY_SUBTAG &&
-	bitoffs == 0) {
+    ERTS_DECLARE_DUMMY(Eterm br_flags);
+    ERTS_DECLARE_DUMMY(byte *base);
+    size_t offset, size;
+    BinRef *br;
+
+    ERTS_GET_BITSTRING_REF(obj, br_flags, br, base, offset, size);
+
+    if (TAIL_BITS(size) != 0) {
+        return 1;
+    }
+    size = BYTE_SIZE(size);
+
+    if (br && BIT_OFFSET(offset) == 0) {
 	*b_size += size;
         if (*b_size < size) return 2;
 	*in_clist = 0;
         ++*v_size;
-        /* If iov_len is smaller then Uint we split the binary into*/
+        /* If iov_len is smaller then size_t we split the binary into*/
         /* multiple smaller (2GB) elements in the iolist.*/
 	*v_size += size / MAX_SYSIOVEC_IOVLEN;
         if (size >= blimit) {
@@ -628,6 +610,7 @@ io_list_vec_count(Eterm obj, Uint *v_size,
 	    ++*p_v_size;
 	}
     }
+
     return 0;
 }
 
@@ -654,19 +637,19 @@ io_list_vec_count(Eterm obj, Uint *v_size,
  *    *total_size - Total size of iolist in bytes
  */
 int
-erts_ioq_iolist_vec_len(Eterm obj, int* vsize, Uint* csize,
-                        Uint* pvsize, Uint* pcsize,
-                        size_t* total_size, Uint blimit)
+erts_ioq_iolist_vec_len(Eterm obj, int* vsize, size_t * csize,
+                        size_t * pvsize, size_t * pcsize,
+                        size_t* total_size, size_t blimit)
 {
     DECLARE_ESTACK(s);
     Eterm* objp;
-    Uint v_size = 0;
-    Uint c_size = 0;
-    Uint b_size = 0;
-    Uint in_clist = 0;
-    Uint p_v_size = 0;
-    Uint p_c_size = 0;
-    Uint p_in_clist = 0;
+    size_t v_size = 0;
+    size_t c_size = 0;
+    size_t b_size = 0;
+    size_t in_clist = 0;
+    size_t p_v_size = 0;
+    size_t p_c_size = 0;
+    size_t p_in_clist = 0;
     size_t total;
 
     goto L_jump_start;  /* avoid a push */
@@ -694,7 +677,7 @@ erts_ioq_iolist_vec_len(Eterm obj, int* vsize, Uint* csize,
 		    p_v_size++;
 		}
 	    }
-	    else if (is_binary(obj)) {
+	    else if (is_bitstring(obj)) {
                 IO_LIST_VEC_COUNT(obj);
 	    }
 	    else if (is_list(obj)) {
@@ -708,14 +691,14 @@ erts_ioq_iolist_vec_len(Eterm obj, int* vsize, Uint* csize,
 	    obj = CDR(objp);
 	    if (is_list(obj))
 		goto L_iter_list;   /* on tail */
-	    else if (is_binary(obj)) {  /* binary tail is OK */
+	    else if (is_bitstring(obj)) {  /* binary tail is OK */
 		IO_LIST_VEC_COUNT(obj);
 	    }
 	    else if (!is_nil(obj)) {
 		goto L_type_error;
 	    }
 	}
-	else if (is_binary(obj)) {
+	else if (is_bitstring(obj)) {
 	    IO_LIST_VEC_COUNT(obj);
 	}
 	else if (!is_nil(obj)) {
@@ -740,497 +723,4 @@ erts_ioq_iolist_vec_len(Eterm obj, int* vsize, Uint* csize,
  L_overflow_error:
     DESTROY_ESTACK(s);
     return 1;
-}
-
-typedef struct {
-    Eterm result_head;
-    Eterm result_tail;
-    Eterm input_list;
-
-    UWord acc_size;
-    Binary *acc;
-
-    /* We yield after copying this many bytes into the accumulator (Minus
-     * eating a few on consing etc). Large binaries will only count to the
-     * extent their split (if any) resulted in a copy op. */
-    UWord bytereds_available;
-    UWord bytereds_spent;
-
-    Process *process;
-    ErtsEStack estack;
-
-    Eterm magic_reference;
-} iol2v_state_t;
-
-static int iol2v_state_destructor(Binary *data) {
-    iol2v_state_t *state = ERTS_MAGIC_BIN_UNALIGNED_DATA(data);
-
-    DESTROY_SAVED_ESTACK(&state->estack);
-
-    if (state->acc != NULL) {
-        erts_bin_free(state->acc);
-    }
-
-    return 1;
-}
-
-static void iol2v_init(iol2v_state_t *state, Process *process, Eterm input) {
-    state->process = process;
-
-    state->result_head = NIL;
-    state->result_tail = NIL;
-    state->input_list = input;
-
-    state->magic_reference = NIL;
-    state->acc_size = 0;
-    state->acc = NULL;
-
-    CLEAR_SAVED_ESTACK(&state->estack);
-}
-
-static Eterm iol2v_make_sub_bin(iol2v_state_t *state, Eterm bin_term,
-        UWord offset, UWord size) {
-    Uint byte_offset, bit_offset, bit_size;
-    ErlSubBin *sb;
-    Eterm orig_pb_term;
-
-    sb = (ErlSubBin*)HAlloc(state->process, ERL_SUB_BIN_SIZE);
-
-    ERTS_GET_REAL_BIN(bin_term, orig_pb_term,
-        byte_offset, bit_offset, bit_size);
-
-    ASSERT(bit_size == 0);
-
-    sb->thing_word = HEADER_SUB_BIN;
-    sb->bitoffs = bit_offset;
-    sb->bitsize = 0;
-    sb->orig = orig_pb_term;
-    sb->is_writable = 0;
-
-    sb->offs = byte_offset + offset;
-    sb->size = size;
-
-    return make_binary(sb);
-}
-
-static Eterm iol2v_promote_acc(iol2v_state_t *state) {
-    Eterm bin;
-
-    bin = erts_build_proc_bin(&MSO(state->process),
-                              HAlloc(state->process, PROC_BIN_SIZE),
-                              erts_bin_realloc(state->acc, state->acc_size));
-    state->acc_size = 0;
-    state->acc = NULL;
-
-    return bin;
-}
-
-/* Destructively enqueues a term to the result list, saving us the hassle of
- * having to reverse it later. This is safe since GC is disabled and we never
- * leak the unfinished term to the outside. */
-static void iol2v_enqueue_result(iol2v_state_t *state, Eterm term) {
-    Eterm prev_tail;
-    Eterm *hp;
-
-    prev_tail = state->result_tail;
-
-    hp = HAlloc(state->process, 2);
-    state->result_tail = CONS(hp, term, NIL);
-
-    if(prev_tail != NIL) {
-        Eterm *prev_cell = list_val(prev_tail);
-        CDR(prev_cell) = state->result_tail;
-    } else {
-        state->result_head = state->result_tail;
-    }
-
-    state->bytereds_spent += 1;
-}
-
-#ifndef DEBUG
-    #define ACC_REALLOCATION_LIMIT (IOL2V_SMALL_BIN_LIMIT * 32)
-#else
-    #define ACC_REALLOCATION_LIMIT (IOL2V_SMALL_BIN_LIMIT * 4)
-#endif
-
-static void iol2v_expand_acc(iol2v_state_t *state, UWord extra) {
-    UWord required_bytes, acc_alloc_size;
-
-    ERTS_CT_ASSERT(ERTS_UWORD_MAX > ACC_REALLOCATION_LIMIT / 2);
-    ASSERT(extra >= 1);
-
-    acc_alloc_size = state->acc != NULL ? (state->acc)->orig_size : 0;
-    required_bytes = state->acc_size + extra;
-
-    if (state->acc == NULL) {
-        UWord new_size = MAX(required_bytes, IOL2V_SMALL_BIN_LIMIT);
-
-        state->acc = erts_bin_nrml_alloc(new_size);
-    } else if (required_bytes > acc_alloc_size) {
-        Binary *prev_acc;
-        UWord new_size;
-
-        if (acc_alloc_size >= ACC_REALLOCATION_LIMIT) {
-            /* We skip reallocating once we hit a certain point; it often
-             * results in extra copying and we're very likely to overallocate
-             * on anything other than absurdly long byte/heapbin sequences. */
-            iol2v_enqueue_result(state, iol2v_promote_acc(state));
-            iol2v_expand_acc(state, extra);
-            return;
-        }
-
-        new_size = MAX(required_bytes, acc_alloc_size * 2);
-        prev_acc = state->acc;
-
-        state->acc = erts_bin_realloc(prev_acc, new_size);
-
-        if (prev_acc != state->acc) {
-            state->bytereds_spent += state->acc_size;
-        }
-    }
-
-    state->bytereds_spent += extra;
-}
-
-static int iol2v_append_byte_seq(iol2v_state_t *state, Eterm seq_start, Eterm *seq_end) {
-    Eterm lookahead, iterator;
-    Uint observed_bits;
-    SWord seq_length;
-    char *acc_data;
-
-    lookahead = seq_start;
-    seq_length = 0;
-
-    ASSERT(state->bytereds_available > state->bytereds_spent);
-
-    while (is_list(lookahead)) {
-        Eterm *cell = list_val(lookahead);
-
-        if (!is_small(CAR(cell))) {
-            break;
-        }
-
-        if (seq_length * 2 >= (state->bytereds_available - state->bytereds_spent)) {
-            break;
-        }
-
-        lookahead = CDR(cell);
-        seq_length += 1;
-    }
-
-    ASSERT(seq_length >= 1);
-
-    iol2v_expand_acc(state, seq_length);
-
-    /* Bump a few extra reductions to account for list traversal. */
-    state->bytereds_spent += seq_length;
-
-    acc_data = &(state->acc)->orig_bytes[state->acc_size];
-    state->acc_size += seq_length;
-
-    iterator = seq_start;
-    observed_bits = 0;
-
-    while (iterator != lookahead) {
-        Eterm *cell;
-        Uint byte;
-
-        cell = list_val(iterator);
-        iterator = CDR(cell);
-
-        byte = unsigned_val(CAR(cell));
-        observed_bits |= byte;
-
-        ASSERT(acc_data < &(state->acc)->orig_bytes[state->acc_size]);
-        *(acc_data++) = byte;
-    }
-
-    if (observed_bits > UCHAR_MAX) {
-        return 0;
-    }
-
-    ASSERT(acc_data == &(state->acc)->orig_bytes[state->acc_size]);
-    *seq_end = iterator;
-
-    return 1;
-}
-
-static int iol2v_append_binary(iol2v_state_t *state, Eterm bin_term) {
-    int is_acc_small, is_bin_small;
-    UWord combined_size;
-    UWord binary_size;
-
-    Uint byte_offset, bit_offset, bit_size;
-    byte *binary_data;
-
-    Eterm *parent_header;
-    Eterm parent_binary;
-
-    ASSERT(state->bytereds_available > state->bytereds_spent);
-
-    ERTS_GET_REAL_BIN(bin_term, parent_binary, byte_offset, bit_offset, bit_size);
-    parent_header = binary_val(parent_binary);
-    binary_size = binary_size(bin_term);
-
-    if (bit_size != 0) {
-        return 0;
-    } else if (binary_size == 0) {
-        state->bytereds_spent += 1;
-        return 1;
-    }
-
-    is_acc_small = state->acc_size < IOL2V_SMALL_BIN_LIMIT;
-    is_bin_small = binary_size < IOL2V_SMALL_BIN_LIMIT;
-    combined_size = binary_size + state->acc_size;
-
-    if (thing_subtag(*parent_header) == REFC_BINARY_SUBTAG) {
-        ProcBin *pb = (ProcBin*)parent_header;
-
-        if (pb->flags) {
-            erts_emasculate_writable_binary(pb);
-        }
-
-        binary_data = &((byte*)pb->bytes)[byte_offset];
-    } else {
-        ErlHeapBin *hb = (ErlHeapBin*)parent_header;
-
-        ASSERT(thing_subtag(*parent_header) == HEAP_BINARY_SUBTAG);
-        ASSERT(is_bin_small);
-
-        binary_data = &((byte*)&hb->data)[byte_offset];
-    }
-
-    if (!is_bin_small && (state->acc_size == 0 || !is_acc_small)) {
-        /* Avoid combining if we encounter an acceptably large binary while the
-         * accumulator is either empty or large enough to be returned on its
-         * own. */
-        if (state->acc_size != 0) {
-            iol2v_enqueue_result(state, iol2v_promote_acc(state));
-        }
-
-        iol2v_enqueue_result(state, bin_term);
-    } else if (is_bin_small || combined_size < (IOL2V_SMALL_BIN_LIMIT * 2)) {
-        /* If the candidate is small or we can't split the combination in two,
-         * then just copy it into the accumulator. */
-        iol2v_expand_acc(state, binary_size);
-
-        if (ERTS_LIKELY(bit_offset == 0)) {
-            sys_memcpy(&(state->acc)->orig_bytes[state->acc_size],
-                binary_data, binary_size);
-        } else {
-            ASSERT(binary_size <= ERTS_UWORD_MAX / 8);
-
-            erts_copy_bits(binary_data, bit_offset, 1,
-                (byte*)&(state->acc)->orig_bytes[state->acc_size], 0, 1,
-                binary_size * 8);
-        }
-
-        state->acc_size += binary_size;
-    } else {
-        /* Otherwise, append enough data for the accumulator to be valid, and
-         * then return the rest as a sub-binary. */
-        UWord spill = IOL2V_SMALL_BIN_LIMIT - state->acc_size;
-        Eterm binary_tail;
-
-        iol2v_expand_acc(state, spill);
-
-        if (ERTS_LIKELY(bit_offset == 0)) {
-            sys_memcpy(&(state->acc)->orig_bytes[state->acc_size],
-                binary_data, spill);
-        } else {
-            ASSERT(binary_size <= ERTS_UWORD_MAX / 8);
-
-            erts_copy_bits(binary_data, bit_offset, 1,
-                (byte*)&(state->acc)->orig_bytes[state->acc_size], 0, 1,
-                spill * 8);
-        }
-
-        state->acc_size += spill;
-
-        binary_tail = iol2v_make_sub_bin(state, bin_term, spill,
-            binary_size - spill);
-
-        iol2v_enqueue_result(state, iol2v_promote_acc(state));
-        iol2v_enqueue_result(state, binary_tail);
-    }
-
-    return 1;
-}
-
-static BIF_RETTYPE iol2v_yield(iol2v_state_t *state) {
-    if (is_nil(state->magic_reference)) {
-        iol2v_state_t *boxed_state;
-        Binary *magic_binary;
-        Eterm *hp;
-
-        magic_binary = erts_create_magic_binary_x(sizeof(*state),
-            &iol2v_state_destructor, ERTS_ALC_T_BINARY, 1);
-
-        boxed_state = ERTS_MAGIC_BIN_UNALIGNED_DATA(magic_binary);
-        sys_memcpy(boxed_state, state, sizeof(*state));
-
-        hp = HAlloc(boxed_state->process, ERTS_MAGIC_REF_THING_SIZE);
-        boxed_state->magic_reference =
-            erts_mk_magic_ref(&hp, &MSO(boxed_state->process), magic_binary);
-
-        state = boxed_state;
-    }
-
-    ERTS_BIF_YIELD1(BIF_TRAP_EXPORT(BIF_iolist_to_iovec_1),
-        state->process, state->magic_reference);
-}
-
-static BIF_RETTYPE iol2v_continue(iol2v_state_t *state) {
-    Eterm iterator;
-
-    DECLARE_ESTACK(s);
-    ESTACK_CHANGE_ALLOCATOR(s, ERTS_ALC_T_SAVED_ESTACK);
-
-    state->bytereds_available =
-        ERTS_BIF_REDS_LEFT(state->process) * IOL2V_SMALL_BIN_LIMIT;
-    state->bytereds_spent = 0;
-
-    if (state->estack.start) {
-        ESTACK_RESTORE(s, &state->estack);
-    }
-
-    iterator = state->input_list;
-
-    for(;;) {
-        if (state->bytereds_spent >= state->bytereds_available) {
-            ESTACK_SAVE(s, &state->estack);
-            state->input_list = iterator;
-
-            return iol2v_yield(state);
-        }
-
-        while (is_list(iterator)) {
-            Eterm *cell;
-            Eterm head;
-
-            cell = list_val(iterator);
-            head = CAR(cell);
-
-            if (is_binary(head)) {
-                if (!iol2v_append_binary(state, head)) {
-                    goto l_badarg;
-                }
-
-                iterator = CDR(cell);
-            } else if (is_small(head)) {
-                Eterm seq_end;
-
-                if (!iol2v_append_byte_seq(state, iterator, &seq_end)) {
-                    goto l_badarg;
-                }
-
-                iterator = seq_end;
-            } else if (is_list(head) || is_nil(head)) {
-                Eterm tail = CDR(cell);
-
-                if (!is_nil(tail)) {
-                    ESTACK_PUSH(s, tail);
-                }
-
-                state->bytereds_spent += 1;
-                iterator = head;
-            } else {
-                goto l_badarg;
-            }
-
-            if (state->bytereds_spent >= state->bytereds_available) {
-                ESTACK_SAVE(s, &state->estack);
-                state->input_list = iterator;
-
-                return iol2v_yield(state);
-            }
-        }
-
-        if (is_binary(iterator)) {
-            if (!iol2v_append_binary(state, iterator)) {
-                goto l_badarg;
-            }
-        } else if (!is_nil(iterator)) {
-            goto l_badarg;
-        }
-
-        if(ESTACK_ISEMPTY(s)) {
-            break;
-        }
-
-        iterator = ESTACK_POP(s);
-    }
-
-    if (state->acc_size != 0) {
-        iol2v_enqueue_result(state, iol2v_promote_acc(state));
-    }
-
-    BUMP_REDS(state->process, state->bytereds_spent / IOL2V_SMALL_BIN_LIMIT);
-
-    CLEAR_SAVED_ESTACK(&state->estack);
-    DESTROY_ESTACK(s);
-
-    BIF_RET(state->result_head);
-
-l_badarg:
-    CLEAR_SAVED_ESTACK(&state->estack);
-    DESTROY_ESTACK(s);
-
-    if (state->acc != NULL) {
-        erts_bin_free(state->acc);
-        state->acc = NULL;
-    }
-
-    BIF_ERROR(state->process, BADARG);
-}
-
-BIF_RETTYPE iolist_to_iovec_1(BIF_ALIST_1) {
-    BIF_RETTYPE result;
-
-    if (is_nil(BIF_ARG_1)) {
-        BIF_RET(NIL);
-    } else if (is_binary(BIF_ARG_1)) {
-        if (binary_bitsize(BIF_ARG_1) != 0) {
-            ASSERT(!(BIF_P->flags & F_DISABLE_GC));
-            BIF_ERROR(BIF_P, BADARG);
-        } else if (binary_size(BIF_ARG_1) != 0) {
-            Eterm *hp = HAlloc(BIF_P, 2);
-
-            BIF_RET(CONS(hp, BIF_ARG_1, NIL));
-        } else {
-            BIF_RET(NIL);
-        }
-    } else if (is_internal_magic_ref(BIF_ARG_1)) {
-        iol2v_state_t *state;
-        Binary *magic;
-
-        magic = erts_magic_ref2bin(BIF_ARG_1);
-
-        if (ERTS_MAGIC_BIN_DESTRUCTOR(magic) != &iol2v_state_destructor) {
-            ASSERT(!(BIF_P->flags & F_DISABLE_GC));
-            BIF_ERROR(BIF_P, BADARG);
-        }
-
-        ASSERT(BIF_P->flags & F_DISABLE_GC);
-
-        state = ERTS_MAGIC_BIN_UNALIGNED_DATA(magic);
-        result = iol2v_continue(state);
-    } else if (!is_list(BIF_ARG_1)) {
-        ASSERT(!(BIF_P->flags & F_DISABLE_GC));
-        BIF_ERROR(BIF_P, BADARG);
-    } else {
-        iol2v_state_t state;
-
-        iol2v_init(&state, BIF_P, BIF_ARG_1);
-
-        erts_set_gc_state(BIF_P, 0);
-
-        result = iol2v_continue(&state);
-    }
-
-    if (result != THE_NON_VALUE || BIF_P->freason != TRAP) {
-        erts_set_gc_state(BIF_P, 1);
-    }
-
-    BIF_RET(result);
 }

@@ -1,57 +1,31 @@
-// AsmJit - Machine code generation for C++
+// This file is part of AsmJit project <https://asmjit.com>
 //
-//  * Official AsmJit Home Page: https://asmjit.com
-//  * Official Github Repository: https://github.com/asmjit/asmjit
-//
-// Copyright (c) 2008-2020 The AsmJit Authors
-//
-// This software is provided 'as-is', without any express or implied
-// warranty. In no event will the authors be held liable for any damages
-// arising from the use of this software.
-//
-// Permission is granted to anyone to use this software for any purpose,
-// including commercial applications, and to alter it and redistribute it
-// freely, subject to the following restrictions:
-//
-// 1. The origin of this software must not be misrepresented; you must not
-//    claim that you wrote the original software. If you use this software
-//    in a product, an acknowledgment in the product documentation would be
-//    appreciated but is not required.
-// 2. Altered source versions must be plainly marked as such, and must not be
-//    misrepresented as being the original software.
-// 3. This notice may not be removed or altered from any source distribution.
+// See <asmjit/core.h> or LICENSE.md for license and copyright information
+// SPDX-License-Identifier: Zlib
 
-#include "../core/api-build_p.h"
+#include <asmjit/core/api-build_p.h>
 #if !defined(ASMJIT_NO_X86)
 
-#include "../x86/x86func_p.h"
-#include "../x86/x86emithelper_p.h"
-#include "../x86/x86operand.h"
+#include <asmjit/x86/x86func_p.h>
+#include <asmjit/x86/x86emithelper_p.h>
+#include <asmjit/x86/x86operand.h>
 
 ASMJIT_BEGIN_SUB_NAMESPACE(x86)
 
-// ============================================================================
-// [asmjit::x86::FuncInternal - Init]
-// ============================================================================
-
 namespace FuncInternal {
 
-static inline bool shouldThreatAsCDeclIn64BitMode(uint32_t ccId) noexcept {
-  return ccId == CallConv::kIdCDecl ||
-         ccId == CallConv::kIdStdCall ||
-         ccId == CallConv::kIdThisCall ||
-         ccId == CallConv::kIdFastCall ||
-         ccId == CallConv::kIdRegParm1 ||
-         ccId == CallConv::kIdRegParm2 ||
-         ccId == CallConv::kIdRegParm3;
+[[nodiscard]]
+static inline bool should_treat_as_cdeclIn64BitMode(CallConvId call_conv_id) noexcept {
+  return call_conv_id == CallConvId::kCDecl ||
+         call_conv_id == CallConvId::kStdCall ||
+         call_conv_id == CallConvId::kThisCall ||
+         call_conv_id == CallConvId::kFastCall ||
+         call_conv_id == CallConvId::kRegParm1 ||
+         call_conv_id == CallConvId::kRegParm2 ||
+         call_conv_id == CallConvId::kRegParm3;
 }
 
-ASMJIT_FAVOR_SIZE Error initCallConv(CallConv& cc, uint32_t ccId, const Environment& environment) noexcept {
-  constexpr uint32_t kGroupGp   = Reg::kGroupGp;
-  constexpr uint32_t kGroupVec  = Reg::kGroupVec;
-  constexpr uint32_t kGroupMm   = Reg::kGroupMm;
-  constexpr uint32_t kGroupKReg = Reg::kGroupKReg;
-
+ASMJIT_FAVOR_SIZE Error init_call_conv(CallConv& cc, CallConvId call_conv_id, const Environment& environment) noexcept {
   constexpr uint32_t kZax = Gp::kIdAx;
   constexpr uint32_t kZbx = Gp::kIdBx;
   constexpr uint32_t kZcx = Gp::kIdCx;
@@ -61,290 +35,300 @@ ASMJIT_FAVOR_SIZE Error initCallConv(CallConv& cc, uint32_t ccId, const Environm
   constexpr uint32_t kZsi = Gp::kIdSi;
   constexpr uint32_t kZdi = Gp::kIdDi;
 
-  bool winABI = environment.isPlatformWindows() || environment.isAbiMSVC();
+  bool win_abi = environment.is_platform_windows() || environment.is_msvc_abi();
 
-  cc.setArch(environment.arch());
-  cc.setSaveRestoreRegSize(Reg::kGroupVec, 16);
-  cc.setSaveRestoreRegSize(Reg::kGroupMm, 8);
-  cc.setSaveRestoreRegSize(Reg::kGroupKReg, 8);
-  cc.setSaveRestoreAlignment(Reg::kGroupVec, 16);
-  cc.setSaveRestoreAlignment(Reg::kGroupMm, 8);
-  cc.setSaveRestoreAlignment(Reg::kGroupKReg, 8);
+  cc.set_arch(environment.arch());
+  cc.set_save_restore_reg_size(RegGroup::kVec, 16);
+  cc.set_save_restore_reg_size(RegGroup::kMask, 8);
+  cc.set_save_restore_reg_size(RegGroup::kX86_MM, 8);
+  cc.set_save_restore_alignment(RegGroup::kVec, 16);
+  cc.set_save_restore_alignment(RegGroup::kMask, 8);
+  cc.set_save_restore_alignment(RegGroup::kX86_MM, 8);
 
-  if (environment.is32Bit()) {
-    bool isStandardCallConv = true;
+  if (environment.is_32bit()) {
+    bool is_standard_call_conv = true;
 
-    cc.setSaveRestoreRegSize(Reg::kGroupGp, 4);
-    cc.setSaveRestoreAlignment(Reg::kGroupGp, 4);
+    cc.set_save_restore_reg_size(RegGroup::kGp, 4);
+    cc.set_save_restore_alignment(RegGroup::kGp, 4);
 
-    cc.setPreservedRegs(Reg::kGroupGp, Support::bitMask(Gp::kIdBx, Gp::kIdSp, Gp::kIdBp, Gp::kIdSi, Gp::kIdDi));
-    cc.setNaturalStackAlignment(4);
+    cc.set_preserved_regs(RegGroup::kGp, Support::bit_mask<RegMask>(Gp::kIdBx, Gp::kIdSp, Gp::kIdBp, Gp::kIdSi, Gp::kIdDi));
+    cc.set_natural_stack_alignment(4);
 
-    switch (ccId) {
-      case CallConv::kIdCDecl:
+    switch (call_conv_id) {
+      case CallConvId::kCDecl:
         break;
 
-      case CallConv::kIdStdCall:
-        cc.setFlags(CallConv::kFlagCalleePopsStack);
+      case CallConvId::kStdCall:
+        cc.set_flags(CallConvFlags::kCalleePopsStack);
         break;
 
-      case CallConv::kIdFastCall:
-        cc.setFlags(CallConv::kFlagCalleePopsStack);
-        cc.setPassedOrder(kGroupGp, kZcx, kZdx);
+      case CallConvId::kFastCall:
+        cc.set_flags(CallConvFlags::kCalleePopsStack);
+        cc.set_passed_order(RegGroup::kGp, kZcx, kZdx);
         break;
 
-      case CallConv::kIdVectorCall:
-        cc.setFlags(CallConv::kFlagCalleePopsStack);
-        cc.setPassedOrder(kGroupGp, kZcx, kZdx);
-        cc.setPassedOrder(kGroupVec, 0, 1, 2, 3, 4, 5);
+      case CallConvId::kVectorCall:
+        cc.set_flags(CallConvFlags::kCalleePopsStack);
+        cc.set_passed_order(RegGroup::kGp, kZcx, kZdx);
+        cc.set_passed_order(RegGroup::kVec, 0, 1, 2, 3, 4, 5);
         break;
 
-      case CallConv::kIdThisCall:
-        // NOTE: Even MINGW (starting with GCC 4.7.0) now uses __thiscall on MS Windows,
-        // so we won't bail to any other calling convention if __thiscall was specified.
-        if (winABI) {
-          cc.setFlags(CallConv::kFlagCalleePopsStack);
-          cc.setPassedOrder(kGroupGp, kZcx);
+      case CallConvId::kThisCall:
+        // NOTE: Even MINGW (starting with GCC 4.7.0) now uses __thiscall on MS Windows, so we won't bail to any
+        // other calling convention if __thiscall was specified.
+        if (win_abi) {
+          cc.set_flags(CallConvFlags::kCalleePopsStack);
+          cc.set_passed_order(RegGroup::kGp, kZcx);
         }
         else {
-          ccId = CallConv::kIdCDecl;
+          call_conv_id = CallConvId::kCDecl;
         }
         break;
 
-      case CallConv::kIdRegParm1:
-        cc.setPassedOrder(kGroupGp, kZax);
+      case CallConvId::kRegParm1:
+        cc.set_passed_order(RegGroup::kGp, kZax);
         break;
 
-      case CallConv::kIdRegParm2:
-        cc.setPassedOrder(kGroupGp, kZax, kZdx);
+      case CallConvId::kRegParm2:
+        cc.set_passed_order(RegGroup::kGp, kZax, kZdx);
         break;
 
-      case CallConv::kIdRegParm3:
-        cc.setPassedOrder(kGroupGp, kZax, kZdx, kZcx);
+      case CallConvId::kRegParm3:
+        cc.set_passed_order(RegGroup::kGp, kZax, kZdx, kZcx);
         break;
 
-      case CallConv::kIdLightCall2:
-      case CallConv::kIdLightCall3:
-      case CallConv::kIdLightCall4: {
-        uint32_t n = (ccId - CallConv::kIdLightCall2) + 2;
+      case CallConvId::kLightCall2:
+      case CallConvId::kLightCall3:
+      case CallConvId::kLightCall4: {
+        uint32_t n = uint32_t(call_conv_id) - uint32_t(CallConvId::kLightCall2) + 2;
 
-        cc.setFlags(CallConv::kFlagPassFloatsByVec);
-        cc.setPassedOrder(kGroupGp, kZax, kZdx, kZcx, kZsi, kZdi);
-        cc.setPassedOrder(kGroupMm, 0, 1, 2, 3, 4, 5, 6, 7);
-        cc.setPassedOrder(kGroupVec, 0, 1, 2, 3, 4, 5, 6, 7);
-        cc.setPassedOrder(kGroupKReg, 0, 1, 2, 3, 4, 5, 6, 7);
-        cc.setPreservedRegs(kGroupGp, Support::lsbMask<uint32_t>(8));
-        cc.setPreservedRegs(kGroupVec, Support::lsbMask<uint32_t>(8) & ~Support::lsbMask<uint32_t>(n));
+        cc.set_flags(CallConvFlags::kPassFloatsByVec);
+        cc.set_passed_order(RegGroup::kGp, kZax, kZdx, kZcx, kZsi, kZdi);
+        cc.set_passed_order(RegGroup::kVec, 0, 1, 2, 3, 4, 5, 6, 7);
+        cc.set_passed_order(RegGroup::kMask, 0, 1, 2, 3, 4, 5, 6, 7);
+        cc.set_passed_order(RegGroup::kX86_MM, 0, 1, 2, 3, 4, 5, 6, 7);
+        cc.set_preserved_regs(RegGroup::kGp, Support::lsb_mask<uint32_t>(8));
+        cc.set_preserved_regs(RegGroup::kVec, Support::lsb_mask<uint32_t>(8) & ~Support::lsb_mask<uint32_t>(n));
 
-        cc.setNaturalStackAlignment(16);
-        isStandardCallConv = false;
+        cc.set_natural_stack_alignment(16);
+        is_standard_call_conv = false;
         break;
       }
 
       default:
-        return DebugUtils::errored(kErrorInvalidArgument);
+        return make_error(Error::kInvalidArgument);
     }
 
-    if (isStandardCallConv) {
-      // MMX arguments is something where compiler vendors disagree. For example
-      // GCC and MSVC would pass first three via registers and the rest via stack,
-      // however Clang passes all via stack. Returning MMX registers is even more
-      // fun, where GCC uses MM0, but Clang uses EAX:EDX pair. I'm not sure it's
-      // something we should be worried about as MMX is deprecated anyway.
-      cc.setPassedOrder(kGroupMm, 0, 1, 2);
+    if (is_standard_call_conv) {
+      // MMX arguments is something where compiler vendors disagree. For example GCC and MSVC would pass first three
+      // via registers and the rest via stack, however Clang passes all via stack. Returning MMX registers is even
+      // more fun, where GCC uses MM0, but Clang uses EAX:EDX pair. I'm not sure it's something we should be worried
+      // about as MMX is deprecated anyway.
+      cc.set_passed_order(RegGroup::kX86_MM, 0, 1, 2);
 
-      // Vector arguments (XMM|YMM|ZMM) are passed via registers. However, if the
-      // function is variadic then they have to be passed via stack.
-      cc.setPassedOrder(kGroupVec, 0, 1, 2);
+      // Vector arguments (XMM|YMM|ZMM) are passed via registers. However, if the function is variadic then they have
+      // to be passed via stack.
+      cc.set_passed_order(RegGroup::kVec, 0, 1, 2);
 
-      // Functions with variable arguments always use stack for MM and vector
-      // arguments.
-      cc.addFlags(CallConv::kFlagPassVecByStackIfVA);
+      // Functions with variable arguments always use stack for MM and vector arguments.
+      cc.add_flags(CallConvFlags::kPassVecByStackIfVA);
     }
 
-    if (ccId == CallConv::kIdCDecl) {
-      cc.addFlags(CallConv::kFlagVarArgCompatible);
+    if (call_conv_id == CallConvId::kCDecl) {
+      cc.add_flags(CallConvFlags::kVarArgCompatible);
     }
   }
   else {
-    cc.setSaveRestoreRegSize(Reg::kGroupGp, 8);
-    cc.setSaveRestoreAlignment(Reg::kGroupGp, 8);
+    cc.set_save_restore_reg_size(RegGroup::kGp, 8);
+    cc.set_save_restore_alignment(RegGroup::kGp, 8);
 
-    // Preprocess the calling convention into a common id as many conventions
-    // are normally ignored even by C/C++ compilers and treated as `__cdecl`.
-    if (shouldThreatAsCDeclIn64BitMode(ccId))
-      ccId = winABI ? CallConv::kIdX64Windows : CallConv::kIdX64SystemV;
+    // Preprocess the calling convention into a common id as many conventions are normally ignored even by C/C++
+    // compilers and treated as `__cdecl`.
+    if (should_treat_as_cdeclIn64BitMode(call_conv_id))
+      call_conv_id = win_abi ? CallConvId::kX64Windows : CallConvId::kX64SystemV;
 
-    switch (ccId) {
-      case CallConv::kIdX64SystemV: {
-        cc.setFlags(CallConv::kFlagPassFloatsByVec |
-                    CallConv::kFlagPassMmxByXmm    |
-                    CallConv::kFlagVarArgCompatible);
-        cc.setNaturalStackAlignment(16);
-        cc.setRedZoneSize(128);
-        cc.setPassedOrder(kGroupGp, kZdi, kZsi, kZdx, kZcx, 8, 9);
-        cc.setPassedOrder(kGroupVec, 0, 1, 2, 3, 4, 5, 6, 7);
-        cc.setPreservedRegs(kGroupGp, Support::bitMask(kZbx, kZsp, kZbp, 12, 13, 14, 15));
+    switch (call_conv_id) {
+      case CallConvId::kX64SystemV: {
+        cc.set_flags(CallConvFlags::kPassFloatsByVec |
+                    CallConvFlags::kPassMmxByXmm    |
+                    CallConvFlags::kVarArgCompatible);
+        cc.set_natural_stack_alignment(16);
+        cc.set_red_zone_size(128);
+        cc.set_passed_order(RegGroup::kGp, kZdi, kZsi, kZdx, kZcx, 8, 9);
+        cc.set_passed_order(RegGroup::kVec, 0, 1, 2, 3, 4, 5, 6, 7);
+        cc.set_preserved_regs(RegGroup::kGp, Support::bit_mask<RegMask>(kZbx, kZsp, kZbp, 12, 13, 14, 15));
         break;
       }
 
-      case CallConv::kIdX64Windows: {
-        cc.setStrategy(CallConv::kStrategyX64Windows);
-        cc.setFlags(CallConv::kFlagPassFloatsByVec |
-                    CallConv::kFlagIndirectVecArgs |
-                    CallConv::kFlagPassMmxByGp     |
-                    CallConv::kFlagVarArgCompatible);
-        cc.setNaturalStackAlignment(16);
+      case CallConvId::kX64Windows: {
+        cc.set_strategy(CallConvStrategy::kX64Windows);
+        cc.set_flags(CallConvFlags::kPassFloatsByVec |
+                    CallConvFlags::kIndirectVecArgs |
+                    CallConvFlags::kPassMmxByGp     |
+                    CallConvFlags::kVarArgCompatible);
+        cc.set_natural_stack_alignment(16);
         // Maximum 4 arguments in registers, each adds 8 bytes to the spill zone.
-        cc.setSpillZoneSize(4 * 8);
-        cc.setPassedOrder(kGroupGp, kZcx, kZdx, 8, 9);
-        cc.setPassedOrder(kGroupVec, 0, 1, 2, 3);
-        cc.setPreservedRegs(kGroupGp, Support::bitMask(kZbx, kZsp, kZbp, kZsi, kZdi, 12, 13, 14, 15));
-        cc.setPreservedRegs(kGroupVec, Support::bitMask(6, 7, 8, 9, 10, 11, 12, 13, 14, 15));
+        cc.set_spill_zone_size(4 * 8);
+        cc.set_passed_order(RegGroup::kGp, kZcx, kZdx, 8, 9);
+        cc.set_passed_order(RegGroup::kVec, 0, 1, 2, 3);
+        cc.set_preserved_regs(RegGroup::kGp, Support::bit_mask<RegMask>(kZbx, kZsp, kZbp, kZsi, kZdi, 12, 13, 14, 15));
+        cc.set_preserved_regs(RegGroup::kVec, Support::bit_mask<RegMask>(6, 7, 8, 9, 10, 11, 12, 13, 14, 15));
         break;
       }
 
-      case CallConv::kIdVectorCall: {
-        cc.setStrategy(CallConv::kStrategyX64VectorCall);
-        cc.setFlags(CallConv::kFlagPassFloatsByVec |
-                    CallConv::kFlagPassMmxByGp     );
-        cc.setNaturalStackAlignment(16);
+      case CallConvId::kVectorCall: {
+        cc.set_strategy(CallConvStrategy::kX64VectorCall);
+        cc.set_flags(CallConvFlags::kPassFloatsByVec |
+                    CallConvFlags::kPassMmxByGp     );
+        cc.set_natural_stack_alignment(16);
         // Maximum 6 arguments in registers, each adds 8 bytes to the spill zone.
-        cc.setSpillZoneSize(6 * 8);
-        cc.setPassedOrder(kGroupGp, kZcx, kZdx, 8, 9);
-        cc.setPassedOrder(kGroupVec, 0, 1, 2, 3, 4, 5);
-        cc.setPreservedRegs(kGroupGp, Support::bitMask(kZbx, kZsp, kZbp, kZsi, kZdi, 12, 13, 14, 15));
-        cc.setPreservedRegs(kGroupVec, Support::bitMask(6, 7, 8, 9, 10, 11, 12, 13, 14, 15));
+        cc.set_spill_zone_size(6 * 8);
+        cc.set_passed_order(RegGroup::kGp, kZcx, kZdx, 8, 9);
+        cc.set_passed_order(RegGroup::kVec, 0, 1, 2, 3, 4, 5);
+        cc.set_preserved_regs(RegGroup::kGp, Support::bit_mask<RegMask>(kZbx, kZsp, kZbp, kZsi, kZdi, 12, 13, 14, 15));
+        cc.set_preserved_regs(RegGroup::kVec, Support::bit_mask<RegMask>(6, 7, 8, 9, 10, 11, 12, 13, 14, 15));
         break;
       }
 
-      case CallConv::kIdLightCall2:
-      case CallConv::kIdLightCall3:
-      case CallConv::kIdLightCall4: {
-        uint32_t n = (ccId - CallConv::kIdLightCall2) + 2;
+      case CallConvId::kLightCall2:
+      case CallConvId::kLightCall3:
+      case CallConvId::kLightCall4: {
+        uint32_t n = uint32_t(call_conv_id) - uint32_t(CallConvId::kLightCall2) + 2;
 
-        cc.setFlags(CallConv::kFlagPassFloatsByVec);
-        cc.setNaturalStackAlignment(16);
-        cc.setPassedOrder(kGroupGp, kZax, kZdx, kZcx, kZsi, kZdi);
-        cc.setPassedOrder(kGroupMm, 0, 1, 2, 3, 4, 5, 6, 7);
-        cc.setPassedOrder(kGroupVec, 0, 1, 2, 3, 4, 5, 6, 7);
-        cc.setPassedOrder(kGroupKReg, 0, 1, 2, 3, 4, 5, 6, 7);
+        cc.set_flags(CallConvFlags::kPassFloatsByVec);
+        cc.set_natural_stack_alignment(16);
+        cc.set_passed_order(RegGroup::kGp, kZax, kZdx, kZcx, kZsi, kZdi);
+        cc.set_passed_order(RegGroup::kVec, 0, 1, 2, 3, 4, 5, 6, 7);
+        cc.set_passed_order(RegGroup::kMask, 0, 1, 2, 3, 4, 5, 6, 7);
+        cc.set_passed_order(RegGroup::kX86_MM, 0, 1, 2, 3, 4, 5, 6, 7);
 
-        cc.setPreservedRegs(kGroupGp, Support::lsbMask<uint32_t>(16));
-        cc.setPreservedRegs(kGroupVec, ~Support::lsbMask<uint32_t>(n));
+        cc.set_preserved_regs(RegGroup::kGp, Support::lsb_mask<uint32_t>(16));
+        cc.set_preserved_regs(RegGroup::kVec, ~Support::lsb_mask<uint32_t>(n));
         break;
       }
 
       default:
-        return DebugUtils::errored(kErrorInvalidArgument);
+        return make_error(Error::kInvalidArgument);
     }
   }
 
-  cc.setId(ccId);
-  return kErrorOk;
+  cc.set_id(call_conv_id);
+  return Error::kOk;
 }
 
-ASMJIT_FAVOR_SIZE void unpackValues(FuncDetail& func, FuncValuePack& pack) noexcept {
-  uint32_t typeId = pack[0].typeId();
-  switch (typeId) {
-    case Type::kIdI64:
-    case Type::kIdU64: {
-      if (Environment::is32Bit(func.callConv().arch())) {
+ASMJIT_FAVOR_SIZE void unpack_values(FuncDetail& func, FuncValuePack& pack) noexcept {
+  TypeId type_id = pack[0].type_id();
+  switch (type_id) {
+    case TypeId::kInt64:
+    case TypeId::kUInt64: {
+      if (Environment::is_32bit(func.call_conv().arch())) {
         // Convert a 64-bit return value to two 32-bit return values.
-        pack[0].initTypeId(Type::kIdU32);
-        pack[1].initTypeId(typeId - 2);
+        pack[0].init_type_id(TypeId::kUInt32);
+        pack[1].init_type_id(TypeId(uint32_t(type_id) - 2));
         break;
       }
+      break;
+    }
+
+    default: {
       break;
     }
   }
 }
 
-ASMJIT_FAVOR_SIZE Error initFuncDetail(FuncDetail& func, const FuncSignature& signature, uint32_t registerSize) noexcept {
-  const CallConv& cc = func.callConv();
-  uint32_t arch = cc.arch();
-  uint32_t stackOffset = cc._spillZoneSize;
-  uint32_t argCount = func.argCount();
+ASMJIT_FAVOR_SIZE Error init_func_detail(FuncDetail& func, const FuncSignature& signature, uint32_t register_size) noexcept {
+  const CallConv& cc = func.call_conv();
+  Arch arch = cc.arch();
+  uint32_t stack_offset = cc._spill_zone_size;
+  uint32_t arg_count = func.arg_count();
 
   // Up to two return values can be returned in GP registers.
-  static const uint8_t gpReturnIndexes[4] = {
+  static const uint8_t gp_return_indexes[4] = {
     uint8_t(Gp::kIdAx),
     uint8_t(Gp::kIdDx),
-    uint8_t(BaseReg::kIdBad),
-    uint8_t(BaseReg::kIdBad)
+    uint8_t(Reg::kIdBad),
+    uint8_t(Reg::kIdBad)
   };
 
-  if (func.hasRet()) {
-    unpackValues(func, func._rets);
-    for (uint32_t valueIndex = 0; valueIndex < Globals::kMaxValuePack; valueIndex++) {
-      uint32_t typeId = func._rets[valueIndex].typeId();
+  if (func.has_ret()) {
+    unpack_values(func, func._rets);
+    for (uint32_t value_index = 0; value_index < Globals::kMaxValuePack; value_index++) {
+      TypeId type_id = func._rets[value_index].type_id();
 
       // Terminate at the first void type (end of the pack).
-      if (!typeId)
+      if (type_id == TypeId::kVoid) {
         break;
+      }
 
-      switch (typeId) {
-        case Type::kIdI64:
-        case Type::kIdU64: {
-          if (gpReturnIndexes[valueIndex] != BaseReg::kIdBad)
-            func._rets[valueIndex].initReg(Reg::kTypeGpq, gpReturnIndexes[valueIndex], typeId);
-          else
-            return DebugUtils::errored(kErrorInvalidState);
+      switch (type_id) {
+        case TypeId::kInt64:
+        case TypeId::kUInt64: {
+          if (gp_return_indexes[value_index] != Reg::kIdBad) {
+            func._rets[value_index].init_reg(RegType::kGp64, gp_return_indexes[value_index], type_id);
+          }
+          else {
+            return make_error(Error::kInvalidState);
+          }
           break;
         }
 
-        case Type::kIdI8:
-        case Type::kIdI16:
-        case Type::kIdI32: {
-          if (gpReturnIndexes[valueIndex] != BaseReg::kIdBad)
-            func._rets[valueIndex].initReg(Reg::kTypeGpd, gpReturnIndexes[valueIndex], Type::kIdI32);
-          else
-            return DebugUtils::errored(kErrorInvalidState);
+        case TypeId::kInt8:
+        case TypeId::kInt16:
+        case TypeId::kInt32: {
+          if (gp_return_indexes[value_index] != Reg::kIdBad) {
+            func._rets[value_index].init_reg(RegType::kGp32, gp_return_indexes[value_index], TypeId::kInt32);
+          }
+          else {
+            return make_error(Error::kInvalidState);
+          }
           break;
         }
 
-        case Type::kIdU8:
-        case Type::kIdU16:
-        case Type::kIdU32: {
-          if (gpReturnIndexes[valueIndex] != BaseReg::kIdBad)
-            func._rets[valueIndex].initReg(Reg::kTypeGpd, gpReturnIndexes[valueIndex], Type::kIdU32);
-          else
-            return DebugUtils::errored(kErrorInvalidState);
+        case TypeId::kUInt8:
+        case TypeId::kUInt16:
+        case TypeId::kUInt32: {
+          if (gp_return_indexes[value_index] != Reg::kIdBad) {
+            func._rets[value_index].init_reg(RegType::kGp32, gp_return_indexes[value_index], TypeId::kUInt32);
+          }
+          else {
+            return make_error(Error::kInvalidState);
+          }
           break;
         }
 
-        case Type::kIdF32:
-        case Type::kIdF64: {
-          uint32_t regType = Environment::is32Bit(arch) ? Reg::kTypeSt : Reg::kTypeXmm;
-          func._rets[valueIndex].initReg(regType, valueIndex, typeId);
+        case TypeId::kFloat32:
+        case TypeId::kFloat64: {
+          RegType reg_type = Environment::is_32bit(arch) ? RegType::kX86_St : RegType::kVec128;
+          func._rets[value_index].init_reg(reg_type, value_index, type_id);
           break;
         }
 
-        case Type::kIdF80: {
+        case TypeId::kFloat80: {
           // 80-bit floats are always returned by FP0.
-          func._rets[valueIndex].initReg(Reg::kTypeSt, valueIndex, typeId);
+          func._rets[value_index].init_reg(RegType::kX86_St, value_index, type_id);
           break;
         }
 
-        case Type::kIdMmx32:
-        case Type::kIdMmx64: {
+        case TypeId::kMmx32:
+        case TypeId::kMmx64: {
           // MM registers are returned through XMM (SystemV) or GPQ (Win64).
-          uint32_t regType = Reg::kTypeMm;
-          uint32_t regIndex = valueIndex;
-          if (Environment::is64Bit(arch)) {
-            regType = cc.strategy() == CallConv::kStrategyDefault ? Reg::kTypeXmm : Reg::kTypeGpq;
-            regIndex = cc.strategy() == CallConv::kStrategyDefault ? valueIndex : gpReturnIndexes[valueIndex];
+          RegType reg_type = RegType::kX86_Mm;
+          uint32_t reg_index = value_index;
+          if (Environment::is_64bit(arch)) {
+            reg_type = cc.strategy() == CallConvStrategy::kDefault ? RegType::kVec128 : RegType::kGp64;
+            reg_index = cc.strategy() == CallConvStrategy::kDefault ? value_index : gp_return_indexes[value_index];
 
-            if (regIndex == BaseReg::kIdBad)
-              return DebugUtils::errored(kErrorInvalidState);
+            if (reg_index == Reg::kIdBad) {
+              return make_error(Error::kInvalidState);
+            }
           }
 
-          func._rets[valueIndex].initReg(regType, regIndex, typeId);
+          func._rets[value_index].init_reg(reg_type, reg_index, type_id);
           break;
         }
 
         default: {
-          func._rets[valueIndex].initReg(vecTypeIdToRegType(typeId), valueIndex, typeId);
+          func._rets[value_index].init_reg(vec_type_id_to_reg_type(type_id), value_index, type_id);
           break;
         }
       }
@@ -352,72 +336,77 @@ ASMJIT_FAVOR_SIZE Error initFuncDetail(FuncDetail& func, const FuncSignature& si
   }
 
   switch (cc.strategy()) {
-    case CallConv::kStrategyDefault: {
-      uint32_t gpzPos = 0;
-      uint32_t vecPos = 0;
+    case CallConvStrategy::kDefault:
+    default: {
+      uint32_t gpz_pos = 0;
+      uint32_t vec_pos = 0;
 
-      for (uint32_t argIndex = 0; argIndex < argCount; argIndex++) {
-        unpackValues(func, func._args[argIndex]);
+      for (uint32_t arg_index = 0; arg_index < arg_count; arg_index++) {
+        unpack_values(func, func._args[arg_index]);
 
-        for (uint32_t valueIndex = 0; valueIndex < Globals::kMaxValuePack; valueIndex++) {
-          FuncValue& arg = func._args[argIndex][valueIndex];
+        for (uint32_t value_index = 0; value_index < Globals::kMaxValuePack; value_index++) {
+          FuncValue& arg = func._args[arg_index][value_index];
 
           // Terminate if there are no more arguments in the pack.
-          if (!arg)
+          if (!arg) {
             break;
+          }
 
-          uint32_t typeId = arg.typeId();
+          TypeId type_id = arg.type_id();
 
-          if (Type::isInt(typeId)) {
-            uint32_t regId = BaseReg::kIdBad;
+          if (TypeUtils::is_int(type_id)) {
+            uint32_t reg_id = Reg::kIdBad;
 
-            if (gpzPos < CallConv::kMaxRegArgsPerGroup)
-              regId = cc._passedOrder[Reg::kGroupGp].id[gpzPos];
+            if (gpz_pos < CallConv::kMaxRegArgsPerGroup) {
+              reg_id = cc._passed_order[RegGroup::kGp].id[gpz_pos];
+            }
 
-            if (regId != BaseReg::kIdBad) {
-              uint32_t regType = (typeId <= Type::kIdU32) ? Reg::kTypeGpd : Reg::kTypeGpq;
-              arg.assignRegData(regType, regId);
-              func.addUsedRegs(Reg::kGroupGp, Support::bitMask(regId));
-              gpzPos++;
+            if (reg_id != Reg::kIdBad) {
+              RegType reg_type = type_id <= TypeId::kUInt32 ? RegType::kGp32 : RegType::kGp64;
+              arg.assign_reg_data(reg_type, reg_id);
+              func.add_used_regs(RegGroup::kGp, Support::bit_mask<RegMask>(reg_id));
+              gpz_pos++;
             }
             else {
-              uint32_t size = Support::max<uint32_t>(Type::sizeOf(typeId), registerSize);
-              arg.assignStackOffset(int32_t(stackOffset));
-              stackOffset += size;
+              uint32_t size = Support::max<uint32_t>(TypeUtils::size_of(type_id), register_size);
+              arg.assign_stack_offset(int32_t(stack_offset));
+              stack_offset += size;
             }
             continue;
           }
 
-          if (Type::isFloat(typeId) || Type::isVec(typeId)) {
-            uint32_t regId = BaseReg::kIdBad;
+          if (TypeUtils::is_float(type_id) || TypeUtils::is_vec(type_id)) {
+            uint32_t reg_id = Reg::kIdBad;
 
-            if (vecPos < CallConv::kMaxRegArgsPerGroup)
-              regId = cc._passedOrder[Reg::kGroupVec].id[vecPos];
+            if (vec_pos < CallConv::kMaxRegArgsPerGroup) {
+              reg_id = cc._passed_order[RegGroup::kVec].id[vec_pos];
+            }
 
-            if (Type::isFloat(typeId)) {
-              // If this is a float, but `kFlagPassFloatsByVec` is false, we have
-              // to use stack instead. This should be only used by 32-bit calling
-              // conventions.
-              if (!cc.hasFlag(CallConv::kFlagPassFloatsByVec))
-                regId = BaseReg::kIdBad;
+            if (TypeUtils::is_float(type_id)) {
+              // If this is a float, but `kFlagPassFloatsByVec` is false, we have to use stack instead. This should
+              // be only used by 32-bit calling conventions.
+              if (!cc.has_flag(CallConvFlags::kPassFloatsByVec)) {
+                reg_id = Reg::kIdBad;
+              }
             }
             else {
-              // Pass vector registers via stack if this is a variable arguments
-              // function. This should be only used by 32-bit calling conventions.
-              if (signature.hasVarArgs() && cc.hasFlag(CallConv::kFlagPassVecByStackIfVA))
-                regId = BaseReg::kIdBad;
+              // Pass vector registers via stack if this is a variable arguments function. This should be only used
+              // by 32-bit calling conventions.
+              if (signature.has_var_args() && cc.has_flag(CallConvFlags::kPassVecByStackIfVA)) {
+                reg_id = Reg::kIdBad;
+              }
             }
 
-            if (regId != BaseReg::kIdBad) {
-              arg.initTypeId(typeId);
-              arg.assignRegData(vecTypeIdToRegType(typeId), regId);
-              func.addUsedRegs(Reg::kGroupVec, Support::bitMask(regId));
-              vecPos++;
+            if (reg_id != Reg::kIdBad) {
+              arg.init_type_id(type_id);
+              arg.assign_reg_data(vec_type_id_to_reg_type(type_id), reg_id);
+              func.add_used_regs(RegGroup::kVec, Support::bit_mask<RegMask>(reg_id));
+              vec_pos++;
             }
             else {
-              uint32_t size = Type::sizeOf(typeId);
-              arg.assignStackOffset(int32_t(stackOffset));
-              stackOffset += size;
+              uint32_t size = TypeUtils::size_of(type_id);
+              arg.assign_stack_offset(int32_t(stack_offset));
+              stack_offset += size;
             }
             continue;
           }
@@ -426,12 +415,11 @@ ASMJIT_FAVOR_SIZE Error initFuncDetail(FuncDetail& func, const FuncSignature& si
       break;
     }
 
-    case CallConv::kStrategyX64Windows:
-    case CallConv::kStrategyX64VectorCall: {
-      // Both X64 and VectorCall behave similarly - arguments are indexed
-      // from left to right. The position of the argument determines in
-      // which register the argument is allocated, so it's either GP or
-      // one of XMM/YMM/ZMM registers.
+    case CallConvStrategy::kX64Windows:
+    case CallConvStrategy::kX64VectorCall: {
+      // Both X64 and VectorCall behave similarly - arguments are indexed from left to right. The position of the
+      // argument determines in which register the argument is allocated, so it's either GP or one of XMM/YMM/ZMM
+      // registers.
       //
       //       [       X64       ] [VecCall]
       // Index: #0   #1   #2   #3   #4   #5
@@ -445,73 +433,77 @@ ASMJIT_FAVOR_SIZE Error initFuncDetail(FuncDetail& func, const FuncSignature& si
       //        RCX  XMM1 R8   XMM3
       //
       // Unused vector registers are used by HVA.
-      bool isVectorCall = (cc.strategy() == CallConv::kStrategyX64VectorCall);
+      bool is_vector_call = (cc.strategy() == CallConvStrategy::kX64VectorCall);
 
-      for (uint32_t argIndex = 0; argIndex < argCount; argIndex++) {
-        unpackValues(func, func._args[argIndex]);
+      for (uint32_t arg_index = 0; arg_index < arg_count; arg_index++) {
+        unpack_values(func, func._args[arg_index]);
 
-        for (uint32_t valueIndex = 0; valueIndex < Globals::kMaxValuePack; valueIndex++) {
-          FuncValue& arg = func._args[argIndex][valueIndex];
+        for (uint32_t value_index = 0; value_index < Globals::kMaxValuePack; value_index++) {
+          FuncValue& arg = func._args[arg_index][value_index];
 
           // Terminate if there are no more arguments in the pack.
-          if (!arg)
+          if (!arg) {
             break;
+          }
 
-          uint32_t typeId = arg.typeId();
-          uint32_t size = Type::sizeOf(typeId);
+          TypeId type_id = arg.type_id();
+          uint32_t size = TypeUtils::size_of(type_id);
 
-          if (Type::isInt(typeId) || Type::isMmx(typeId)) {
-            uint32_t regId = BaseReg::kIdBad;
+          if (TypeUtils::is_int(type_id) || TypeUtils::is_mmx(type_id)) {
+            uint32_t reg_id = Reg::kIdBad;
 
-            if (argIndex < CallConv::kMaxRegArgsPerGroup)
-              regId = cc._passedOrder[Reg::kGroupGp].id[argIndex];
+            if (arg_index < CallConv::kMaxRegArgsPerGroup) {
+              reg_id = cc._passed_order[RegGroup::kGp].id[arg_index];
+            }
 
-            if (regId != BaseReg::kIdBad) {
-              uint32_t regType = (size <= 4 && !Type::isMmx(typeId)) ? Reg::kTypeGpd : Reg::kTypeGpq;
-              arg.assignRegData(regType, regId);
-              func.addUsedRegs(Reg::kGroupGp, Support::bitMask(regId));
+            if (reg_id != Reg::kIdBad) {
+              RegType reg_type = size <= 4 && !TypeUtils::is_mmx(type_id) ? RegType::kGp32 : RegType::kGp64;
+              arg.assign_reg_data(reg_type, reg_id);
+              func.add_used_regs(RegGroup::kGp, Support::bit_mask<RegMask>(reg_id));
             }
             else {
-              arg.assignStackOffset(int32_t(stackOffset));
-              stackOffset += 8;
+              arg.assign_stack_offset(int32_t(stack_offset));
+              stack_offset += 8;
             }
             continue;
           }
 
-          if (Type::isFloat(typeId) || Type::isVec(typeId)) {
-            uint32_t regId = BaseReg::kIdBad;
+          if (TypeUtils::is_float(type_id) || TypeUtils::is_vec(type_id)) {
+            uint32_t reg_id = Reg::kIdBad;
 
-            if (argIndex < CallConv::kMaxRegArgsPerGroup)
-              regId = cc._passedOrder[Reg::kGroupVec].id[argIndex];
+            if (arg_index < CallConv::kMaxRegArgsPerGroup) {
+              reg_id = cc._passed_order[RegGroup::kVec].id[arg_index];
+            }
 
-            if (regId != BaseReg::kIdBad) {
-              // X64-ABI doesn't allow vector types (XMM|YMM|ZMM) to be passed
-              // via registers, however, VectorCall was designed for that purpose.
-              if (Type::isFloat(typeId) || isVectorCall) {
-                uint32_t regType = vecTypeIdToRegType(typeId);
-                arg.assignRegData(regType, regId);
-                func.addUsedRegs(Reg::kGroupVec, Support::bitMask(regId));
+            if (reg_id != Reg::kIdBad) {
+              // X64-ABI doesn't allow vector types (XMM|YMM|ZMM) to be passed via registers, however, VectorCall
+              // was designed for that purpose.
+              if (TypeUtils::is_float(type_id) || is_vector_call) {
+                RegType reg_type = vec_type_id_to_reg_type(type_id);
+                arg.assign_reg_data(reg_type, reg_id);
+                func.add_used_regs(RegGroup::kVec, Support::bit_mask<RegMask>(reg_id));
                 continue;
               }
             }
 
-            // Passed via stack if the argument is float/double or indirectly.
-            // The trap is - if the argument is passed indirectly, the address
-            // can be passed via register, if the argument's index has GP one.
-            if (Type::isFloat(typeId)) {
-              arg.assignStackOffset(int32_t(stackOffset));
+            // Passed via stack if the argument is float/double or indirectly. The trap is - if the argument is
+            // passed indirectly, the address can be passed via register, if the argument's index has GP one.
+            if (TypeUtils::is_float(type_id)) {
+              arg.assign_stack_offset(int32_t(stack_offset));
             }
             else {
-              uint32_t gpRegId = cc._passedOrder[Reg::kGroupGp].id[argIndex];
-              if (gpRegId != BaseReg::kIdBad)
-                arg.assignRegData(Reg::kTypeGpq, gpRegId);
-              else
-                arg.assignStackOffset(int32_t(stackOffset));
-              arg.addFlags(FuncValue::kFlagIsIndirect);
+              uint32_t gp_reg_id = cc._passed_order[RegGroup::kGp].id[arg_index];
+              if (gp_reg_id != Reg::kIdBad) {
+                arg.assign_reg_data(RegType::kGp64, gp_reg_id);
+              }
+              else {
+                arg.assign_stack_offset(int32_t(stack_offset));
+              }
+              arg.add_flags(FuncValue::kFlagIsIndirect);
             }
 
             // Always 8 bytes (float/double/pointer).
-            stackOffset += 8;
+            stack_offset += 8;
             continue;
           }
         }
@@ -520,8 +512,8 @@ ASMJIT_FAVOR_SIZE Error initFuncDetail(FuncDetail& func, const FuncSignature& si
     }
   }
 
-  func._argStackSize = stackOffset;
-  return kErrorOk;
+  func._arg_stack_size = stack_offset;
+  return Error::kOk;
 }
 
 } // {FuncInternal}

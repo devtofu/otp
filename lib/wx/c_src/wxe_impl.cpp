@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2008-2017. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2008-2026. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,10 +35,33 @@
 #include <wx/dcbuffer.h>
 #undef private
 
+#ifdef HAVE_GLIB
+ #include <glib.h>
+#endif
+
 #include "wxe_impl.h"
 #include "wxe_events.h"
 #include "wxe_return.h"
 #include "wxe_gl.h"
+
+// Non-fatal X error handler (GLX/X11 backend only).
+// GDK installs an X error handler that escalates asynchronous X protocol
+// errors to a fatal g_log() -> G_BREAKPOINT() -> SIGTRAP, killing the whole
+// process. Some GL stacks (e.g. Mesa GLX with wxGLCanvas on wx 3.0) emit a
+// benign asynchronous GLX BadMatch on SwapBuffers during GL window teardown;
+// that must not abort the emulator. Install our own handler that logs the
+// error and returns 0 (non-fatal), matching how robust GTK GL apps behave.
+//
+// This only applies to the GLX/X11 GL canvas backend. wxWidgets 3.2+ has an
+// EGL GL canvas backend (Wayland) that does not use Xlib; there is no X error
+// path to guard there. wxUSE_GLCANVAS_EGL is defined (to 0/1) on wx builds
+// that know about EGL and is absent on older (GLX-only) wx, so treat "absent
+// or 0" as the GLX/X11 case. Include Xlib explicitly rather than relying on
+// the GL canvas header to pull it in transitively.
+#if defined(__WXGTK__) && (!defined(wxUSE_GLCANVAS_EGL) || !wxUSE_GLCANVAS_EGL)
+#define WXE_INSTALL_X_ERROR_HANDLER 1
+#include <X11/Xlib.h>
+#endif
 
 IMPLEMENT_APP_NO_MAIN(WxeApp)
 
@@ -85,7 +110,7 @@ void push_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[], int op, wxe_m
     int wakeup = wxe_needs_wakeup;
     wxe_needs_wakeup = 0;
     enif_mutex_unlock(wxe_batch_locker_m);
-    if(n < 2 || wakeup || WXE_DEBUG_PING) {
+    if(n < 2 || wakeup || op == WXE_DEBUG_PING) {
       wxWakeUpIdle();
     }
   }
@@ -109,31 +134,92 @@ void meta_command(ErlNifEnv *env, int what, wxe_me_ref *mp) {
 void send_msg(const char * type, const wxString * msg) {
   WxeApp * app = (WxeApp *) wxTheApp;
   wxeReturn rt = wxeReturn(app->global_me, init_caller);
+  ErlNifEnv *env = enif_alloc_env();
+  rt.env = env;
   ERL_NIF_TERM emsg = enif_make_tuple3(rt.env,
                                        rt.make_atom((char *) "wxe_driver"),
                                        rt.make_atom((char *) type),
                                        rt.make(msg));
   rt.send(emsg);
+  enif_free_env(env);
 }
+
+void wx_print_term(ErlNifEnv * env, ERL_NIF_TERM t)
+{
+  if(enif_is_binary(env, t)) {
+    ErlNifBinary bin;
+    enif_inspect_binary(env, t, &bin);
+    if(bin.size > 128) {
+      enif_fprintf(stderr, "<<...LARGE BIN>");
+    } else {
+      enif_fprintf(stderr, "%T", t);
+    }
+  } else {
+    enif_fprintf(stderr, "%T", t);
+  }
+}
+
+
 
 void print_cmd(wxeCommand& event)
 {
   int i;
   wxe_fns_t *func = &wxe_fns[event.op];
   enif_fprintf(stderr, "  %T %d %s::%s(", event.caller, event.op, func->cname, func->fname);
-  for(i=0; i < event.argc-1; i++) {
-    enif_fprintf(stderr, "%T,", event.args[i]);
+  for(i=0; i < event.argc; i++) {
+    wx_print_term(event.env, event.args[i]);
+    if(i < event.argc - 1)
+      enif_fprintf(stderr, ", ");
   }
-  if(i > 0) {
-    enif_fprintf(stderr, "%T)\r\n", event.args[i]);
-  } else {
-    enif_fprintf(stderr, ")\r\n");
-  }
+  enif_fprintf(stderr, ")\r\n");
 }
+ 
 
 /* ************************************************************
  *  Init WxeApp the application emulator
  * ************************************************************/
+
+#ifdef HAVE_GLIB
+static GLogWriterOutput wxe_log_glib(GLogLevelFlags log_level,
+                                     const GLogField *fields,
+                                     gsize n_fields,
+                                     gpointer user_data)
+{
+  for (gsize i = 0; i < n_fields; i++) {
+    if(strcmp(fields[i].key, "MESSAGE") == 0) {
+      wxString msg;
+      msg.Printf(wxT("GTK: %s"), (char *) fields[i].value);
+      send_msg("debug", &msg);
+    }
+  }
+  return G_LOG_WRITER_HANDLED;
+}
+#endif
+
+#if defined(WXE_INSTALL_X_ERROR_HANDLER)
+// Non-fatal X error handler; see the comment at the top of this file where
+// WXE_INSTALL_X_ERROR_HANDLER is defined. Reports the error to Erlang (like
+// wxe_log_glib does for GTK messages) and returns 0 so an asynchronous GLX/X
+// protocol error cannot abort the emulator.
+static int wxe_x_error_handler(Display *dpy, XErrorEvent *ev)
+{
+  (void) dpy;
+  // Report the first few occurrences only, to avoid flooding if it repeats.
+  static int wxe_x_error_count = 0;
+  if(wxe_x_error_count < 10) {
+    wxe_x_error_count++;
+    wxString msg;
+    msg.Printf(wxT("non-fatal X error ignored: "
+                   "error_code=%u request_code=%u minor_code=%u "
+                   "resource=0x%lx serial=%lu"),
+               (unsigned) ev->error_code, (unsigned) ev->request_code,
+               (unsigned) ev->minor_code, (unsigned long) ev->resourceid,
+               (unsigned long) ev->serial);
+    send_msg("warning", &msg);
+  }
+  return 0; // non-fatal: do not let the error abort the process
+}
+#endif
 
 bool WxeApp::OnInit()
 {
@@ -167,6 +253,20 @@ bool WxeApp::OnInit()
 		 (wxObjectEventFunction) (wxEventFunction) &WxeApp::dummy_close);
 #endif
 
+#ifdef HAVE_GLIB
+  g_log_set_writer_func(wxe_log_glib, NULL, NULL);
+#endif
+
+#if defined(WXE_INSTALL_X_ERROR_HANDLER)
+  // Only meaningful under X11/XWayland. wxGetDisplay() returns the X Display*
+  // on the GTK/X11 backend and NULL on a native Wayland backend (where this
+  // class of asynchronous X protocol error cannot occur), so use it as a
+  // runtime gate.
+  if(wxGetDisplay() != NULL) {
+    XSetErrorHandler(wxe_x_error_handler);
+  }
+#endif
+
   SetExitOnFrameDelete(false);
 
   enif_mutex_lock(wxe_status_m);
@@ -198,6 +298,18 @@ void WxeApp::MacNewFile() {
 void WxeApp::MacReopenApp() {
   wxString empty;
   send_msg("reopen_app", &empty);
+}
+
+// See: https://github.com/wxWidgets/wxWidgets/blob/v3.1.5/src/osx/cocoa/utils.mm#L76:L93
+bool WxeApp::OSXIsGUIApplication() {
+   char val_buf[8];
+   size_t val_len = 7;
+   int res = enif_getenv("WX_MACOS_NON_GUI_APP", val_buf, &val_len);
+   if (res == 0) {
+     return FALSE;
+   } else {
+     return TRUE;
+   }
 }
 #endif
 
@@ -357,11 +469,11 @@ int WxeApp::dispatch(wxeFifo * batch)
         enif_mutex_lock(wxe_batch_locker_m);
 	break;
       }
+      batch->DeleteCmd(event);
       if(wait > CHECK_EVENTS) {
         enif_mutex_unlock(wxe_batch_locker_m);
         return 1; // Let wx check for events
       }
-      batch->DeleteCmd(event);
     }
     if(blevel <= 0) {
       enif_mutex_unlock(wxe_batch_locker_m);
@@ -435,19 +547,21 @@ void WxeApp::dispatch_cb(wxeFifo * batch, wxeMemEnv * memenv, ErlNifPid process)
             }
             enif_mutex_lock(wxe_batch_locker_m);
             last = batch->m_q.size();
-            if(wxe_idle_processed) {
-              // We have processed cmds inside dispatch()
-              // so the iterator may be wrong, restart from
-              // beginning of the queue
-              i = 0;
-            }
             break;
           }
           batch->DeleteCmd(event);
         } else {
         // enif_fprintf(stderr, "Ignore:"); event ? print_cmd(*event) : fprintf(stderr, "NULL\r\n");
       }
-      i++;
+      if(wxe_idle_processed) {
+        // We have processed cmds inside dispatch()
+        // so the iterator may be wrong, restart from
+        // beginning of the queue
+        i = 0;
+        wxe_idle_processed = 0;
+      } else {
+        i++;
+      }
     }
     // sleep until something happens
     // enif_fprintf(stderr, "\r\n%s:%d: %d: sleep sz %d (%d) it pos: %d\r\n", __FILE__, __LINE__, recurse_level,
@@ -511,7 +625,6 @@ void * newMemEnv(ErlNifEnv* env, wxe_me_ref *mr)
   WxeApp * app = (WxeApp *) wxTheApp;
   wxeMemEnv* global_me = app->global_me;
   wxeMemEnv* memenv = new wxeMemEnv();
-  memenv->create();
 
   for(int i = 0; i < global_me->next; i++) {
     memenv->ref2ptr[i] = global_me->ref2ptr[i];
@@ -525,7 +638,11 @@ void * newMemEnv(ErlNifEnv* env, wxe_me_ref *mr)
 void WxeApp::destroyMemEnv(wxeMetaCommand &Ecmd)
 {
   // Clear incoming cmd queue first
-  // dispatch_cmds();
+  dispatch_cmds();
+  enif_mutex_lock(wxe_batch_locker_m);
+  wxe_needs_wakeup = 1;
+  enif_mutex_unlock(wxe_batch_locker_m);
+
   wxWindow *parent = NULL;
 
   if(!Ecmd.me_ref || !Ecmd.me_ref->memenv) {
@@ -542,8 +659,8 @@ void WxeApp::destroyMemEnv(wxeMetaCommand &Ecmd)
     send_msg("debug", &msg);
   }
 
-  // pre-pass delete all dialogs first since they might crash erlang otherwise
-  for(int i=1; i < memenv->next; i++) {
+  // pre-pass delete all dialogs and DC's first since they might crash erlang otherwise
+  for(int i=memenv->next-1; i > 0; i--) {
     wxObject * ptr = (wxObject *) memenv->ref2ptr[i];
     if(ptr) {
       ptrMap::iterator it = ptr2ref.find(ptr);
@@ -551,23 +668,22 @@ void WxeApp::destroyMemEnv(wxeMetaCommand &Ecmd)
 	wxeRefData *refd = it->second;
 	if(refd->alloc_in_erl && refd->type == 2) {
 	  wxDialog *win = (wxDialog *) ptr;
-	  if(win->IsModal()) {
-	    win->EndModal(-1);
-	  }
+	  if(win->IsModal()) { win->EndModal(-1); }
 	  parent = win->GetParent();
 	  if(parent) {
 	    ptrMap::iterator parentRef = ptr2ref.find(parent);
-	    if(parentRef == ptr2ref.end()) {
-	      // The parent is already dead delete the parent ref
-	      win->SetParent(NULL);
-	    }
+            // if the parent is already dead delete the parent ref
+	    if(parentRef == ptr2ref.end()) { win->SetParent(NULL); }
 	  }
-	  if(recurse_level > 0) {
-	    // Delay delete until we are out of dispatch*
-	  } else {
-	    delete win;
-	  }
-	}
+          // Delay delete until we are out of dispatch*
+	  if(recurse_level == 0) { delete win; }
+	} else if(refd->alloc_in_erl && refd->type == 8) {
+	  if(delete_object(ptr, refd)) {
+	    // Delete refs for leaks and non overridden allocs
+	    delete refd;
+	    ptr2ref.erase(it);
+          }
+        }
       }
     }
   }
@@ -629,7 +745,7 @@ void WxeApp::destroyMemEnv(wxeMetaCommand &Ecmd)
 	    delete refd;
 	    ptr2ref.erase(it);
 	  } // overridden allocs deletes meta-data in clearPtr
-	} else { // Not alloced in erl just delete references
+	} else { // Not allocated in erl just delete references
 	  if(refd->ref >= global_me->next) { // if it is not part of global ptrs
 	    delete refd;
 	    ptr2ref.erase(it);
@@ -647,8 +763,9 @@ void WxeApp::destroyMemEnv(wxeMetaCommand &Ecmd)
 //  fflush(stderr);
   enif_free(memenv->ref2ptr);
   enif_free_env(memenv->tmp_env);
-  if(wxe_debug) enif_fprintf(stderr, "Deleting memenv %d\r\n", memenv);
+  if(wxe_debug) enif_fprintf(stderr, "Deleting memenv %p\r\n", memenv);
   Ecmd.me_ref->memenv = NULL;
+  delete memenv;
   enif_release_resource(Ecmd.me_ref);
 }
 
@@ -669,7 +786,7 @@ wxeRefData * WxeApp::getRefData(void *ptr) {
 
 int WxeApp::newPtr(void * ptr, int type, wxeMemEnv *memenv) {
   int ref;
-  intList free = memenv->free;
+  intList &free = memenv->free;
 
   if(free.IsEmpty()) {
     ref = memenv->next++;
@@ -707,11 +824,16 @@ int WxeApp::getRef(void * ptr, wxeMemEnv *memenv, int type) {
       // Found it return
       return refd->ref;
     } // else
-    // Old reference to deleted object, release old and recreate in current memenv.
+    // Stale reference to an object whose address has been recycled after its
+    // owning memenv was torn down (memenv is deleted in destroyMemEnv, so
+    // refd->memenv is now a dangling pointer and must not be dereferenced).
+    // Just drop the stale entry and recreate the reference in the current
+    // memenv below.
+    delete refd;
     ptr2ref.erase(it);
   }
   int ref;
-  intList free = memenv->free;
+  intList &free = memenv->free;
 
   if(free.IsEmpty()) {
     ref = memenv->next++;
@@ -735,7 +857,7 @@ void WxeApp::clearPtr(void * ptr) {
 
   if(it != ptr2ref.end()) {
     wxeRefData *refd = it->second;
-    intList free = refd->memenv->free;
+    intList &free = refd->memenv->free;
     int ref = refd->ref;
     refd->memenv->ref2ptr[ref] = NULL;
     free.Append(ref);
@@ -751,27 +873,32 @@ void WxeApp::clearPtr(void * ptr) {
     if(refd->type == 1 && ((wxObject*)ptr)->IsKindOf(CLASSINFO(wxSizer))) {
       wxSizerItemList list = ((wxSizer*)ptr)->GetChildren();
       for(wxSizerItemList::compatibility_iterator node = list.GetFirst();
-	  node; node = node->GetNext()) {
-	wxSizerItem *item = node->GetData();
-	wxObject *content=NULL;
-	if((content = item->GetWindow()))
-	  if(ptr2ref.end() == ptr2ref.find(content)) {
-	    wxString msg;
-	    wxClassInfo *cinfo = ((wxObject *)ptr)->GetClassInfo();
-	    msg.Printf(wxT("Double usage detected of window at %p in sizer {wx_ref, %d, %s}"),
-		       content, ref, cinfo->GetClassName());
-	    send_msg("error", &msg);
-	    ((wxSizer*)ptr)->Detach((wxWindow*)content);
-	  }
-	if((content = item->GetSizer()))
-	  if(ptr2ref.end() == ptr2ref.find(content)) {
-	    wxString msg;
-	    wxClassInfo *cinfo = ((wxObject *)ptr)->GetClassInfo();
-	    msg.Printf(wxT("Double usage detected of sizer at %p in sizer {wx_ref, %d, %s}"),
-		       content, ref, cinfo->GetClassName());
-	    send_msg("error", &msg);
-	    ((wxSizer*)ptr)->Detach((wxSizer*)content);
-	  }
+          node; node = node->GetNext()) {
+        wxSizerItem *item = node->GetData();
+        // wxSizer::Detach() deletes the wxSizerItem, so read both members
+        // before any Detach and use else-if: a sizer item holds a window XOR
+        // a sizer, and re-reading item after a Detach would be use-after-free.
+        wxObject *win = item->GetWindow();
+        wxObject *childSizer = item->GetSizer();
+        if(win) {
+          if(ptr2ref.end() == ptr2ref.find(win)) {
+            wxString msg;
+            wxClassInfo *cinfo = ((wxObject *)ptr)->GetClassInfo();
+            msg.Printf(wxT("Double usage detected of window at %p in sizer {wx_ref, %d, %s}"),
+                       win, ref, cinfo->GetClassName());
+            send_msg("error", &msg);
+            ((wxSizer*)ptr)->Detach((wxWindow*)win);
+          }
+        } else if(childSizer) {
+          if(ptr2ref.end() == ptr2ref.find(childSizer)) {
+            wxString msg;
+            wxClassInfo *cinfo = ((wxObject *)ptr)->GetClassInfo();
+            msg.Printf(wxT("Double usage detected of sizer at %p in sizer {wx_ref, %d, %s}"),
+                       childSizer, ref, cinfo->GetClassName());
+            send_msg("error", &msg);
+            ((wxSizer*)ptr)->Detach((wxSizer*)childSizer);
+          }
+        }
       }
     }
 

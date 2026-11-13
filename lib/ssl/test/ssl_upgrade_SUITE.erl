@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2014-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2014-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,6 +23,7 @@
 
 -behaviour(ct_suite).
 
+-include("ssl_test_lib.hrl").
 -include_lib("common_test/include/ct.hrl").
 
 %% Common test
@@ -61,8 +64,8 @@ all() ->
     ].
 
 init_per_suite(Config0) ->
-    catch crypto:stop(),
-    try crypto:start() of
+    catch application:stop(crypto),
+    try application:start(crypto) of
         ok ->
             ssl_test_lib:clean_start(),
             case ct_release_test:init(Config0) of
@@ -77,7 +80,7 @@ init_per_suite(Config0) ->
 
 end_per_suite(Config) ->
     ct_release_test:cleanup(Config),
-    crypto:stop().
+    application:stop(crypto).
 
 init_per_testcase(_TestCase, Config) ->
     ssl_test_lib:ct_log_supported_protocol_versions(Config),
@@ -94,7 +97,7 @@ upgrade_init(CtData, State) ->
 upgrade_upgraded(_, #state{skip = true} = State) ->
     State;
 upgrade_upgraded(_, #state{soft = false, config = Config, result_proxy = Pid} = State) ->
-    ct:pal("Restart upgrade ~n", []),
+    ?CT_PAL("Restart upgrade ~n", []),
     {Server, Client} = restart_start_connection(Config, Pid),
     Result = check_result(Pid, Server, Client),
     ssl_test_lib:close(Server),
@@ -104,7 +107,7 @@ upgrade_upgraded(_, #state{soft = false, config = Config, result_proxy = Pid} = 
 upgrade_upgraded(_, #state{server = Server0, client = Client0,
 			   config = Config, soft = true,
 			   result_proxy = Pid} = State) ->
-    ct:pal("Soft upgrade: ~n", []),
+    ?CT_PAL("Soft upgrade: ~n", []),
     Server0 ! changed_version,
     Client0 ! changed_version,
     Result = check_result(Pid, Server0, Client0),
@@ -117,7 +120,7 @@ upgrade_upgraded(_, #state{server = Server0, client = Client0,
 upgrade_downgraded(_, #state{skip = true} = State) ->
     State;
 upgrade_downgraded(_, #state{soft = false, config = Config, result_proxy = Pid} = State) ->
-    ct:pal("Restart downgrade: ~n", []),
+    ?CT_PAL("Restart downgrade: ~n", []),
     {Server, Client} = restart_start_connection(Config, Pid),
     Result = check_result(Pid, Server, Client),
     ssl_test_lib:close(Server),
@@ -126,7 +129,7 @@ upgrade_downgraded(_, #state{soft = false, config = Config, result_proxy = Pid} 
     ok = Result,
     State;
 upgrade_downgraded(_, #state{server = Server, client = Client, soft = true, result_proxy = Pid} = State) ->
-    ct:pal("Soft downgrade: ~n", []),
+    ?CT_PAL("Soft downgrade: ~n", []),
     Server ! changed_version,
     Client ! changed_version,
     Result = check_result(Pid, Server, Client),
@@ -148,12 +151,15 @@ minor_upgrade(Config) when is_list(Config) ->
 %%--------------------------------------------------------------------
 %% Internal functions ------------------------------------------------
 %%--------------------------------------------------------------------
+upgrade_init(Ver, Ver, _, State) ->
+    %% No upgrade if to and from version is the same!
+    State#state{skip = true};
 upgrade_init(_, "8.0.2", _, State) ->
     %% Requires stdlib upgrade so it will be a node upgrade!
     State#state{skip = true};
 upgrade_init(_, _, CtData, #state{config = Config} = State) ->
     {ok, {_, _, Up, _Down}} = ct_release_test:get_appup(CtData, ssl),
-    ct:pal("Up: ~p", [Up]),
+    ?CT_PAL("Up: ~p", [Up]),
     Soft = is_soft(Up), %% It is symmetrical, if upgrade is soft so is downgrade
     Pid = spawn(?MODULE, result_proxy_init, [[]]),
     case Soft of
@@ -174,8 +180,8 @@ use_connection(Socket) ->
     end.
 
 soft_start_connection(Config, ResulProxy) ->
-    ClientOpts = proplists:get_value(client_rsa_verify_opts, Config),
-    ServerOpts = proplists:get_value(server_rsa_verify_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
     Server = start_server([{node, ServerNode}, {port, 0},
 			   {from, ResulProxy},
@@ -191,19 +197,19 @@ soft_start_connection(Config, ResulProxy) ->
     {Server, Client}.
 
 restart_start_connection(Config, ResulProxy) ->
-    ClientOpts = proplists:get_value(client_rsa_verify_opts, Config),
-    ServerOpts = proplists:get_value(server_rsa_verify_opts, Config),
+    ClientOpts = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
     Server = start_server([{node, ServerNode}, {port, 0},
-					{from, ResulProxy},
-					{mfa, {ssl_test_lib, send_recv_result_active, []}},
-					{options, ServerOpts}]),
+                           {from, ResulProxy},
+                           {mfa, {ssl_test_lib, send_recv_result_active, []}},
+                           {options, ServerOpts}]),
     Port = inet_port(ResulProxy, Server),
     Client = start_client([{node, ClientNode}, {port, Port},
-					{host, Hostname},
-					{from, ResulProxy},
-					{mfa, {ssl_test_lib, send_recv_result_active, []}},
-					{options, ClientOpts}]),
+                           {host, Hostname},
+                           {from, ResulProxy},
+                           {mfa, {ssl_test_lib, send_recv_result_active, []}},
+                           {options, ClientOpts}]),
     {Server, Client}.
 
 is_soft([{restart_application, ssl}]) ->	       

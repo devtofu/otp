@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1997-2018. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(big).
@@ -116,13 +118,13 @@ compiler_1() -> ok.
 %%% test/0
 %%% 
 %%%    Run the complete test suite.
-%%%    Reads Nodes from nodes.profile and starts them if neccessary.
+%%%    Reads Nodes from nodes.profile and starts them if necessary.
 %%%    Kills Mnesia and wipes out the Mnesia directories as a starter.
 %%%
 %%% test/1
 %%%
 %%%    Run parts of the test suite.
-%%%    Reads Nodes from nodes.profile and starts them if neccessary.
+%%%    Reads Nodes from nodes.profile and starts them if necessary.
 %%%    Kills Mnesia and wipes out the Mnesia directories as a starter.
 %%%
 %%% test/2
@@ -171,24 +173,24 @@ system_info(Nodes) ->
     ?match(Nodes,mnesia:system_info(db_nodes)),
     ?match(Nodes,mnesia:system_info(running_db_nodes)),
     ?match(true,mnesia:system_info(have_disc)),
-    ?match(A when atom(A),mnesia:system_info(debug)),
-    ?match(L when list(L),mnesia:system_info(directory)),
-    ?match(L when list(L),mnesia:system_info(log_version)),
+    ?match(A when is_atom(A),mnesia:system_info(debug)),
+    ?match(L when is_list(L),mnesia:system_info(directory)),
+    ?match(L when is_list(L),mnesia:system_info(log_version)),
     ?match({_,_},mnesia:system_info(schema_version)),
-    ?match(L when list(L),mnesia:system_info(tables)),
-    ?match(L when list(L),mnesia:system_info(local_tables)),
-    ?match(L when list(L),mnesia:system_info(held_locks)),
-    ?match(L when list(L),mnesia:system_info(lock_queue)),
-    ?match(L when list(L),mnesia:system_info(transactions)),
-    ?match(I when integer(I),mnesia:system_info(transaction_failures)),
-    ?match(I when integer(I),mnesia:system_info(transaction_commits)),
-    ?match(I when integer(I),mnesia:system_info(transaction_restarts)),
-    ?match(L when list(L),mnesia:system_info(checkpoints)),
-    ?match(A when atom(A),mnesia:system_info(backup_module)),
+    ?match(L when is_list(L),mnesia:system_info(tables)),
+    ?match(L when is_list(L),mnesia:system_info(local_tables)),
+    ?match(L when is_list(L),mnesia:system_info(held_locks)),
+    ?match(L when is_list(L),mnesia:system_info(lock_queue)),
+    ?match(L when is_list(L),mnesia:system_info(transactions)),
+    ?match(I when is_integer(I),mnesia:system_info(transaction_failures)),
+    ?match(I when is_integer(I),mnesia:system_info(transaction_commits)),
+    ?match(I when is_integer(I),mnesia:system_info(transaction_restarts)),
+    ?match(L when is_list(L),mnesia:system_info(checkpoints)),
+    ?match(A when is_atom(A),mnesia:system_info(backup_module)),
     ?match(true,mnesia:system_info(auto_repair)),
     ?match({_,_},mnesia:system_info(dump_log_interval)),
-    ?match(A when atom(A),mnesia:system_info(dump_log_update_in_place)),
-    ?match(I when integer(I),mnesia:system_info(transaction_log_writes)),
+    ?match(A when is_atom(A),mnesia:system_info(dump_log_update_in_place)),
+    ?match(I when is_integer(I),mnesia:system_info(transaction_log_writes)),
     ?match({'EXIT',{aborted,badarg}},mnesia:system_info(ali_baba)),
     done.
 
@@ -210,7 +212,7 @@ table_info(Nodes) ->
     Keys = lists:seq(1,Size),
     Records = [{Tab,A,7} || A <- Keys],
     lists:foreach(fun(Rec) -> ?match(ok,mnesia:dirty_write(Rec)) end,Records),
-    ?match(Mem when integer(Mem),mnesia:table_info(Tab,memory)),
+    ?match(Mem when is_integer(Mem),mnesia:table_info(Tab,memory)),
     ?match(Size,mnesia:table_info(Tab,size)),
     ?match(Type,mnesia:table_info(Tab,type)),
     ?match([Node3],mnesia:table_info(Tab,disc_copies)),
@@ -615,7 +617,7 @@ replica_management(Nodes) ->
     done.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% Add and drop indecies
+%% Add and drop indices
 
 index_lifecycle(suite) ->
     [ add_table_index, create_live_table_index, del_table_index ].
@@ -689,7 +691,7 @@ del_table_index(Nodes) ->
     done.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% Syncronize table with log or disc
+%% Synchronize table with log or disc
 %% 
 table_sync(suite) -> 
     [ dump_tables, dump_log, change_dump_log_config, wait_for_tables, force_load_table ].

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2012-2021. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2012-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -42,6 +44,32 @@ groups() ->
      %% The results seem to be stable enough anyway
      {binary, [{repeat, 1}],
       [match_single_pattern_no_match,
+       match_ac_root_skip_single_root_no_match,
+       match_ac_root_skip_2_no_match,
+       match_ac_root_skip_3_no_match,
+       match_ac_root_skip_4_no_match,
+       match_ac_root_skip_8_no_match,
+       match_ac_root_skip_9_no_match,
+       match_ac_root_skip_16_no_match,
+       match_ac_root_skip_32_no_match,
+       match_ac_root_skip_single_root_eventual_match,
+       match_ac_root_skip_2_eventual_match,
+       match_ac_root_skip_3_eventual_match,
+       match_ac_root_skip_4_eventual_match,
+       match_ac_root_skip_8_eventual_match,
+       match_ac_root_skip_9_eventual_match,
+       match_ac_root_skip_16_eventual_match,
+       match_ac_root_skip_32_eventual_match,
+       match_ac_root_skip_single_root_immediate_match,
+       match_ac_root_skip_4_immediate_match,
+       match_byte_set_4_uncompiled_no_match,
+       compile_byte_set_2,
+       compile_byte_set_3,
+       compile_byte_set_4,
+       compile_byte_set_8,
+       compile_byte_set_9,
+       compile_byte_set_16,
+       compile_byte_set_32,
        matches_single_pattern_no_match,
        matches_single_pattern_eventual_match,
        matches_single_pattern_frequent_match]},
@@ -52,7 +80,7 @@ groups() ->
        encode_list, encode_list_to_string,
        mime_binary_decode, mime_binary_decode_to_string,
        mime_list_decode, mime_list_decode_to_string]},
-     {io, [{repeat, 5}], [double_random_to_list]},
+     {io, [{repeat, 5}], [double_random_to_list, double_random_to_list_array]},
      {gen_server, [{repeat,5}], cases(gen_server)},
      {gen_statem, [{repeat,3}], cases(gen_statem)},
      {gen_server_comparison, [],
@@ -169,6 +197,117 @@ match_single_pattern_no_match(_Config) ->
     Binary = binary:copy(<<"ugbcfuysabfuqyfikgfsdalpaskfhgjsdgfjwsalp">>, 1000000),
     comment(test(100, binary, match, [Binary, <<"o">>])).
 
+%% These benchmarks exercise the shared Aho-Corasick root-skip loop. Root
+%% sets up to 16 use its SIMD implementation and 32 uses its scalar one.
+%% Keep pattern compilation outside the measured loop so the result primarily
+%% reflects root-skip throughput.
+match_ac_root_skip_single_root_no_match(_Config) ->
+    Binary = binary:copy(<<0>>, 4 * 1024 * 1024),
+    Pattern = binary:compile_pattern(single_root_patterns()),
+    comment(test(100, binary, match, [Binary, Pattern])).
+
+match_ac_root_skip_2_no_match(_Config) ->
+    match_ac_root_skip_no_match(2).
+
+match_ac_root_skip_3_no_match(_Config) ->
+    match_ac_root_skip_no_match(3).
+
+match_ac_root_skip_4_no_match(_Config) ->
+    match_ac_root_skip_no_match(4).
+
+match_ac_root_skip_8_no_match(_Config) ->
+    match_ac_root_skip_no_match(8).
+
+match_ac_root_skip_9_no_match(_Config) ->
+    match_ac_root_skip_no_match(9).
+
+match_ac_root_skip_16_no_match(_Config) ->
+    match_ac_root_skip_no_match(16).
+
+match_ac_root_skip_32_no_match(_Config) ->
+    match_ac_root_skip_no_match(32).
+
+match_ac_root_skip_single_root_eventual_match(_Config) ->
+    Prefix = binary:copy(<<0>>, 4 * 1024 * 1024),
+    Pattern = binary:compile_pattern(single_root_patterns()),
+    comment(test(100, binary, match,
+                 [<<Prefix/binary, "abc">>, Pattern])).
+
+match_ac_root_skip_2_eventual_match(_Config) ->
+    match_ac_root_skip_eventual_match(2).
+
+match_ac_root_skip_3_eventual_match(_Config) ->
+    match_ac_root_skip_eventual_match(3).
+
+match_ac_root_skip_4_eventual_match(_Config) ->
+    match_ac_root_skip_eventual_match(4).
+
+match_ac_root_skip_8_eventual_match(_Config) ->
+    match_ac_root_skip_eventual_match(8).
+
+match_ac_root_skip_9_eventual_match(_Config) ->
+    match_ac_root_skip_eventual_match(9).
+
+match_ac_root_skip_16_eventual_match(_Config) ->
+    match_ac_root_skip_eventual_match(16).
+
+match_ac_root_skip_32_eventual_match(_Config) ->
+    match_ac_root_skip_eventual_match(32).
+
+match_ac_root_skip_single_root_immediate_match(_Config) ->
+    Pattern = binary:compile_pattern(single_root_patterns()),
+    comment(test(100000, binary, match, [<<"abc">>, Pattern])).
+
+match_ac_root_skip_4_immediate_match(_Config) ->
+    Binary = binary:copy(<<1>>, 4 * 1024 * 1024),
+    Pattern = binary:compile_pattern(byte_patterns(4)),
+    comment(test(100000, binary, match, [Binary, Pattern])).
+
+match_byte_set_4_uncompiled_no_match(_Config) ->
+    Binary = binary:copy(<<0>>, 4 * 1024 * 1024),
+    comment(test(100, binary, match, [Binary, byte_patterns(4)])).
+
+compile_byte_set_2(_Config) ->
+    compile_byte_set(2).
+
+compile_byte_set_3(_Config) ->
+    compile_byte_set(3).
+
+compile_byte_set_4(_Config) ->
+    compile_byte_set(4).
+
+compile_byte_set_8(_Config) ->
+    compile_byte_set(8).
+
+compile_byte_set_9(_Config) ->
+    compile_byte_set(9).
+
+compile_byte_set_16(_Config) ->
+    compile_byte_set(16).
+
+compile_byte_set_32(_Config) ->
+    compile_byte_set(32).
+
+compile_byte_set(Count) ->
+    comment(test(100000, binary, compile_pattern, [byte_patterns(Count)])).
+
+match_ac_root_skip_no_match(Count) ->
+    Binary = binary:copy(<<0>>, 4 * 1024 * 1024),
+    Pattern = binary:compile_pattern(byte_patterns(Count)),
+    comment(test(100, binary, match, [Binary, Pattern])).
+
+match_ac_root_skip_eventual_match(Count) ->
+    Prefix = binary:copy(<<0>>, 4 * 1024 * 1024),
+    Binary = <<Prefix/binary, Count>>,
+    Pattern = binary:compile_pattern(byte_patterns(Count)),
+    comment(test(100, binary, match, [Binary, Pattern])).
+
+byte_patterns(Count) ->
+    [<<Byte>> || Byte <- lists:seq(1, Count)].
+
+single_root_patterns() ->
+    [<<"ab">>, <<"abc">>, <<"ad">>].
+
 matches_single_pattern_no_match(_Config) ->
     Binary = binary:copy(<<"ugbcfuysabfuqyfikgfsdalpaskfhgjsdgfjwsalp">>, 1000000),
     comment(test(100, binary, matches, [Binary, <<"o">>])).
@@ -283,14 +422,17 @@ mbb(N, Acc) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 -define(MAX_DOUBLE, (1 bsl 62) - 1).
--define(DOUBLE_SAMPLE, 10000).
+-define(DOUBLE_SAMPLE, 100000).
 -define(SMALL_DIGITS, 6).
 
 double_random_to_list(_Config) ->
-    comment(test_double(io_lib_format, fwrite_g, 0)).
+    comment(test_double(0)).
+
+double_random_to_list_array(_Config) ->
+    comment(test_double_array(0)).
 
 double_small_digit_to_list(_Config) ->
-    comment(test_double(io_lib_format, fwrite_g, ?SMALL_DIGITS)).
+    comment(test_double(?SMALL_DIGITS)).
 
 double(0) ->
     Int = rand:uniform(?MAX_DOUBLE),
@@ -319,17 +461,34 @@ exp10(Acc, 0) ->
 exp10(Acc, X) ->
     exp10(Acc, X - 1).
 
-test_double(Mod, Fun, SmallDigits) ->
-    test_double(?DOUBLE_SAMPLE, Mod, Fun, SmallDigits).
-test_double(Iter, Mod, Fun, SmallDigits) ->
-    F = fun() -> loop_double(Iter, Mod, Fun, SmallDigits) end,
+test_double(Samples) when is_list(Samples) ->
+    F = fun() -> loop_double(Samples) end,
     {Time, ok} = timer:tc(fun() -> lspawn(F) end),
-    report_mfa(Iter, Time, Mod).
+    report_mfa(?DOUBLE_SAMPLE, Time, io_lib_format);
+test_double(SmallDigits) when is_integer(SmallDigits) ->
+    rand:seed(exsplus, {1201,855653,380975}),
+    Samples = [double(SmallDigits) || _ <- lists:seq(1, ?DOUBLE_SAMPLE)],
+    test_double(Samples).
 
-loop_double(0, _M, _F, _SmallDigits) -> garbage_collect(), ok;
-loop_double(N, M, F, SmallDigits) ->
-    _ = apply(M, F, [double(SmallDigits)]),
-    loop_double(N - 1, M, F, SmallDigits).
+loop_double([]) -> garbage_collect(), ok;
+loop_double([Sample | Rest]) ->
+    _ = io_lib_format:fwrite_g(Sample),
+    loop_double(Rest).
+
+test_double_array(SmallDigits) when is_integer(SmallDigits) ->
+    rand:seed(exsplus, {1201,855653,380975}),
+    Samples = [double(SmallDigits) || _ <- lists:seq(1, ?DOUBLE_SAMPLE)],
+    Samples_array = array:from_list(Samples),
+    test_double_array(?DOUBLE_SAMPLE - 1, Samples_array).
+test_double_array(Iter, Samples_array) ->
+    F = fun() -> loop_double_array(Iter, Samples_array) end,
+    {Time, ok} = timer:tc(fun() -> lspawn(F) end),
+    report_mfa(?DOUBLE_SAMPLE, Time, io_lib_format).
+
+loop_double_array(0, _Samples_array) -> garbage_collect(), ok;
+loop_double_array(Iter, Samples_array) ->
+    _ = io_lib_format:fwrite_g(array:get(Iter, Samples_array)),
+    loop_double_array(Iter - 1, Samples_array).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 

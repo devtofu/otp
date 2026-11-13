@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2003-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2003-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -25,8 +27,13 @@
 %%% holder for suite, configuration and connection data.
 %%%
 -module(ct_util).
+-moduledoc false.
 
--export([start/0, start/1, start/2, start/3,
+-compile([{nowarn_deprecated_function, [{erlang,exit,2}]}]).
+
+-compile([{nowarn_possibly_unsafe_function, {file, consult, 1}}]).
+
+-export([start/0, start/1, start/3, start/4,
 	 stop/1, update_last_run_index/0]).
 
 -export([register_connection/4, unregister_connection/1,
@@ -77,12 +84,13 @@
 
 -define(default_verbosity, [{default,?MAX_VERBOSITY},
 			    {'$unspecified',?MAX_VERBOSITY}]).
+-define(default_custom_stylesheet, undefined).
 
 -record(suite_data, {key,name,value}).
 
 %%%-----------------------------------------------------------------
 start() ->
-    start(normal, ".", ?default_verbosity).
+    start(normal, ".", ?default_verbosity, ?default_custom_stylesheet).
 %%% -spec start(Mode) -> Pid | exit(Error)
 %%%       Mode = normal | interactive
 %%%       Pid = pid()
@@ -98,18 +106,20 @@ start() ->
 %%%
 %%% See ct.
 start(LogDir) when is_list(LogDir) ->
-    start(normal, LogDir, ?default_verbosity);
+    start(normal, LogDir, ?default_verbosity, ?default_custom_stylesheet);
 start(Mode) ->
-    start(Mode, ".", ?default_verbosity).
+    start(Mode, ".", ?default_verbosity, ?default_custom_stylesheet).
 
-start(LogDir, Verbosity) when is_list(LogDir) ->
-    start(normal, LogDir, Verbosity).
+start(LogDir, Verbosity, CustomStylesheet) when is_list(LogDir) ->
+    start(normal, LogDir, Verbosity, CustomStylesheet).
 
-start(Mode, LogDir, Verbosity) ->
+start(Mode, LogDir, Verbosity, CustomStylesheet) ->
     case whereis(ct_util_server) of
 	undefined ->
 	    S = self(),
-	    Pid = spawn_link(fun() -> do_start(S, Mode, LogDir, Verbosity) end),
+	    Pid = spawn_link(fun() ->
+	        do_start(S, Mode, LogDir, Verbosity, CustomStylesheet)
+	    end),
 	    receive 
 		{Pid,started} -> Pid;
 		{Pid,Error} -> exit(Error);
@@ -126,7 +136,7 @@ start(Mode, LogDir, Verbosity) ->
 	    end
     end.
 
-do_start(Parent, Mode, LogDir, Verbosity) ->
+do_start(Parent, Mode, LogDir, Verbosity, CustomStylesheet) ->
     process_flag(trap_exit,true),
     register(ct_util_server,self()),
     mark_process(),
@@ -192,7 +202,7 @@ do_start(Parent, Mode, LogDir, Verbosity) ->
         ignore -> ok
     end,
 
-    {StartTime,TestLogDir} = ct_logs:init(Mode, Verbosity),
+    {StartTime,TestLogDir} = ct_logs:init(Mode, Verbosity, CustomStylesheet),
 
     ct_event:notify(#event{name=test_start,
 			   node=node(),
@@ -218,7 +228,7 @@ do_start(Parent, Mode, LogDir, Verbosity) ->
 	    self() ! {{stop,{self(),{user_error,CTHReason}}},
 		      {Parent,make_ref()}}
     end,
-    loop(Mode, [], StartDir).
+    loop(Mode, [], StartDir, CustomStylesheet).
 
 create_table(TableName,KeyPos) ->
     create_table(TableName,set,KeyPos).
@@ -320,18 +330,18 @@ get_verbosity(Category) ->
 	    {error,Reason}
     end.
 
-loop(Mode,TestData,StartDir) ->
+loop(Mode,TestData,StartDir,CustomStylesheet) ->
     receive 
 	{update_last_run_index,From} ->
 	    ct_logs:make_last_run_index(),
 	    return(From,ok),
-	    loop(Mode,TestData,StartDir);
+	    loop(Mode,TestData,StartDir,CustomStylesheet);
 	{{save_suite_data,{Key,Name,Value}},From} ->
 	    ets:insert(?suite_table, #suite_data{key=Key,
 						 name=Name,
 						 value=Value}),
 	    return(From,ok),
-	    loop(Mode,TestData,StartDir);
+	    loop(Mode,TestData,StartDir,CustomStylesheet);
 	{{read_suite_data,Key},From} ->
 	    case ets:lookup(?suite_table, Key) of
 		[#suite_data{key=Key,name=undefined,value=Value}] ->
@@ -341,7 +351,7 @@ loop(Mode,TestData,StartDir) ->
 		_ ->
 		    return(From,undefined)
 	    end,
-	    loop(Mode,TestData,StartDir);
+	    loop(Mode,TestData,StartDir,CustomStylesheet);
 	{{delete_suite_data,Key},From} ->
 	    if Key == all ->
 		    ets:delete_all_objects(?suite_table);
@@ -349,20 +359,20 @@ loop(Mode,TestData,StartDir) ->
 		    ets:delete(?suite_table, Key)
 	    end,
 	    return(From,ok),
-	    loop(Mode,TestData,StartDir);
+	    loop(Mode,TestData,StartDir,CustomStylesheet);
 	{{match_delete_suite_data,KeyPat},From} ->
 	    ets:match_delete(?suite_table, #suite_data{key=KeyPat,
 						       name='_',
 						       value='_'}),
 	    return(From,ok),
-	    loop(Mode,TestData,StartDir);
+	    loop(Mode,TestData,StartDir,CustomStylesheet);
 	{delete_testdata,From} ->
 	    return(From,ok),
-	    loop(From,[],StartDir);	
+	    loop(From,[],StartDir,CustomStylesheet);	
 	{{delete_testdata,Key},From} ->
 	    TestData1 = lists:keydelete(Key,1,TestData),
 	    return(From,ok),
-	    loop(From,TestData1,StartDir);
+	    loop(From,TestData1,StartDir,CustomStylesheet);
 	{{match_delete_testdata,{Key1,Key2}},From} ->
 	    %% handles keys with 2 elements
 	    TestData1 =
@@ -380,14 +390,14 @@ loop(Mode,TestData,StartDir) ->
 				     true
 			     end, TestData),
 	    return(From,ok),
-	    loop(From,TestData1,StartDir);
+	    loop(From,TestData1,StartDir,CustomStylesheet);
 	{{set_testdata,New = {Key,_Val}},From} ->
 	    TestData1 = lists:keydelete(Key,1,TestData),
 	    return(From,ok),
-	    loop(Mode,[New|TestData1],StartDir);
+	    loop(Mode,[New|TestData1],StartDir,CustomStylesheet);
 	{{get_testdata, all}, From} ->
 	    return(From, TestData),
-	    loop(From, TestData, StartDir);
+	    loop(From, TestData, StartDir,CustomStylesheet);
 	{{get_testdata,Key},From} ->
 	    case lists:keysearch(Key,1,TestData) of
 		{value,{Key,Val}} ->
@@ -395,7 +405,7 @@ loop(Mode,TestData,StartDir) ->
 		_ ->
 		    return(From,undefined)
 	    end,
-	    loop(From,TestData,StartDir);
+	    loop(From,TestData,StartDir,CustomStylesheet);
 	{{update_testdata,Key,Fun,Opts},From} ->
 	    TestData1 =
 		case lists:keysearch(Key,1,TestData) of
@@ -423,16 +433,16 @@ loop(Mode,TestData,StartDir) ->
 				TestData
 			end
 		end,
-	    loop(From,TestData1,StartDir);	    
+	    loop(From,TestData1,StartDir,CustomStylesheet);
 	{{set_cwd,Dir},From} ->
 	    return(From,file:set_cwd(Dir)),
-	    loop(From,TestData,StartDir);
+	    loop(From,TestData,StartDir,CustomStylesheet);
 	{reset_cwd,From} ->
 	    return(From,file:set_cwd(StartDir)),
-	    loop(From,TestData,StartDir);
+	    loop(From,TestData,StartDir,CustomStylesheet);
 	{get_start_dir,From} ->
 	    return(From,StartDir),
-	    loop(From,TestData,StartDir);
+	    loop(From,TestData,StartDir,CustomStylesheet);
 	{{stop,Info},From} ->
 	    test_server_io:reset_state(),
 	    {MiscIoName,MiscIoDivider,MiscIoFooter} =
@@ -467,7 +477,7 @@ loop(Mode,TestData,StartDir) ->
 	    test_server_io:stop([unexpected_io]),
 	    test_server_io:finish(),
 
-	    ct_logs:close(Info, StartDir),
+	    ct_logs:close(Info, StartDir, CustomStylesheet),
 	    ct_event:stop(),
 	    ct_config:stop(),
 	    ct_default_gl:stop(),
@@ -475,12 +485,12 @@ loop(Mode,TestData,StartDir) ->
 	    return(From, Info);
 	{Ref, _Msg} when is_reference(Ref) ->
 	    %% This clause is used when doing cast operations.
-	    loop(Mode,TestData,StartDir);
+	    loop(Mode,TestData,StartDir,CustomStylesheet);
 	{get_mode,From} ->
 	    return(From,Mode),
-	    loop(Mode,TestData,StartDir);
+	    loop(Mode,TestData,StartDir,CustomStylesheet);
 	{'EXIT',_Pid,normal} ->
-	    loop(Mode,TestData,StartDir);
+	    loop(Mode,TestData,StartDir,CustomStylesheet);
 	{'EXIT',Pid,Reason} ->
 	    case ets:lookup(?conn_table,Pid) of
 		[#conn{address=A,callback=CB}] ->
@@ -498,7 +508,7 @@ loop(Mode,TestData,StartDir) ->
 		    catch CB:close(Pid),
 		    %% in case CB:close failed to do this:
 		    unregister_connection(Pid),
-		    loop(Mode,TestData,StartDir);
+		    loop(Mode,TestData,StartDir,CustomStylesheet);
 		_ ->
 		    %% Let process crash in case of error, this shouldn't happen!
 		    io:format("\n\nct_util_server got EXIT "
@@ -786,7 +796,7 @@ listenv(Telnet) ->
 %%% Equivalent to ct:parse_table/1
 parse_table(Data) ->
     {Heading, Rest} = get_headings(Data),
-    Lines = parse_row(Rest,[],size(Heading)),
+    Lines = parse_row(Rest,[],tuple_size(Heading)),
     {Heading,Lines}.
 
 get_headings(["|" ++ Headings | Rest]) ->

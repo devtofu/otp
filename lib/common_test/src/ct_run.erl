@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2004-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2004-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,13 +21,18 @@
 %%
 
 -module(ct_run).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}},
+          {nowarn_possibly_unsafe_function, {file, consult, 1}},
+          {nowarn_deprecated_function, [{erlang,exit,2}]}]).
 
 %% Script interface
 -export([script_start/0,script_usage/0]).
 
 %% User interface
 -export([install/1,install/2,run/1,run/2,run/3,run_test/1,
-	 run_testspec/1,step/3,step/4,refresh_logs/1]).
+	 run_testspec/1,step/3,step/4,refresh_logs/2]).
 
 %% Misc internal API functions
 -export([variables_file_name/1,script_start1/2,run_test2/1, run_make/3]).
@@ -59,6 +66,7 @@
 	       config = [],
 	       event_handlers = [],
 	       ct_hooks = [],
+	       ct_hooks_order,
 	       enable_builtin_hooks,
 	       include = [],
 	       auto_compile,
@@ -212,10 +220,10 @@ finish(Tracing, ExitStatus, Args) ->
             case get_start_opt(halt_with,
                                fun([HaltMod,HaltFunc]) -> 
                                        {list_to_atom(HaltMod),
-                                        list_to_atom(HaltFunc)} end,
-                               Args) of
+                                        list_to_atom(HaltFunc)}
+                               end, Args) of
                 undefined ->
-                    halt(ExitStatus);
+                    halt(ExitStatus, [{flush, false}]);
                 {M,F} ->
                     apply(M, F, [ExitStatus])
             end
@@ -248,6 +256,10 @@ script_start1(Parent, Args) ->
 				  end, Args),
     EvHandlers = event_handler_args2opts(Args),
     CTHooks = ct_hooks_args2opts(Args),
+    CTHooksOrder = get_start_opt(ct_hooks_order,
+                                 fun([CTHO]) -> list_to_atom(CTHO);
+                                    ([]) -> undefined
+                                 end, undefined, Args),
     EnableBuiltinHooks = get_start_opt(enable_builtin_hooks,
 				       fun([CT]) -> list_to_atom(CT);
 					  ([]) -> undefined
@@ -301,7 +313,7 @@ script_start1(Parent, Args) ->
     AbortIfMissing = get_start_opt(abort_if_missing_suites,
 				   fun([]) -> true;
 				      ([Bool]) -> list_to_atom(Bool)
-				   end, false, Args),
+				   end, true, Args),
     %% silent connections
     SilentConns =
 	get_start_opt(silent_connections,
@@ -352,6 +364,7 @@ script_start1(Parent, Args) ->
 		 verbosity = Verbosity,
 		 event_handlers = EvHandlers,
 		 ct_hooks = CTHooks,
+                 ct_hooks_order = CTHooksOrder,
 		 enable_builtin_hooks = EnableBuiltinHooks,
 		 auto_compile = AutoCompile,
 		 abort_if_missing_suites = AbortIfMissing,
@@ -369,7 +382,7 @@ script_start1(Parent, Args) ->
     %% send final results to starting process waiting in script_start/0
     Parent ! {self(), Result}.
 
-run_or_refresh(Opts = #opts{logdir = LogDir}, Args) ->
+run_or_refresh(Opts = #opts{logdir = LogDir, stylesheet = CustomStylesheet}, Args) ->
     case proplists:get_value(refresh_logs, Args) of
 	undefined ->
 	    script_start2(Opts, Args);
@@ -383,12 +396,12 @@ run_or_refresh(Opts = #opts{logdir = LogDir}, Args) ->
 	    %% give the shell time to print version etc
 	    timer:sleep(500),
 	    io:nl(),
-	    case catch ct_logs:make_all_runs_index(refresh) of
+	    case catch ct_logs:make_all_runs_index(refresh, CustomStylesheet) of
 		{'EXIT',ARReason} ->
 		    ok = file:set_cwd(Cwd),
 		    {error,{all_runs_index,ARReason}};
 		_ ->
-		    case catch ct_logs:make_all_suites_index(refresh) of
+		    case catch ct_logs:make_all_suites_index(refresh, CustomStylesheet) of
 			{'EXIT',ASReason} ->
 			    ok = file:set_cwd(Cwd),
 			    {error,{all_suites_index,ASReason}};
@@ -539,6 +552,10 @@ combine_test_opts(TS, Specs, Opts) ->
 		   [Opts#opts.ct_hooks,
 		    TSOpts#opts.ct_hooks]),
 
+    AllCTHooksOrder =
+        choose_val(Opts#opts.ct_hooks_order,
+                   TSOpts#opts.ct_hooks_order),
+
     EnableBuiltinHooks =
 	choose_val(
 	  Opts#opts.enable_builtin_hooks,
@@ -603,6 +620,7 @@ combine_test_opts(TS, Specs, Opts) ->
 	      config = TSOpts#opts.config,
 	      event_handlers = AllEvHs,
 	      ct_hooks = AllCTHooks,
+              ct_hooks_order = AllCTHooksOrder,
 	      enable_builtin_hooks = EnableBuiltinHooks,
 	      stylesheet = Stylesheet,
 	      auto_compile = AutoCompile,
@@ -614,14 +632,16 @@ combine_test_opts(TS, Specs, Opts) ->
 
 check_and_install_configfiles(
   Configs, LogDir, #opts{
-	     event_handlers = EvHandlers,
-	     ct_hooks = CTHooks,
-	     enable_builtin_hooks = EnableBuiltinHooks} ) ->
+                      event_handlers = EvHandlers,
+                      ct_hooks = CTHooks,
+                      ct_hooks_order = CTHooksOrder,
+                      enable_builtin_hooks = EnableBuiltinHooks} ) ->
     case ct_config:check_config_files(Configs) of
 	false ->
 	    install([{config,Configs},
 		     {event_handler,EvHandlers},
 		     {ct_hooks,CTHooks},
+		     {ct_hooks_order,CTHooksOrder},
 		     {enable_builtin_hooks,EnableBuiltinHooks}], LogDir);
 	{value,{error,{nofile,File}}} ->
 	    {error,{cant_read_config_file,File}};
@@ -705,6 +725,7 @@ script_start4(#opts{label = Label, profile = Profile,
 		    logopts = LogOpts,
 		    verbosity = Verbosity,
 		    enable_builtin_hooks = EnableBuiltinHooks,
+		    stylesheet = CustomStylesheet,
 		    logdir = LogDir, testspec_files = Specs}, _Args) ->
 
     %% label - used by ct_logs
@@ -723,7 +744,7 @@ script_start4(#opts{label = Label, profile = Profile,
 		  {enable_builtin_hooks,EnableBuiltinHooks}]) of
 	ok ->
 	    _ = ct_util:start(interactive, LogDir,
-			      add_verbosity_defaults(Verbosity)),
+			      add_verbosity_defaults(Verbosity), CustomStylesheet),
 	    ct_util:set_testdata({logopts, LogOpts}),
 	    log_ts_names(Specs),
 	    io:nl(),
@@ -753,6 +774,7 @@ script_usage() ->
 	      "\n\t [-cover_stop Bool]"
 	      "\n\t [-event_handler EvHandler1 EvHandler2 .. EvHandlerN]"
 	      "\n\t [-ct_hooks CTHook1 CTHook2 .. CTHookN]"
+	      "\n\t [-ct_hooks_order test | config]"
 	      "\n\t [-include InclDir1 InclDir2 .. InclDirN]"
 	      "\n\t [-no_auto_compile]"
 	      "\n\t [-abort_if_missing_suites]"
@@ -799,22 +821,7 @@ script_usage() ->
     io:format("Run CT in interactive mode:\n\n"
 	      "\tct_run -shell"
 	      "\n\t [-config ConfigFile1 ConfigFile2 .. ConfigFileN]"
-	      "\n\t [-decrypt_key Key] | [-decrypt_file KeyFile]\n\n"),
-    io:format("Run tests in web based GUI:\n\n"
-	      "\n\t [-config ConfigFile1 ConfigFile2 .. ConfigFileN]"
-	      "\n\t [-decrypt_key Key] | [-decrypt_file KeyFile]"
-	      "\n\t [-dir TestDir1 TestDir2 .. TestDirN] |"
-	      "\n\t [-suite Suite [-case Case]]"
-	      "\n\t [-logopts LogOpt1 LogOpt2 .. LogOptN]"
-	      "\n\t [-verbosity GenVLvl | [CategoryVLvl1 .. CategoryVLvlN]]"
-	      "\n\t [-include InclDir1 InclDir2 .. InclDirN]"
-	      "\n\t [-no_auto_compile]"
-	      "\n\t [-abort_if_missing_suites]"
-	      "\n\t [-multiply_timetraps N]"
-	      "\n\t [-scale_timetraps]"
-	      "\n\t [-create_priv_dir auto_per_run | auto_per_tc | manual_per_tc]"
-	      "\n\t [-basic_html]"
-	      "\n\t [-no_esc_chars]\n\n").
+	      "\n\t [-decrypt_key Key] | [-decrypt_file KeyFile]\n\n").
 
 install(Opts) ->
     install(Opts, ".").
@@ -908,7 +915,8 @@ run_test1(StartOpts) when is_list(StartOpts) ->
                                      all,
                                      StartOpts),
             application:set_env(common_test, keep_logs, KeepLogs),
-	    ok = refresh_logs(?abs(RefreshDir)),
+            CustomStylesheet = proplists:get_value(stylesheet, StartOpts),
+	    ok = refresh_logs(?abs(RefreshDir), CustomStylesheet),
 	    exit(done)
     end.
 
@@ -972,6 +980,11 @@ run_test2(StartOpts) ->
 
     %% CT Hooks
     CTHooks = get_start_opt(ct_hooks, value, [], StartOpts),
+    CTHooksOrder = get_start_opt(ct_hooks_order,
+                                 fun(CHO) when CHO == test;
+                                               CHO == config ->
+                                         CHO
+                                 end, undefined, StartOpts),
     EnableBuiltinHooks = get_start_opt(enable_builtin_hooks,
 				       fun(EBH) when EBH == true;
 						     EBH == false ->
@@ -1029,7 +1042,7 @@ run_test2(StartOpts) ->
 	end,
 
     %% abort test run if some suites can't be compiled
-    AbortIfMissing = get_start_opt(abort_if_missing_suites, value, false,
+    AbortIfMissing = get_start_opt(abort_if_missing_suites, value, true,
 				   StartOpts),
 
     %% decrypt config file
@@ -1088,6 +1101,7 @@ run_test2(StartOpts) ->
 		 verbosity = Verbosity,
 		 event_handlers = EvHandlers,
 		 ct_hooks = CTHooks,
+                 ct_hooks_order = CTHooksOrder,
 		 enable_builtin_hooks = EnableBuiltinHooks,
 		 auto_compile = AutoCompile,
 		 abort_if_missing_suites = AbortIfMissing,
@@ -1215,6 +1229,7 @@ run_dir(Opts = #opts{logdir = LogDir,
 		     config = CfgFiles,
 		     event_handlers = EvHandlers,
 		     ct_hooks = CTHook,
+                     ct_hooks_order = CTHooksOrder,
 		     enable_builtin_hooks = EnableBuiltinHooks},
 	StartOpts) ->
     LogDir1 = which(logdir, LogDir),
@@ -1241,6 +1256,7 @@ run_dir(Opts = #opts{logdir = LogDir,
     case install([{config,AbsCfgFiles},
 		  {event_handler,EvHandlers},
 		  {ct_hooks, CTHook},
+                  {ct_hooks_order, CTHooksOrder},
 		  {enable_builtin_hooks,EnableBuiltinHooks}], LogDir1) of
 	ok -> ok;
 	{error,_IReason} = IError -> exit(IError)
@@ -1262,10 +1278,10 @@ run_dir(Opts = #opts{logdir = LogDir,
 			true -> D end || D <- Dirs],
 	    reformat_result(catch do_run(tests(Dirs1), [], Opts1, StartOpts));
 
-	{Dir=[Hd|_],undefined,[]} when is_list(Dir) and is_integer(Hd) ->
+	{Dir=[Hd|_],undefined,[]} when is_list(Dir), is_integer(Hd) ->
 	    reformat_result(catch do_run(tests(Dir), [], Opts1, StartOpts));
 
-	{Dir,undefined,[]} when is_atom(Dir) and (Dir /= undefined) ->
+	{Dir,undefined,[]} when is_atom(Dir), Dir /= undefined ->
 	    reformat_result(catch do_run(tests(atom_to_list(Dir)),
 					 [], Opts1, StartOpts));
 
@@ -1273,13 +1289,13 @@ run_dir(Opts = #opts{logdir = LogDir,
 	    Suites1 = [suite_to_test(S) || S <- Suites],
 	    reformat_result(catch do_run(tests(Suites1), [], Opts1, StartOpts));
 
-	{undefined,Suite,[]} when is_atom(Suite) and
-				  (Suite /= undefined) ->
+	{undefined,Suite,[]} when is_atom(Suite),
+				  Suite /= undefined ->
 	    {Dir,Mod} = suite_to_test(Suite),
 	    reformat_result(catch do_run(tests(Dir, Mod), [], Opts1, StartOpts));
 
-	{undefined,Suite,GsAndCs} when is_atom(Suite) and
-				       (Suite /= undefined) ->
+	{undefined,Suite,GsAndCs} when is_atom(Suite),
+				       Suite /= undefined ->
 	    {Dir,Mod} = suite_to_test(Suite),
 	    reformat_result(catch do_run(tests(Dir, Mod, GsAndCs),
 					 [], Opts1, StartOpts));
@@ -1287,9 +1303,9 @@ run_dir(Opts = #opts{logdir = LogDir,
 	{undefined,[Hd,_|_],_GsAndCs} when not is_integer(Hd) ->
 	    exit({error,multiple_suites_and_cases});
 
-	{undefined,Suite=[Hd|Tl],GsAndCs} when is_integer(Hd) ;
-					       (is_list(Hd) and	(Tl == [])) ;
-					       (is_atom(Hd) and	(Tl == [])) ->
+	{undefined,Suite=[Hd|Tl],GsAndCs} when is_integer(Hd);
+					       is_list(Hd), Tl == [];
+					       is_atom(Hd), Tl == [] ->
 	    {Dir,Mod} = suite_to_test(Suite),
 	    reformat_result(catch do_run(tests(Dir, Mod, GsAndCs),
 					 [], Opts1, StartOpts));
@@ -1300,19 +1316,19 @@ run_dir(Opts = #opts{logdir = LogDir,
 	{undefined,undefined,GsAndCs} when GsAndCs /= [] ->
 	    exit({error,incorrect_start_options});
 
-	{Dir,Suite,GsAndCs} when is_integer(hd(Dir)) ;
-				 (is_atom(Dir) and (Dir /= undefined)) ;
-				 ((length(Dir) == 1) and is_atom(hd(Dir))) ;
-				 ((length(Dir) == 1) and is_list(hd(Dir))) ->
+	{Dir,Suite,GsAndCs} when is_integer(hd(Dir));
+				 is_atom(Dir), Dir /= undefined;
+				 is_atom(hd(Dir)), length(Dir) == 1;
+				 is_list(hd(Dir)), length(Dir) == 1 ->
 	    Dir1 = if is_atom(Dir) -> atom_to_list(Dir);
 		      true -> Dir end,
 	    if Suite == undefined ->
 		  exit({error,incorrect_start_options});
 
-	       is_integer(hd(Suite)) ;
-	       (is_atom(Suite) and (Suite /= undefined)) ;
-	       ((length(Suite) == 1) and is_atom(hd(Suite))) ;
-	       ((length(Suite) == 1) and is_list(hd(Suite))) ->
+	       is_integer(hd(Suite));
+	       is_atom(Suite), Suite /= undefined;
+	       is_atom(hd(Suite)), length(Suite) == 1;
+	       is_list(hd(Suite)), length(Suite) == 1 ->
 		    {Dir2,Mod} = suite_to_test(Dir1, Suite),
 		    case GsAndCs of
 			[] ->
@@ -1432,6 +1448,7 @@ get_data_for_node(#testspec{label = Labels,
 			    userconfig = UsrCfgs,
 			    event_handler = EvHs,
 			    ct_hooks = CTHooks,
+                            ct_hooks_order = CTHooksOrder,
 			    enable_builtin_hooks = EnableBuiltinHooks,
 			    auto_compile = ACs,
 			    abort_if_missing_suites = AiMSs,
@@ -1486,6 +1503,7 @@ get_data_for_node(#testspec{label = Labels,
 	  config = ConfigFiles,
 	  event_handlers = EvHandlers,
 	  ct_hooks = FiltCTHooks,
+          ct_hooks_order = CTHooksOrder,
 	  enable_builtin_hooks = EnableBuiltinHooks,
 	  auto_compile = AutoCompile,
 	  abort_if_missing_suites = AbortIfMissing,
@@ -1494,18 +1512,18 @@ get_data_for_node(#testspec{label = Labels,
 	  scale_timetraps = ST,
 	  create_priv_dir = CreatePrivDir}.
 
-refresh_logs(LogDir) ->
+refresh_logs(LogDir, CustomStylesheet) ->
     {ok,Cwd} = file:get_cwd(),
     case file:set_cwd(LogDir) of
 	E = {error,_Reason} ->
 	    E;
 	_ ->
-	    case catch ct_logs:make_all_suites_index(refresh) of
+	    case catch ct_logs:make_all_suites_index(refresh, CustomStylesheet) of
 		{'EXIT',ASReason} ->
 		    ok = file:set_cwd(Cwd),
 		    {error,{all_suites_index,ASReason}};
 		_ ->
-		    case catch ct_logs:make_all_runs_index(refresh) of
+		    case catch ct_logs:make_all_runs_index(refresh, CustomStylesheet) of
 			{'EXIT',ARReason} ->
 			    ok = file:set_cwd(Cwd),
 			    {error,{all_runs_index,ARReason}};
@@ -1596,11 +1614,11 @@ suite_to_test(Dir, Suite) when is_list(Suite) ->
 	    {DirName,list_to_atom(filename:rootname(File))}
     end.
 
-groups_and_cases(Gs, Cs) when ((Gs == undefined) or (Gs == [])) and
-			      ((Cs == undefined) or (Cs == [])) ->
+groups_and_cases(Gs, Cs) when Gs == undefined orelse Gs == [],
+			      Cs == undefined orelse Cs == [] ->
     [];
 groups_and_cases(Gs, Cs) when Gs == undefined ; Gs == [] ->
-    if (Cs == all) or (Cs == [all]) or (Cs == ["all"]) -> all;
+    if Cs == all; Cs == [all]; Cs == ["all"] -> all;
        true -> [ensure_atom(C) || C <- listify(Cs)]
     end;
 groups_and_cases(GOrGs, Cs) when (is_atom(GOrGs) orelse
@@ -1608,8 +1626,8 @@ groups_and_cases(GOrGs, Cs) when (is_atom(GOrGs) orelse
 				   (is_atom(hd(GOrGs)) orelse
 				    (is_list(hd(GOrGs)) andalso
 				     is_atom(hd(hd(GOrGs))))))) ->
-    if (Cs == undefined) or (Cs == []) or
-       (Cs == all) or (Cs == [all]) or (Cs == ["all"]) ->
+    if Cs == undefined; Cs == [];
+       Cs == all; Cs == [all]; Cs == ["all"] ->
 	    [{GOrGs,all}];
        true ->
 	    [{GOrGs,[ensure_atom(C) || C <- listify(Cs)]}]
@@ -1618,7 +1636,7 @@ groups_and_cases(Gs, Cs) when is_integer(hd(hd(Gs))) ->
     %% if list of strings, this comes from 'ct_run -group G1 G2 ...' and
     %% we need to parse the strings
     Gs1 = 
-	if (Gs == [all]) or (Gs == ["all"]) ->
+	if Gs == [all]; Gs == ["all"] ->
 		all;
 	   true ->
 		lists:map(fun(G) ->
@@ -1667,7 +1685,7 @@ do_run(Tests, Misc, LogDir, LogOpts) when is_list(Misc),
 
 do_run(Tests, Skip, Opts, Args) when is_record(Opts, opts) ->
     #opts{label = Label, profile = Profile,
-	  verbosity = VLvls} = Opts,
+	  verbosity = VLvls, stylesheet = CustomStylesheet} = Opts,
     %% label - used by ct_logs
     TestLabel =
 	if Label == undefined -> undefined;
@@ -1704,7 +1722,7 @@ do_run(Tests, Skip, Opts, Args) when is_record(Opts, opts) ->
 			"Note: TEST_SERVER_FRAMEWORK = " ++ Other))
 	    end,
 	    Verbosity = add_verbosity_defaults(VLvls),
-	    case ct_util:start(Opts#opts.logdir, Verbosity) of
+	    case ct_util:start(Opts#opts.logdir, Verbosity, CustomStylesheet) of
 		{error,interactive_mode} ->
 		    io:format("CT is started in interactive mode. "
 			      "To exit this mode, "
@@ -2050,8 +2068,23 @@ final_tests1([{TestDir,Suite,GrsOrCs}|Tests], Final, Skip, Bad) when
 			  [ct_groups:make_conf(TestDir, Suite,
 					       GroupName, Props, TCs)];
 		     ({GroupOrGroups,TCs}) ->
-			  [ct_groups:make_conf(TestDir, Suite,
-					       GroupOrGroups, [], TCs)];
+			  case GroupOrGroups of
+			   [GroupList] when is_list(GroupList) ->
+				   {GrpNames, Props} = lists:foldl(
+				   fun({GrpName,_} = GrSpec, {GrpNames, Props}) -> 
+				      {lists:append(GrpNames, [GrpName]), [GrSpec | Props]};
+				   ({GrpName,_,_} = GrSpec, {GrpNames, Props}) -> 
+				      {lists:append(GrpNames, [GrpName]), [GrSpec | Props]};
+				   (GrpName, {GrpNames, Props}) -> 
+				      {lists:append(GrpNames, [GrpName]), Props} 
+					end,
+					{[], []}, GroupList),
+				   [ct_groups:make_conf(TestDir, Suite,
+				    [GrpNames], [{override, Props}], TCs)];
+			    _ -> 
+				   [ct_groups:make_conf(TestDir, Suite,
+				    GroupOrGroups, [], TCs)]
+			end;
 		     (TC) ->
 			  [TC]
 		  end, GrsOrCs),
@@ -2331,7 +2364,7 @@ start_cover(Opts=#opts{coverspec=CovData,cover_stop=CovStop},LogDir) ->
 		[TsCoverInfo]),
 
     %% start cover on specified nodes
-    if (CovNodes /= []) and (CovNodes /= undefined) ->
+    if CovNodes /= [], CovNodes /= undefined ->
 	    ct_logs:log("COVER INFO",
 			"Nodes included in cover "
 			"session: ~tw",
@@ -3261,7 +3294,7 @@ do_trace(Terms) ->
     ok.
 
 stop_trace(true) ->
-    dbg:stop_clear();
+    dbg:stop();
 stop_trace(false) ->
     ok.
 

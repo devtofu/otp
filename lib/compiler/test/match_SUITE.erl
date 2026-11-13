@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2004-2019. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2004-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,6 +21,9 @@
 %%
 -module(match_SUITE).
 
+%% The main point of this test suite is testing aliased patterns.
+-compile([nowarn_match_alias_pats]).
+
 -export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1, 
 	 init_per_group/2,end_per_group/2,
 	 pmatch/1,mixed/1,aliases/1,non_matching_aliases/1,
@@ -26,9 +31,12 @@
 	 selectify/1,deselectify/1,underscore/1,match_map/1,map_vars_used/1,
 	 coverage/1,grab_bag/1,literal_binary/1,
          unary_op/1,eq_types/1,match_after_return/1,match_right_tuple/1,
-         tuple_size_in_try/1,match_boolean_list/1]).
-	 
+         tuple_size_in_try/1,match_boolean_list/1,
+         heisen_variables/1,
+         mutable_variables/1]).
+
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
 suite() -> [{ct_hooks,[ts_install_cth]}].
 
@@ -43,8 +51,9 @@ groups() ->
        underscore,match_map,map_vars_used,coverage,
        grab_bag,literal_binary,unary_op,eq_types,
        match_after_return,match_right_tuple,
-       tuple_size_in_try,match_boolean_list]}].
-
+       tuple_size_in_try,match_boolean_list,
+       heisen_variables,
+       mutable_variables]}].
 
 init_per_suite(Config) ->
     test_lib:recompile(?MODULE),
@@ -151,34 +160,39 @@ aliases(Config) when is_list(Config) ->
     6 = tup_lit_alias({1,2,3}),
     6 = tup_lit_alias_rev({1,2,3}),
 
-    {42,42,42,42} = multiple_aliases_1(42),
-    {7,7,7} = multiple_aliases_2(7),
-    {{a,b},{a,b},{a,b}} = multiple_aliases_3({a,b}),
+    {1,2,3,4} = list_in_tuple({container, [1,2,3], 4}),
+    {a,b,c,d} = list_in_tuple({container, [a,b,c], d}),
+
+    {13,y,13,17,x,{y,13},17} = tuple_in_tuple({x, {y,13}, 17}),
+    {a,y,a,b,x,{y,a},b} = tuple_in_tuple({x, {y,a}, b}),
+
+    {42,42,42,42} = multiple_aliases_1(id(42)),
+    {7,7,7} = multiple_aliases_2(id(7)),
+    {{a,b},{a,b},{a,b}} = multiple_aliases_3(id({a,b})),
+    {[x,y,z],[x,y,z],[x,y,z]} = multiple_aliases_4(id([x,y,z])),
 
     %% Lists/literals.
-    {a,b} = list_alias1([a,b]),
-    {a,b} = list_alias2([a,b]),
-    {a,b} = list_alias3([a,b]),
+    {a,b} = list_alias(id([a,b])),
 
     %% Multiple matches.
-    {'EXIT',{{badmatch,home},_}} =
-        (catch fun() ->
-                       Rec = (42 = V) = home,
-                       {Rec,V}
-               end()),
+    ?assertError({badmatch,home},
+                 fun() ->
+                         Rec = (42 = V) = home,
+                         {Rec,V}
+                 end()),
     {home,home} =
         fun() ->
                 Rec = (home = V) = home,
                 {Rec,V}
         end(),
-    {'EXIT',{{badmatch,16},_}} =
-        (catch fun(B) ->
-                       <<42:V>> = V = B
-               end(16)),
-    {'EXIT',{{badmatch,0},_}} =
-        (catch fun() ->
-                       <<2:V>> = V = 0
-               end()),
+    ?assertError({badmatch,16},
+                 fun(B) ->
+                         <<42:V>> = V = B
+                 end(16)),
+    ?assertError({badmatch,0},
+                 fun() ->
+                         <<2:V>> = V = 0
+                 end()),
     {42,42} =
         fun(E) ->
                 Rec = (42 = V) = id(E),
@@ -259,9 +273,20 @@ three_2(A=
 	C) ->
     {A,B,C}.
 
-tuple_alias({A,B,C}={X,Y,Z}) ->
+tuple_alias(Expr) ->
+    Res = tuple_alias_a(Expr),
+    Res = tuple_alias_b(Expr).
+
+tuple_alias_a({A,B,C} = {X,Y,Z}) ->
     {A,B,C,X,Y,Z};
-tuple_alias({A,B}={C,D}={E,F}) ->
+tuple_alias_a({A,B} = {C,D} = {E,F}) ->
+    {A,B,C,D,E,F}.
+
+tuple_alias_b({_,_,_}=Expr) ->
+    {A,B,C} = {X,Y,Z} = Expr,
+    {A,B,C,X,Y,Z};
+tuple_alias_b({_,_}=Expr) ->
+    {A,B} = {C,D} = {E,F} = Expr,
     {A,B,C,D,E,F}.
 
 tup_lit_alias({A,B,C}={1,2,3}) ->
@@ -270,22 +295,91 @@ tup_lit_alias({A,B,C}={1,2,3}) ->
 tup_lit_alias_rev({1,2,3}={A,B,C}) ->
     A+B+C.
 
-multiple_aliases_1((A=B)=(C=D)) ->
+list_in_tuple(E) ->
+    Res = list_in_tuple_a(E),
+    Res = list_in_tuple_b(E).
+
+list_in_tuple_a({container, [_,_,_] = [A,B,C], D}) ->
     {A,B,C,D}.
 
-multiple_aliases_2((A=B)=(A=C)) ->
+list_in_tuple_b(E) ->
+    {container, [_,_,_] = [A,B,C], D} = E,
+    {A,B,C,D}.
+
+tuple_in_tuple(Expr) ->
+    Res = tuple_in_tuple_a(Expr),
+    Res = tuple_in_tuple_b(Expr).
+
+tuple_in_tuple_a({x, {y,A} = {B,C}, D} = {E, F, G}) ->
+    {A,B,C,D,E,F,G}.
+
+tuple_in_tuple_b(Expr) ->
+    {x, {y,A} = {B,C}, D} = {E, F, G} = Expr,
+    {A,B,C,D,E,F,G}.
+
+multiple_aliases_1(Expr) ->
+    Res = multiple_aliases_1a(Expr),
+    Res = multiple_aliases_1b(Expr).
+
+multiple_aliases_1a((A=B) = (C=D)) ->
+    {A,B,C,D}.
+
+multiple_aliases_1b(Expr) ->
+    (A=B) = (C=D) = Expr,
+    {A,B,C,D}.
+
+multiple_aliases_2((A=B) = (A=C)) ->
     {A,B,C}.
 
-multiple_aliases_3((A={_,_}=B)={_,_}=C) ->
+multiple_aliases_3(Expr) ->
+    Res = multiple_aliases_3a(Expr),
+    Res = multiple_aliases_3b(Expr).
+
+multiple_aliases_3a((A={_,_}=B)={_,_}=C) ->
     {A,B,C}.
 
-list_alias1([a,b]=[X,Y]) ->
+multiple_aliases_3b(Expr) ->
+    (A={_,_}=B) = {_,_} = C = Expr,
+    {A,B,C}.
+
+multiple_aliases_4(Expr) ->
+    Res = multiple_aliases_4a(Expr),
+    Res = multiple_aliases_4b(Expr).
+
+multiple_aliases_4a((A=[_,_,_]=B) = [_,_,_] = C) ->
+    {A,B,C}.
+
+multiple_aliases_4b(Expr) ->
+    (A=[_,_,_]=B) = [_,_,_] = C = Expr,
+    {A,B,C}.
+
+list_alias(Expr) ->
+    Res = list_alias1a(Expr),
+    Res = list_alias1b(Expr),
+    Res = list_alias2a(Expr),
+    Res = list_alias2b(Expr),
+    Res = list_alias3a(Expr),
+    Res = list_alias3b(Expr).
+
+list_alias1a([a,b]=[X,Y]) ->
     {X,Y}.
 
-list_alias2([X,Y]=[a,b]) ->
+list_alias1b(Expr) ->
+    [a,b] = [X,Y] = Expr,
     {X,Y}.
 
-list_alias3([X,b]=[a,Y]) ->
+list_alias2a([X,Y]=[a,b]) ->
+    {X,Y}.
+
+list_alias2b(Expr) ->
+    [X,Y] = [a,b] = Expr,
+    {X,Y}.
+
+list_alias3a([X,b]=[a,Y]) ->
+    {X,Y}.
+
+list_alias3b(Expr) ->
+    [X,b] = [a,Y]= Expr,
     {X,Y}.
 
 non_matching_aliases(_Config) ->
@@ -297,28 +391,31 @@ non_matching_aliases(_Config) ->
     none = mixed_aliases(<<6789:16>>),
     none = mixed_aliases(#{key=>value}),
 
-    {'EXIT',{{badmatch,bar},_}} = (catch plus_plus_prefix()),
-    {'EXIT',{{badmatch,42},_}} = (catch nomatch_alias(42)),
-    {'EXIT',{{badmatch,job},_}} = (catch entirely()),
-    {'EXIT',{{badmatch,associates},_}} = (catch printer()),
-    {'EXIT',{{badmatch,borogoves},_}} = (catch tench()),
+    ?assertError({badmatch,bar}, plus_plus_prefix()),
+    ?assertError({badmatch,42}, nomatch_alias(42)),
+    ?assertError({badmatch,job}, entirely()),
+    ?assertError({badmatch,associates}, printer()),
+    ?assertError({badmatch,borogoves}, tench()),
 
     put(perch, 0),
-    {'EXIT',{{badmatch,{spine,42}},_}} = (catch perch(42)),
+    ?assertError({badmatch,{spine,42}}, perch(42)),
     1 = erase(perch),
 
     put(salmon, 0),
-    {'EXIT',{{badmatch,mimsy},_}} = (catch salmon()),
+    ?assertError({badmatch,mimsy}, salmon()),
     1 = erase(salmon),
 
     put(shark, 0),
-    {'EXIT',{{badmatch,_},_}} = (catch shark()),
+    ?assertError({badmatch,_}, shark()),
     1 = erase(shark),
 
-    {'EXIT',{{badmatch,_},_}} = (catch radio(research)),
+    ?assertError({badmatch,_}, radio(research)),
 
-    {'EXIT',{{case_clause,whatever},_}} = (catch pike1(whatever)),
-    {'EXIT',{{case_clause,whatever},_}} = (catch pike2(whatever)),
+    ?assertError({case_clause,whatever}, pike1(whatever)),
+    ?assertError({case_clause,whatever}, pike2(whatever)),
+
+    ?assertError(badarith, squid(a)),
+    ?assertError({badmatch,43}, squid(42)),
 
     ok.
 
@@ -351,8 +448,8 @@ entirely() ->
     [receive _ -> Voice end || banking <- printer].
 
 printer() ->
-    {[Indoor] = [] = associates},
-    [ireland || Indoor <- Indoor].
+    {[_Indoor] = [] = associates},
+    [ireland || _Indoor <- _Indoor].
 
 tench() ->
     E = begin
@@ -364,7 +461,7 @@ tench() ->
 perch(X) ->
     begin
 	put(perch, get(perch)+1),
-	[A] = [] = {spine,X}
+	[_A] = [] = {spine,X}
     end.
 
 salmon() ->
@@ -402,6 +499,11 @@ pike2(X) ->
     end,
     Var.
 
+squid(E) ->
+    ([X] = {Y}) = V = E + 1,
+    {V,X + Y}.
+
+
 %% OTP-7018.
 
 match_in_call(Config) when is_list(Config) ->
@@ -412,7 +514,7 @@ match_in_call(Config) when is_list(Config) ->
     mac_e({gurka,42}),
 
     [{2,2},{2,2}] = mac_lc([{2,any},{2,2}]),
-    {'EXIT',_} = (catch mac_lc([{1,1}])),
+    ?assertError(_, mac_lc([{1,1}])),
 
     ok.
 
@@ -497,9 +599,9 @@ untuplify_2(V1, V2) ->
 shortcut_boolean(Config) when is_list(Config) ->
     false = shortcut_boolean_1([0]),
     true = shortcut_boolean_1({42}),
-    maybe = shortcut_boolean_1(self()),
-    {'EXIT',_} = (catch shortcut_boolean_1([a,b])),
-    {'EXIT',_} = (catch shortcut_boolean_1({a,b})),
+    'maybe' = shortcut_boolean_1(self()),
+    ?assertError(_, shortcut_boolean_1([a,b])),
+    ?assertError(_, shortcut_boolean_1({a,b})),
     ok.
 
 shortcut_boolean_1(X) ->
@@ -511,7 +613,7 @@ shortcut_boolean_1(X) ->
 			end,
 		    not V;
 		false ->
-		    maybe
+		    'maybe'
 	    end,
     id(Outer).
 
@@ -539,7 +641,7 @@ selectify(Config) when is_list(Config) ->
     atom = sel_different_types({r,forty_two}),
     float = sel_different_types({r,100.0}),
     none = sel_different_types({r,18}),
-    {'EXIT',_} = (catch sel_different_types([a,b,c])),
+    ?assertError(_, sel_different_types([a,b,c])),
 
     integer = sel_same_value({r,42}),
     error = sel_same_value({r,100}),
@@ -708,6 +810,7 @@ match_map(Config) when is_list(Config) ->
     Map = #{key=>{x,y},ignore=>anything},
     #s{map=Map,t={x,y}} = do_match_map(#s{map=Map}),
     {a,#{k:={a,b,c}}} = do_match_map_2(#{k=>{a,b,c}}),
+    ?assertError({badmatch,whatever}, do_match_map_none(id(whatever))),
     ok.
 
 do_match_map(#s{map=#{key:=Val}}=S) ->
@@ -719,6 +822,17 @@ do_match_map_2(Map) ->
 	{a,#{k:=_}}=Tuple ->
 	    Tuple
     end.
+
+do_match_map_none(V) ->
+    %% Cover handling of has_map_fields in beam_validator.
+    #{42 := _} = try
+                     {} = {{} = V}
+                 catch
+                     throw:V ->
+                         #{};
+                     throw:_ ->
+                         V
+                 end.
 
 map_vars_used(Config) when is_list(Config) ->
     {some,value} = do_map_vars_used(a, b, #{{a,b}=>42,v=>{some,value}}),
@@ -750,6 +864,15 @@ coverage(Config) when is_list(Config) ->
 
     %% Cover beam_ssa_opt.
     ok = coverage_6(),
+
+    %% Cover beam_ssa_dead.
+    a = coverage_7(x, x, id(true)),
+    b = coverage_7(x, 0, id(false)),
+
+    ?assertError({badmatch,{42}}, coverage_8(id(42))),
+
+    error = coverage_9(id(1)),
+    true = coverage_9(id(0)),
 
     ok.
 
@@ -795,6 +918,29 @@ coverage_6() ->
             error([error,X,V])
     end.
 
+%% Cover beam_ssa_dead:opt_switch_1/3.
+coverage_7(_, _, true)  ->
+    a;
+coverage_7(_, 0, false)  ->
+    b;
+coverage_7(_, _, true)  ->
+    c.
+
+%% Cover beam_ssa_dead:will_succeed_*
+coverage_8(V) ->
+    V =/= (V = {V}).
+
+coverage_9(V) when V == 0 ->
+    -1 /= try ok of
+              _ ->
+                  V
+          catch
+              _ ->
+                  ok
+          end;
+coverage_9(_) ->
+    error.
+
 grab_bag(_Config) ->
     [_|T] = id([a,b,c]),
     [b,c] = id(T),
@@ -802,7 +948,7 @@ grab_bag(_Config) ->
     T1 = fun() ->
 		 [_|_] = x
 	 end,
-    {'EXIT',_} = (catch T1()),
+    ?assertError(_, T1()),
 
     T2 = fun(A, B) ->
 		 case {{element(1, A),element(2, B)},
@@ -1017,5 +1163,39 @@ match_boolean_list(Config) when is_list(Config) ->
              [true | _] -> error;
              [false | _] -> ok
          end.
+
+
+heisen_variables(_Config) ->
+    ?assertError({badmatch,3}, gh_6516_scope1()),
+    ?assertError({badmatch,3}, gh_6516_scope2()),
+
+    ok.
+
+gh_6516_scope1() ->
+    {X = 4, X = 3}.
+
+gh_6516_scope2() ->
+  {X = 4, _ = X = 3}.
+
+%% GH-6873. Bound variables would be overwritten.
+mutable_variables(_Config) ->
+    ?assertError({badmatch,0}, mutable_variables_1()),
+
+    F = fun() -> id({tag,whatever}) end,
+    whatever = mutable_variables_2(id({tag,whatever}), F),
+    ?assertError({badmatch,{tag,whatever}}, mutable_variables_2(id(a), F)),
+
+    ok.
+
+mutable_variables_1() ->
+    Zero = 0,
+    One = 1,
+    Result = One = Zero,
+    {Result,One,Zero}.
+
+mutable_variables_2(Middle, Fun) ->
+    {tag,V} = Middle = Fun(),
+    V.
+
 
 id(I) -> I.

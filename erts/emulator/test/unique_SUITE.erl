@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2014-2017. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2014-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,13 +16,14 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
 -module(unique_SUITE).
 
 -export([all/0, suite/0, init_per_suite/1, end_per_suite/1]).
+-export([init_per_testcase/2, end_per_testcase/2]).
 -export([unique_monotonic_integer_white_box/1,
 	 unique_integer_white_box/1]).
 
@@ -47,6 +50,11 @@ end_per_suite(_Config) ->
     erts_debug:set_internal_state(available_internal_state, false),
     ok.
 
+init_per_testcase(_TestCase, Config) ->
+    Config.
+end_per_testcase(_TestCase, Config) ->
+    erts_test_utils:ept_check_leaked_nodes(Config).
+
 %%
 %%
 %% Unique counter white box test case
@@ -54,7 +62,7 @@ end_per_suite(_Config) ->
 %%
 
 unique_monotonic_integer_white_box(Config) when is_list(Config) ->
-    {ok, Node} = start_node(Config),
+    {ok, Peer, Node} = ?CT_PEER(),
     TestServer = self(),
     Success = make_ref(),
     %% Run this in a separate node, so we don't mess up
@@ -72,8 +80,7 @@ unique_monotonic_integer_white_box(Config) when is_list(Config) ->
             ok
     end,
     erlang:demonitor(Mon, [flush]),
-    stop_node(Node),
-    ok.
+    peer:stop(Peer).
 
 set_unique_monotonic_integer_state(MinCounter, NextValue) ->
     true = erts_debug:set_internal_state(unique_monotonic_integer_state,
@@ -355,21 +362,3 @@ check_unique_integer_around(Int, #uniqint_info{min_int = MinInt,
 print_ret_val(File, Line, Value) ->    
     io:format("~s:~p: ~p~n", [File, Line, Value]),
     Value.
-
-start_node(Config) ->
-    start_node(Config, []).
-start_node(Config, Opts) when is_list(Config), is_list(Opts) ->
-    Pa = filename:dirname(code:which(?MODULE)),
-    A = erlang:monotonic_time(1) + erlang:time_offset(1),
-    B = erlang:unique_integer([positive]),
-    Name = list_to_atom(atom_to_list(?MODULE)
-                        ++ "-"
-                        ++ atom_to_list(proplists:get_value(testcase, Config))
-                        ++ "-"
-                        ++ integer_to_list(A)
-                        ++ "-"
-                        ++ integer_to_list(B)),
-    test_server:start_node(Name, slave, [{args, Opts++" -pa "++Pa}]).
-
-stop_node(Node) ->
-    test_server:stop_node(Node).

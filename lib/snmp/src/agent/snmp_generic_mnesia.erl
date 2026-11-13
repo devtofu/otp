@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1996-2016. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,10 +16,11 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(snmp_generic_mnesia).
+-moduledoc false.
 
 -export([variable_get/1, variable_set/2, variable_inc/2]).
 -export([table_func/2, table_func/4, 
@@ -37,7 +40,7 @@
 %%%-----------------------------------------------------------------
 
 %%------------------------------------------------------------------
-%% Theses functions could be in the MIB for simple 
+%% These functions could be in the MIB for simple 
 %% variables or tables, i.e. vars without complex 
 %% set-operations. If there are complex set op, an
 %% extra layer-function should be added, and that
@@ -185,8 +188,8 @@ make_row2(RowList, 1) -> RowList;
 make_row2([_OtherIndex | RowList], N) ->
     make_row2(RowList, N-1).
 
-make_row_list(Row) ->
-    make_row_list(size(Row), Row, []).
+make_row_list(Row) when is_tuple(Row) ->
+    make_row_list(tuple_size(Row), Row, []).
 make_row_list(N, Row, Acc) when N > 2 ->
     make_row_list(N-1, Row, [element(N, Row) | Acc]);
 make_row_list(2, Row, Acc) ->

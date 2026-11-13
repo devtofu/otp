@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2010-2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2010-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,6 +25,9 @@
 %%
 
 -module(diameter_dbg).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {file, consult, 1}}]).
 
 -export([table/1,
          tables/0,
@@ -30,9 +35,7 @@
          modules/0,
          versions/0,
          version_info/0,
-         compiled/0,
          procs/0,
-         latest/0,
          nl/0,
          sizes/0]).
 
@@ -148,7 +151,7 @@ modules() ->
     Mods.
 
 appdir() ->
-    [_|_] = code:lib_dir(?APP, ebin).
+    [_|_] = filename:join(code:lib_dir(?APP), "ebin").
 
 %% ----------------------------------------------------------
 %% # versions/0
@@ -165,25 +168,11 @@ version_info() ->
     ?I:version_info(modules()).
 
 %% ----------------------------------------------------------
-%% # compiled/0
-%% ----------------------------------------------------------
-
-compiled() ->
-    ?I:compiled(modules()).
-
-%% ----------------------------------------------------------
 %% # procs/0
 %% ----------------------------------------------------------
 
 procs() ->
     ?I:procs(?APP).
-
-%% ----------------------------------------------------------
-%% # latest/0
-%% ----------------------------------------------------------
-
-latest() ->
-    ?I:latest(modules()).
 
 %% ----------------------------------------------------------
 %% # nl/0
@@ -219,7 +208,7 @@ pp(<<Version:8, MsgLength:24,
          "Application id",
          "Hop by hop id",
          "End to end id"],
-        [Version, MsgLength, size(AVPs) + 20,
+        [Version, MsgLength, byte_size(AVPs) + 20,
          Rbit, Pbit, Ebit, Tbit, Reserved,
          CmdCode,
          ApplId,
@@ -230,11 +219,11 @@ pp(<<Version:8, MsgLength:24,
     N;
 
 pp(<<_Version:8, MsgLength:24, _/binary>> = Bin) ->
-    {bad_message_length, MsgLength, size(Bin)};
+    {bad_message_length, MsgLength, byte_size(Bin)};
 
 pp(Bin)
   when is_binary(Bin) ->
-    {truncated_binary, size(Bin)};
+    {truncated_binary, byte_size(Bin)};
 
 pp(_) ->
     not_binary.
@@ -289,7 +278,7 @@ avp(0, Data, Length, Size) ->
     data(Data, Length, Size).
 
 data(Bin, Length, Size)
-  when size(Bin) >= Length ->
+  when is_binary(Bin), byte_size(Bin) >= Length ->
     <<AVP:Length/binary, Rest/binary>> = Bin,
     ppp({"Data", AVP}),
     unpad(Rest, Size - Length, Length rem 4);
@@ -304,7 +293,7 @@ unpad(Bin, Size, N) ->
     un(Bin, Size, 4 - N).
 
 un(Bin, Size, N)
-  when size(Bin) >= N ->
+  when is_binary(Bin), byte_size(Bin) >= N ->
     ppp({"Padding bytes", N}),
     <<Pad:N/binary, Rest/binary>> = Bin,
     Bits = N*8,
@@ -373,7 +362,7 @@ p(T) ->
 
 stop() ->
     dbg:ctp(),
-    dbg:stop_clear().
+    dbg:stop().
 
 %% tpl/1
 %% tp/1

@@ -1,7 +1,16 @@
 %% =====================================================================
-%% Licensed under the Apache License, Version 2.0 (the "License"); you may
-%% not use this file except in compliance with the License. You may obtain
-%% a copy of the License at <http://www.apache.org/licenses/LICENSE-2.0>
+%% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0 OR LGPL-2.1-or-later
+%%
+%% Copyright Ericsson AB 2009-2026. All Rights Reserved.
+%% Copyright 2003 Richard Carlsson
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
 %%
 %% Unless required by applicable law or agreed to in writing, software
 %% distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,8 +28,8 @@
 %% above, a recipient may use your version of this file under the terms of
 %% either the Apache License or the LGPL.
 %%
+%% %CopyrightEnd%
 %% @private
-%% @copyright 2003 Richard Carlsson
 %% @author Richard Carlsson <carlsson.richard@gmail.com>
 %% @see edoc
 %% @end
@@ -31,7 +40,10 @@
 
 -module(edoc_data).
 
--export([module/4, overview/4, type/2]).
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}},
+          nowarn_deprecated_catch]).
+
+-export([module/4, overview/4, type/3]).
 
 -export([hidden_filter/2, get_all_tags/1, get_entry/2, get_tags/2]).
 
@@ -117,7 +129,7 @@ module(Module, Entries, Env, Opts) ->
 	    ++ sees(HeaderTags, Env)
 	    ++ references(HeaderTags)
 	    ++ todos(HeaderTags, Opts)
-	    ++ [{typedecls, types(AllTags, Env)},
+	    ++ [{typedecls, types(AllTags, Env, Opts)},
 		{functions, functions(Functions, Env, Opts)}
 		| callbacks(Functions, Module, Env, Opts)])
 	  },
@@ -142,9 +154,9 @@ module_args(none) ->
 module_args(Vs) ->
     [{args, [{arg, [{argName, [atom_to_list(V)]}]} || V <- Vs]}].
 
-types(Tags, Env) ->
+types(Tags, Env, Opts) ->
     [{typedecl, [{label, edoc_types:to_label(Def)}, {line, Line}],
-      [edoc_types:to_xml(Def, Env)] ++ description(Doc)}
+      [edoc_types:to_xml(Def, Env, Opts)] ++ description(Doc)}
      || #tag{name = type, line = Line, data = {Def, Doc}} <- Tags].
 
 functions(Es, Env, Opts) ->
@@ -250,9 +262,9 @@ function({N, A}, As0, Export, Ts, Env, Opts) ->
 		{private, yes_or_no(is_private(Ts))},
 		{hidden, yes_or_no(is_hidden(Ts))},
 		{label, edoc_refs:to_label(edoc_refs:function(N, A))}],
-     lists:append([get_args(lists:nth(Clause, As0), Ts, Clause, Env)
+     lists:append([get_args(lists:nth(Clause, As0), Ts, Clause, Env, Opts)
                    || Clause <- lists:seq(1, length(As0))])
-     ++ get_throws(Ts, Env)
+     ++ get_throws(Ts, Env, Opts)
      ++ get_equiv(Ts, Env)
      ++ get_doc(Ts)
      ++ get_since(Ts)
@@ -261,8 +273,8 @@ function({N, A}, As0, Export, Ts, Env, Opts) ->
      ++ todos(Ts, Opts)
     }.
 
-get_args(As, Ts, Clause, Env) ->
-    {Args, Ret, Spec} = signature(Ts, As, Clause, Env),
+get_args(As, Ts, Clause, Env, Opts) ->
+    {Args, Ret, Spec} = signature(Ts, As, Clause, Env, Opts),
     [{args, [{arg, [{argName, [atom_to_list(A)]}] ++ description(D)}
      || {A, D} <- Args]}]
     ++ Spec
@@ -274,11 +286,11 @@ get_args(As, Ts, Clause, Env) ->
 yes_or_no(true) -> "yes";
 yes_or_no(false) -> "no".
 
-get_throws(Ts, Env) ->
+get_throws(Ts, Env, Opts) ->
     case get_tags(throws, Ts) of
 	[Throws] ->
 	    Type = Throws#tag.data,
-	    [edoc_types:to_xml(Type, Env)];
+	    [edoc_types:to_xml(Type, Env, Opts)];
 	[] ->
 	    []
     end.
@@ -427,7 +439,7 @@ todos(Tags, Opts) ->
 	    []
     end.
 
-signature(Ts, As, Clause, Env) ->
+signature(Ts, As, Clause, Env, Opts) ->
     case get_tags(spec, Ts) of
 	[T] ->
             Spec = maybe_nth(Clause, T#tag.data),
@@ -439,7 +451,7 @@ signature(Ts, As, Clause, Env) ->
 	    As1 = merge_args(As0, As, Ds0, P),
 	    %% check_params(As1, P),
 	    Spec1 = edoc_types:set_arg_names(Spec, [A || {A,_} <- As1]),
-	    {As1, R, [edoc_types:to_xml(Spec1, Env)]};
+	    {As1, R, [edoc_types:to_xml(Spec1, Env, Opts)]};
 	[] ->
 	    S = sets:new(),
 	    {[{A, ""} || A <- fix_argnames(As, S, 1)], [], []}
@@ -523,8 +535,8 @@ get_tags(_, []) -> [].
 
 %% ---------------------------------------------------------------------
 
-type(T, Env) ->
-    xmerl_lib:expand_element({type, [edoc_types:to_xml(T, Env)]}).
+type(T, Env, Opts) ->
+    xmerl_lib:expand_element({type, [edoc_types:to_xml(T, Env, Opts)]}).
 
 %% <!ELEMENT overview (title, description?, author*, copyright?, version?,
 %%                     since?, see*, reference*, todo?, modules)>

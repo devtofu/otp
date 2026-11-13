@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1999-2018. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1999-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,46 +16,101 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
 -module(match_spec_SUITE).
 
--export([all/0, suite/0]).
--export([test_1/1, test_2/1, test_3/1, caller_and_return_to/1, bad_match_spec_bin/1,
+-export([all/0, suite/0, groups/0]).
+-export([init_per_suite/1, end_per_suite/1,
+         init_per_group/2, end_per_group/2,
+         init_per_testcase/2, end_per_testcase/2]).
+-export([test_1/1, test_2/1, test_3/1, test_4a/1, test_4b/1, test_5a/1,
+         test_5b/1, test_6/1, caller_and_return_to/1, bad_match_spec_bin/1,
 	 trace_control_word/1, silent/1, silent_no_ms/1, silent_test/1,
 	 ms_trace2/1, ms_trace3/1, ms_trace_dead/1, boxed_and_small/1,
 	 destructive_in_test_bif/1, guard_exceptions/1,
 	 empty_list/1,
-	 unary_plus/1, unary_minus/1, moving_labels/1]).
+	 unary_plus/1, unary_minus/1, moving_labels/1,
+         guard_bifs/1,bignums/1]).
 -export([fpe/1]).
 -export([otp_9422/1]).
 -export([faulty_seq_trace/1, do_faulty_seq_trace/0]).
 -export([maps/1]).
--export([runner/2, loop_runner/3]).
+-export([runner/2, loop_runner/3, fixed_runner/2]).
 -export([f1/1, f2/2, f3/2, fn/1, fn/2, fn/3]).
 -export([do_boxed_and_small/0]).
+-export([f1_test4/1, f2_test4/2, f3_test4/2]).
 
 % This test suite assumes that tracing in general works. What we test is
 % the match spec functionality.
 
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
+-include("erts_test_utils.hrl").
 
 suite() ->
     [{ct_hooks,[ts_install_cth]},
      {timetrap, {minutes, 1}}].
 
 all() ->
-    [test_1, test_2, test_3, caller_and_return_to, bad_match_spec_bin,
-     trace_control_word, silent, silent_no_ms, silent_test, ms_trace2,
-     ms_trace3, ms_trace_dead, boxed_and_small, destructive_in_test_bif,
-     guard_exceptions, unary_plus, unary_minus, fpe,
-     moving_labels,
-     faulty_seq_trace,
-     empty_list,
-     otp_9422,
-     maps].
+    trace_sessions:all() ++
+    testcases_ets() ++
+    testcases_match_spec_test().
+
+groups() ->
+    trace_sessions:groups(testcases_trace()).
+
+testcases_trace() ->
+    [test_1, test_2, test_3, test_4a, test_4b, test_5a, test_5b, test_6,
+     caller_and_return_to,
+     trace_control_word,
+     silent, silent_no_ms, silent_test,
+     ms_trace2, ms_trace3, ms_trace_dead,
+     otp_9422].
+
+testcases_ets() ->
+    [bad_match_spec_bin, fpe].
+
+testcases_match_spec_test() ->
+    [boxed_and_small, destructive_in_test_bif,
+     guard_exceptions, unary_plus, unary_minus,
+     moving_labels, faulty_seq_trace, empty_list,
+     maps, guard_bifs, bignums].
+
+init_per_suite(Config) ->
+    trace_sessions:init_per_suite(Config, ?MODULE).
+
+end_per_suite(Config) ->
+    trace_sessions:end_per_suite(Config).
+
+init_per_group(Group, Config) ->
+    trace_sessions:init_per_group(Group, Config).
+
+end_per_group(Group, Config) ->
+    trace_sessions:end_per_group(Group, Config).
+
+init_per_testcase(_TestCase, Config) ->
+    Config.
+end_per_testcase(_TestCase, Config) ->
+    (erts_test_utils:ept_check_leaked_nodes(Config)
+     andalso
+     trace_sessions:end_per_testcase(Config)).
+
+erlang_trace(A,B,C) ->
+    trace_sessions:erlang_trace(A,B,C).
+
+erlang_trace_pattern(A,B) ->
+    trace_sessions:erlang_trace_pattern(A,B).
+
+erlang_trace_pattern(A,B,C) ->
+    %%erlang:display({?LINE, "B", B}),
+    trace_sessions:erlang_trace_pattern(A,B,C).
+
+erlang_trace_info(A,B) ->
+    trace_sessions:erlang_trace_info(A,B).
+
 
 test_1(Config) when is_list(Config) ->
     tr(fun() -> ?MODULE:f1(a) end,
@@ -166,26 +223,160 @@ test_3(Config) when is_list(Config) ->
                            [{disable_trace, fnoppelklopfer, call}]}]}],
     Fun2 = fun() -> ?MODULE:f3(a, a) end,
     P2 = spawn(?MODULE, runner, [self(), Fun2]),
-    erlang:trace(P2, true, [call]),
-    erlang:trace_pattern({?MODULE, f2, 2}, Pat),
+    erlang_trace(P2, true, [call]),
+    erlang_trace_pattern({?MODULE, f2, 2}, Pat),
     collect(P2, [{trace, P2, call, {?MODULE, f2, [a, a]}, [true,
 							     {?MODULE,f3,2}]}]),
     collect(P1, [{trace, P1, call, {?MODULE, f2, [a, b]}, [true]}]),
     ok.
 
+%% Test `caller_line` trace with `call` and `global`
+test_4a(Config) when is_list(Config) ->
+    Fun = fun() -> ?MODULE:f3_test4(a, b) end,
+    Pat = [{'_', [],[{message, {caller_line}}]}],
+    P = spawn(?MODULE, runner, [self(), Fun]),
+    erlang_trace(P, true, [call]),
+    %% `global` is implied but we still mention explicitly
+    erlang_trace_pattern({?MODULE, f2_test4, 2}, Pat, [global]),
+    erlang_trace_pattern({?MODULE, f1_test4, 1}, Pat, [global]),
+    collect(P, [{trace, P, call, {?MODULE, f2_test4, [a, b]}, {?MODULE, f3_test4, 2, {"test4.erl", 3}}},
+                {trace, P, call, {?MODULE, f1_test4, [a]}, {?MODULE, f3_test4, 2, {"test4.erl", 3}}}]),
+    ok.
+
+%% Test `caller_line` trace with `return_trace`, `call` and `global`
+test_4b(Config) when is_list(Config) ->
+    Fun = fun() -> ?MODULE:f3_test4(a, b) end,
+    P = spawn(?MODULE, runner, [self(), Fun]),
+    Pat = [{'_', [], [{return_trace}, {message, {caller_line}}]}],
+    erlang_trace(P, true, [call]),
+    %% `global` is implied but we still mention explicitly
+    erlang_trace_pattern({?MODULE, f2_test4, 2}, Pat, [global]),
+    erlang_trace_pattern({?MODULE, f1_test4, 1}, Pat, [global]),
+    collect(P, [{trace, P, call, {?MODULE, f2_test4, [a, b]}, {?MODULE, f3_test4, 2, {"test4.erl", 3}}},
+                {trace, P, call, {?MODULE, f1_test4, [a]}, {?MODULE, f3_test4, 2, {"test4.erl", 3}}},
+                {trace, P, return_from, {?MODULE, f1_test4, 1}, {a}},
+                {trace, P, return_from, {?MODULE, f2_test4, 2}, {a}}
+               ]),
+    ok.
+
+%% Test `caller_line` trace with `call` and `local`
+test_5a(Config) when is_list(Config) ->
+    Fun = fun() -> f3_test5(a, b) end,
+    Pat = [{'_', [],[{message, {caller_line}}]}],
+    P = spawn(?MODULE, runner, [self(), Fun]),
+    erlang_trace(P, true, [call]),
+    %% Notice `local` function tracing
+    erlang_trace_pattern({?MODULE, f2_test5, 2}, Pat, [local]),
+    erlang_trace_pattern({?MODULE, f1_test5, 1}, Pat, [local]),
+    collect(P, [{trace, P, call, {?MODULE, f2_test5, [a, b]}, {?MODULE, f3_test5, 2, {"test5.erl", 3}}},
+                {trace, P, call, {?MODULE, f1_test5, [a]}, {?MODULE, f3_test5, 2, {"test5.erl", 3}}}]),
+    ok.
+
+%% Test `caller_line` trace with `return_trace`, `call` and `local`
+test_5b(Config) when is_list(Config) ->
+    Fun = fun() -> f3_test5(a, b) end,
+    P = spawn(?MODULE, runner, [self(), Fun]),
+    Pat = [{'_', [], [{return_trace}, {message, {caller_line}}]}],
+    erlang_trace(P, true, [call]),
+    %% Notice `local` function tracing
+    erlang_trace_pattern({?MODULE, f2_test5, 2}, Pat, [local]),
+    erlang_trace_pattern({?MODULE, f1_test5, 1}, Pat, [local]),
+    collect(P, [{trace, P, call, {?MODULE, f2_test5, [a, b]}, {?MODULE, f3_test5, 2, {"test5.erl", 3}}},
+                {trace, P, call, {?MODULE, f1_test5, [a]}, {?MODULE, f3_test5, 2, {"test5.erl", 3}}},
+                {trace, P, return_from, {?MODULE, f1_test5, 1}, {a}},
+                {trace, P, return_from, {?MODULE, f2_test5, 2}, {a}}
+               ]),
+    ok.
+
+%% Test current_stacktrace/[0,1]
+test_6(Config) when is_list(Config) ->
+    %% Test non small argument
+    ?assertError(badarg,
+                 erlang_trace_pattern({?MODULE, f2_test6, '_'},
+                                      [{'_', [], [{message, {current_stacktrace, a}}]}])),
+
+    %% Test negative
+    ?assertError(badarg,
+                 erlang_trace_pattern({?MODULE, f2_test6, '_'},
+                                      [{'_', [], [{message, {current_stacktrace, -1}}]}])),
+
+    Fun = fun() -> f5_test6() end,
+    Pat = [{'_', [], [{message, {current_stacktrace}}]}],
+    P = spawn(?MODULE, fixed_runner, [self(), Fun]),
+    erlang_trace(P, true, [call]),
+    erlang_trace_pattern({?MODULE, f2_test6, 1}, Pat, [local]),
+    erlang_trace_pattern({?MODULE, f1_test6, 0}, Pat, [local]),
+    collect(P, [{trace, P, call, {?MODULE, f2_test6, [f1]},
+                   [
+                    {?MODULE, f3_test6, 0, [{file, "test6.erl"}, {line, 21}]},
+                    {?MODULE, f5_test6, 0, [{file, "test6.erl"}, {line, 14}]},
+                    {?MODULE, fixed_runner, 2, [{file, "test6.erl"}, {line, 7}]}
+                   ]},
+                {trace, P, call, {?MODULE, f1_test6, []},
+                   [
+                    {?MODULE, f2_test6, 1, [{file, "test6.erl"}, {line, 25}]},
+                    {?MODULE, f3_test6, 0, [{file, "test6.erl"}, {line, 21}]},
+                    {?MODULE, f5_test6, 0, [{file, "test6.erl"}, {line, 14}]},
+                    {?MODULE, fixed_runner, 2, [{file, "test6.erl"}, {line, 7}]}
+                   ]}
+               ]),
+
+    Pat2 = [{'_', [], [{message, {current_stacktrace, 3}}]}],
+    P2 = spawn(?MODULE, fixed_runner, [self(), Fun]),
+    erlang_trace(P2, true, [call]),
+    erlang_trace_pattern({?MODULE, f2_test6, 1}, Pat2, [local]),
+    erlang_trace_pattern({?MODULE, f1_test6, 0}, Pat2, [local]),
+    collect(P2, [{trace, P2, call, {?MODULE, f2_test6, [f1]},
+                   [
+                    {?MODULE, f3_test6, 0, [{file, "test6.erl"}, {line, 21}]},
+                    {?MODULE, f5_test6, 0, [{file, "test6.erl"}, {line, 14}]},
+                    {?MODULE, fixed_runner, 2, [{file, "test6.erl"}, {line, 7}]}
+                   ]},
+                {trace, P2, call, {?MODULE, f1_test6, []},
+                   [
+                    {?MODULE, f2_test6, 1, [{file, "test6.erl"}, {line, 25}]},
+                    {?MODULE, f3_test6, 0, [{file, "test6.erl"}, {line, 21}]},
+                    {?MODULE, f5_test6, 0, [{file, "test6.erl"}, {line, 14}]}
+                   ]}
+               ]),
+
+    %% Test when erts_backtrace_depth is less than depth
+    OldDepth = erlang:system_flag(backtrace_depth, 2),
+    try
+        P3 = spawn(?MODULE, fixed_runner, [self(), Fun]),
+        erlang_trace(P3, true, [call]),
+        erlang_trace_pattern({?MODULE, f2_test6, 1}, Pat2, [local]),
+        erlang_trace_pattern({?MODULE, f1_test6, 0}, Pat2, [local]),
+        collect(P3, [{trace, P3, call, {?MODULE, f2_test6, [f1]},
+                       [
+                        {?MODULE, f3_test6, 0, [{file, "test6.erl"}, {line, 21}]},
+                        {?MODULE, f5_test6, 0, [{file, "test6.erl"}, {line, 14}]}
+                       ]},
+                    {trace, P3, call, {?MODULE, f1_test6, []},
+                       [
+                        {?MODULE, f2_test6, 1, [{file, "test6.erl"}, {line, 25}]},
+                        {?MODULE, f3_test6, 0, [{file, "test6.erl"}, {line, 21}]}
+                       ]}
+                   ])
+    after
+        erlang:system_flag(backtrace_depth, OldDepth)
+    end,
+
+    ok.
+
 %% Test that caller and return to work as they should
 %% There was a bug where caller would be undefined when return_to was set
 %% for r the bif erlang:put().
-caller_and_return_to(Config) ->
+caller_and_return_to(Config) when is_list(Config) ->
     tr(
       fun do_put_wrapper/0,
       fun (Tracee) ->
               MsgCaller = [{'_',[],[{message,{caller}}]}],
-              1 = erlang:trace(Tracee, true, [call,return_to]),
-              1 = erlang:trace_pattern( {?MODULE,do_put,1}, MsgCaller, [local]),
-              1 = erlang:trace_pattern( {?MODULE,do_the_put,1}, MsgCaller, [local]),
-              1 = erlang:trace_pattern( {erlang,integer_to_list,1}, MsgCaller, [local]),
-              1 = erlang:trace_pattern( {erlang,put,2}, MsgCaller, [local]),
+              1 = erlang_trace(Tracee, true, [call,return_to]),
+              1 = erlang_trace_pattern( {?MODULE,do_put,1}, MsgCaller, [local]),
+              1 = erlang_trace_pattern( {?MODULE,do_the_put,1}, MsgCaller, [local]),
+              1 = erlang_trace_pattern( {erlang,integer_to_list,1}, MsgCaller, [local]),
+              1 = erlang_trace_pattern( {erlang,put,2}, MsgCaller, [local]),
 
               [{trace,Tracee,call,{?MODULE,do_put,[test]},{?MODULE,do_put_wrapper,0}},
                {trace,Tracee,call,{?MODULE,do_the_put,[test]},{?MODULE,do_put,1}},
@@ -224,7 +415,7 @@ otp_9422(Config) when is_list(Config) ->
     P1 = spawn_link(?MODULE, loop_runner, [self(), Fun1, Laps]),
     io:format("spawned ~p as tracee\n", [P1]),
 
-    erlang:trace(P1, true, [call, silent]),
+    erlang_trace(P1, true, [call, silent]),
 
     Fun2 = fun() -> otp_9422_trace_changer() end,
     P2 = spawn_link(?MODULE, loop_runner, [self(), Fun2, Laps]),
@@ -246,19 +437,19 @@ otp_9422_tracee() ->
 
 otp_9422_trace_changer() ->
     Pat1 = [{[a], [], [{enable_trace, arity}]}],
-    erlang:trace_pattern({?MODULE, f1, 1}, Pat1),
+    erlang_trace_pattern({?MODULE, f1, 1}, Pat1),
     Pat2 = [{[b], [], [{disable_trace, arity}]}],
-    erlang:trace_pattern({?MODULE, f1, 1}, Pat2).
+    erlang_trace_pattern({?MODULE, f1, 1}, Pat2).
 
     
     
 
 
 bad_match_spec_bin(Config) when is_list(Config) ->
-    {'EXIT',{badarg,_}} = (catch ets:match_spec_run([1], <<>>)),
+    ?assertError(badarg, ets:match_spec_run([1], <<>>)),
     B0 = <<1,2>>,
     {B,_} = split_binary(B0, 0),
-    {'EXIT',{badarg,_}} = (catch ets:match_spec_run([1], B)),
+    ?assertError(badarg, ets:match_spec_run([1], B)),
     ok.
 
 
@@ -321,13 +512,14 @@ tcw_bits() ->
 
 tcw_bits(Save, Prev, Bits) ->
     Curr = 1 bsl Bits,
-    case catch erlang:system_flag(trace_control_word, Curr) of
-        {'EXIT' , {badarg, _}} ->
-            Prev = erlang:system_flag(trace_control_word, Save),
-            Bits;
+    try erlang:system_flag(trace_control_word, Curr) of
         Prev ->
             Curr = erlang:system_info(trace_control_word),
             tcw_bits(Save, Curr, Bits+1)
+    catch
+        error:badarg ->
+            Prev = erlang:system_flag(trace_control_word, Save),
+            Bits
     end.
 
 
@@ -416,10 +608,10 @@ silent_no_ms(Config) when is_list(Config) ->
               ?MODULE:f3(l, m)
       end,
       fun (Tracee) ->
-              1 = erlang:trace(Tracee, true, [call,silent,return_to]),
-              1 = erlang:trace_pattern( {?MODULE,f2,2}, [], [global]),
-              1 = erlang:trace_pattern( {erlang,integer_to_list,1}, [], [global]),
-              1 = erlang:trace_pattern(
+              1 = erlang_trace(Tracee, true, [call,silent,return_to]),
+              1 = erlang_trace_pattern( {?MODULE,f2,2}, [], [global]),
+              1 = erlang_trace_pattern( {erlang,integer_to_list,1}, [], [global]),
+              1 = erlang_trace_pattern(
                     {?MODULE,f1,1},
                     [{[start],[],[{silent,false}]},
                      {[stop],[],[{silent,true}]}],
@@ -452,10 +644,10 @@ silent_no_ms(Config) when is_list(Config) ->
               ?MODULE:f3(l, m)
       end,
       fun (Tracee) ->
-              1 = erlang:trace(Tracee, true, [call,silent,return_to]),
-              1 = erlang:trace_pattern( {?MODULE,f2,2}, [], [local]),
-              1 = erlang:trace_pattern( {erlang,integer_to_list,1}, [], [local]),
-              1 = erlang:trace_pattern(
+              1 = erlang_trace(Tracee, true, [call,silent,return_to]),
+              1 = erlang_trace_pattern( {?MODULE,f2,2}, [], [local]),
+              1 = erlang_trace_pattern( {erlang,integer_to_list,1}, [], [local]),
+              1 = erlang_trace_pattern(
                     {?MODULE,f1,1},
                     [{[start],[],[{silent,false}]},
                      {[stop],[],[{silent,true}]}],
@@ -478,9 +670,9 @@ silent_no_ms(Config) when is_list(Config) ->
 
 %% Test that match_spec_test does not activate silent
 silent_test(_Config) ->
-    {flags,[]} = erlang:trace_info(self(),flags),
+    {flags,[]} = erlang_trace_info(self(),flags),
     erlang:match_spec_test([],[{'_',[],[{silent,true}]}],trace),
-    {flags,[]} = erlang:trace_info(self(),flags).
+    {flags,[]} = erlang_trace_info(self(),flags).
 
 
 %% Test the match spec functions {trace/2}
@@ -510,11 +702,11 @@ ms_trace2(Config) when is_list(Config) ->
               ?MODULE:f3(o, p)
       end,
       fun (Tracee) ->
-              1 = erlang:trace(Tracee, false, [all]),
-              1 = erlang:trace_pattern( {?MODULE,f1,1}, [], [global]),
-              1 = erlang:trace_pattern( {?MODULE,f2,2}, [], [local]),
-              1 = erlang:trace_pattern( {erlang,integer_to_list,1}, [], [global]),
-              3 = erlang:trace_pattern(
+              1 = erlang_trace(Tracee, false, [all]),
+              1 = erlang_trace_pattern( {?MODULE,f1,1}, [], [global]),
+              1 = erlang_trace_pattern( {?MODULE,f2,2}, [], [local]),
+              1 = erlang_trace_pattern( {erlang,integer_to_list,1}, [], [global]),
+              3 = erlang_trace_pattern(
                     {?MODULE,fn,'_'},
                     [{['$1','$2'],[],
                       [{trace,'$1','$2'},{message,ms_trace2}]}],
@@ -539,7 +731,7 @@ ms_trace2(Config) when is_list(Config) ->
                 ms_trace2}]
       end),
     %% Silence valgrind
-    erlang:trace_pattern({?MODULE,fn,'_'},[],[]),
+    erlang_trace_pattern({?MODULE,fn,'_'},[],[]),
     ok.
 
 
@@ -600,11 +792,11 @@ ms_trace3(Config) when is_list(Config) ->
       end,
 
       fun (Tracee) -> %% Startup
-              1 = erlang:trace(Tracee, false, [all]),
-              1 = erlang:trace_pattern( {?MODULE,f1,1}, [], [global]),
-              1 = erlang:trace_pattern( {?MODULE,f2,2}, [], [local]),
-              1 = erlang:trace_pattern( {erlang,integer_to_list,1}, [], [global]),
-              3 = erlang:trace_pattern(
+              1 = erlang_trace(Tracee, false, [all]),
+              1 = erlang_trace_pattern( {?MODULE,f1,1}, [], [global]),
+              1 = erlang_trace_pattern( {?MODULE,f2,2}, [], [local]),
+              1 = erlang_trace_pattern( {erlang,integer_to_list,1}, [], [global]),
+              3 = erlang_trace_pattern(
                     {?MODULE,fn,'_'},
                     [{['$1','$2','$3'],[],
                       [{trace,'$1','$2','$3'},{message,Tag}]}],
@@ -641,22 +833,22 @@ ms_trace_dead(_Config) ->
     TFun = fun F() -> receive M -> Self ! M, F() end end,
     {Tracer, MRef} = spawn_monitor(TFun),
     MetaTracer = spawn_link(TFun),
-    erlang:trace_pattern({?MODULE, f1, '_'},
+    erlang_trace_pattern({?MODULE, f1, '_'},
                          [{'_',[],[{message, false},
                                    {trace,[],
                                     [call,{const,{tracer,Tracer}}]}]}],
                          [{meta, MetaTracer}]),
-    erlang:trace_pattern({?MODULE, f2, '_'}, []),
+    erlang_trace_pattern({?MODULE, f2, '_'}, []),
     ?MODULE:f2(1,2),
     ?MODULE:f1(1),
-    {tracer,Tracer} = erlang:trace_info(self(), tracer),
-    {flags,[call]} = erlang:trace_info(self(), flags),
+    {tracer,Tracer} = erlang_trace_info(self(), tracer),
+    {flags,[call]} = erlang_trace_info(self(), flags),
     ?MODULE:f2(2,3),
     receive {trace, Self, call, {?MODULE, f2, _}} -> ok end,
     exit(Tracer, stop),
     receive {'DOWN',MRef,_,_,_} -> ok end,
     ?MODULE:f1(2),
-    {tracer,[]} = erlang:trace_info(self(), tracer),
+    {tracer,[]} = erlang_trace_info(self(), tracer),
     ?MODULE:f2(3,4),
     TRef = erlang:trace_delivered(all),
     receive {trace_delivered, _, TRef} -> ok end,
@@ -686,10 +878,9 @@ destructive_in_test_bif(Config) when is_list(Config) ->
 
 %% Test that the comparison between boxed and small does not crash emulator
 boxed_and_small(Config) when is_list(Config) ->
-    {ok, Node} = start_node(match_spec_suite_other),
+    {ok, Peer, Node} = ?CT_PEER(),
     ok = rpc:call(Node,?MODULE,do_boxed_and_small,[]),
-    stop_node(Node),
-    ok.
+    peer:stop(Peer).
 
 do_boxed_and_small() ->
     {ok, false, _, _} = erlang:match_spec_test({0,3},[{{1.47,'_'},[],['$_']}],table),
@@ -700,22 +891,16 @@ do_boxed_and_small() ->
 
 %% Test that faulty seq_trace_call does not crash emulator
 faulty_seq_trace(Config) when is_list(Config) ->
-    {ok, Node} = start_node(match_spec_suite_other),
+    {ok, Peer, Node} = ?CT_PEER(),
     ok = rpc:call(Node,?MODULE,do_faulty_seq_trace,[]),
-    stop_node(Node),
-    ok.
+    peer:stop(Peer).
 
 do_faulty_seq_trace() ->
     {ok,'EXIT',_,_} = erlang:match_spec_test([],[{'_',[],[{message,{set_seq_token,yxa,true}}]}],trace),
     ok.
 
 errchk(Pat) ->
-    case catch erlang:trace_pattern({?MODULE, f2, 2}, Pat) of
-	{'EXIT', {badarg, _}} ->
-	    ok;
-	Other ->
-	    ct:fail({noerror, Other})
-    end.
+    ?assertError(badarg, erlang_trace_pattern({?MODULE, f2, 2}, Pat)).
 
 %% Checks that unary minus works
 unary_minus(Config) when is_list(Config) ->
@@ -773,8 +958,55 @@ unary_plus(Config) when is_list(Config) ->
 			       table),
     ok.
 
+bignums(Config) when is_list(Config) ->
+    %% Test bignum operations that would bump reductions when running
+    %% in a real process. When running in the fake process created by
+    %% `erlang:match_spec_test/3`, reductions must not be bumped
+    %% because in a debug build the lock checker would complain that
+    %% the main lock for the process is not held.
 
-    
+    Ops = [{'+', [1 bsl 64]},
+           {'+', [1 bsl 64, 42]},
+           {'-', [1 bsl 64]},
+           {'-', [1 bsl 64, 999]},
+           {'*', [1 bsl 64, 1 bsl 60]},
+           {'div', [1 bsl 256, 1 bsl 60]},
+           {'rem', [1 bsl 128, (1 bsl 60) - 7]},
+           {'band', [(1 bsl 64) - 1, (1 bsl 64) - 7]},
+           {'bor', [(1 bsl 64) - 1, (1 bsl 64) - 7]},
+           {'bxor', [(1 bsl 64) - 1, (1 bsl 64) - 7]},
+           {'bsl', [1, 64]},
+           {'bsr', [1 bsl 128, 64]},
+           {'bnot', [1 bsl 64]}
+          ],
+
+    lists:foreach(
+      fun({Op, [_,_]=ArgsList}) ->
+              Result = apply(erlang, Op, ArgsList),
+              ArgsTuple = list_to_tuple(ArgsList),
+              Guard = [{'=:=', {Op,'$1','$2'}, {const,Result}}],
+
+              TableMs = [{{'$1','$2'},Guard,['$_']}],
+              {ok, ArgsTuple, [], []} =
+                  erlang:match_spec_test(ArgsTuple, TableMs, table),
+
+              TraceMs = [{['$1','$2'],Guard,[true]}],
+              {ok, true, [], []} =
+                  erlang:match_spec_test(ArgsList, TraceMs, trace);
+         ({Op, [_]=ArgsList}) ->
+              Result = apply(erlang, Op, ArgsList),
+              ArgsTuple = list_to_tuple(ArgsList),
+              Guard = [{'=:=', {Op,'$1'}, {const,Result}}],
+
+              TableMs = [{{'$1'},Guard,['$_']}],
+              {ok, ArgsTuple, [], []} =
+                  erlang:match_spec_test(ArgsTuple, TableMs, table),
+
+              TraceMs = [{['$1'],Guard,[true]}],
+              {ok, true, [], []} =
+                  erlang:match_spec_test(ArgsList, TraceMs, trace)
+      end, Ops),
+    ok.
 
 %% Checks that exceptions in guards are handled correctly
 guard_exceptions(Config) when is_list(Config) ->
@@ -840,10 +1072,11 @@ guard_exceptions(Config) when is_list(Config) ->
 %% Checks floating point exceptions in match-specs
 fpe(Config) when is_list(Config) ->
     MS = [{{'$1'},[],[{'/','$1',0}]}],
-    case catch (['EXIT','EXIT'] = 
-		ets:match_spec_run([{1},{2}],ets:match_spec_compile(MS))) of 
-	{'EXIT',_} -> ct:fail({error, "Floating point exceptions faulty"});
-	_ -> ok 
+    try ['EXIT','EXIT'] =
+                ets:match_spec_run([{1},{2}],ets:match_spec_compile(MS)) of
+        _ -> ok
+    catch
+        _:_ -> ct:fail({error, "Floating point exceptions faulty"})
     end.
 
 %% Test maps in match-specs
@@ -918,6 +1151,56 @@ maps(Config) when is_list(Config) ->
     ok = maps_check_loop(M0),
     M2 = maps:from_list([{integer_to_list(K),V} || {K,V} <- Ls0]),
     ok = maps_check_loop(M2),
+
+    %% Maps in guards
+    {ok,#{a:=1},[],[]} = erlang:match_spec_test(#{a=>1}, [{'$1',[{'==','$1',#{a=>1}}],['$1']}], table),
+    {ok,#{a:='$1'},[],[]} = erlang:match_spec_test(#{a=>'$1'}, [{'$1',[{'==','$1',#{a=>{const,'$1'}}}],['$1']}], table),
+    {ok,#{a:=1},[],[]} = erlang:match_spec_test(#{a=>1}, [{'$1',[{'==','$1',#{{const,a}=>1}}],['$1']}], table),
+    {ok,#{20:=1,b:=2},[],[]} = erlang:match_spec_test({11,#{20=>1,b=>2}},[{{'$1','$2'},[{'==','$2',#{{'+','$1',9}=>{'-','$1',10},b=>{const,2}}}],['$2']}], table),
+    %% Test that maps with duplicate keys work. This depends on the iteration order of small maps.
+    true = lists:any(
+             fun(N) ->
+                     {ok,#{1=>1,2=>N},[],[]} ==
+                         erlang:match_spec_test(#{1=>1,2=>N},[{'$1',[{'==','$1',#{1=>1,2=>2,{const,2}=>3,{'+',1,1}=>4,{'+',2,0}=>5}}],['$1']}],table)
+             end,[2,3,4,5]),
+    %% Test what happens when a map is collapsed from hash to flatmap
+    {ok,#{0:=1},[],[]} = erlang:match_spec_test(#{0=>1},[{'$1',[{'==','$1',maps:from_list([{{'-',I,I},1} || I <- lists:seq(1,100)])}],['$1']}], table),
+
+    %% Large maps in guards
+    {ok,#{a:=1},[],[]} = erlang:match_spec_test(M0#{a=>1}, [{'$1',[{'==','$1',M0#{a=>1}}],['$1']}], table),
+    {ok,#{a:='$1'},[],[]} = erlang:match_spec_test(M0#{a=>'$1'}, [{'$1',[{'==','$1',M0#{a=>{const,'$1'}}}],['$1']}], table),
+    {ok,#{520:=1,b:=2},[],[]} = erlang:match_spec_test({11,M0#{520=>1,b=>2}},[{{'$1','$2'},[{'==','$2',M0#{{'+','$1',509}=>{'-','$1',10},b=>{const,2}}}],['$2']}], table),
+    %% Test that maps with duplicate keys work. This depends on the iteration order of hash maps.
+    true = lists:any(
+             fun(N) ->
+                     {ok,M0#{1:=1,2:=N},[],[]} == erlang:match_spec_test(M0#{1=>1,2=>N},[{'$1',[{'==','$1',M0#{1=>1,2=>2,{const,2}=>3,{'+',1,1}=>4,{'+',2,0}=>5}}],['$1']}], table)
+             end, [2,3,4,5]),
+
+    %% Maps in body
+    {ok,#{a:=1,b:=2},[],[]} = erlang:match_spec_test(#{a=>1},[{#{a=>'$1'},[],[#{a=>'$1',b=>{const,2}}]}], table),
+    {ok,#{a:=1,b:=#{a:='$1'}},[],[]} = erlang:match_spec_test(#{a=>1},[{#{a=>'$1'},[],[#{a=>'$1',b=>#{a=>{const,'$1'}}}]}], table),
+    {ok,#{a:=1,b:=#{a:='$1'}},[],[]} = erlang:match_spec_test(#{a=>1},[{#{a=>'$1'},[],[#{a=>'$1',{const,b}=>#{a=>{const,'$1'}}}]}], table),
+    %% Test that maps with duplicate keys work. This depends on the iteration order of small maps.
+    true = lists:any(
+             fun(N) ->
+                     {ok,#{2=>N},[],[]} == erlang:match_spec_test(#{a=>1},[{#{a=>'$1'},[],[#{{'+',3,-1}=>1,2=>2,{const,2}=>3,{'+',1,'$1'}=>4,{'+',2,0}=>5}]}], table)
+             end,[1,2,3,4,5]),
+
+    %% This used to return #{1=>a,1=>c} (i.e. a flat map with duplicate keys)
+    {ok,#{1:=c,2:=b},[],[]} = erlang:match_spec_test({1,2,1}, [{{'$1','$2','$3'}, [], [#{'$1'=>a, '$2'=>b, '$3'=>c}]}], table),
+    
+    %% Test what happens when a map is collapsed from hash to flatmap
+    {ok,#{0:=1},[],[]} = erlang:match_spec_test(#{0=>1},[{'$1',[],[maps:from_list([{{'-',I,I},1} || I <- lists:seq(1,100)])]}], table),
+
+    %% Large maps in body
+    {ok,#{a:=1,b:=#{a:='$1'}},[],[]} = erlang:match_spec_test(M0#{a=>1},[{#{a=>'$1'},[],[M0#{a=>'$1',b=>M0#{a=>{const,'$1'}}}]}], table),
+    {ok,#{a:=1,b:=#{a:='$1'}},[],[]} = erlang:match_spec_test(M0#{a=>1},[{#{a=>'$1'},[],[M0#{a=>'$1',{const,b}=>M0#{a=>{const,'$1'}}}]}], table),
+    %% Test that maps with duplicate keys work. This depends on the iteration order of hash maps.
+    true = lists:any(
+             fun(N) ->
+                     {ok,M0#{1:=1,2:=N},[],[]} == erlang:match_spec_test(M0#{1=>1,2=>5},[{'$1',[],[M0#{1=>1,2=>2,{const,2}=>3,{'+',1,1}=>4,{'*',2,1}=>5}]}], table)
+             end,[2,3,4,5]),
+
     ok.
 
 maps_check_loop(M) ->
@@ -954,15 +1237,44 @@ moving_labels(Config) when is_list(Config) ->
 	erlang:match_spec_test({true,false}, Ms2, table),
 
     ok.
-    
+
+-record(dummy_record, {}).
+
+%% GH-7045: Some guard BIFs were unavailable in match specifications.
+guard_bifs(_Config) ->
+    Matches =
+        [begin
+             BIF = list_to_tuple([F | lists:duplicate(A, '$1')]),
+             erlang:match_spec_test(Data, [{{'$1'}, [BIF], [{{'$1'}}]}], Kind)
+         end
+         || {F, A} <- erlang:module_info(functions),
+            {Data, Kind} <- [{{a}, table}, {[a], trace}],
+            F =/= is_record, %% Has special requirements, checked below.
+            erl_internal:arith_op(F, A) orelse
+                erl_internal:bool_op(F, A) orelse
+                erl_internal:comp_op(F, A) orelse
+                erl_internal:guard_bif(F, A)],
+    [] = [T || {error, _}=T <- Matches],
+
+    IsRecord = {is_record,
+                '$1',
+                dummy_record,
+                record_info(size, dummy_record)},
+    [{ok, _, [], []} =
+         erlang:match_spec_test(Data, [{{'$1'}, [IsRecord], [{{'$1'}}]}], Kind)
+     || {Data, Kind} <- [{{#dummy_record{}}, table},
+                         {[#dummy_record{}], trace}]],
+
+    ok.
+
 tr(Fun, MFA, Pat, Expected) ->
     tr(Fun, MFA, [call], Pat, [global], Expected).
 
 tr(Fun, MFA, TraceFlags, Pat, PatFlags, Expected0) ->
     tr(Fun,
        fun(P) ->
-               erlang:trace(P, true, TraceFlags),
-               erlang:trace_pattern(MFA, Pat, PatFlags),
+               erlang_trace(P, true, TraceFlags),
+               erlang_trace_pattern(MFA, Pat, PatFlags),
                lists:map(
                  fun(X) when is_function(X,1) -> X;
                     (X) -> list_to_tuple([trace, P | tuple_to_list(X)])
@@ -982,6 +1294,7 @@ collect(P, TMs) ->
 collect([]) ->
     receive
 	M ->
+            erlang:display({?LINE,got_unexpected, M}),
 	    io:format("Got unexpected: ~p~n", [M]),
 	    flush({got_unexpected,M})
     after 17 ->
@@ -997,17 +1310,17 @@ collect([TM | TMs]) ->
 	M0 when element(2, M0) =:= element(2, TM); is_function(TM, 1) ->
 	    M = case element(1, M0) of
 		    trace_ts ->
-			list_to_tuple(lists:reverse(
-					tl(lists:reverse(tuple_to_list(M0)))));
+                        erlang:delete_element(tuple_size(M0), M0);
 		    _ -> M0
 		end,
 	    case is_function(TM,1) of
 		true ->
-		    case (catch TM(M)) of
+                    case ?Catch(TM(M)) of
 			true ->
 			    io:format("Got:            ~p~n", [M]),
 			    collect(TMs);
 			_ ->
+                            erlang:display({?LINE,got_unexpected, M}),
 			    io:format("Got unexpected: ~p~n", [M]),
 			    flush({got_unexpected,M})
 		    end;
@@ -1018,6 +1331,7 @@ collect([TM | TMs]) ->
 			    io:format("Got:            ~p~n", [M]),
 			    collect(TMs);
 			_ ->
+                            erlang:display({?LINE,got_unexpected, M}),
 			    io:format("Got unexpected: ~p~n", [M]),
 			    flush({got_unexpected,M})
 		    end
@@ -1109,11 +1423,54 @@ fbinmatch(<<>>, Acc) -> Acc.
 id(X) ->
     X.
 
-start_node(Name) ->
-    Pa = filename:dirname(code:which(?MODULE)),
-    Cookie = atom_to_list(erlang:get_cookie()),
-    test_server:start_node(Name, slave, 
-                           [{args, "-setcookie " ++ Cookie ++" -pa " ++ Pa}]).
+-file("test4.erl", 1).
+f3_test4(X,Y) ->
+    ?MODULE:f2_test4(X,Y), % Line 3 - This line number should remain stable
+    ok.
 
-stop_node(Node) ->
-    test_server:stop_node(Node).
+f2_test4(X, _) ->
+    ?MODULE:f1_test4(X).
+
+f1_test4(X) ->
+    {X}.
+
+-file("test5.erl", 1).
+f3_test5(X,Y) ->
+    f2_test5(X,Y), % Line 3 - This line number should remain stable
+    ok.
+
+f2_test5(X, _) ->
+    f1_test5(X).
+
+f1_test5(X) ->
+    {X}.
+
+-file("test6.erl", 1).
+fixed_runner(Collector, Fun) ->
+    receive
+        {go, Collector} ->
+            go
+    end,
+    Fun(), % Line 7 - This line number should remain stable
+    receive
+        {done, Collector} ->
+            Collector ! {gone, self()}
+    end.
+
+f5_test6() ->
+    f3_test6(), % Line 14 - This line number should remain stable
+    f4_test6().
+
+f4_test6() ->
+    f4.
+
+f3_test6() ->
+    f2_test6(f1), % Line 21 - This line number should remain stable
+    f3.
+
+f2_test6(X) ->
+    X = f1_test6(), % Line 25 - This line number should remain stable
+    f2.
+
+f1_test6() ->
+    f1.

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,6 +25,7 @@
 
 -behaviour(ct_suite).
 
+-include("ssl_test_lib.hrl").
 -include_lib("common_test/include/ct.hrl").
 
 %% Callback functions
@@ -68,14 +71,18 @@
 all() ->
     [{group, 'tlsv1.2'},
      {group, 'tlsv1.1'},
-     {group, 'tlsv1'}
+     {group, 'tlsv1'},
+     {group, 'dtlsv1.2'},
+     {group, 'dtlsv1'}
     ].
 
 groups() ->
     [
      {'tlsv1.2', [], next_protocol_tests()},
      {'tlsv1.1', [], next_protocol_tests()},
-     {'tlsv1', [], next_protocol_tests()}
+     {'tlsv1', [], next_protocol_tests()},
+     {'dtlsv1.2', [], next_protocol_tests()},
+     {'dtlsv1', [], next_protocol_tests()}
     ].
 
 next_protocol_tests() ->
@@ -94,8 +101,8 @@ next_protocol_tests() ->
     ].
 
 init_per_suite(Config0) ->
-    catch crypto:stop(),
-    try crypto:start() of
+    catch application:stop(crypto),
+    try application:start(crypto) of
 	ok ->
             ssl_test_lib:clean_start(),
             ssl:clear_pem_cache(),
@@ -118,7 +125,7 @@ end_per_group(GroupName, Config) ->
 init_per_testcase(_TestCase, Config) ->
     ssl_test_lib:ct_log_supported_protocol_versions(Config),
     Version = proplists:get_value(version, Config),
-    ct:log("Ciphers: ~p~n ", [ ssl:cipher_suites(default, Version)]),
+    ?CT_LOG("Ciphers: ~p~n ", [ ssl:cipher_suites(default, Version)]),
     ct:timetrap(?TIMEOUT),
     Config.
 
@@ -135,10 +142,11 @@ validate_empty_protocols_are_not_allowed(Config) when is_list(Config) ->
 			    [{next_protocols_advertised, [<<"foo/1">>, <<"">>]}])),
     {error, {options, {client_preferred_next_protocols, {invalid_protocol, <<>>}}}}
 	= (catch ssl:connect({127,0,0,1}, 9443,
-			     [{client_preferred_next_protocols,
+			     [{verify, verify_none}, {client_preferred_next_protocols,
 			       {client, [<<"foo/1">>, <<"">>], <<"foox/1">>}}], infinity)),
     Option = {client_preferred_next_protocols, {invalid_protocol, <<"">>}},
-    {error, {options, Option}} = (catch ssl:connect({127,0,0,1}, 9443, [Option], infinity)).
+    {error, {options, Option}} = (catch ssl:connect({127,0,0,1}, 9443, 
+                                                    [{verify, verify_none}, Option], infinity)).
 
 %--------------------------------------------------------------------------------
 
@@ -150,12 +158,13 @@ validate_empty_advertisement_list_is_allowed(Config) when is_list(Config) ->
 
 validate_advertisement_must_be_a_binary_list(Config) when is_list(Config) ->
     Option = {next_protocols_advertised, blah},
-    {error, {options, Option}} = (catch ssl:listen(9443, [Option])).
+    {error, {options, Option}} = (catch ssl:listen(9443, [{verify, verify_none}, Option])).
 %--------------------------------------------------------------------------------
 
 validate_client_protocols_must_be_a_tuple(Config) when is_list(Config)  ->
     Option = {client_preferred_next_protocols, [<<"foo/1">>]},
-    {error, {options, Option}} = (catch ssl:connect({127,0,0,1}, 9443, [Option])).
+    {error, {options, Option}} = (catch ssl:connect({127,0,0,1}, 9443,
+                                                    [{verify, verify_none}, Option])).
 
 %--------------------------------------------------------------------------------
 
@@ -249,13 +258,13 @@ npn_handshake_session_reused(Config) when  is_list(Config)->
 %%--------------------------------------------------------------------
 
 assert_npn(Socket, Protocol) ->
-    ct:log("Negotiated Protocol ~p, Expecting: ~p ~n",
+    ?CT_LOG("Negotiated Protocol ~p, Expecting: ~p ~n",
 		       [ssl:negotiated_protocol(Socket), Protocol]),
     Protocol = ssl:negotiated_protocol(Socket).
 
 assert_npn_and_renegotiate_and_send_data(Socket, Protocol, Data) ->
     assert_npn(Socket, Protocol),
-    ct:log("Renegotiating ~n", []),
+    ?CT_LOG("Renegotiating ~n", []),
     ok = ssl:renegotiate(Socket),
     ssl:send(Socket, Data),
     assert_npn(Socket, Protocol),
@@ -270,7 +279,7 @@ ssl_receive_and_assert_npn(Socket, Protocol, Data) ->
     ssl_receive(Socket, Data).
 
 ssl_send(Socket, Data) ->
-    ct:log("Connection info: ~p~n",
+    ?CT_LOG("Connection info: ~p~n",
                [ssl:connection_information(Socket)]),
     ssl:send(Socket, Data).
 
@@ -278,11 +287,11 @@ ssl_receive(Socket, Data) ->
     ssl_receive(Socket, Data, []).
 
 ssl_receive(Socket, Data, Buffer) ->
-    ct:log("Connection info: ~p~n",
+    ?CT_LOG("Connection info: ~p~n",
                [ssl:connection_information(Socket)]),
     receive
     {ssl, Socket, MoreData} ->
-        ct:log("Received ~p~n",[MoreData]),
+        ?CT_LOG("Received ~p~n",[MoreData]),
         NewBuffer = Buffer ++ MoreData,
         case NewBuffer of
             Data ->

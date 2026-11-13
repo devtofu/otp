@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1997-2016. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,10 +16,11 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(os_mon_sysinfo).
+-moduledoc false.
 -behaviour(gen_server).
 
 %% API
@@ -45,7 +48,7 @@ get_disk_info() ->
     gen_server:call(os_mon_sysinfo, get_disk_info).
 
 get_disk_info(DriveRoot) ->
-    gen_server:call(os_mon_sysinfo, {get_disk_info,DriveRoot}).
+    gen_server:call(os_mon_sysinfo, {get_disk_info, DriveRoot}).
 
 get_mem_info() ->
     gen_server:call(os_mon_sysinfo, get_mem_info).
@@ -65,8 +68,8 @@ init([]) ->
 
 handle_call(get_disk_info, _From, State) ->
     {reply, get_disk_info1(State#state.port), State};
-handle_call({get_disk_info,RootList}, _From, State) ->
-    {reply, get_disk_info1(State#state.port,RootList), State};
+handle_call({get_disk_info, DriveRoot}, _From, State) ->
+    {reply, get_disk_info1(State#state.port, DriveRoot), State};
 handle_call(get_mem_info, _From, State) ->
     {reply, get_mem_info1(State#state.port), State}.
 
@@ -108,8 +111,8 @@ get_disk_info1(Port) ->
     Port ! {self(),{command,[?DISK_INFO]}},
     get_data(Port,[]).
 
-get_disk_info1(Port,PathList) ->
-    Port ! {self(),{command,[?DISK_INFO|[P++[0]||P <- PathList]]}},
+get_disk_info1(Port, DriveRoot) ->
+    Port ! {self(), {command,[?DISK_INFO|DriveRoot++[0]]}},
     get_data(Port,[]).
 
 get_mem_info1(Port) ->

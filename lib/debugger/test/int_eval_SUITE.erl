@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1999-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1999-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -89,7 +91,7 @@ bifs_outside_erlang(Config) when is_list(Config) ->
     ok = spawn_eval(Fun),
     ok.
 
-%% Try evalutate spawn_link/3.
+%% Try evaluating spawn_link/3.
 spawning(Config) when is_list(Config) ->
     ok = spawn_eval(fun() -> ?IM:spawn_test() end).
 

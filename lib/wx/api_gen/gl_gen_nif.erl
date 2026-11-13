@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -172,7 +174,7 @@ declare_var(P=#arg{name=Name,
         false -> w("  ~s ~s;\n",[T,Name])
     end,
     {P,Argc+1};
-declare_var(P=#arg{name=Name,type=#type{base=string,ref={pointer,2},mod=[const]}},Argc) ->
+declare_var(P=#arg{name=_Name,type=#type{base=string,ref={pointer,2},mod=[const]}},Argc) ->
     {P,Argc+1};
 declare_var(P=#arg{name=Name, in=true, type=#type{base=Base}}, Argc)
   when Base =:= binary; Base =:= string ->
@@ -181,6 +183,7 @@ declare_var(P=#arg{name=Name, in=true, type=#type{base=Base}}, Argc)
 declare_var(P=#arg{name=Name, in=true, alt=list_binary, type=#type{name=T}}, Argc) ->
     w("  ErlNifBinary ~s_bin;\n", [Name]),
     w("  unsigned int ~s_len;\n", [Name]),
+    w("  std::vector <~s> ~s_vec;\n", [T, Name]),
     w("  ~s *~s;\n",[T, Name]),
     {P,Argc+1};
 declare_var(P=#arg{name=Name, in=true, type=#type{name=T, base=guard_int}}, Argc) ->
@@ -207,6 +210,10 @@ declare_var(P=#arg{name=Name, in=true, type=#type{name=T,single={Comp, Sz}}},
             w("  ~s ~s[~w];\n",[T,Name,Sz])
     end,
     {P,Argc+1};
+declare_var(P=#arg{name=Name, in=true, type=#type{name=Type, single=list}}, Argc) ->
+    w("  ~s *~s;\n",[Type,Name]),
+    w("  std::vector <~s> ~s_vec;\n", [Type, Name]),
+    {P,Argc+1};
 declare_var(P=#arg{name=Name, in=true, type=#type{name=T}}, Argc) ->
     w("  ~s *~s;\n",[T,Name]),
     {P,Argc+1};
@@ -218,7 +225,9 @@ declare_var(P=#arg{name=Name, in=false, type=#type{base=binary}}, Argc) ->
     {P,Argc+1};
 declare_var(P=#arg{name=Name, in=false, type=#type{name=T, single={Single,Sz}}}, Argc)
   when Single =:= list; Single =:= tuple ->
-    w("  ~s ~s[~w];\n", [T, Name, Sz]),
+    %% Zero-initialise: GL writes a pname-dependent number of values (fewer than
+    %% Sz for most pnames), but the marshalling loop reads all Sz elements.
+    w("  ~s ~s[~w] = {0};\n", [T, Name, Sz]),
     case Sz > 9 of
         false -> ignore;
         true  ->
@@ -240,7 +249,7 @@ declare_var(P, Argc) ->
 
 %%% Decode
 
-decode_var_0(P=#arg{name=Name}, Argc) ->
+decode_var_0(P=#arg{name=_Name}, Argc) ->
     Res = decode_var(P, Argc),
     Res.
 
@@ -290,9 +299,9 @@ decode_var(P=#arg{name=Name, type=#type{base=memory}},Argc) ->
       "    int ~s_a;\n"
       "    const ERL_NIF_TERM *~s_t;\n"
       "    if(enif_get_tuple(env, argv[~w], &~s_a, &~s_t) &&\n"
-      "         enif_is_binary(env, ~s_t[1]))\n"
+      "         ~s_a >= 2 && enif_is_binary(env, ~s_t[1]))\n"
       "       enif_inspect_binary(env, ~s_t[1], &~s);~n",
-      [Argc,Name,Name,Argc,Name,Name,Name,Name,Name]),
+      [Argc,Name,Name,Argc,Name,Name,Name,Name,Name,Name]),
     w("    else Badarg(~w, \"~s\");\n"
       "  } else Badarg(~w, \"~s\");\n", [?OP,Name, ?OP,Name]),
     {P,Argc+1};
@@ -369,7 +378,6 @@ decode_var(P=#arg{name=Name, in=true, alt=Alt,
     end,
     w(" else {\n",[]),
     w("    ERL_NIF_TERM ~s_l, ~s_h, ~s_t;\n", [Name, Name, Name]),
-    w("    std::vector <~s> ~s_vec;\n", [Type, Name]),
     w("    ~s ~s_tmp;\n", [Type, Name]),
     w("    ~s_l = argv[~w];\n",[Name,Argc]),
     w("    while(enif_get_list_cell(env, ~s_l, &~s_h, &~s_t)) {\n", [Name,Name,Name]),
@@ -418,8 +426,8 @@ decode_var(P=#arg{name=Name, in=true, alt=Alt,
 
 
 decode_var(P=#arg{name=Name, in=false,
-                  type=#type{name=T, base=Base, size=Szs}}, Argc)
-  when Base =:= binary; Base =:= string ->
+                  type=#type{name=T, base=Base, size=Szs, single=Single}}, Argc)
+  when not is_tuple(Single), (Base =:= binary orelse Base =:= string) ->
     Sz = case Szs of
              {Max,_} when is_integer(Max) -> integer_to_list(Max);
              {Max,_} -> Max;
@@ -447,7 +455,22 @@ decode_var(P=#arg{in=false, type=#type{single={C,Sz}}}, Argc)
   when C =:= tuple; C =:= list, is_integer(Sz) ->
     {P,Argc};
 decode_var(P=#arg{name=Name, in=false, type=#type{name=T,single={list,Sz,_}}}, Argc) ->
+    w("  if(~s < 0) Badarg(~w,\"~s\");\n", [Sz, ?OP, Sz]),
     w("  std::vector <~s> ~s (~s);\n", [T, Name, Sz]),
+    w("  std::vector <ERL_NIF_TERM> ~s_ts (~s);\n", [Name, Sz]),
+    {P,Argc};
+decode_var(P=#arg{name=Name, in=false,
+                  type=#type{base=Base, name=T,single={list,Sz,_,_}, size=Size}}, Argc) ->
+    case Base of
+        string ->
+            {BinSize, _} = Size,
+            w("  if(~s < 0) Badarg(~w,\"~s\");\n", [BinSize, ?OP, BinSize]),
+            w("  ~s = (unsigned char *) enif_alloc((int) ~s*sizeof(~s));\n", [Name,BinSize,T]),
+            w("  unsigned char *~s_ptr = ~s;\n", [Name,Name]),
+            store_free(Name ++ "_ptr");
+        _ ->
+            exit({?LINE, Base, P})
+    end,
     w("  std::vector <ERL_NIF_TERM> ~s_ts (~s);\n", [Name, Sz]),
     {P,Argc};
 decode_var(P=#arg{name=Name, in=true, type=#type{name="GLUquadric"}}, Argc) ->
@@ -572,10 +595,6 @@ build_ret(Name,_Q,#type{name=T,base=Base,size=Sz,single=true})
        Ptr     -> io_lib:format("     enif_make_uint64(env, (egl_uint64_t) ~s)", [Name]);
        true    -> io_lib:format("     enif_make_int64(env, (egl_int64_t) ~s)", [Name])
     end;
-build_ret(Name,_Q,#type{base=string,single=true}) ->
-    io_lib:format("     enif_make_string(env, (const char *) ~s, ERL_NIF_LATIN1)",[Name]);
-build_ret(Name,_Q,#type{base=string,size={_,_OutSz}}) ->
-    io_lib:format("     enif_make_string(env, (const char *) ~s, ERL_NIF_LATIN1)",[Name]);
 build_ret(Name,_Q,#type{name=_T,base=float,size=Sz,single=true}) ->
     if Sz =< 4 -> io_lib:format("     enif_make_double(env, (double) ~s)", [Name]);
        true    -> io_lib:format("     enif_make_double(env, ~s)", [Name])
@@ -598,6 +617,12 @@ build_ret(Name,false,#type{single={list,Sz}}) when Sz >= 10, is_integer(Sz) ->
     io_lib:format("     enif_make_list_from_array(env, ~s_ts, ~w)",[Name, Sz]);
 build_ret(Name,false,#type{single={list,_,Sz}}) ->
     io_lib:format("     enif_make_list_from_array(env, ~s_ts.data(), ~s)",[Name, Sz]);
+build_ret(Name,false,#type{single={list,_,Sz,_}}) ->
+    io_lib:format("     enif_make_list_from_array(env, ~s_ts.data(), ~s)",[Name, Sz]);
+build_ret(Name,_Q,#type{base=string,single=true}) ->
+    io_lib:format("     enif_make_string(env, (const char *) ~s, ERL_NIF_LATIN1)",[Name]);
+build_ret(Name,_Q,#type{base=string,size={_,_OutSz}}) ->
+    io_lib:format("     enif_make_string(env, (const char *) ~s, ERL_NIF_LATIN1)",[Name]);
 build_ret(Name,_Q,T=#type{}) ->
     io:format("{~p, {~p, {single,{tuple,X}}}}.~n", [get(current_func),Name]),
     io:format(" ~p~n",[T]).
@@ -611,6 +636,12 @@ prepare_ret(#arg{name=Name, type=#type{single={list,_,Sz}}=T}) ->
     Fetch = build_ret(Name ++ "[ri]", false, T#type{single=true}),
     w("  for(int ri=0; ri < (int) ~s; ri++)\n"
       "    ~s_ts[ri] = ~s;\n",[Sz, Name, Fetch]);
+prepare_ret(#arg{name=Name, type=#type{single={list,_,Sz,Lengths}}=T}) ->
+    Fetch = build_ret(Name, false, T#type{single=true}),
+    w("  for(int ri=0; ri < (int) ~s; ri++) {\n"
+      "    ~s_ts[ri] = ~s;\n",[Sz, Name, Fetch]),
+    w("    ~s += ~s[ri];\n"
+      "   }\n", [Name, Lengths]);
 prepare_ret(_) ->
     ok.
 

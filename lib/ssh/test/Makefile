@@ -1,7 +1,9 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 2004-2018. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 2004-2026. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,12 +28,14 @@ include $(ERL_TOP)/make/$(TARGET)/otp.mk
 # ----------------------------------------------------
 
 MODULES= \
+	cth_events \
 	ssh_cth \
 	ssh_algorithms_SUITE \
 	ssh_options_SUITE \
 	ssh_basic_SUITE \
 	ssh_bench_SUITE \
 	ssh_chan_behaviours_SUITE \
+	ssh_collect_labmachine_info_SUITE \
 	ssh_compat_SUITE \
 	ssh_connection_SUITE \
 	ssh_agent_mock_server \
@@ -53,6 +57,7 @@ MODULES= \
 	ssh_key_cb \
 	ssh_key_cb_options \
 	ssh_key_cb_engine_keys \
+	ssh_algorithms_key_cb \
 	ssh_trpt_test_lib \
 	ssh_chan_behaviours_client \
 	ssh_chan_behaviours_server \
@@ -79,7 +84,10 @@ TARGET_FILES= $(MODULES:%=$(EBIN)/%.$(EMULATOR))
 
 SPEC_FILES = \
 	ssh.spec \
-	ssh_bench.spec
+	ssh_bench.spec \
+	ssh_dev.spec \
+	ssh_gh.spec \
+	ssh_sup.spec
 
 COVER_FILE = ssh.cover
 
@@ -97,7 +105,8 @@ RELSYSDIR = $(RELEASE_PATH)/ssh_test
 
 INCLUDES = -I$(ERL_TOP)/lib/ssh/src
 
-ERL_COMPILE_FLAGS += $(INCLUDES) -pa ../ebin
+ERL_COMPILE_FLAGS += $(INCLUDES) -pa ../ebin +nowarn_missing_spec_documented
+ERL_COMPILE_FLAGS := $(filter-out +deterministic,$(ERL_COMPILE_FLAGS))
 
 EBIN = .
 
@@ -105,7 +114,7 @@ EBIN = .
 # Targets
 # ----------------------------------------------------
 
-tests debug opt: emakebuild $(TARGET_FILES)
+tests $(TYPES): emakebuild $(TARGET_FILES)
 
 .PHONY: emakebuild
 
@@ -140,3 +149,7 @@ release_tests_spec: opt
 	@tar cf - *_SUITE_data property_test | (cd "$(RELSYSDIR)"; tar xf -)
 
 release_docs_spec:
+
+# Dependencies
+
+$(TARGET_FILES):	$(HRL_FILES)

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2013-2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2013-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,7 +22,7 @@
 
 %%
 %%----------------------------------------------------------------------
-%% Purpose: Record and constant defenitions for the TLS-record protocol
+%% Purpose: Record and constant definitions for the TLS-record protocol
 %% see RFC 5246
 %%----------------------------------------------------------------------
 
@@ -30,10 +32,11 @@
 -include("ssl_record.hrl"). %% Common TLS and DTLS records and Constantes
 
 %% Used to handle tls_plain_text, tls_compressed and tls_cipher_text
--record(ssl_tls, {   
-	  type,
-	  version, 
-	  fragment
-	 }).
+-record(ssl_tls, {
+                  type,
+                  version :: tls_record:tls_version() | undefined,
+                  fragment,
+                  early_data = false % TLS-1.3
+                 }).
 
 -endif. % -ifdef(tls_record).

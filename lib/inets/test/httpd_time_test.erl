@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2001-2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2001-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -47,7 +49,7 @@ t2(Host, Port) ->
 
 
 t4(Host, Port) ->
-    t(essl, Host, Port).
+    t(ssl, Host, Port).
 
 
 t(SocketType, Host, Port) ->
@@ -134,13 +136,13 @@ loop(Pollers, Timeout) ->
 		    exit({fail, {poller_exit, Pid, Time, Reason}});
 		false ->
 		    error_msg("received unexpected ~p from ~p"
-			      "befor completion of test", [Reason, Pid]),
+			      "before completion of test", [Reason, Pid]),
 		    loop(Pollers, Timeout - inets_lib:millisec_passed(Start))
 	    end;
 
 	{poller_stat_failure, Pid, {SocketType, Host, Port, Time, Reason}} ->
 	    error_msg("received stat failure ~p from poller ~p after ~p "
-		      "befor completion of test" 
+		      "before completion of test" 
 		      "~n   SocketType: ~p"
 		      "~n   Host:       ~p"
 		      "~n   Port:       ~p", 
@@ -149,7 +151,7 @@ loop(Pollers, Timeout) ->
 
 	{poller_stat_failure, Pid, SocketType, Host, Port, Reason} ->
 	    error_msg("received stat failure ~p from poller ~p "
-		      "befor completion of test" 
+		      "before completion of test" 
 		      "~n   SocketType: ~p"
 		      "~n   Host:       ~p"
 		      "~n   Port:       ~p", 
@@ -157,7 +159,7 @@ loop(Pollers, Timeout) ->
 	    exit({fail, {poller_failure, Pid, Reason}});
 
 	Any ->
-	    error_msg("received unexpected message befor completion of test: "
+	    error_msg("received unexpected message before completion of test: "
 		      "~n   ~p", [Any]),
 	    exit({fail, Any})
 
@@ -417,7 +419,7 @@ validate(ExpStatusCode, _SocketType, _Socket, Response) ->
 sz(L) when is_list(L) ->
     length(lists:flatten(L));
 sz(B) when is_binary(B) ->
-    size(B);
+    byte_size(B);
 sz(O) ->
     {unknown_size,O}.
 
@@ -450,6 +452,7 @@ status_to_message(303) -> "Section 10.3.4: See Other";
 status_to_message(304) -> "Section 10.3.5: Not Modified";
 status_to_message(305) -> "Section 10.3.6: Use Proxy";
 status_to_message(307) -> "Section 10.3.8: Temporary Redirect";
+status_to_message(308) -> "RFC 9110, Section 15.4.9: Permanent Redirect";
 status_to_message(400) -> "Section 10.4.1: Bad Request";
 status_to_message(401) -> "Section 10.4.2: Unauthorized";
 status_to_message(402) -> "Section 10.4.3: Peyment Required";

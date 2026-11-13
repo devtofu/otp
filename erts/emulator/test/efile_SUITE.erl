@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1997-2020. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,11 +16,12 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 
 -module(efile_SUITE).
 -export([all/0, suite/0]).
+-export([init_per_testcase/2, end_per_testcase/2]).
 -export([iter_max_files/1, proc_zero_sized_files/1]).
 
 -export([do_iter_max_files/2]).
@@ -30,6 +33,12 @@ suite() -> [{ct_hooks,[ts_install_cth]}].
 
 all() -> 
     [iter_max_files, proc_zero_sized_files].
+
+
+init_per_testcase(_TestCase, Config) ->
+    Config.
+end_per_testcase(_TestCase, Config) ->
+    erts_test_utils:ept_check_leaked_nodes(Config).
 
 %%
 %% Open as many files as possible. Do this several times and check 
@@ -52,11 +61,9 @@ iter_max_files_1(Config) ->
             N = 10
     end,
     %% Run on a different node in order to make the test more stable.
-    Dir = filename:dirname(code:which(?MODULE)),
-    {ok,Node} = test_server:start_node(test_iter_max_files,slave,
-                                       [{args,"-pa " ++ Dir}]),
+    {ok, Peer, Node} = ?CT_PEER(),
     L = rpc:call(Node,?MODULE,do_iter_max_files,[N, TestFile]),
-    test_server:stop_node(Node),
+    peer:stop(Peer),
     io:format("Number of files opened in each test:~n~w\n", [L]),
     verify_max_files(L),
     Head = hd(L),

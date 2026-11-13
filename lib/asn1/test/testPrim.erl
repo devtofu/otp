@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2017. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -163,7 +165,28 @@ obj_id(_) ->
     %%==========================================================
 
     [roundtrip('ObjId', V) ||
-	V <- [{0,22,3},{1,39,3},{2,100,3},{2,16303,3},{2,16304,3}]],
+        V <- [{0,22,3},
+              {1,39,3},
+              {2,100,3},
+              {2,16303,3},
+              {2,16304,3},
+              {2,1 bsl (14 * 7),3}]],
+
+    try
+        [roundtrip('ObjId', V) ||
+         V <- [{0,22,3},
+              {1,39,3},
+              {2,100,3},
+              {2,16303,3},
+              {2,16304,3},
+              {2,1 bsl (20 * 7),3}]]
+    of
+        [_|_]=Res -> ct:fail("Failed to reject overlong oid ~p", [Res])
+    catch
+        _:_ ->
+            ok
+    end,
+
     ok.
 
 rel_oid(_Rules) ->
@@ -208,7 +231,7 @@ enc_error(Tag,T, V) ->
                      true ->
                          try 'Prim':encode(T, V) of
                              _ ->
-                                 ?t:fail()
+                                 ct:fail(expected_exception)
                          catch
                              _:{error,{asn1,Reason}} ->
                                  Reason
@@ -226,7 +249,14 @@ real(_Rules) ->
     %%==========================================================
     %% AngleInRadians ::= REAL
     %%==========================================================
-    
+
+    %% Zero
+    real_roundtrip('AngleInRadians', 0),
+
+    %% Infinities
+    real_roundtrip('AngleInRadians', 'MINUS-INFINITY'),
+    real_roundtrip('AngleInRadians', 'PLUS-INFINITY'),
+
     %% Base 2
     real_roundtrip('AngleInRadians', {1,2,1}),
     real_roundtrip('AngleInRadians', {129,2,1}),
@@ -247,6 +277,7 @@ real(_Rules) ->
     %% Base 10, string format NR3
 
     real_roundtrip('AngleInRadians', "123.123E123", "123123.E120"),
+    real_roundtrip('AngleInRadians', "+123.123E123", "123123.E120"),
     real_roundtrip('AngleInRadians', "0.0E0", "0.E+0"),
     real_roundtrip('AngleInRadians', "0.0123", "123.E-4"),
     real_roundtrip('AngleInRadians', "0", "0.E+0"),
@@ -255,6 +286,14 @@ real(_Rules) ->
 		   "123456789.E123456789"),
     real_roundtrip('AngleInRadians', "01.000E1", "1.E1"),
     real_roundtrip('AngleInRadians', "120.0001", "1200001.E-4"),
+    real_roundtrip('AngleInRadians', "5", "5.E+0"),
+    real_roundtrip('AngleInRadians', "53", "53.E+0"),
+
+    real_roundtrip('AngleInRadians', "-123.123E123", "-123123.E120"),
+    real_roundtrip('AngleInRadians', "-0.0123", "-123.E-4"),
+    real_roundtrip('AngleInRadians', "-0.73", "-73.E-2"),
+    real_roundtrip('AngleInRadians', "-5", "-5.E+0"),
+    real_roundtrip('AngleInRadians', "-53", "-53.E+0"),
 
     ok.
 

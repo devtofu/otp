@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2002-2017. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2002-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 
 -module(estone_SUITE).
@@ -47,6 +49,7 @@
 -ifndef(PGO).
 -include_lib("common_test/include/ct_event.hrl").
 -endif.
+-include("erts_test_utils.hrl").
 
 %% EStone defines
 -define(TOTAL, (3000 * 1000 * 100)).   %% 300 secs
@@ -119,7 +122,7 @@ pgo() ->
 %%
 get_cpu_speed({win32, _},_DataDir) ->
     RegH =
-	case catch win32reg:open([read]) of
+        case ?Catch(win32reg:open([read])) of
 	    {ok, Handle} ->
 		Handle;
 	    _ ->
@@ -279,12 +282,12 @@ micro(int_arith) ->
     #micro{function = int_arith,
 	   weight = 3,
 	   loops = 4157,
-	   str = "Small Integer arithmetics"};
+	   str = "Small Integer arithmetic"};
 micro(float_arith) ->
     #micro{function = float_arith,
 	   weight = 1,
 	   loops = 5526,
-	   str = "Float arithmetics"};
+	   str = "Float arithmetic"};
 micro(fcalls) ->
     #micro{function = fcalls,
 	   weight = 5,
@@ -805,7 +808,7 @@ req(Name, Req) ->
 gserv(Name, Mod, State, Debug) ->
     receive
 	{From, Ref, {call, Req}} when Debug == [] ->
-	    case catch apply(Mod, handle_call, [From, State, Req]) of
+            case ?Catch(apply(Mod, handle_call, [From, State, Req])) of
 		{reply, Reply, State2} ->
 		    From ! {Name, Ref, Reply},
 		    gserv(Name, Mod, State2, Debug);

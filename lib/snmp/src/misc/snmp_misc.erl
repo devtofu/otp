@@ -1,8 +1,10 @@
 %% 
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1996-2019. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,11 +16,14 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %% 
 
 -module(snmp_misc).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, binary_to_term, 1}}]).
 
 %% need definition of mib record
 -include("snmp_types.hrl").
@@ -84,7 +89,12 @@ verify_behaviour(Behaviour, UserMod)
     case (catch UserMod:module_info(exports)) of
         Exps when is_list(Exps) ->
             Callbacks = Behaviour:behaviour_info(callbacks),
-            (catch verify_behaviour2(Callbacks, Exps));
+            OptionalCallbacks =
+                case Behaviour:behaviour_info(optional_callbacks) of
+                    undefined -> [];
+                    OC -> OC
+                end,
+            (catch verify_behaviour2(Callbacks -- OptionalCallbacks, Exps));
         _ ->
             {error, {bad_module, UserMod}}
     end;
@@ -455,7 +465,7 @@ bits_to_int([],_Kibbles,Res) -> Res;
 bits_to_int([Kibble|Ks],Kibbles,Res) ->
     case snmp_misc:assq(Kibble,Kibbles) of
 	{value,V} ->
-	    bits_to_int(Ks,Kibbles,Res + round(math:pow(2,V)));
+	    bits_to_int(Ks, Kibbles, Res + round(math:pow(2,V)));
 	_ ->
 	    error
     end.
@@ -492,7 +502,7 @@ format_pdu(PDU, MiniMib) when is_record(PDU, pdu) ->
 	       (T =:= 'get-bulk-request') ->
 		   "";
 	       true ->
-		   io_lib:format("*!*!* An error occured. *!*!* ~n"
+		   io_lib:format("*!*!* An error occurred. *!*!* ~n"
 				 "Error status = ~w, index = ~w.~n",
 				 [ES, EI])
 	   end,

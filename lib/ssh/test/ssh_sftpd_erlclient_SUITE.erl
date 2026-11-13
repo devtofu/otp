@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2007-2017. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2007-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -56,7 +58,7 @@
 
 suite() ->
     [{ct_hooks,[ts_install_cth]},
-     {timetrap,{seconds,40}}].
+     {timetrap,{seconds,20}}].
 
 all() -> 
     [close_file, 
@@ -87,7 +89,8 @@ init_per_suite(Config) ->
 	   Config
        end).
 
-end_per_suite(_Config) -> 
+end_per_suite(Config) ->
+    ssh_test_lib:clean_all_user_host_keys(Config),
     ok.
 
 %%--------------------------------------------------------------------
@@ -122,7 +125,7 @@ init_per_testcase(TestCase, Config) ->
 		Spec = ssh_sftpd:subsystem_spec([{sftpd_vsn, 6}]),
 		[{subsystems, [Spec]}];
 	    _ ->
-		[]
+                [{subsystems, [ssh_sftpd:subsystem_spec([])]}]
 	end,
 
     {Sftpd, Host, Port} = ssh_test_lib:daemon([{preferred_algorithms,

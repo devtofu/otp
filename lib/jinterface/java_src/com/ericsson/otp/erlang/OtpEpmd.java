@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2000-2016. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2000-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -326,7 +328,7 @@ public class OtpEpmd {
             if (response == ALIVE2_RESP || response == ALIVE2_X_RESP) {
                 final int result = ibuf.read1();
                 if (result == 0) {
-                    node.creation = (response == ALIVE2_RESP
+                    node.setCreation(response == ALIVE2_RESP
                                      ? ibuf.read2BE() : ibuf.read4BE());
                     if (traceLevel >= traceThreshold) {
                         System.out.println("<- OK");

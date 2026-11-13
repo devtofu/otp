@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1998-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1998-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,18 +20,26 @@
 %% %CopyrightEnd%
 
 -module(epp_SUITE).
--export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1, 
+-export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1,
 	 init_per_group/2,end_per_group/2]).
 
 -export([rec_1/1, include_local/1, predef_mac/1,
 	 upcase_mac_1/1, upcase_mac_2/1,
 	 variable_1/1, otp_4870/1, otp_4871/1, otp_5362/1,
-         pmod/1, not_circular/1, skip_header/1, otp_6277/1, otp_7702/1,
+         pmod/1, not_circular/1, skip_header/1, otp_6277/1, gh_4995/1, otp_7702/1,
          otp_8130/1, overload_mac/1, otp_8388/1, otp_8470/1,
          otp_8562/1, otp_8665/1, otp_8911/1, otp_10302/1, otp_10820/1,
          otp_11728/1, encoding/1, extends/1,  function_macro/1,
 	 test_error/1, test_warning/1, otp_14285/1,
-	 test_if/1,source_name/1,otp_16978/1,otp_16824/1,scan_file/1]).
+	 test_if/1,source_name/1,otp_16978/1,otp_16824/1,scan_file/1,file_macro/1,
+         deterministic_include/1, nondeterministic_include/1,
+         gh_8268/1,
+         moduledoc_include/1,
+         stringify/1,
+         fun_type_arg/1,
+         include_path_open/1,
+         doctests/1
+        ]).
 
 -export([epp_parse_erl_form/2]).
 
@@ -50,6 +60,7 @@ config(data_dir, _) ->
     filename:absname("./epp_SUITE_data").
 -else.
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 -export([init_per_testcase/2, end_per_testcase/2]).
 
 init_per_testcase(_, Config) ->
@@ -63,16 +74,23 @@ suite() ->
     [{ct_hooks,[ts_install_cth]},
      {timetrap,{minutes,1}}].
 
-all() -> 
+all() ->
     [rec_1, {group, upcase_mac}, include_local, predef_mac,
      {group, variable}, otp_4870, otp_4871, otp_5362, pmod,
-     not_circular, skip_header, otp_6277, otp_7702, otp_8130,
+     not_circular, skip_header, otp_6277, gh_4995, otp_7702, otp_8130,
      overload_mac, otp_8388, otp_8470, otp_8562,
      otp_8665, otp_8911, otp_10302, otp_10820, otp_11728,
      encoding, extends, function_macro, test_error, test_warning,
-     otp_14285, test_if, source_name, otp_16978, otp_16824, scan_file].
+     otp_14285, test_if, source_name, otp_16978, otp_16824, scan_file, file_macro,
+     deterministic_include, nondeterministic_include,
+     gh_8268,
+     moduledoc_include,
+     stringify,
+     fun_type_arg,
+     include_path_open,
+     doctests].
 
-groups() -> 
+groups() ->
     [{upcase_mac, [], [upcase_mac_1, upcase_mac_2]},
      {variable, [], [variable_1]}].
 
@@ -111,6 +129,117 @@ include_local(Config) when is_list(Config) ->
 	lists:keysearch(a,3,List),
     [{File,1},{FooHrl,1},{BarHrl,1},{FooHrl,5},{File,5}] =
         [ FileLine || {attribute,_,file,FileLine} <- List ],
+    ok.
+
+file_macro(Config) when is_list(Config) ->
+    DataDir = proplists:get_value(data_dir, Config),
+    File = filename:join(DataDir, "file_macro.erl"),
+    {ok, List} = epp:parse_file(File, [{includes, [DataDir]},
+                                       {source_name, "Other source"}]),
+    %% Both attribute a and b are defined as ?FILE, they should be the same
+    {attribute,_,a,FileA} = lists:keyfind(a, 3, List),
+    {attribute,_,b,FileB} = lists:keyfind(b, 3, List),
+    "Other source" = FileA = FileB,
+    ok.
+
+moduledoc_include(Config) when is_list(Config) ->
+    PrivDir = proplists:get_value(priv_dir, Config),
+    ModuleFileContent = <<"-module(moduledoc).
+
+                           -moduledoc {file, \"README.md\"}.
+
+                           -export([]).
+                          ">>,
+    DocFileContent = <<"# README
+
+                        This file is a test
+                       ">>,
+    CreateFile = fun (Dir, File, Content) ->
+                     Dirname = filename:join([PrivDir, Dir]),
+                     ok = create_dir(Dirname),
+                     Filename = filename:join([Dirname, File]),
+                     ok = file:write_file(Filename, Content),
+                     Filename
+                 end,
+
+    %% positive test: checks that all works as expected
+    ModuleName = CreateFile("module_attr", "moduledoc.erl", ModuleFileContent),
+    DocName = CreateFile("module_attr", "README.md", DocFileContent),
+    {ok, List} = epp:parse_file(ModuleName, []),
+    {attribute, _, moduledoc, ModuleDoc} = lists:keyfind(moduledoc, 3, List),
+    ?assertEqual({ok, unicode:characters_to_binary(ModuleDoc)}, file:read_file(DocName)),
+
+    %% negative test: checks that we produce an expected warning
+    ModuleWarnContent = binary:replace(ModuleFileContent, <<"README">>, <<"NotExistingFile">>),
+    ModuleWarnName = CreateFile("module_attr", "moduledoc_err.erl", ModuleWarnContent),
+    {ok, ListWarn} = epp:parse_file(ModuleWarnName, []),
+    {warning,{_,epp,{moduledoc,file, "NotExistingFile.md"}}} = lists:keyfind(warning, 1, ListWarn),
+
+    ok.
+
+create_dir(Dir) ->
+    case file:make_dir(Dir) of
+        ok -> ok;
+        {error, eexist} -> ok;
+        _ -> error
+    end.
+
+deterministic_include(Config) when is_list(Config) ->
+    DataDir = proplists:get_value(data_dir, Config),
+    File = filename:join(DataDir, "deterministic_include.erl"),
+    {ok, List} = epp:parse_file(File, [{includes, [DataDir]},
+                                       {deterministic, true},
+                                       {source_name, "deterministic_include.erl"}]),
+
+    %% In deterministic mode, only basenames, rather than full paths, should
+    %% be written to the -file() attributes resulting from -include and -include_lib
+    ?assert(lists:any(fun
+                       ({attribute,_Anno,file,{"baz.hrl",_Line}}) -> true;
+                       (_) -> false
+                     end,
+                     List),
+            "Expected a basename in the -file attribute resulting from " ++
+            "including baz.hrl in deterministic mode."),
+    ?assert(lists:any(fun
+                       ({attribute,_Anno,file,{"file.hrl",_Line}}) -> true;
+                       (_) -> false
+                     end,
+                     List),
+            "Expected a basename in the -file attribute resulting from " ++
+            "including file.hrl in deterministic mode."),
+    ok.
+
+nondeterministic_include(Config) when is_list(Config) ->
+    DataDir = proplists:get_value(data_dir, Config),
+    File = filename:join(DataDir, "deterministic_include.erl"),
+    {ok, List} = epp:parse_file(File, [{includes, [DataDir]},
+                                       {source_name, "deterministic_include.erl"}]),
+
+    %% Outside of deterministic mode, full paths, should be written to
+    %% the -file() attributes resulting from -include and -include_lib
+    %% to make debugging easier.
+    %% We don't try to assume what the full absolute path will be in the
+    %% unit test, since that can depend on the environment and how the
+    %% test is executed. Instead, we just look for whether there is
+    %% the parent directory along with the basename at least.
+    IncludeAbsolutePathSuffix = filename:join("include","baz.hrl"),
+    ?assert(lists:any(fun
+                       ({attribute,_Anno,file,{IncludePath,_Line}}) ->
+                         lists:suffix(IncludeAbsolutePathSuffix,IncludePath);
+                       (_) -> false
+                     end,
+                     List),
+            "Expected an absolute in the -file attribute resulting from " ++
+            "including baz.hrl outside of deterministic mode."),
+    IncludeLibAbsolutePathSuffix = filename:join("include","file.hrl"),
+    ?assert(lists:any(fun
+                       ({attribute,_Anno,file,{IncludePath,_line}}) ->
+                         lists:suffix(IncludeLibAbsolutePathSuffix,IncludePath);
+                       (_) -> false
+                     end,
+                     List),
+            "Expected an absolute in the -file attribute resulting from " ++
+            "including file.hrl outside of deterministic mode."),
     ok.
 
 %%% Here is a little reimplementation of epp:parse_file, which times out
@@ -479,6 +608,17 @@ otp_6277(Config) when is_list(Config) ->
     [] = check(Config, Ts),
     ok.
 
+%% Test -ifdef(MODULE) before module declaration. Should not be
+%% considered defined.
+gh_4995(Config) when is_list(Config) ->
+    Ts = [{gh_4995,
+           <<"-ifdef(MODULE).
+              -record(r, {x = ?MODULE}).
+              -endif.">>,
+           []}],
+    [] = check(Config, Ts),
+    ok.
+
 %% OTP-7702. Wrong line number in stringifying macro expansion.
 otp_7702(Config) when is_list(Config) ->
     Dir = proplists:get_value(priv_dir, Config),
@@ -794,7 +934,8 @@ otp_8130(Config) when is_list(Config) ->
                                "t() -> ?a.\n"),
     {ok,Epp} = epp:open(File, []),
     PreDefMacs = macs(Epp),
-    ['BASE_MODULE','BASE_MODULE_STRING','BEAM','FILE',
+    ['BASE_MODULE','BASE_MODULE_STRING','BEAM',
+     'FEATURE_AVAILABLE', 'FEATURE_ENABLED','FILE',
      'FUNCTION_ARITY','FUNCTION_NAME',
      'LINE','MACHINE','MODULE','MODULE_STRING',
      'OTP_RELEASE'] = PreDefMacs,
@@ -846,11 +987,12 @@ scan_file(Config) when is_list(Config) ->
     [FileForm1, ModuleForm, ExportForm,
      FileForm2, FileForm3, FunctionForm,
      {eof,_}] = Toks,
-    [{'-',_}, {atom,_,file}, {'(',_} | _ ] = FileForm1,
+    [{'-',_}, {atom,_,file}, {'(',_} | _ ]   = FileForm1,
     [{'-',_}, {atom,_,module}, {'(',_} | _ ] = ModuleForm,
     [{'-',_}, {atom,_,export}, {'(',_} | _ ] = ExportForm,
-    [{'-',_}, {atom,_,file}, {'(',_} | _ ] = FileForm2,
-    [{'-',_}, {atom,_,file}, {'(',_} | _ ] = FileForm3,
+    [{'-',_}, {atom,_,file}, {'(',_} | _ ]   = FileForm2,
+    [{'-',_}, {atom,_,file}, {'(',_} | _ ]   = FileForm3,
+    [{atom,_,ok}, {'(',_} | _]               = FunctionForm,
     ok.
 
 macs(Epp) ->
@@ -919,7 +1061,7 @@ ifdef(Config) ->
              "-else.\n"
              "t() -> a.\n"
              "-endif.\n">>,
-           {errors,[{{3,1},epp,{bad,else}}],[]}},
+           {errors,[{{3,1},epp,{bad,'else'}}],[]}},
 
           {ifdef_c8,
            <<"-ifdef(a).\n"
@@ -1170,8 +1312,15 @@ test_if(Config) ->
 	  {if_8c,
 	   <<"-if(?foo).\n"                     %Undefined symbol.
 	     "-endif.\n">>,
-	   {errors,[{{1,25},epp,{undefined,foo,none}}],[]}}
+	   {errors,[{{1,25},epp,{undefined,foo,none}}],[]}},
 
+	  {if_9c,
+	   <<"-if(not_builtin()).\n"
+	     "a bug.\n"
+	     "-else.\n"
+	     "t() -> ok.\n"
+	     "-endif.\n">>,
+	   {errors,[{{1,21},epp,{bad,'if'}}],[]}}
 	 ],
     [] = compile(Config, Cs),
 
@@ -1237,14 +1386,6 @@ test_if(Config) ->
            ok},
 
 	  {if_7,
-	   <<"-if(not_builtin()).\n"
-	     "a bug.\n"
-	     "-else.\n"
-	     "t() -> ok.\n"
-	     "-endif.\n">>,
-           ok},
-
-	  {if_8,
 	   <<"-if(42).\n"			%Not boolean.
 	     "a bug.\n"
 	     "-else.\n"
@@ -1508,20 +1649,20 @@ otp_10820(Config) when is_list(Config) ->
     Dir = proplists:get_value(priv_dir, Config),
     File = filename:join(Dir, L++".erl"),
     C1 = <<"%% coding: utf-8\n -module(any).">>,
-    ok = do_otp_10820(File, C1, "+pc latin1"),
-    ok = do_otp_10820(File, C1, "+pc unicode"),
+    ok = do_otp_10820(File, C1, ["+pc", "latin1"]),
+    ok = do_otp_10820(File, C1, ["+pc", "unicode"]),
     C2 = <<"\n-module(any).">>,
-    ok = do_otp_10820(File, C2, "+pc latin1"),
-    ok = do_otp_10820(File, C2, "+pc unicode").
+    ok = do_otp_10820(File, C2, ["+pc", "latin1"]),
+    ok = do_otp_10820(File, C2, ["+pc", "unicode"]).
 
 do_otp_10820(File, C, PC) ->
-    {ok,Node} = start_node(erl_pp_helper, "+fnu " ++ PC),
+    {ok,Peer,Node} = ?CT_PEER(["+fnu"] ++ PC),
     ok = rpc:call(Node, file, write_file, [File, C]),
     {ok, Forms} = rpc:call(Node, epp, parse_file, [File, [],[]]),
     [{attribute,1,file,{File,1}},
      {attribute,2,module,any},
      {eof,2}] = unopaque_forms(Forms),
-    true = test_server:stop_node(Node),
+    peer:stop(Peer),
     ok.
 
 %% OTP_14285: Unicode atoms.
@@ -1587,8 +1728,9 @@ encoding(Config) when is_list(Config) ->
 	epp_parse_file(ErlFile, [{default_encoding,latin1}]),
     {ok,[{attribute,1,file,_},
 	 {attribute,1,module,encoding},
-	 {eof,3}],[{encoding,none}]} =
+	 {eof,3}],Extra0} =
 	epp_parse_file(ErlFile, [{default_encoding,latin1},extra]),
+    none = proplists:get_value(encoding, Extra0),
 
     %% Try a latin-1 file with encoding given in a comment.
     C2 = <<"-module(encoding).
@@ -1610,16 +1752,20 @@ encoding(Config) when is_list(Config) ->
 	epp_parse_file(ErlFile, [{default_encoding,utf8}]),
     {ok,[{attribute,1,file,_},
 	 {attribute,1,module,encoding},
-	 {eof,4}],[{encoding,latin1}]} =
+	 {eof,4}],Extra1} =
 	epp_parse_file(ErlFile, [extra]),
+    latin1 = proplists:get_value(encoding, Extra1),
+
     {ok,[{attribute,1,file,_},
 	 {attribute,1,module,encoding},
-	 {eof,4}],[{encoding,latin1}]} =
+	 {eof,4}],Extra2} =
 	epp_parse_file(ErlFile, [{default_encoding,latin1},extra]),
+    latin1 = proplists:get_value(encoding, Extra2),
     {ok,[{attribute,1,file,_},
 	 {attribute,1,module,encoding},
-	 {eof,4}],[{encoding,latin1}]} =
+	 {eof,4}],Extra3} =
 	epp_parse_file(ErlFile, [{default_encoding,utf8},extra]),
+    latin1 = proplists:get_value(encoding, Extra3),
     ok.
 
 extends(Config) ->
@@ -1712,7 +1858,15 @@ function_macro(Config) ->
 	     "b(?FUNCTION_ARITY, ?__) -> ok.\n"
 	     "c(?FF) -> ok.\n"
 	     "t() -> a(1, 2), b(3, 1, 2), c(c, 2), ok.\n">>,
-	   ok}
+	   ok},
+
+          {f_5,
+           <<"a([]) -> 1 = ?FUNCTION_ARITY.\n"
+             "b({}) -> 1 = ?FUNCTION_ARITY.\n"
+             "c([], []) -> 2 = ?FUNCTION_ARITY.\n"
+             "d([], _) -> 2 = ?FUNCTION_ARITY.\n"
+             "t() -> a([]), b({}), c([], []), d([], 42), ok.\n">>,
+           ok}
 	 ],
     [] = run(Config, Ts),
 
@@ -1780,7 +1934,7 @@ otp_16824(Config) when is_list(Config) ->
           {otp_16824_8,
            <<"\n-else\n"
              "-endif.">>,
-           {errors,[{{3,1},epp,{bad,else}}],[]}},
+           {errors,[{{3,1},epp,{bad,'else'}}],[]}},
 
           {otp_16824_9,
            <<"\n-ifndef.\n"
@@ -1966,6 +2120,82 @@ otp_16824(Config) when is_list(Config) ->
     [] = compile(Config, Cs),
     ok.
 
+gh_8268(Config) ->
+    Ts = [{circular_1,
+           <<"-define(LOG(Tag, Code), io:format(\"~s\", [Tag]), Code).
+             more_work() -> ok.
+             some_work() -> ok.
+             t() ->
+                ?LOG(work,
+                     begin
+                        maybe
+                           ok ?= some_work()
+                        end,
+                        more_work()
+                     end).
+             ">>,
+           [{feature,maybe_expr,enable}],
+           ok}],
+    [] = run(Config, Ts),
+    ok.
+
+stringify(Config) ->
+    Ts = [{stringify_1,
+           ~"""
+            -define(S(S), ??S).
+            t() ->
+                ~S('атом') = ?S('атом'),
+                ~S("атом") = ?S("атом"),
+                ok.
+            """,
+           [],
+           ok}],
+    [] = run(Config, Ts),
+    ok.
+
+%% GH-10280. A fun type could not be used as a macro argument.
+fun_type_arg(Config) ->
+    Ts = [{fun_type_1,
+           ~"""
+            -define(FOO(X), X).
+            -define(BAR(X, Y), {X,Y}).
+
+            -type foo() :: ?FOO(fun(() -> 'ok')).
+            -type bar() :: ?BAR(fun((integer()) -> integer()), integer()).
+            -type frotz() :: ?FOO(fun((integer()) -> {atom(),integer()})).
+
+            -define(mk_fun_var(Fun, Vars), mk_fun_var(Fun, Vars)).
+
+            t() ->
+                ok = f(fun() -> ok end),
+                42 = g({fun(I) -> 2 * I end, 21}),
+                {ok,7} = h(fun(I) -> {ok,I} end),
+                #{a := 1, b := 2} =
+                    ?mk_fun_var(fun(Map0) ->
+                       Map1 = Map0#{a => 1},
+                       Map1#{b => 2}
+                    end, #{}),
+                42 = ?FOO(fun(((I))) -> I + 1 end)(41),
+                true = (?FOO(fun (_) when true, true -> true end))(0),
+                ok.
+
+            -spec f(foo()) -> 'ok'.
+            f(F) -> F().
+
+            -spec g(bar()) -> integer().
+            g({F,I}) -> F(I).
+
+            -spec h(frotz()) -> {atom(),integer()}.
+            h(H) -> H(7).
+
+            mk_fun_var(Fun, Vars) -> Fun(Vars).
+            """,
+           [],
+           ok}],
+    [] = run(Config, Ts),
+    ok.
+
+
 %% Start location is 1.
 check(Config, Tests) ->
     eval_tests(Config, fun check_test/3, Tests).
@@ -1988,6 +2218,9 @@ eval_tests(Config, Fun, Tests) ->
     F = fun({N,P,Opts,E}, BadL) ->
                 %% io:format("Testing ~p~n", [P]),
                 Return = Fun(Config, P, Opts),
+                %% The result should be the same when enabling maybe ... end
+                %% (making 'else' a keyword instead of an atom).
+                Return = Fun(Config, P, [{feature,maybe_expr,enable}|Opts]),
                 case message_compare(E, Return) of
                     true ->
                         case E of
@@ -2010,7 +2243,7 @@ check_test(Config, Test, Opts) ->
     PrivDir = proplists:get_value(priv_dir, Config),
     File = filename:join(PrivDir, Filename),
     ok = file:write_file(File, Test),
-    case epp:parse_file(File, [PrivDir], Opts) of
+    case epp:parse_file(File, [{includes, PrivDir}| Opts]) of
 	{ok,Forms} ->
 	    Errors = [E || E={error,_} <- Forms],
 	    call_format_error([E || {error,E} <- Errors]),
@@ -2085,18 +2318,150 @@ run_test(Config, Test0, Opts0) ->
     Opts = [return, {i,PrivDir},{outdir,PrivDir}] ++ Opts0,
     {ok, epp_test, []} = compile:file(File, Opts),
     AbsFile = filename:rootname(File, ".erl"),
-    {module, epp_test} = code:load_abs(AbsFile, epp_test),
-    Reply = epp_test:t(),
-    code:purge(epp_test),
-    Reply.
+
+    case lists:member({feature, maybe_expr, enable}, Opts0) of
+        false ->
+            %% Run in node
+            {module, epp_test} = code:load_abs(AbsFile, epp_test),
+            Reply = epp_test:t(),
+            code:purge(epp_test),
+            Reply;
+        true ->
+            %% Run in peer with maybe_expr enabled
+            {ok, Peer, Node} =
+                ?CT_PEER(#{args => ["-enable-feature","maybe_expr"],
+                           connection => 0}),
+            {module, epp_test} =
+                rpc:call(Node, code, load_abs, [AbsFile, epp_test]),
+            Reply = rpc:call(Node, epp_test, t, []),
+            peer:stop(Peer),
+            Reply
+    end.
+
+%% Test the include_path_open option for epp using ram files.
+include_path_open(_Config) ->
+    %% Test 1: Basic ram file preprocessing with macros
+    Code1 = <<"-module(ram_test).\n"
+              "-export([f/0]).\n"
+              "-define(HELLO, hello).\n"
+              "f() -> {?MODULE, ?HELLO}.\n">>,
+    Forms1 = epp_open_ram(Code1, []),
+    {attribute,_,module,ram_test} = lists:keyfind(module, 3, Forms1),
+    {ok, ram_test, Bin1} = compile:forms(Forms1),
+    {module, ram_test} = code:load_binary(ram_test, "ram_test.erl", Bin1),
+    {ram_test, hello} = ram_test:f(),
+    true = code:delete(ram_test),
+    code:purge(ram_test),
+
+    %% Test 2: Ram file with -include resolved via include_path_open
+    HrlContent = <<"-record(point, {x, y}).\n"
+                   "-define(ORIGIN, #point{x=0, y=0}).\n">>,
+    Code2 = <<"-module(ram_inc).\n"
+              "-include(\"my_header.hrl\").\n"
+              "-export([origin/0]).\n"
+              "origin() -> ?ORIGIN.\n">>,
+    Files2 = #{"my_header.hrl" => HrlContent},
+    PathOpen2 = ram_include_path_open(Files2),
+    Forms2 = epp_open_ram(Code2, [{include_path_open, PathOpen2}]),
+    {attribute,_,module,ram_inc} = lists:keyfind(module, 3, Forms2),
+    {ok, ram_inc, Bin2} = compile:forms(Forms2),
+    {module, ram_inc} = code:load_binary(ram_inc, "ram_inc.erl", Bin2),
+    {point, 0, 0} = ram_inc:origin(),
+    true = code:delete(ram_inc),
+    code:purge(ram_inc),
+
+    %% Test 3: Nested includes via ram files
+    Hrl3a = <<"-define(A, a_value).\n">>,
+    Hrl3b = <<"-include(\"a.hrl\").\n"
+              "-define(B, {?A, b_value}).\n">>,
+    Code3 = <<"-module(ram_nested).\n"
+              "-include(\"b.hrl\").\n"
+              "-export([t/0]).\n"
+              "t() -> ?B.\n">>,
+    Files3 = #{"a.hrl" => Hrl3a, "b.hrl" => Hrl3b},
+    PathOpen3 = ram_include_path_open(Files3),
+    Forms3 = epp_open_ram(Code3, [{include_path_open, PathOpen3}]),
+    {ok, ram_nested, Bin3} = compile:forms(Forms3),
+    {module, ram_nested} = code:load_binary(ram_nested, "ram_nested.erl", Bin3),
+    {a_value, b_value} = ram_nested:t(),
+    true = code:delete(ram_nested),
+    code:purge(ram_nested),
+
+    %% Test 4: include_lib resolved via include_path_open
+    HrlLib = <<"-define(LIB_VAL, from_lib).\n">>,
+    Code4 = <<"-module(ram_lib).\n"
+              "-include_lib(\"myapp/include/lib.hrl\").\n"
+              "-export([t/0]).\n"
+              "t() -> ?LIB_VAL.\n">>,
+    Files4 = #{"myapp/include/lib.hrl" => HrlLib},
+    PathOpen4 = ram_include_path_open(Files4),
+    Forms4 = epp_open_ram(Code4, [{include_path_open, PathOpen4}]),
+    {ok, ram_lib, Bin4} = compile:forms(Forms4),
+    {module, ram_lib} = code:load_binary(ram_lib, "ram_lib.erl", Bin4),
+    from_lib = ram_lib:t(),
+    true = code:delete(ram_lib),
+    code:purge(ram_lib),
+
+    %% Test 5: Missing include via include_path_open gives proper error
+    Code5 = <<"-module(ram_missing).\n"
+              "-include(\"missing.hrl\").\n"
+              "-export([t/0]).\n"
+              "t() -> ok.\n">>,
+    PathOpen5 = ram_include_path_open(#{}),
+    Forms5 = epp_open_ram(Code5, [{include_path_open, PathOpen5}]),
+    {error, {2, epp, {include, file, "missing.hrl"}}} =
+        lists:keyfind(error, 1, Forms5),
+
+    ok.
+
+%% open a binary as a cooked ram file and preprocess with epp.
+epp_open_ram(Bin, ExtraOpts) ->
+    {ok, Fd} = file:open(Bin, [ram, read, binary, cooked]),
+    try
+        {ok, Epp} = epp:open([{fd, Fd}, {name, "ram_file.erl"},
+                               {location, 1} | ExtraOpts]),
+        try
+            collect_epp_forms(Epp)
+        after
+            epp:close(Epp)
+        end
+    after
+        file:close(Fd)
+    end.
+
+%% create a include_path_open function backed by in-memory files.
+ram_include_path_open(Files) ->
+    fun(Path, Name, Modes) ->
+        %% Try Name directly (for absolute paths and include_lib),
+        %% then try each path prefix.
+        Candidates = [Name | [filename:join(Dir, Name) || Dir <- Path]],
+        ram_include_path_open_try(Candidates, Files, Modes)
+    end.
+
+ram_include_path_open_try([], _Files, _Modes) ->
+    {error, enoent};
+ram_include_path_open_try([Candidate | Rest], Files, Modes) ->
+    case maps:find(Candidate, Files) of
+        {ok, Content} ->
+            {ok, Fd} = file:open(Content, [ram, read, binary, cooked]),
+            {ok, Fd, Candidate};
+        error ->
+            ram_include_path_open_try(Rest, Files, Modes)
+    end.
+
+doctests(_Config) ->
+    file:write_file("example.erl",
+        ~"""
+         -module(example).
+
+         -export([foo/0]).
+
+         foo() -> ?MODULE.
+         """),
+    ct_doctest:module(epp, [{skipped_blocks, 5}]).
 
 fail() ->
     ct:fail(failed).
 
 message_compare(T, T) ->
     T =:= T.
-
-%% +fnu means a peer node has to be started; slave will not do
-start_node(Name, Xargs) ->
-    PA = filename:dirname(code:which(?MODULE)),
-    test_server:start_node(Name, peer, [{args, "-pa " ++ PA ++ " " ++ Xargs}]).

@@ -1,5 +1,28 @@
-How to Build Erlang/OTP on Windows
-==================================
+<!--
+%%
+%% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2014-2025. All Rights Reserved.
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%
+%% %CopyrightEnd%
+-->
+
+Building Erlang/OTP on Windows
+==============================
 
 Introduction
 ------------
@@ -7,7 +30,8 @@ Introduction
 This section describes how to build the Erlang emulator and the OTP
 libraries on Windows. Note that the Windows binary releases are still
 a preferred alternative if one does not have Microsoft’s development
-tools and/or don’t want to install WSL.
+tools and/or don’t want to install WSL. You can download the binary
+releases from <https://erlang.org/downloads>.
 
 The instructions apply to Windows 10 (v.1809 and later) supporting the
 WSL.1 (Windows Subsystem for Linux v.1) and using Ubuntu 18.04 release.
@@ -31,7 +55,7 @@ to make the Erlang/OTP distribution for Windows better. Please submit
 any suggestions or patches to our [git project] [1] to let
 them find their way into the next version of Erlang. If making changes
 to the build system (like makefiles etc) please bear in mind that the
-same makefiles are used on Unix/VxWorks, so that your changes
+same makefiles are used on Unix, so that your changes
 don't break other platforms. That of course goes for C-code too; system
 specific code resides in the `$ERL_TOP/erts/emulator/sys/win32` and
 `$ERL_TOP/erts/etc/win32` directories mostly. The
@@ -50,43 +74,43 @@ environment variables etc seemed to be in place.
 
 This is the short story though, for the experienced and impatient:
 
-    *   Get and install complete WSL environment
+*   Get and install complete WSL environment
 
-    *   Install Visual Studio 2019
+*   Install Visual Studio 2019
 
-    *   Get and install windows JDK-8
+*   Get and install windows JDK-8
 
-    *   Get and install windows NSIS 3.05 or later (3.05 tried and working)
+*   Get and install windows NSIS 3.05 or later (3.05 tried and working)
 
-    *   Get, build and install OpenSSL v1.1.1d or later (up to 1.1.1d
-        tried & working) with static libs.
+*   Get, build and install OpenSSL v1.1.1d or later (up to 1.1.1d
+    tried & working) with static libs.
 
-    *   Get, build and install wxWidgets-3.1.3 or later (up to 3.1.3
-        tried & working) with static libs.
+*   Get, build and install wxWidgets-3.2.2.1 or later (up to that
+    version tried & working) with static libs.
 
-    *   Get the Erlang source distribution (from
-        <http://www.erlang.org/download.html>) and unpack with `tar`
-        to the windows disk for example to: /mnt/c/src/
+*   Get the Erlang source distribution (from
+    <http://www.erlang.org/download.html>) and unpack with `tar`
+    to the windows disk for example to: /mnt/c/src/
 
-    *   Install mingw-gcc, and make: `sudo apt install g++-mingw-w64 gcc-mingw-w64 make`
+*   Install mingw-gcc, and make: `sudo apt update && sudo apt install g++-mingw-w64 gcc-mingw-w64 make`
 
-    *   `$ cd UNPACK_DIR`
+*   `$ cd UNPACK_DIR`
 
-    *   Modify PATH and other environment variables so that all these tools
-        are runnable from a bash shell. Still standing in `$ERL_TOP`, issue
-        the following commands (for 32-bit Windows, remove the x64 from the
-        first row and change `otp_win64_%OTP-REL%` to `otp_win32_%OTP-REL%` on
-        the last row):
+*   Modify PATH and other environment variables so that all these tools
+    are runnable from a bash shell. Still standing in `$ERL_TOP`, issue
+    the following commands (for 32-bit Windows, remove the x64 from the
+    first row and change `otp_win64_%OTP-REL%` to `otp_win32_%OTP-REL%` on
+    the last row):
 
-            $ eval `./otp_build env_win32 x64`
-            $ ./otp_build configure
-            $ ./otp_build boot -a
-            $ ./otp_build release -a
-            $ ./otp_build installer_win32
-            $ release/win32/otp_win64_%OTP-REL% /S
+        $ eval `./otp_build env_win32 x64`
+        $ ./otp_build configure
+        $ ./otp_build boot -a
+        $ ./otp_build release -a
+        $ ./otp_build installer_win32
+        $ release/win32/otp_win64_%OTP-REL% /S
 
-    Voila! `Start->Programs->Erlang OTP %OTP-REL%->Erlang` starts the Erlang
-    Windows shell.
+Voila! `Start->Programs->Erlang OTP %OTP-REL%->Erlang` starts the Erlang
+Windows shell.
 
 
 Tools you Need and Their Environment
@@ -121,7 +145,7 @@ the different tools:
 
     Add javac to your path environment, in my case this means:
 
-        `PATH="/mnt/c/Program\ Files/Java/jdk1.8.0_241/bin:$PATH`
+    `PATH="/mnt/c/Program\ Files/Java/jdk1.8.0_241/bin:$PATH`
 
     No `CLASSPATH` or anything is needed. Type `javac.exe` in the bash prompt
     and you should get a list of available Java options.
@@ -134,7 +158,7 @@ the different tools:
 
     Add 'makensis.exe' to your path environment:
 
-         `PATH="/mnt/c/Program\ Files/NSIS/Bin:$PATH`
+    `PATH="/mnt/c/Program\ Files/NSIS/Bin:$PATH`
 
     Type `which makensis.exe` in the bash prompt and you should get the
     path to the program.
@@ -143,32 +167,32 @@ the different tools:
     You need this to build crypto, ssh and ssl libs.
 
     We recommend v1.1.1d or later.
-    There are prebuilt avaiable binaries, which you can just
+    There are prebuilt available binaries, which you can just
     download and install, available here:
     URL: <http://wiki.openssl.org/index.php/Binaries>
 
     Install into `C:/OpenSSL-Win64` (or `C:/OpenSSL-Win32`)
 
 *   wxWidgets (optional)
-    You need this to build wx and use gui's in debugger and observer.
+    You need this to build wx to use gui's in debugger and observer.
 
-    We recommend v3.1.4 or later.
-    Unpack into `c:/opt/local64/pgm/wxWidgets-3.1.4`
+    We recommend v3.2.2.1 or later.
+    Unpack into `c:/opt/local64/pgm/wxWidgets-3.2.2.1`
 
-    If the `wxUSE_POSTSCRIPT` isn't enabled in  `c:/opt/local64/pgm/wxWidgets-3.1.4/include/wx/msw/setup.h`,
+    If the `wxUSE_POSTSCRIPT` isn't enabled in  `c:/opt/local64/pgm/wxWidgets-3.2.2.1/include/wx/msw/setup.h`,
     enable it.
 
     We recommend to enable for wxWebView wxUSE_WEBVIEW_EDGE.
     *   Download the nuget package 'Microsoft.Web.WebView2' (Version 0.9.488 or newer)
     *   Extract the package (it's a zip archive) to wxWidgets/3rdparty/webview2 (you should have 3rdparty/webview2/build/native/include/WebView2.h file after unpacking it)
-    *   Enable wxUSE_WEBVIEW_EDGE in `c:/opt/local64/pgm/wxWidgets-3.1.4/include/wx/msw/setup.h`
-    *   After `otp_build release -a` copy WebView2Loader.dll from the subdirectory corresponding to the architecture used (x86 or x64) of wxWidgets/3rdparty/webview2/build/ to your $ERL_TOP/release/win32/erts-*/bin/ directory
-        `cp /mnt/c/opt/local64/pgm/wxWidgets-3.1.4/3rdparty/webview2/runtimes/win-x64/native/WebView2Loader.dll $ERL_TOP/release/win32/erts-11.1.7/bin/`
+    *   Enable wxUSE_WEBVIEW_EDGE in `c:/opt/local64/pgm/wxWidgets-3.2.2.1/include/wx/msw/setup.h`
 
     Build with:
 
-        C:\...\> cd c:\opt\local64\pgm\wxWidgets-3.1.4\build\msw
-        C:\...\> nmake TARGET_CPU=amd64 BUILD=release SHARED=0 DIR_SUFFIX_CPU= -f makefile.vc
+    ```text
+    C:\...\> cd c:\opt\local64\pgm\wxWidgets-3.2.2.1\build\msw
+    C:\...\> nmake TARGET_CPU=amd64 BUILD=release SHARED=0 DIR_SUFFIX_CPU= -f makefile.vc
+    ```
 
     Remove the `TARGET_CPU=amd64` for 32bit build.
 
@@ -182,10 +206,11 @@ the different tools:
     Set the environment `ERL_TOP` to point to the root directory of the
     source distribution. Let's say I stood in `/mnt/c/src` and unpacked
     `otp_src_%OTP-REL%.tar.gz`, I then add the following to `.profile`:
-
-        ERL_TOP=/mnt/c/src/otp_src_%OTP-REL%
-        export ERL_TOP
-
+    
+    ```text
+    ERL_TOP=/mnt/c/src/otp_src_%OTP-REL%
+    export ERL_TOP
+    ```
 
 
 The Shell Environment

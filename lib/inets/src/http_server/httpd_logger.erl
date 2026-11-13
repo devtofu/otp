@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2017. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,6 +21,7 @@
 %%
 %%
 -module(httpd_logger).
+-moduledoc false.
 
 -include_lib("kernel/include/logger.hrl").
 -include_lib("inets/include/httpd.hrl").
@@ -33,11 +36,11 @@ error_report(Protocol, Reason, #mod{init_data = #init_data{peername = PeerName,
              Location) ->
     ServerName = httpd_util:lookup(Db, server_name),
     Report0 = #{protocol => Protocol,
-               reason => Reason,
-               peer => PeerName,
-               host => SockName,
-               server_name => ServerName,
-               metadata => Location},
+                reason => Reason,
+                peer => PeerName,
+                host => SockName,
+                server_name => ServerName,
+                metadata => Location},
     Report1 = case URI of
                   undefined ->
                       Report0;
@@ -46,11 +49,11 @@ error_report(Protocol, Reason, #mod{init_data = #init_data{peername = PeerName,
               end,
     case Protocol of
         'HTTP' ->
-            Report1#{transport => transport_type(Type)}; 
+            Report1#{transport => transport_type(Type)};
         _ ->
             Report1
-    end. 
-    
+    end.
+
 log(Level, #{metadata := MetaData} = Report, Domain) ->
     logger:log(Level, maps:without([metadata], Report), 
                MetaData#{domain => [otp,inets, httpd, Domain, Level],

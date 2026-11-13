@@ -1,14 +1,10 @@
 ;;; erlang-test.el -*- lexical-binding: t; coding: utf-8-unix -*-
 
-;;; Unit tests for erlang.el.
-
-;; Author: Johan Claesson
-;; Created: 2016-05-07
-;; Keywords: erlang, languages
-
 ;; %CopyrightBegin%
 ;;
-;; Copyright Ericsson AB 2016-2020. All Rights Reserved.
+;; SPDX-License-Identifier: Apache-2.0
+;;
+;; Copyright Ericsson AB 2016-2025. All Rights Reserved.
 ;;
 ;; Licensed under the Apache License, Version 2.0 (the "License");
 ;; you may not use this file except in compliance with the License.
@@ -24,6 +20,11 @@
 ;;
 ;; %CopyrightEnd%
 
+;;; Unit tests for erlang.el.
+
+;; Author: Johan Claesson
+;; Created: 2016-05-07
+;; Keywords: erlang, languages
 
 ;;; Commentary:
 
@@ -102,14 +103,7 @@ concatenated to form an erlang file to test on.")
           (erlang-test-create-erlang-file erlang-file)
           (erlang-test-compile-tags erlang-file tags-file)
           (setq erlang-buffer (find-file-noselect erlang-file))
-          (if (< emacs-major-version 26)
-              (progn
-                (with-current-buffer erlang-buffer
-                  (setq-local tags-file-name tags-file))
-                ;; Setting global tags-file-name is a workaround for
-                ;; GNU Emacs bug#23164.
-                (setq tags-file-name tags-file))
-            (visit-tags-table tags-file t))
+          (visit-tags-table tags-file t)
           (erlang-test-complete-at-point tags-file)
           (erlang-test-completion-table)
           (erlang-test-xref-find-definitions erlang-file erlang-buffer))
@@ -171,7 +165,7 @@ concatenated to form an erlang file to test on.")
   (should (string-equal (file-truename expected-file)
                         (file-truename (buffer-file-name))))
   (should (eq expected-line (line-number-at-pos)))
-  (should (= (point-at-bol) (point))))
+  (should (= (line-beginning-position) (point))))
 
 (defun erlang-test-complete-at-point (tags-file)
   (with-temp-buffer
@@ -179,13 +173,13 @@ concatenated to form an erlang file to test on.")
     (setq-local tags-file-name tags-file)
     (insert "\nerlang_test:fun")
     (erlang-complete-tag)
-    (should (looking-back "erlang_test:function" (point-at-bol)))
+    (should (looking-back "erlang_test:function" (line-beginning-position)))
     (insert "\nfun")
     (erlang-complete-tag)
-    (should (looking-back "function" (point-at-bol)))
+    (should (looking-back "function" (line-beginning-position)))
     (insert "\nerlang_")
     (erlang-complete-tag)
-    (should (looking-back "erlang_test:" (point-at-bol)))))
+    (should (looking-back "erlang_test:" (line-beginning-position)))))
 
 
 (ert-deftest erlang-test-compile-options ()
@@ -222,28 +216,162 @@ concatenated to form an erlang file to test on.")
     erlang))
 
 
+
 (ert-deftest erlang-test-parse-id ()
-  (cl-loop for id-string in '("fun/10"
-                              "qualified-function module:fun/10"
-                              "record reko"
-                              "macro _SYMBOL"
-                              "macro MACRO/10"
-                              "module modula"
-                              "macro"
-                              nil)
-           for id-list in '((nil nil "fun" 10)
-                            (qualified-function "module" "fun" 10)
-                            (record nil "reko" nil)
-                            (macro nil "_SYMBOL" nil)
-                            (macro nil "MACRO" 10)
-                            (module nil "modula" nil)
-                            (nil nil "macro" nil)
-                            nil)
-           for id-list2 = (erlang-id-to-list id-string)
-           do (should (equal id-list id-list2))
-           for id-string2 = (erlang-id-to-string id-list)
-           do (should (equal id-string id-string2))
-           collect id-list2))
+  ;; Put it in a lambda to make it work on new (and old) versions
+  ;; (with-suppressed-warnings ((ignored-return-value nreverse))
+  ;; don't exist on emacs 26.
+  (let ((dotest (lambda ()
+                  (cl-loop for id-string in '("fun/10"
+                                              "qualified-function module:fun/10"
+                                              "record reko"
+                                              "macro _SYMBOL"
+                                              "macro MACRO/10"
+                                              "module modula"
+                                              "macro"
+                                              nil)
+                           for id-list in '((nil nil "fun" 10)
+                                            (qualified-function "module" "fun" 10)
+                                            (record nil "reko" nil)
+                                            (macro nil "_SYMBOL" nil)
+                                            (macro nil "MACRO" 10)
+                                            (module nil "modula" nil)
+                                            (nil nil "macro" nil)
+                                            nil)
+                           for id-list2 = (erlang-id-to-list id-string)
+                           do (should (equal id-list id-list2))
+                           for id-string2 = (erlang-id-to-string id-list)
+                           do (should (equal id-string id-string2))
+                           collect id-list2))))
+    (funcall dotest)))
+
+(defun erlang-test-string-states (code)
+  "Parse CODE in Erlang mode and return the string state at each `@'.
+Every `@' character in CODE marks a position of interest and is
+removed before parsing.  The returned list holds the `nth' 3
+element of the parse state at each of those positions, in order:
+nil outside any string, t inside a triple-quoted string, and the
+delimiting character inside an ordinary string or a quoted atom.
+Font Lock is run first, since that is what used to apply the
+syntax properties these tests are about."
+  (with-temp-buffer
+    (let (positions)
+      (insert code)
+      (goto-char (point-min))
+      (while (search-forward "@" nil t)
+        (delete-char -1)
+        (push (point) positions))
+      (erlang-mode)
+      (font-lock-ensure)
+      (mapcar (lambda (position) (nth 3 (syntax-ppss position)))
+              (nreverse positions)))))
+
+
+(ert-deftest erlang-test-syntax-dollar-quote ()
+  ;; A dollar sign that happens to be the last character of a string
+  ;; or of a quoted atom does not escape the quote that ends it.
+  (should (equal '(nil) (erlang-test-string-states
+                         "f() -> \"ends with $\", @ok.\n")))
+  (should (equal '(nil) (erlang-test-string-states
+                         "f() -> 'ends with $', @ok.\n")))
+  (should (equal '(nil) (erlang-test-string-states
+                         "f() -> \"$\", @ok.\n")))
+  ;; In code $" and $' are character literals, and the quote does not
+  ;; begin a string.  This has to hold on a line that already
+  ;; contains a string, which is where the old rules lost track.
+  (should (equal '(nil) (erlang-test-string-states
+                         "f() -> [$\"], @ok.\n")))
+  (should (equal '(nil) (erlang-test-string-states
+                         "f() -> [$'], @ok.\n")))
+  (should (equal '(nil) (erlang-test-string-states
+                         "f(X) -> trim(g(\"ETag\", X), [$\"]), @ok.\n")))
+  (should (equal '(nil) (erlang-test-string-states
+                         "f(X) -> trim(g('etag', X), [$']), @ok.\n")))
+  ;; In $\" and $\' the backslash does the escaping, not the dollar
+  ;; sign, so the quote is still part of the character literal.
+  (should (equal '(nil) (erlang-test-string-states
+                         "f() -> [$\\\"], @ok.\n")))
+  (should (equal '(nil) (erlang-test-string-states
+                         "f() -> [$\\'], @ok.\n")))
+  ;; $$ is the dollar sign character, and does not swallow the quote
+  ;; that follows it.
+  (should (equal '(?\" nil) (erlang-test-string-states
+                             "f() -> $$, \"in@side\", @ok.\n")))
+  ;; Strings, quoted atoms and comments still are what they are.
+  (should (equal '(?\" nil) (erlang-test-string-states
+                             "f() -> \"in@side\", @ok.\n")))
+  (should (equal '(?' nil) (erlang-test-string-states
+                            "f() -> 'in@side', @ok.\n")))
+  (should (equal '(nil) (erlang-test-string-states
+                         "%% a comment with \" and '\nf() -> @ok.\n")))
+  (should (equal '(?\") (erlang-test-string-states
+                         "f() -> \"unterminated\n@g() -> ok.\n"))))
+
+
+(ert-deftest erlang-test-syntax-triple-quoted-string ()
+  ;; A quote inside a triple-quoted string is a character of the
+  ;; string, and so is an apostrophe following it.  Reading the quote
+  ;; as the end of the string used to leave the rest of the buffer
+  ;; inside a quoted atom.
+  (should (equal '(t nil)
+                 (erlang-test-string-states
+                  (concat "-moduledoc \"\"\"\n"
+                          "A \"quoted\" phrase@'s body.\n"
+                          "\"\"\".\n"
+                          "f() -> @ok.\n"))))
+  ;; The string is closed by a run of as many quotes as opened it,
+  ;; alone on its line, which is how a triple quote is written as
+  ;; contents.
+  (should (equal '(t t nil)
+                 (erlang-test-string-states
+                  (concat "-doc \"\"\"\"\n"
+                          "@before\n"
+                          "\"\"\"\n"
+                          "@after\n"
+                          "\"\"\"\".\n"
+                          "f() -> @ok.\n"))))
+  ;; A longer run does not close it either.
+  (should (equal '(t nil)
+                 (erlang-test-string-states
+                  (concat "-doc \"\"\"\n"
+                          "\"\"\"\"\n"
+                          "@contents\n"
+                          "\"\"\".\n"
+                          "f() -> @ok.\n"))))
+  ;; A sigil prefix does not change the delimiter.
+  (should (equal '(t nil)
+                 (erlang-test-string-states
+                  (concat "f() -> ~b\"\"\"\n"
+                          "    @body\n"
+                          "    \"\"\",\n"
+                          "  @ok.\n"))))
+  ;; Contents are verbatim: neither a dollar sign before a quote nor
+  ;; a backslash escape is special there.
+  (should (equal '(t nil)
+                 (erlang-test-string-states
+                  (concat "f() -> ~S\"\"\"\n"
+                          "    @a\\\"b $\" 'c'\n"
+                          "    \"\"\",\n"
+                          "  @ok.\n"))))
+  (should (equal '(nil) (erlang-test-string-states
+                         (concat "-doc \"\"\"\n"
+                                 "ends with $\n"
+                                 "\"\"\".\n"
+                                 "f() -> @ok.\n"))))
+  ;; An empty triple-quoted string, and one that is never closed.
+  (should (equal '(nil) (erlang-test-string-states
+                         (concat "-doc \"\"\"\n"
+                                 "\"\"\".\n"
+                                 "f() -> @ok.\n"))))
+  (should (equal '(t) (erlang-test-string-states
+                       (concat "-doc \"\"\"\n"
+                               "@unterminated\n"))))
+  ;; A run of quotes in a comment delimits nothing, and four quotes
+  ;; in an expression are two adjacent empty strings.
+  (should (equal '(nil) (erlang-test-string-states
+                         "%% see \"\"\" here\nf() -> @ok.\n")))
+  (should (equal '(nil) (erlang-test-string-states
+                         "f() -> \"\"\"\" ++ X, @ok.\n"))))
 
 
 (provide 'erlang-test)

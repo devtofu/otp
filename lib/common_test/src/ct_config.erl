@@ -1,7 +1,9 @@
 %%--------------------------------------------------------------------
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2010-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2010-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -24,8 +26,12 @@
 %% Created : 15 February 2010
 %%----------------------------------------------------------------------
 -module(ct_config).
+-moduledoc false.
+
 -compile([{nowarn_deprecated_function,{crypto,block_decrypt,4}},
-          {nowarn_deprecated_function,{crypto,block_encrypt,4}}]).
+          {nowarn_deprecated_function,{crypto,block_encrypt,4}},
+          {nowarn_possibly_unsafe_function, {erlang, binary_to_term, 1}},
+          {nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
 
 -export([start/1, stop/0]).
 
@@ -347,7 +353,7 @@ get_config(KeyOrName,Default,Opts) when is_atom(KeyOrName) ->
 	    Else
     end;
 
-%% This useage of get_config is only used by internal ct functions
+%% This usage of get_config is only used by internal ct functions
 %% and may change at any time
 get_config({DeepKey,SubKey}, Default, Opts) when is_tuple(DeepKey) ->
     get_config(erlang:append_element(DeepKey, SubKey), Default, Opts);
@@ -593,7 +599,7 @@ encrypt_config_file(SrcFileName, EncryptFileName, {file,KeyFile}) ->
     end;
 
 encrypt_config_file(SrcFileName, EncryptFileName, {key,Key}) ->
-    _ = crypto:start(),
+    _ = application:start(crypto),
     {CryptoKey,IVec} = make_crypto_key(Key),
     case file:read_file(SrcFileName) of
 	{ok,Bin0} ->
@@ -632,7 +638,7 @@ decrypt_config_file(EncryptFileName, TargetFileName, {file,KeyFile}) ->
     end;
 
 decrypt_config_file(EncryptFileName, TargetFileName, {key,Key}) ->
-    _ = crypto:start(),
+    _ = application:start(crypto),
     {CryptoKey,IVec} = make_crypto_key(Key),
     case file:read_file(EncryptFileName) of
 	{ok,Bin} ->

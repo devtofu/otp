@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2011-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2011-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -67,7 +69,7 @@ typedef volatile ethr_native_sint128_t__ * ethr_native_dw_ptr_t;
  * This code assumes 8 byte aligned memory in 64-bit mode, and 4 byte
  * aligned memory in 32-bit mode. A malloc implementation that does
  * not adhere to these alignment requirements is seriously broken,
- * and we wont bother trying to work around it.
+ * and we won't bother trying to work around it.
  *
  * Since memory alignment may be off by one word we need to align at
  * runtime. We, therefore, need an extra word allocated.
@@ -159,7 +161,7 @@ ethr_native_dw_atomic_cmpxchg_mb(ethr_native_dw_atomic_t *var,
 
 #if ETHR_NO_CLOBBER_EBX__ && ETHR_CMPXCHG8B_REGISTER_SHORTAGE
     /*
-     * gcc wont let us use ebx as input and we
+     * gcc won't let us use ebx as input and we
      * get a register shortage
      */
 
@@ -176,7 +178,7 @@ ethr_native_dw_atomic_cmpxchg_mb(ethr_native_dw_atomic_t *var,
 
 #elif ETHR_NO_CLOBBER_EBX__
     /*
-     * gcc wont let us use ebx as input
+     * gcc won't let us use ebx as input
      */
 
     __asm__ __volatile__(

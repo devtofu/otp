@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2014-2020. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2014-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -23,13 +25,16 @@
 %% Purpose: Supervisor for a listen options tracker
 %%----------------------------------------------------------------------
 -module(tls_server_session_ticket_sup).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
 
 -behaviour(supervisor).
 
 %% API
--export([start_link/0, 
+-export([start_link/0,
          start_link_dist/0]).
--export([start_child/1, 
+-export([start_child/1,
          start_child_dist/1]).
 
 %% Supervisor callback
@@ -54,23 +59,19 @@ start_child_dist(Args) ->
 sup_name(normal) ->
     ?MODULE;
 sup_name(dist) ->
-    list_to_atom(atom_to_list(?MODULE) ++ "_dist").
-  
+    tls_server_session_ticket_sup_dist.
+
 %%%=========================================================================
 %%%  Supervisor callback
 %%%=========================================================================
-init(_O) ->
-    RestartStrategy = simple_one_for_one,
-    MaxR = 0,
-    MaxT = 3600,
-   
-    Name = undefined, % As simple_one_for_one is used.
-    StartFunc = {tls_server_session_ticket, start_link, []},
-    Restart = temporary, % E.g. should not be restarted
-    Shutdown = 4000,
-    Modules = [tls_server_session_ticket],
-    Type = worker,
-    
-    ChildSpec = {Name, StartFunc, Restart, Shutdown, Type, Modules},
-    {ok, {{RestartStrategy, MaxR, MaxT}, [ChildSpec]}}.
-
+init(_) ->
+    SupFlags = #{strategy  => simple_one_for_one
+                },
+    ChildSpecs = [#{id       => undefined,
+                    start    => {tls_server_session_ticket, start_link, []},
+                    restart  => temporary,
+                    shutdown => 4000,
+                    modules  => [tls_server_session_ticket],
+                    type     => worker
+                   }],
+    {ok, {SupFlags, ChildSpecs}}.

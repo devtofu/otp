@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1998-2019. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1998-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -27,7 +29,6 @@
 -define(line, put(line, ?LINE), ).
 -define(privdir(_), "./disk_log_SUITE_priv").
 -define(config(X,Y), foo).
--define(t,test_server).
 -else.
 -include_lib("common_test/include/ct.hrl").
 -define(format(S, A), ok).
@@ -161,7 +162,7 @@ test_one(File) ->
 %% Two filled index files.
 two_filled(Conf) when is_list(Conf) ->
     Dir = ?privdir(Conf),
-    File = list_to_atom(join(Dir, "sune.LOG")),
+    File = join(Dir, "sune.LOG"),
     delete_files(File),
     start(),
 

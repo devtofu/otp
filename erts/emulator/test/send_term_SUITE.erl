@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2005-2016. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2005-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -212,14 +214,14 @@ make_expected_ext2term_drv([T|Ts]) ->
 %%
 
 generate_external_terms_files(BaseDir) ->
-    {ok,Node} = slave:start(hostname(), a_node),
+    {ok, Peer, Node} = ?CT_PEER(),
     RPid = rpc:call(Node, erlang, self, []),
     true = is_pid(RPid),
     RRef = rpc:call(Node, erlang, make_ref, []),
     true = is_reference(RRef),
     RPort = hd(rpc:call(Node, erlang, ports, [])),
     true = is_port(RPort),
-    slave:stop(Node),
+    peer:stop(Peer),
     Terms = [{4711, -4711, [an_atom, "a list"]},
              [1000000000000000000000,-1111111111111111, "blupp!", blipp],
              {RPid, {RRef, RPort}, self(), hd(erlang:ports()), make_ref()},
@@ -341,12 +343,3 @@ write_license(IoDev) ->
 	" * and needs to be consistent with each other.~n"
 	" */~n",
     io:format(IoDev, S, []).
-
-
-hostname() ->    
-    hostname(atom_to_list(node())).
-
-hostname([$@ | Hostname]) ->
-    list_to_atom(Hostname);
-hostname([_C | Cs]) ->
-    hostname(Cs).

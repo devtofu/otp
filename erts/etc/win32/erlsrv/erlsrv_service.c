@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 1998-2016. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 1998-2025. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,7 +16,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * %CopyrightEnd%
  */
 #include <windows.h>
@@ -535,10 +537,14 @@ static BOOL start_a_service(ServerInfo *srvi){
 	  HANDLE hJob = CreateJobObject(NULL, NULL);
 	  JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli = { 0 };
 	  /*
-	   * Causes all processes associated with the job to terminate when the
-	   * last handle to the job is closed.
-	   */
-	  jeli.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        * JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        * Causes all processes associated with the job to terminate when the
+        * last handle to the job is closed.
+        *
+        * JOB_OBJECT_LIMIT_BREAKAWAY_OK
+        * Sometimes we want to break out, for example to start programs in another windows session
+      */
+      jeli.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
 	  SetInformationJobObject(hJob, JobObjectExtendedLimitInformation, &jeli, sizeof(jeli));
 	  if (AssignProcessToJobObject(hJob, GetCurrentProcess()) == FALSE) {
 	      log_error(L"Could not AssignProcessToJobObject");
@@ -920,7 +926,7 @@ static VOID WINAPI service_main_loop(DWORD argc, wchar_t **argv){
 		    L"The service is not restarted, ignoring OnFail option.");
 	} else {
 	  log_error(L"Erlang machine seems to die "
-		    L"continously, not restarted.");
+		    L"continuously, not restarted.");
 	}
 	CloseHandle(eventStop);
 	set_stopped(ERROR_PROCESS_ABORTED);

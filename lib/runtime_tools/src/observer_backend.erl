@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2002-2021. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2002-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,10 +16,11 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(observer_backend).
+-moduledoc false.
 
 %% General
 -export([vsn/0]).
@@ -63,7 +66,7 @@ vsn() ->
 socket_info() ->
     Info0             = socket:info(),
     {Counters, Info1} = maps:take(counters, Info0),
-    IovMax            = maps:get(iov_max , Info1),
+    IovMax            = maps:get(iov_max, Info1),
     NumMons           = socket:number_of_monitors(),
     [{iov_max, IovMax}, {num_monitors, NumMons} | maps:to_list(Counters)].
     
@@ -169,11 +172,21 @@ get_mnesia_loop(Parent, {Match, Cont}) ->
 
 get_port_list() ->
     ExtraItems = [monitors,monitored_by,parallelism,locking,queue_size,memory],
-    [begin
-	 [{port_id,P}|erlang:port_info(P)] ++
-             port_info(P,ExtraItems) ++
-             inet_port_extra(erlang:port_info(P, name), P)
-     end || P <- erlang:ports()].
+    PortInfo =
+        fun(P, Acc) ->
+                case erlang:port_info(P) of
+                    undefined ->
+                        Acc;
+                    Info ->
+                        [
+                         [{port_id,P}|Info] ++
+                             port_info(P,ExtraItems) ++
+                             inet_port_extra(erlang:port_info(P, name), P)
+                        | Acc ]
+                end
+        end,
+    PIs = lists:foldl(PortInfo, [], erlang:ports()),
+    lists:reverse(PIs).
 
 port_info(P,[Item|Items]) ->
     case erlang:port_info(P,Item) of
@@ -205,27 +218,68 @@ inet_port_extra({_,Type},Port) when Type =:= "udp_inet";
                 [{local_address,LAddr}];
             {error, _} -> []
         end ++
-        case inet:getopts(Port,
-                          [active, broadcast, buffer, bind_to_device,
-                           delay_send, deliver, dontroute, exit_on_close,
-                           header, high_msgq_watermark, high_watermark,
-                           ipv6_v6only, keepalive, linger, low_msgq_watermark,
-                           low_watermark, mode, netns, nodelay, packet,
-                           packet_size, priority, read_packets, recbuf,
-                           reuseaddr, send_timeout, send_timeout_close,
-                           show_econnreset, sndbuf, tos, tclass]) of
-            {ok, Opts} -> [{options, Opts}];
-            {error, _} -> []
-        end,
+        [{options, get_sock_opts(Port)}],
     [{inet,Data}];
 inet_port_extra(_,_) ->
     [].
 
+sock_opts() ->
+    [active, broadcast, buffer, bind_to_device,
+     delay_send, deliver, dontroute, exit_on_close,
+     header, high_msgq_watermark, high_watermark,
+     ipv6_v6only, keepalive, linger, low_msgq_watermark,
+     low_watermark, mode, netns, nodelay, packet,
+     packet_size, priority, read_packets, recbuf,
+     reuseaddr, send_timeout, send_timeout_close,
+     show_econnreset, sndbuf, tos, tclass].
+
+get_sock_opts(Port) ->
+    get_sock_opts(Port, sock_opts()).
+
+get_sock_opts(Port, Opts) ->
+    get_sock_opts(Port, Opts, []).
+
+%% The reason we are doing it this way, is because if there
+%% is an issue with one of the options, we should just skip
+%% that option and continue with the next.
+%% Better to have some options then none.
+get_sock_opts(_Port, [], Acc) ->
+    lists:reverse(Acc);
+get_sock_opts(Port, [Opt|Opts], Acc) ->
+    case inet:getopts(Port, [Opt]) of
+        {ok, [Res]} ->
+            get_sock_opts(Port, Opts, [Res|Acc]);
+        {ok, []} -> % No value?
+            Res = {Opt, "-"},
+            get_sock_opts(Port, Opts, [Res|Acc]);
+        {error, einval} ->
+            Res = {Opt, "Not Supported"},
+            get_sock_opts(Port, Opts, [Res|Acc]);
+
+        %% If the option is "invalid", the reason would be 'einval',
+        %% so this error must be something else.
+        %% But if the option just vanish, we don't know what is
+        %% going on. So, do something similar to socket (see below).
+        {error, Reason} ->
+            Res = {Opt, f("error:~p", [Reason])},
+            get_sock_opts(Port, Opts, [Res|Acc])
+    end.
+
 
 get_socket_list() ->
     GetOpt = fun(_Sock, {Opt, false}) ->
+                     %% d("~s -> ~p Not Supported", [?FUNCTION_NAME, Opt]),
 		     {Opt, "Not Supported"};
+		(_Sock, {Opt, require_value}) ->
+                     %% d("~s -> ~p Require Value", [?FUNCTION_NAME, Opt]),
+		     {Opt, "Require Value (e.g. AssocID)"};
 		(Sock, {Opt, true}) ->
+                     %% d("~s -> try getopt for"
+                     %%   "~n   Opt: ~p", [?FUNCTION_NAME, Opt]),
+                     %% We should use try catch here, but then we might
+                     %% miss if there is a fatal error (catched).
+                     %% If we implement more sctp options that are
+                     %% actually for associations (require a value part)...
 		     case socket:getopt(Sock, Opt) of
 			 %% Convert to string?
 			 {ok, Value0} ->
@@ -257,11 +311,19 @@ get_socket_list() ->
 			     %% 	"~n   Option: ~p"
 			     %% 	"~n   Reason: ~p", [Opt, _Reason]),
 			     {Opt, f("error:~p", [Reason])}
-		     end
+                     %% catch
+                     %%     C:E:_S ->
+                     %%         %% d("~s -> catched: "
+                     %%         %%   "~n   Class: ~p"
+                     %%         %%   "~n   Error: ~p"
+                     %%         %%   "~n   Stack: ~p", [?FUNCTION_NAME, C, E, _S]),
+                     %%         {Opt, f("catched:~w,~p", [C, E])}
+                     end
+                             
 	     end,
     [begin
 	 Kind  = socket:which_socket_kind(S),
-	 FD    = case socket:getopt(S, otp, fd) of
+	 FD    = case socket:getopt(S, {otp, fd}) of
 		     {ok, FD0} ->
 			 FD0;
 		     _ ->
@@ -318,6 +380,23 @@ get_socket_list() ->
 			     socket:supports(options, ip),
 			 ?ESOCK_KEEP_UNSUPPORTED_OPT(Supported)]
 	     end,
+         %% Some of the SCTP options are for associations,
+         %% which means that getopt require an extra value
+         %% argument (with the assoc-id and maybe other stuff).
+         %% These options can not be included
+         SctpRequireValue =
+             fun(_Opt, false = Supported) ->
+                     Supported;
+                (Opt, Supported) ->
+                     case lists:member(Opt,
+                                       [get_peer_addr_info,
+                                        status]) of
+                         true ->
+                             require_value;
+                         false ->
+                             Supported
+                     end
+             end,
 	 ProtoOpts =
 	     case Info7 of
 		 #{domain   := Domain,
@@ -340,7 +419,7 @@ get_socket_list() ->
 		   type     := seqpacket,
 		   protocol := sctp} when (Domain =:= inet) orelse
 					  (Domain =:= inet6) ->
-		     [{{sctp, Opt}, Supported} ||
+		     [{{sctp, Opt}, SctpRequireValue(Opt, Supported)} ||
 			 {Opt, Supported} <-
 			     socket:supports(options, sctp),
 			 ?ESOCK_KEEP_UNSUPPORTED_OPT(Supported)];
@@ -374,17 +453,19 @@ sockaddr_to_list(#{family := inet6, addr := Addr, port := Port,
 	" , " ++ erlang:integer_to_list(SID);
 sockaddr_to_list(Addr) ->
     f("~p", [Addr]).
-    
+
+-dialyzer({no_opaque_union, [get_ets_tab_id/1]}).
+get_ets_tab_id(Id) ->
+    case ets:info(Id, named_table) of
+        true -> ignore;
+        false -> Id
+    end.
 
 get_table_list(ets, Opts) ->
     HideUnread = proplists:get_value(unread_hidden, Opts, true),
     HideSys = proplists:get_value(sys_hidden, Opts, true),
     Info = fun(Id, Acc) ->
 		   try
-		       TabId = case ets:info(Id, named_table) of
-				   true -> ignore;
-				   false -> Id
-			       end,
 		       Name = ets:info(Id, name),
 		       Protection = ets:info(Id, protection),
 		       ignore(HideUnread andalso Protection == private, unreadable),
@@ -400,7 +481,7 @@ get_table_list(ets, Opts) ->
 			      andalso is_atom((catch mnesia:table_info(Name, where_to_read))), mnesia_tab),
 		       Memory = ets:info(Id, memory) * erlang:system_info(wordsize),
 		       Tab = [{name,Name},
-			      {id,TabId},
+			      {id,get_ets_tab_id(Id)},
 			      {protection,Protection},
 			      {owner,Owner},
 			      {size,ets:info(Id, size)},
@@ -480,17 +561,18 @@ fetch_stats_loop(Parent, Time) ->
 %% Chunk sending process info to etop/observer
 %%
 procs_info(Collector) ->
-    All = processes(),
-    Send = fun Send (Pids) ->
-                   try lists:split(10000, Pids) of
-                       {First, Rest} ->
-                           Collector ! {procs_info, self(), etop_collect(First, [])},
-                           Send(Rest)
-                   catch _:_ ->
-                           Collector ! {procs_info, self(), etop_collect(Pids, [])}
+    Iter0 = erlang:processes_iterator(),
+    Limit = 10000,
+    Send = fun Send(Iter1, Count) ->
+                   case etop_collect(Iter1, Count, Limit, []) of
+                       {none, ProcInfo} ->
+                           Collector ! {procs_info, self(), ProcInfo};
+                       {Iter, ProcInfo} ->
+                           Collector ! {procs_info, self(), ProcInfo},
+                           Send(Iter, 0)
                    end
            end,
-    Send(All).
+    Send(Iter0, 0).
 
 %%
 %% etop backend
@@ -501,7 +583,8 @@ etop_collect(Collector) ->
     %% utilization in etop). Next time the flag will be true and then
     %% there will be a measurement.
     SchedulerWallTime = erlang:statistics(scheduler_wall_time),
-    ProcInfo = etop_collect(processes(), []),
+    Iter = erlang:processes_iterator(),
+    {none, ProcInfo} = etop_collect(Iter, 0, infinity, []),
 
     Collector ! {self(),#etop_info{now = erlang:timestamp(),
 				   n_procs = length(ProcInfo),
@@ -541,27 +624,55 @@ etop_memi() ->
 	    undefined
     end.
 
-etop_collect([P|Ps], Acc) when P =:= self() ->
-    etop_collect(Ps, Acc);
-etop_collect([P|Ps], Acc) ->
-    Fs = [registered_name,initial_call,memory,reductions,current_function,message_queue_len],
+etop_collect({P, Iter}, Count, Limit, Acc) when P =:= self() ->
+    etop_collect(erlang:processes_next(Iter), Count, Limit, Acc);
+etop_collect(Iter, Limit, Limit, Acc) ->
+    {Iter, Acc};
+etop_collect(none, _Count, _Limit, Acc) ->
+    {none, Acc};
+etop_collect({P, Iter}, Count, Limit, Acc) when is_pid(P) ->
+    Fs = [registered_name,initial_call,
+          {dictionary, '$initial_call'}, {dictionary, '$process_label'},
+          memory,reductions,current_function,message_queue_len],
     case process_info(P, Fs) of
 	undefined ->
-	    etop_collect(Ps, Acc);
-	[{registered_name,Reg},{initial_call,Initial},{memory,Mem},
-	 {reductions,Reds},{current_function,Current},{message_queue_len,Qlen}] ->
-	    Name = case Reg of
-		       [] -> initial_call(Initial, P);
-		       _ -> Reg
+	    etop_collect(erlang:processes_next(Iter), Count + 1, Limit, Acc);
+	[{registered_name,Reg},{initial_call,Initial},
+         {{dictionary, '$initial_call'}, DictInitial},
+         {{dictionary, '$process_label'}, ProcId},
+	 {memory,Mem},{reductions,Reds},
+         {current_function,Current},{message_queue_len,Qlen}
+        ] ->
+	    Name = if Reg /= "" -> Reg;
+                      ProcId /= undefined -> id_to_binary(ProcId);
+                      true -> initial_call(Initial, DictInitial)
 		   end,
 	    Info = #etop_proc_info{pid=P,mem=Mem,reds=Reds,name=Name,
 				   cf=Current,mq=Qlen},
-	    etop_collect(Ps, [Info|Acc])
+	    etop_collect(erlang:processes_next(Iter), Count + 1, Limit, [Info|Acc])
     end;
-etop_collect([], Acc) -> Acc.
+etop_collect(Iter, Count, Limit, Acc) ->
+    etop_collect(erlang:processes_next(Iter), Count, Limit, Acc).
 
-initial_call({proc_lib, init_p, _}, Pid) ->
-    proc_lib:translate_initial_call(Pid);
+id_to_binary(Id) when is_list(Id); is_binary(Id) ->
+    try unicode:characters_to_binary(Id) of
+        {error, _, _} ->
+            unicode:characters_to_binary(io_lib:format("~0.tp", [Id]));
+        BinString ->
+            BinString
+    catch _:_ ->
+            unicode:characters_to_binary(io_lib:format("~0.tp", [Id]))
+    end;
+id_to_binary(TermId) ->
+    unicode:characters_to_binary(io_lib:format("~0.tp", [TermId])).
+
+initial_call({proc_lib, init_p, _}, DictInitial) ->
+    case DictInitial of
+        {_,_,_} = MFA ->
+            MFA;
+        undefined -> %% Fetch the default initial call
+            proc_lib:translate_initial_call([])
+    end;
 initial_call(Initial, _Pid) ->
     Initial.
 
@@ -982,5 +1093,8 @@ f(F, A) ->
 %%     io:format("[ob] " ++ F ++ "~n", A);
 %% d(_, _, _) ->
 %%     ok.
+
+%% d(F, A) ->
+%%     io:format("[ob] " ++ F ++ "~n", A).
 
 

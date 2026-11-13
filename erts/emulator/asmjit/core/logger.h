@@ -1,32 +1,14 @@
-// AsmJit - Machine code generation for C++
+// This file is part of AsmJit project <https://asmjit.com>
 //
-//  * Official AsmJit Home Page: https://asmjit.com
-//  * Official Github Repository: https://github.com/asmjit/asmjit
-//
-// Copyright (c) 2008-2020 The AsmJit Authors
-//
-// This software is provided 'as-is', without any express or implied
-// warranty. In no event will the authors be held liable for any damages
-// arising from the use of this software.
-//
-// Permission is granted to anyone to use this software for any purpose,
-// including commercial applications, and to alter it and redistribute it
-// freely, subject to the following restrictions:
-//
-// 1. The origin of this software must not be misrepresented; you must not
-//    claim that you wrote the original software. If you use this software
-//    in a product, an acknowledgment in the product documentation would be
-//    appreciated but is not required.
-// 2. Altered source versions must be plainly marked as such, and must not be
-//    misrepresented as being the original software.
-// 3. This notice may not be removed or altered from any source distribution.
+// See <asmjit/core.h> or LICENSE.md for license and copyright information
+// SPDX-License-Identifier: Zlib
 
 #ifndef ASMJIT_CORE_LOGGING_H_INCLUDED
 #define ASMJIT_CORE_LOGGING_H_INCLUDED
 
-#include "../core/inst.h"
-#include "../core/string.h"
-#include "../core/formatter.h"
+#include <asmjit/core/inst.h>
+#include <asmjit/core/string.h>
+#include <asmjit/core/formatter.h>
 
 #ifndef ASMJIT_NO_LOGGING
 
@@ -35,15 +17,10 @@ ASMJIT_BEGIN_NAMESPACE
 //! \addtogroup asmjit_logging
 //! \{
 
-// ============================================================================
-// [asmjit::Logger]
-// ============================================================================
-
 //! Logging interface.
 //!
-//! This class can be inherited and reimplemented to fit into your own logging
-//! needs. When reimplementing a logger use \ref Logger::_log() method to log
-//! customize the output.
+//! This class can be inherited and reimplemented to fit into your own logging needs. When reimplementing a logger
+//! use \ref Logger::_log() method to log customize the output.
 //!
 //! There are two `Logger` implementations offered by AsmJit:
 //!   - \ref FileLogger - logs into a `FILE*`.
@@ -70,28 +47,55 @@ public:
   //! \{
 
   //! Returns \ref FormatOptions of this logger.
-  inline FormatOptions& options() noexcept { return _options; }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG FormatOptions& options() noexcept { return _options; }
+
   //! \overload
-  inline const FormatOptions& options() const noexcept { return _options; }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG const FormatOptions& options() const noexcept { return _options; }
 
-  //! Returns formatting flags, see \ref FormatOptions::Flags.
-  inline uint32_t flags() const noexcept { return _options.flags(); }
+  //! Sets formatting options of this Logger to `options`.
+  ASMJIT_INLINE_NODEBUG void set_options(const FormatOptions& options) noexcept { _options = options; }
+
+  //! Resets formatting options of this Logger to defaults.
+  ASMJIT_INLINE_NODEBUG void reset_options() noexcept { _options.reset(); }
+
+  //! Returns formatting flags.
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG FormatFlags flags() const noexcept { return _options.flags(); }
+
   //! Tests whether the logger has the given `flag` enabled.
-  inline bool hasFlag(uint32_t flag) const noexcept { return _options.hasFlag(flag); }
-  //! Sets formatting flags to `flags`, see \ref FormatOptions::Flags.
-  inline void setFlags(uint32_t flags) noexcept { _options.setFlags(flags); }
-  //! Enables the given formatting `flags`, see \ref FormatOptions::Flags.
-  inline void addFlags(uint32_t flags) noexcept { _options.addFlags(flags); }
-  //! Disables the given formatting `flags`, see \ref FormatOptions::Flags.
-  inline void clearFlags(uint32_t flags) noexcept { _options.clearFlags(flags); }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG bool has_flag(FormatFlags flag) const noexcept { return _options.has_flag(flag); }
 
-  //! Returns indentation of `type`, see \ref FormatOptions::IndentationType.
-  inline uint32_t indentation(uint32_t type) const noexcept { return _options.indentation(type); }
-  //! Sets indentation of the given indentation `type` to `n` spaces, see \ref
-  //! FormatOptions::IndentationType.
-  inline void setIndentation(uint32_t type, uint32_t n) noexcept { _options.setIndentation(type, n); }
-  //! Resets indentation of the given indentation `type` to 0 spaces.
-  inline void resetIndentation(uint32_t type) noexcept { _options.resetIndentation(type); }
+  //! Sets formatting flags to `flags`.
+  ASMJIT_INLINE_NODEBUG void set_flags(FormatFlags flags) noexcept { _options.set_flags(flags); }
+
+  //! Enables the given formatting `flags`.
+  ASMJIT_INLINE_NODEBUG void add_flags(FormatFlags flags) noexcept { _options.add_flags(flags); }
+
+  //! Disables the given formatting `flags`.
+  ASMJIT_INLINE_NODEBUG void clear_flags(FormatFlags flags) noexcept { _options.clear_flags(flags); }
+
+  //! Returns indentation of a given indentation `group`.
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG uint32_t indentation(FormatIndentationGroup type) const noexcept { return _options.indentation(type); }
+
+  //! Sets indentation of the given indentation `group` to `n` spaces.
+  ASMJIT_INLINE_NODEBUG void set_indentation(FormatIndentationGroup type, uint32_t n) noexcept { _options.set_indentation(type, n); }
+
+  //! Resets indentation of the given indentation `group` to 0 spaces.
+  ASMJIT_INLINE_NODEBUG void reset_indentation(FormatIndentationGroup type) noexcept { _options.reset_indentation(type); }
+
+  //! Returns padding of a given padding `group`.
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG size_t padding(FormatPaddingGroup type) const noexcept { return _options.padding(type); }
+
+  //! Sets padding of a given padding `group` to `n`.
+  ASMJIT_INLINE_NODEBUG void set_padding(FormatPaddingGroup type, uint32_t n) noexcept { _options.set_padding(type, n); }
+
+  //! Resets padding of a given padding `group` to 0, which means that a default will be used.
+  ASMJIT_INLINE_NODEBUG void reset_padding(FormatPaddingGroup type) noexcept { _options.reset_padding(type); }
 
   //! \}
 
@@ -100,34 +104,24 @@ public:
 
   //! Logs `str` - must be reimplemented.
   //!
-  //! The function can accept either a null terminated string if `size` is
-  //! `SIZE_MAX` or a non-null terminated string of the given `size`. The
-  //! function cannot assume that the data is null terminated and must handle
+  //! The function can accept either a null terminated string if `size` is `SIZE_MAX` or a non-null terminated
+  //! string of the given `size`. The function cannot assume that the data is null terminated and must handle
   //! non-null terminated inputs.
-  virtual Error _log(const char* data, size_t size) noexcept = 0;
+  ASMJIT_API virtual Error _log(const char* data, size_t size) noexcept;
 
   //! Logs string `str`, which is either null terminated or having size `size`.
-  inline Error log(const char* data, size_t size = SIZE_MAX) noexcept { return _log(data, size); }
+  ASMJIT_INLINE_NODEBUG Error log(const char* data, size_t size = SIZE_MAX) noexcept { return _log(data, size); }
   //! Logs content of a string `str`.
-  inline Error log(const String& str) noexcept { return _log(str.data(), str.size()); }
+  ASMJIT_INLINE_NODEBUG Error log(const String& str) noexcept { return _log(str.data(), str.size()); }
 
-  //! Formats the message by using `snprintf()` and then passes the formatted
-  //! string to \ref _log().
+  //! Formats the message by using `snprintf()` and then passes the formatted string to \ref _log().
   ASMJIT_API Error logf(const char* fmt, ...) noexcept;
 
-  //! Formats the message by using `vsnprintf()` and then passes the formatted
-  //! string to \ref _log().
+  //! Formats the message by using `vsnprintf()` and then passes the formatted string to \ref _log().
   ASMJIT_API Error logv(const char* fmt, va_list ap) noexcept;
-
-  //! Logs binary `data` of the given `size`.
-  ASMJIT_API Error logBinary(const void* data, size_t size) noexcept;
 
   //! \}
 };
-
-// ============================================================================
-// [asmjit::FileLogger]
-// ============================================================================
 
 //! Logger that can log to a `FILE*`.
 class ASMJIT_VIRTAPI FileLogger : public Logger {
@@ -142,34 +136,28 @@ public:
   //! Creates a new `FileLogger` that logs to `FILE*`.
   ASMJIT_API FileLogger(FILE* file = nullptr) noexcept;
   //! Destroys the `FileLogger`.
-  ASMJIT_API virtual ~FileLogger() noexcept;
+  ASMJIT_API ~FileLogger() noexcept override;
 
   //! \}
 
   //! \name Accessors
   //! \{
 
-  //! Returns the logging output stream or null if the logger has no output
-  //! stream.
-  inline FILE* file() const noexcept { return _file; }
+  //! Returns the logging output stream or null if the logger has no output stream.
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG FILE* file() const noexcept { return _file; }
 
   //! Sets the logging output stream to `stream` or null.
   //!
-  //! \note If the `file` is null the logging will be disabled. When a logger
-  //! is attached to `CodeHolder` or any emitter the logging API will always
-  //! be called regardless of the output file. This means that if you really
-  //! want to disable logging at emitter level you must not attach a logger
-  //! to it.
-  inline void setFile(FILE* file) noexcept { _file = file; }
+  //! \note If the `file` is null the logging will be disabled. When a logger is attached to `CodeHolder` or any
+  //! emitter the logging API will always be called regardless of the output file. This means that if you really
+  //! want to disable logging at emitter level you must not attach a logger to it.
+  ASMJIT_INLINE_NODEBUG void set_file(FILE* file) noexcept { _file = file; }
 
   //! \}
 
   ASMJIT_API Error _log(const char* data, size_t size = SIZE_MAX) noexcept override;
 };
-
-// ============================================================================
-// [asmjit::StringLogger]
-// ============================================================================
 
 //! Logger that stores everything in an internal string buffer.
 class ASMJIT_VIRTAPI StringLogger : public Logger {
@@ -185,7 +173,7 @@ public:
   //! Create new `StringLogger`.
   ASMJIT_API StringLogger() noexcept;
   //! Destroys the `StringLogger`.
-  ASMJIT_API virtual ~StringLogger() noexcept;
+  ASMJIT_API ~StringLogger() noexcept override;
 
   //! \}
 
@@ -195,16 +183,22 @@ public:
   //! Returns the content of the logger as \ref String.
   //!
   //! It can be moved, if desired.
-  inline String& content() noexcept { return _content; }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG String& content() noexcept { return _content; }
+
   //! \overload
-  inline const String& content() const noexcept { return _content; }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG const String& content() const noexcept { return _content; }
 
   //! Returns aggregated logger data as `char*` pointer.
   //!
   //! The pointer is owned by `StringLogger`, it can't be modified or freed.
-  inline const char* data() const noexcept { return _content.data(); }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG const char* data() const noexcept { return _content.data(); }
+
   //! Returns size of the data returned by `data()`.
-  inline size_t dataSize() const noexcept { return _content.size(); }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG size_t data_size() const noexcept { return _content.size(); }
 
   //! \}
 
@@ -212,7 +206,7 @@ public:
   //! \{
 
   //! Clears the accumulated logger data.
-  inline void clear() noexcept { _content.clear(); }
+  ASMJIT_INLINE_NODEBUG void clear() noexcept { _content.clear(); }
 
   //! \}
 

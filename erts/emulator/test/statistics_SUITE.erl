@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,6 +25,7 @@
 %% Tests the statistics/1 bif.
 
 -export([all/0, suite/0, groups/0,
+         init_per_testcase/2,
          wall_clock_sanity/1,
 	 wall_clock_zero_diff/1, wall_clock_update/1,
          runtime_sanity/1,
@@ -40,6 +43,7 @@
 -export([hog/1]).
 
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
 suite() ->
     [{ct_hooks,[ts_install_cth]},
@@ -60,6 +64,16 @@ groups() ->
      {runtime, [],
       [runtime_sanity, runtime_zero_diff, runtime_update, runtime_diff]},
      {run_queue, [], [run_queue_one]}].
+
+init_per_testcase(msacc, Config) ->
+    try erlang:statistics(microstate_accounting) of
+        _ ->
+            Config
+    catch _:_ ->
+            {skip, "Microstate accouning not available"}
+    end;
+init_per_testcase(_, Config) ->
+    Config.
 
 wall_clock_sanity(Config) when is_list(Config) ->
     erlang:yield(),
@@ -217,7 +231,6 @@ do_much(N) ->
 
 %% Test that statistics(reductions) is callable, and that
 %% Total_Reductions and Reductions_Since_Last_Call make sense.
-%% This to fail on pre-R3A version of JAM.
 reductions(Config) when is_list(Config) ->
     {Reductions, _} = statistics(reductions),
 
@@ -326,6 +339,12 @@ scheduler_wall_time_test(Type) ->
     end.
 
 run_scheduler_wall_time_test(Type) ->
+    %% All dirty schedulers will be hogged during a period of time
+    %% during these tests. If the testcase fails during this time, all
+    %% disc io and large gc will be blocked making the test case
+    %% timeout instead of failing, i.e., do not add stuff that can
+    %% fail the test case while all dirty schedulers are hogged...
+
     %% Should return undefined if system_flag is not turned on yet
     undefined = statistics(Type),
     %% Turn on statistics
@@ -341,9 +360,9 @@ run_scheduler_wall_time_test(Type) ->
                                     Schedulers + DirtyCPUSchedulers
                         end,
 
-        Env = [io_lib:format("~s~n",[KV]) || KV <- os:getenv()],
+        Env = [io_lib:format("~ts~n",[KV]) || KV <- os:getenv()],
 
-        ct:log("Env:~n~s",[Env]),
+        ct:log("Env:~n~ts",[Env]),
 
         ct:log("Schedulers:               ~p~n"
                "SchedulersOnline:         ~p~n"
@@ -355,6 +374,9 @@ run_scheduler_wall_time_test(Type) ->
                 erlang:system_info(dirty_cpu_schedulers),
                 DirtyCPUSchedulers,
                 DirtyIOSchedulers]),
+
+        %% Assert that number of schedulers is the same as number of dirty schedulers
+        Schedulers = DirtyCPUSchedulers,
 
         %% Let testserver and everyone else finish their work
         timer:sleep(1500),
@@ -368,8 +390,8 @@ run_scheduler_wall_time_test(Type) ->
                            Pid
                    end,
         StartDirtyHog = fun(Func) ->
-                                F = fun () ->
-                                            erts_debug:Func(alive_waitexiting,
+                                F = fun() ->
+                                            erts_debug:Func(alive_waitexitingonly,
                                                             MeMySelfAndI)
                                     end,
                                 Pid = spawn_link(F),
@@ -380,8 +402,9 @@ run_scheduler_wall_time_test(Type) ->
         %% Max on one, the other schedulers empty (hopefully)
         %% Be generous the process can jump between schedulers
         %% which is ok and we don't want the test to fail for wrong reasons
-        _L1 = [S1Load|EmptyScheds1] = get_load(Type),
-        {true,_}  = {S1Load > 50,S1Load},
+        L1 = get_load(Type),
+        [High1Load|EmptyScheds1] = lists:reverse(lists:sort(L1)),
+        {true,_}  = {High1Load > 50,High1Load},
         {false,_} = {lists:any(fun(Load) -> Load > 50 end, EmptyScheds1),EmptyScheds1},
         {true,_}  = {lists:sum(EmptyScheds1) < 60,EmptyScheds1},
 
@@ -403,33 +426,33 @@ run_scheduler_wall_time_test(Type) ->
         %% 100% load. Need to take into consideration an odd number of
         %% schedulers and also special consideration for when there is
         %% only 1 scheduler
-        LastHogs = [StartHog() || _ <- lists:seq(1, (Schedulers+1) div 2),
-                                  Schedulers =/= 1],
+
         LastDirtyCPUHogs = [StartDirtyHog(dirty_cpu)
                             || _ <- lists:seq(1, (DirtyCPUSchedulers+1) div 2),
                                    DirtyCPUSchedulers =/= 1],
         LastDirtyIOHogs = [StartDirtyHog(dirty_io)
                            || _ <- lists:seq(1, (DirtyIOSchedulers+1) div 2),
                                    DirtyIOSchedulers =/= 1],
+        LastHogs = [StartHog() || _ <- lists:seq(1, (Schedulers+1) div 2),
+                                  Schedulers =/= 1],
         FullScheds = get_load(Type),
         ct:log("FullScheds: ~w",[FullScheds]),
+
+        AllHogs = [P1|HalfHogs++HalfDirtyCPUHogs++HalfDirtyIOHogs
+                   ++LastHogs++LastDirtyCPUHogs++LastDirtyIOHogs],
+
+        KillHog = fun (HP) -> unlink(HP), exit(HP, kill) end,
+        WaitKilledHog = fun (HP) -> false = is_process_alive(HP) end,
+        [KillHog(Pid) || Pid <- AllHogs],
+        [WaitKilledHog(Pid) || Pid <- AllHogs],
+        receive after 1000 -> ok end, %% Give dirty schedulers time to complete...
+
         {false,_} = {lists:any(fun(Load) -> Load < 80 end, FullScheds),FullScheds},
         FullLoad = lists:sum(FullScheds) div TotLoadSchedulers,
         if FullLoad > 90 -> ok;
            true -> exit({fullload, FullLoad})
         end,
 
-	KillHog = fun (HP) ->
-			  HPM = erlang:monitor(process, HP),
-                          unlink(HP),
-			  exit(HP, kill),
-			  receive
-			      {'DOWN', HPM, process, HP, killed} ->
-				  ok
-			  end
-		  end,
-        [KillHog(Pid) || Pid <- [P1|HalfHogs++HalfDirtyCPUHogs++HalfDirtyIOHogs
-                                 ++LastHogs++LastDirtyCPUHogs++LastDirtyIOHogs]],
         receive after 2000 -> ok end, %% Give dirty schedulers time to complete...
         AfterLoad = get_load(Type),
 	io:format("AfterLoad=~p~n", [AfterLoad]),
@@ -440,12 +463,12 @@ run_scheduler_wall_time_test(Type) ->
     end.
 
 get_load(Type) ->
+    %% Returns info for each *online* scheduler in scheduler id order
     Start = erlang:statistics(Type),
     timer:sleep(1500),
     End = erlang:statistics(Type),
 
-    lists:reverse(
-      lists:sort(load_percentage(online_statistics(Start),online_statistics(End)))).
+    load_percentage(online_statistics(Start),online_statistics(End)).
 
 %% We are only interested in schedulers that are online to remove all
 %% offline normal and dirty cpu schedulers (dirty io cannot be offline)
@@ -456,7 +479,7 @@ online_statistics(Stats) ->
     DirtyCPUSchedulersOnline = erlang:system_info(dirty_cpu_schedulers_online),
     DirtyIOSchedulersOnline = erlang:system_info(dirty_io_schedulers),
     SortedStats = lists:sort(Stats),
-    ct:pal("Stats: ~p~n", [SortedStats]),
+    ct:log("Stats: ~p~n", [SortedStats]),
     SchedulersStats =
         lists:sublist(SortedStats, 1, SchedulersOnline),
     DirtyCPUSchedulersStats =
@@ -570,12 +593,8 @@ io(Config) when is_list(Config) ->
 
 %% Tests that some illegal arguments to statistics fails.
 badarg(Config) when is_list(Config) ->
-    case catch statistics(1) of
-        {'EXIT', {badarg, _}} -> ok
-    end,
-    case catch statistics(bad_atom) of
-        {'EXIT', {badarg, _}} -> ok
-    end.
+    ?assertError(badarg, statistics(1)),
+    ?assertError(badarg, statistics(bad_atom)).
 
 tok_loop() ->
     tok_loop().
@@ -753,7 +772,8 @@ msacc_test(TmpFile) ->
     Refs = [erlang:send_after(10000,self(),ok) ||  _ <- lists:seq(1,100)],
 
     %% Do some nif work
-    catch [crypto:strong_rand_bytes(128) || _ <- lists:seq(1,100)],
+    try [crypto:strong_rand_bytes(128) || _ <- lists:seq(1,100)]
+    catch _:_ -> ok end,
 
     %% Cancel some timers
     [erlang:cancel_timer(R) ||  R <- Refs],

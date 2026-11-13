@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2006-2020. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2006-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -169,7 +171,7 @@ schedulers_alive(Config) when is_list(Config) ->
               enabled -> ok
           end,
           erts_debug:set_internal_state(available_internal_state, true),
-          %% node_and_dist_references will use emulator interal thread blocking...
+          %% node_and_dist_references will use emulator internal thread blocking...
           erts_debug:get_internal_state(node_and_dist_references), 
           erts_debug:set_internal_state(available_internal_state, false),
           io:format("Testing not blocked~n"),
@@ -256,7 +258,7 @@ long_timers(Config) when is_list(Config) ->
 pollset_size(Config) when is_list(Config) ->
     Name = pollset_size_testcase_initial_state_holder,
     Mon = erlang:monitor(process, Name),
-    (catch Name ! {get_initial_check_io_result, self()}),
+    try Name ! {get_initial_check_io_result, self()} catch _:_ -> ok end,
     InitChkIo = receive
 			  {initial_check_io_result, ICIO} ->
 			      erlang:demonitor(Mon, [flush]),
@@ -330,8 +332,9 @@ check_io_debug_test() ->
 has_gethost() ->
     has_gethost(erlang:ports()).
 has_gethost([P|T]) ->
-    case erlang:port_info(P, name) of
-        {name,"inet_gethost"++_} ->
+    {name, Name} = erlang:port_info(P, name),
+    case filename:basename(Name) of
+        "inet_gethost"++_ ->
             true;
         _ ->
             has_gethost(T)
@@ -346,7 +349,7 @@ lc_graph(Config) when is_list(Config) ->
     ok.
 
 leaked_processes(Config) when is_list(Config) ->
-    %% Replace the defualt timetrap with a timetrap with
+    %% Replace the default timetrap with a timetrap with
     %% known pid.
     test_server:timetrap_cancel(),
     Dog = test_server:timetrap(test_server:minutes(5)),
@@ -380,13 +383,15 @@ literal_area_collector(Config) when is_list(Config) ->
 
 
 display_check_io(ChkIo) ->
-    catch erlang:display('--- CHECK IO INFO ---'),
-    catch erlang:display(ChkIo),
-    catch erts_debug:set_internal_state(available_internal_state, true),
-    NoOfErrorFds = (catch element(1, erts_debug:get_internal_state(check_io_debug))),
-    catch erlang:display({'NoOfErrorFds', NoOfErrorFds}),
-    catch erts_debug:set_internal_state(available_internal_state, false),
-    catch erlang:display('--- CHECK IO INFO ---'),
+    erlang:display('--- CHECK IO INFO ---'),
+    erlang:display(ChkIo),
+    erts_debug:set_internal_state(available_internal_state, true),
+    NoOfErrorFds = try element(1, erts_debug:get_internal_state(check_io_debug))
+                   catch C:R -> {'EXIT', {C, R}}
+                   end,
+    erlang:display({'NoOfErrorFds', NoOfErrorFds}),
+    erts_debug:set_internal_state(available_internal_state, false),
+    erlang:display('--- CHECK IO INFO ---'),
     ok.
 
 get_check_io_info() ->

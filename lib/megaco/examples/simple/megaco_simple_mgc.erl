@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2001-2019. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2001-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -30,6 +32,8 @@
 %%----------------------------------------------------------------------
 
 -module(megaco_simple_mgc).
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
 
 -behaviour(megaco_user).
 
@@ -210,7 +214,7 @@ stop(Mid) ->
 		    case SendMod of
 			megaco_tcp -> megaco_tcp:close(SendHandle);
 			megaco_udp -> megaco_udp:close(SendHandle);
-			SendMod    -> exit(Pid, Reason)
+                        SendMod    -> erlang:exit_signal(Pid, Reason)
 		    end
 	    end,
     Conns = megaco:user_info(Mid, connections),
@@ -224,7 +228,7 @@ stop(Mid) ->
 	Pid ->
 	    d("stop -> Pid: ~p", [Pid]),
 	    unlink(Pid),
-	    exit(Pid, shutdown)
+            erlang:exit_signal(Pid, shutdown)
     end,
     ok.
 
@@ -406,7 +410,13 @@ start_batch(Args0) ->
 	    io:format("~p(~p): ~p~n", [?MODULE, ?LINE, Res]),
 	    Res
     end.
+
 	    
+-spec init_batch(ReplyTo :: pid(),
+                 Trace   :: term(),
+                 Debug   :: term()) ->
+           no_return().
+
 init_batch(ReplyTo, Trace, Debug) ->
     register(?MODULE, self()),
     Res = start(Trace, Debug),

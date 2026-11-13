@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2000-2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2000-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -25,6 +27,7 @@
 %%
 
 -module(megaco_filter).
+-moduledoc false.
 
 -export([start/0, start/1, filter/1, raw_filter/1,
 	 pretty_error/1, string_to_term/1]).
@@ -300,10 +303,10 @@ do_filter_contents([H | T], E, ConnData, Contents) ->
             E2 = 
 		case E#event.label of
 		    [$s, $e, $n, $d, $ , $b, $y, $t, $e, $s | Tail] ->
-			L = lists:concat(["send ", size(Bin), " bytes", Tail]),
+			L = lists:concat(["send ", byte_size(Bin), " bytes", Tail]),
 			E#event{label = L};
 		    [$r, $e, $c, $e, $i, $v, $e, $ , $b, $y, $t, $e, $s | Tail] ->
-			L = lists:concat(["receive ", size(Bin), " bytes", Tail]),
+			L = lists:concat(["receive ", byte_size(Bin), " bytes", Tail]),
 			E#event{label = L};
 		    _ ->
 			E

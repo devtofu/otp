@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,6 +23,8 @@
 %%-------------------------------------------------------------------
 -module(wxt).
 -export([t/0, t/1, t/2, user/0, user/1,user/2]).
+
+-compile({no_auto_import,[alias/1]}).
 
 %%  Modules or suites can be shortcuts i.e. basic expands to wx_basic_SUITE.
 %%  

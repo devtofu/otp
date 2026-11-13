@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2001-2018. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2001-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -56,7 +58,7 @@ sys_double_to_chars_ext(double fp, char *buffer, size_t buffer_size, size_t deci
 
     if (erts_snprintf(buffer, buffer_size, "%.*e", decimals, fp) >= buffer_size)
         return -1;
-    /* Search upto decimal point */
+    /* Search up to decimal point */
     if (*s == '+' || *s == '-') s++;
     while (ISDIGIT(*s)) s++;
     if (*s == ',') *s++ = '.'; /* Replace ',' with '.' */

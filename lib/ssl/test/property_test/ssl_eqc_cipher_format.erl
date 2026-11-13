@@ -1,19 +1,22 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2019-2019. All Rights Reserved.
-%% 
-%% The contents of this file are subject to the Erlang Public License,
-%% Version 1.1, (the "License"); you may not use this file except in
-%% compliance with the License. You should have received a copy of the
-%% Erlang Public License along with this software. If not, it can be
-%% retrieved online at http://www.erlang.org/.
-%% 
-%% Software distributed under the License is distributed on an "AS IS"
-%% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See
-%% the License for the specific language governing rights and limitations
-%% under the License.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2019-2025. All Rights Reserved.
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%
 %% %CopyrightEnd%
 %%
 %%
@@ -22,34 +25,8 @@
 
 -compile(export_all).
 
--proptest(eqc).
--proptest([triq,proper]).
-
--ifndef(EQC).
--ifndef(PROPER).
--ifndef(TRIQ).
--define(EQC,true).
--endif.
--endif.
--endif.
-
--ifdef(EQC).
--include_lib("eqc/include/eqc.hrl").
--define(MOD_eqc,eqc).
-
--else.
--ifdef(PROPER).
--include_lib("proper/include/proper.hrl").
--define(MOD_eqc,proper).
-
--else.
--ifdef(TRIQ).
--define(MOD_eqc,triq).
--include_lib("triq/include/triq.hrl").
-
--endif.
--endif.
--endif.
+-include_lib("common_test/include/ct_property_test.hrl").
+-include_lib("public_key/include/public_key.hrl").
 
 -define('TLS_v1.3', 'tlsv1.3').
 -define('TLS_v1.2', 'tlsv1.2').
@@ -62,13 +39,7 @@
 
 prop_tls_cipher_suite_rfc_name() ->
     ?FORALL({CipherSuite, _TLSVersion}, ?LET(Version, tls_version(), {cipher_suite(Version), Version}),
-            case ssl:str_to_suite(ssl:suite_to_str(CipherSuite)) of
-		CipherSuite ->
-		    true;
-		_ ->
-		    false
-	    end
-	   ).
+            ssl:str_to_suite(ssl:suite_to_str(CipherSuite)) == CipherSuite).
 
 prop_tls_cipher_suite_openssl_name() ->
     ?FORALL({CipherSuite, _TLSVersion}, ?LET(Version, tls_version(), {cipher_suite(Version), Version}),
@@ -86,17 +57,14 @@ prop_tls_cipher_suite_openssl_name() ->
 	   ).
 
 prop_tls_anon_cipher_suite_rfc_name() ->
-    ?FORALL({CipherSuite, _TLSVersion}, ?LET(Version, pre_tls_1_3_version(), {anon_cipher_suite(Version), Version}),
-            case ssl:str_to_suite(ssl:suite_to_str(CipherSuite)) of
-		CipherSuite ->
-		    true;
-		_ ->
-		    false
-	    end
-	   ).
+    ?FORALL({CipherSuite, _TLSVersion},
+            ?LET(Version, pre_tls_1_3_version(), {anon_cipher_suite(Version), Version}),
+            ssl:str_to_suite(ssl:suite_to_str(CipherSuite)) == CipherSuite
+           ).
 
 prop_tls_anon_cipher_suite_openssl_name() ->
-    ?FORALL({CipherSuite, _TLSVersion}, ?LET(Version, pre_tls_1_3_version(), {anon_cipher_suite(Version), Version}),
+    ?FORALL({CipherSuite, _TLSVersion},
+            ?LET(Version, pre_tls_1_3_version(), {anon_cipher_suite(Version), Version}),
             case ssl:str_to_suite(ssl:suite_to_openssl_str(CipherSuite)) of
 		CipherSuite ->
 		    lists:member(ssl:suite_to_openssl_str(CipherSuite), openssl_legacy_names());
@@ -104,6 +72,10 @@ prop_tls_anon_cipher_suite_openssl_name() ->
 		    false
 	    end
 	   ).
+
+prop_tls_signature_algs() ->
+    ?FORALL(SigAlg, ?LET(SigAlg, sig_alg(), SigAlg),
+            lists:member(ssl_cipher:signature_algorithm_to_scheme(SigAlg), sig_schemes())).
 
 %%--------------------------------------------------------------------
 %% Generators  -----------------------------------------------
@@ -272,3 +244,55 @@ openssl_legacy_names() ->
      "SRP-AES-128-CBC-SHA",
      "SRP-AES-256-CBC-SHA"
     ]. 
+
+
+sig_alg() ->
+    oneof([#'SignatureAlgorithm'{algorithm = ?'id-RSASSA-PSS',
+                                 parameters =  #'RSASSA-PSS-params'{
+                                                  maskGenAlgorithm =
+                                                      #'MaskGenAlgorithm'{algorithm = ?'id-mgf1',
+                                                                          parameters =  #'HashAlgorithm'{algorithm = ?'id-sha256'}}}},
+           #'SignatureAlgorithm'{algorithm = ?'id-RSASSA-PSS',
+                                 parameters =  #'RSASSA-PSS-params'{
+                                                  maskGenAlgorithm =
+                                                      #'MaskGenAlgorithm'{algorithm = ?'id-mgf1',
+                                                                          parameters = #'HashAlgorithm'{algorithm = ?'id-sha384'}}}},
+
+           #'SignatureAlgorithm'{algorithm = ?'id-RSASSA-PSS',
+                                 parameters =  #'RSASSA-PSS-params'{
+                                                  maskGenAlgorithm =
+                                                      #'MaskGenAlgorithm'{algorithm = ?'id-mgf1',
+                                                                          parameters = #'HashAlgorithm'{algorithm = ?'id-sha512'}}}},
+           #'SignatureAlgorithm'{algorithm = ?sha256WithRSAEncryption},
+           #'SignatureAlgorithm'{algorithm = ?sha384WithRSAEncryption},
+           #'SignatureAlgorithm'{algorithm = ?sha512WithRSAEncryption},
+           #'SignatureAlgorithm'{algorithm = ?'ecdsa-with-SHA256'},
+           #'SignatureAlgorithm'{algorithm = ?'ecdsa-with-SHA384'},
+           #'SignatureAlgorithm'{algorithm = ?'ecdsa-with-SHA512'},
+           #'SignatureAlgorithm'{algorithm = ?'sha-1WithRSAEncryption'},
+           #'SignatureAlgorithm'{algorithm = ?'ecdsa-with-SHA1'},
+           #'SignatureAlgorithm'{algorithm = ?'id-Ed25519'},
+           #'SignatureAlgorithm'{algorithm = ?'id-Ed448'},
+           #'SignatureAlgorithm'{algorithm = ?'rsaEncryption',
+                                 parameters = 'NULL'},
+           #'SignatureAlgorithm'{algorithm = ?'rsaEncryption'},
+           #'SignatureAlgorithm'{algorithm = ?'id-RSASSA-PSS'}]).
+
+sig_schemes() ->
+    [rsa_pss_pss_sha256,
+     rsa_pss_pss_sha384,
+     rsa_pss_pss_sha512,
+     rsa_pkcs1_sha256,
+     rsa_pkcs1_sha384,
+     rsa_pkcs1_sha512,
+     ecdsa_secp256r1_sha256,
+     ecdsa_secp384r1_sha384,
+     ecdsa_secp521r1_sha512,
+     rsa_pkcs1_sha1,
+     rsa_pkcs1_sha1,
+     ecdsa_sha1,
+     eddsa_ed25519,
+     eddsa_ed448,
+     rsa_pkcs1_sha1,
+     rsa_pss_rsae,
+     rsa_pss_pss].

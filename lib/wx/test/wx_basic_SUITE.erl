@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2008-2017. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%%-------------------------------------------------------------------
 %%% File    : wx_basic_SUITE.erl
@@ -29,7 +31,8 @@
 	 init_per_testcase/2, end_per_testcase/2]).
 
 -export([silent_start/1, create_window/1, several_apps/1, wx_api/1, wx_misc/1,
-         data_types/1, enums/1, wx_object/1, undef_in_handle_info/1, undef_in_terminate/1,
+         data_types/1, enums/1, wx_object/1, memory/1, undef_in_handle_info/1,
+         undef_in_terminate/1,
          undef_handle_event/1, undef_handle_call/1, undef_handle_cast/1, undef_handle_info/1,
          undef_code_change/1, undef_terminate1/1, undef_terminate2/1
         ]).
@@ -53,7 +56,7 @@ suite() -> [{ct_hooks,[ts_install_cth]}, {timetrap,{minutes,2}}].
 
 all() -> 
     [silent_start, create_window, several_apps, wx_api, wx_misc,
-     data_types, enums, wx_object, {group, undef_callbacks},
+     data_types, enums, memory, wx_object, {group, undef_callbacks},
      undef_in_handle_info, undef_in_terminate].
 
 groups() -> 
@@ -85,7 +88,7 @@ silent_start(_Config) ->
     ?mr(wx_ref, wx:new([{silent_start, false}])),
     wx:destroy(),
 
-    ?mr('EXIT', catch wx:new([{silent_start, foo}])),
+    ?mr('EXIT', wx:new([{silent_start, foo}])),
     
     ok.
 
@@ -170,6 +173,7 @@ wx_api(Config) ->
     ?m(ok,wx:debug(verbose)),
     ?m(ok,wx:debug(trace)),
     ?m(ok,wx:debug(driver)),
+    ?m(ok,wx:debug(none)),
     
     Mem = ?mr(wx_mem, wx:create_memory(10)),
     ?m(true, is_binary(wx:get_memory_bin(Mem))),
@@ -368,9 +372,26 @@ data_types(_Config) ->
     wx:destroy().
 
 enums(TestInfo) when is_atom(TestInfo) -> wx_test_lib:tc_info(TestInfo);
-enums(Config) ->
+enums(_Config) ->
     %% Test that all needed enums are available and have not changed value
     wx_test_enums:test().
+
+memory(TestInfo) when is_atom(TestInfo) -> wx_test_lib:tc_info(TestInfo);
+memory(_Config) ->
+    wx:new(),
+    Mem = wx:create_memory(10),
+    ?m(true, is_binary(wx:get_memory_bin(Mem))),
+    %% Test retain/release
+    ?m(ok, wx:retain_memory(Mem)),
+    ?m(ok, wx:retain_memory(Mem)),   %% Second retain should not crash
+    ?m(ok, wx:retain_memory(Mem)),   %% Third retain
+    ?m(ok, wx:release_memory(Mem)),
+    ?m(ok, wx:release_memory(Mem)),
+    ?m(ok, wx:release_memory(Mem)),
+    %% Release of un-retained block should not crash
+    ?m(ok, wx:release_memory(Mem)),
+    wx:destroy(),
+    ok.
 
 wx_object(TestInfo) when is_atom(TestInfo) -> wx_test_lib:tc_info(TestInfo);
 wx_object(Config) ->
@@ -395,7 +416,7 @@ wx_object(Config) ->
     Me = self(),
     ?m({call, foobar, {Me, _}}, wx_object:call(Frame, foobar)),
     ?m(ok, wx_object:cast(Frame, foobar2)),
-    ?m([{cast, foobar2}|_], flush()),
+    ?m([{cast, foobar2}|_], flush(true)),
 
     ?m(Frame, wx_obj_test:who_are_you(Frame)),
     {call, {Frame,Panel}, _} = wx_object:call(Frame, fun(US) -> US end),
@@ -406,17 +427,17 @@ wx_object(Config) ->
     timeout = wx_object:wait_response(ReqId, 0),
     {reply, {call, yes1, {Me,_}}} = wx_object:wait_response(ReqId, 1000),
     ReqId2 = wx_object:send_request(Frame, yes2),
-    [Msg] = flush(),
+    [Msg] = flush(true),
     no_reply = wx_object:check_response(Msg, ReqId),
     {reply, {call, yes2, {Me,_}}} = wx_object:check_response(Msg, ReqId2),
 
     FramePid = wx_object:get_pid(Frame),
     io:format("wx_object pid ~p~n",[FramePid]),
     FramePid ! foo3,
-    ?m([{info, foo3}], flush()),
+    ?m([{info, foo3}], flush(true)),
 
     ?m(ok, wx_object:cast(Frame, fun(_) -> hehe end)),
-    ?m([{cast, hehe}|_], flush()),
+    ?m([{cast, hehe}|_], flush(true)),
     wxWindow:refresh(Frame),
     ?m([{sync_event, #wx{event=#wxPaint{}}, _}|_], flush()),
     ?m(ok, wx_object:cast(Frame, fun(_) -> timer:sleep(500), slept end)),
@@ -441,13 +462,13 @@ wx_object(Config) ->
     end,
     ?m(ok, receive
 	       {'DOWN', Monitor, _, _, _} ->
-		   ?m([{terminate, wx_deleted}], flush()),
+		   ?m([{terminate, wx_deleted}], flush(true)),
 		   ok
 	   after 1000 ->
 		   Msgs = flush(),
 		   io:format("Error ~p Alive ~p~n",[Msgs, is_process_alive(FramePid)])
 	   end),
-    catch wx:destroy(),
+    try wx:destroy() catch _:_ -> ok end,
     ok.
 
 %% Test that the server crashes correctly if the handle_event callback is
@@ -607,17 +628,23 @@ check_events([{sync_event, #wx{event=#wxPaint{}}, Obj}|Rest], Async, Sync) ->
     ?mt(wxPaintEvent, Obj),
     check_events(Rest, Async, Sync+1);
 check_events([], Async, Sync) ->
-    case Async > 0 of  %% Test sync explictly
+    case Async > 0 of  %% Test sync explicitly
 	true -> ok;
 	false -> {Async, Sync}
     end.
 
 flush() ->
-    flush([], 1500).
+    flush([], false, 1500).
 
-flush(Acc, Wait) ->
+flush(FilterSync) ->
+    flush([], FilterSync, 1500).
+
+flush(Acc, FilterSync, Wait) ->
     receive
-	Msg -> flush([Msg|Acc], Wait div 10)
+        {sync_event, _} when FilterSync ->
+            flush(Acc, FilterSync, Wait);
+	Msg ->
+            flush([Msg|Acc], FilterSync, Wait div 10)
     after Wait ->
 	    lists:reverse(Acc)
     end.

@@ -1,5 +1,12 @@
 #! /bin/sh -f
-# ``Licensed under the Apache License, Version 2.0 (the "License");
+#
+# %CopyrightBegin%
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 1999-2026. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
@@ -10,29 +17,36 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# 
-# The Initial Developer of the Original Code is Ericsson Utvecklings AB.
-# Portions created by Ericsson are Copyright 1999, Ericsson Utvecklings
-# AB. All Rights Reserved.''
-# 
-#     $Id$
+#
+# %CopyrightEnd%
 #
 #
 # Author: Hakan Mattsson <hakan@erix.ericsson.se>
 # Purpose: Simplified execution of the test suite
 #    
-# Usage: mt <args to erlang startup script>
+# Usage: mt <use distribution proxy> <args to erlang startup script>
 
-#top=".."
 top="$ERL_TOP/lib/mnesia"
 h=`hostname`
 p="-pa $top/examples -pa $top/ebin -pa $top/test -mnesia_test_verbose true"
 log=test_log$$
 latest=test_log_latest
+if [ "$1" = "true" ]; then
+    dist_args="-proto_dist gen_tcp_blocking"
+    shift
+elif [ "$1" = "false" ]; then
+    shift
+fi
 args=${1+"$@"}
-erlcmd="erl -sname a $p $args -mnesia_test_timeout"
-erlcmd1="erl -sname a1 $p $args"
-erlcmd2="erl -sname a2 $p $args"
+tmp=$(mktemp -d)
+if [ "$?" != "0" ]; then
+    echo "Failed to create temp directory" >&2
+    exit 1
+fi
+trap 'rm -rf "$tmp"' EXIT
+erlcmd="erl -sname a@localhost $p $args \
+    $dist_args \
+    -mnesia_test_timeout -s mt start_peers a1 a2 $tmp $args"
 
 if test z"$MT_TERM" = z ; then
     MT_TERM=xterm
@@ -61,12 +75,9 @@ case $MT_TERM in
 	exec="-e"
 esac
 
-$MT_TERM $geom1 $title a1 $exec $erlcmd1 &
-$MT_TERM $geom2 $title a2 $exec $erlcmd2 &
-
 rm "$latest" 2>/dev/null
-ln -s "$log" "$latest"
 touch "$log"
+ln -s "$log" "$latest"
 
 echo "$erlcmd1"
 echo ""
@@ -74,10 +85,15 @@ echo "$erlcmd2"
 echo ""
 echo "$erlcmd"
 echo ""
+
+$MT_TERM $geom0 $title a $exec script -c "$erlcmd" -f $log &
+
+sleep 1
+$MT_TERM $geom1 $title a1 $exec to_erl $tmp/a1/ &
+$MT_TERM $geom2 $title a2 $exec to_erl $tmp/a2/ &
+
 echo "Give the following command in order to see the outcome from node a@$h"":"
 echo ""
-echo "	less test_log$$"
-
-$MT_TERM $geom0 $title a $exec script -f -c "$erlcmd" "$log"  &
+echo "	less $log"
 tail -f "$log" | egrep 'Eval|<>ERROR|NYI'
 

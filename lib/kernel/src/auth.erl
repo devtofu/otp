@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,7 +20,18 @@
 %% %CopyrightEnd%
 %%
 -module(auth).
+-moduledoc """
+Erlang network authentication server.
+
+For a description of the Magic Cookie system, refer
+to [Distributed Erlang](`e:system:distributed.md`) in the Erlang Reference
+Manual.
+""".
+-moduledoc(#{ deprecated => ~"See each function for what to use instead" }).
 -behaviour(gen_server).
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}},
+          nowarn_deprecated_catch]).
 
 -export([start_link/0]).
 
@@ -45,16 +58,17 @@
 -type cookie() :: atom().
 -record(state, {
 	  our_cookie    :: cookie(),  %% Our own cookie
-	  other_cookies :: ets:tab()  %% The send-cookies of other nodes
+	  other_cookies :: ets:table()%% The send-cookies of other nodes
 	 }).
 -type state() :: #state{}.
 
--include("../include/file.hrl").
+-include_lib("kernel/include/file.hrl").
 
 %%----------------------------------------------------------------------
 %% Exported functions
 %%----------------------------------------------------------------------
 
+-doc false.
 -spec start_link() -> {'ok',pid()} | {'error', term()} | 'ignore'.
 
 start_link() ->
@@ -62,6 +76,15 @@ start_link() ->
 
 %%--Deprecated interface------------------------------------------------
 
+-doc """
+Returns `yes` if communication with `Node` is authorized.
+
+Use [`net_adm:ping(Node)`](`net_adm:ping/1`) instead.
+
+Notice that a connection to `Node` is established in this case. Returns `no` if
+`Node` does not exist or communication is not authorized (it has another cookie
+than `auth` thinks it has).
+""".
 -spec is_auth(Node) -> 'yes' | 'no' when
       Node :: node().
 
@@ -71,12 +94,17 @@ is_auth(Node) ->
 	pang -> no
     end.
 
+-doc "Use [`erlang:get_cookie()`](`erlang:get_cookie/0`) in ERTS instead.".
 -spec cookie() -> Cookie when
       Cookie :: cookie().
 
 cookie() ->
     get_cookie().
 
+-doc """
+Use [`erlang:set_cookie(node(), Cookie)` in ERTS](`erlang:set_cookie/2`)
+instead.
+""".
 -spec cookie(TheCookie) -> 'true' when
       TheCookie :: Cookie | [Cookie],
       Cookie :: cookie().
@@ -86,11 +114,23 @@ cookie([Cookie]) ->
 cookie(Cookie) ->
     set_cookie(Cookie).
 
+-doc """
+node_cookie([Node, Cookie])
+
+Equivalent to [`node_cookie(Node, Cookie)`](`node_cookie/2`).
+""".
 -spec node_cookie(Cookies :: [node() | cookie(),...]) -> 'yes' | 'no'.
 
 node_cookie([Node, Cookie]) ->
     node_cookie(Node, Cookie).
 
+-doc """
+Sets the magic cookie of `Node` to `Cookie` and verifies the status of the
+authorization.
+
+Equivalent to calling [`erlang:set_cookie(Node, Cookie)`](`erlang:set_cookie/2`),
+followed by [`auth:is_auth(Node)`](`is_auth/1`).
+""".
 -spec node_cookie(Node, Cookie) -> 'yes' | 'no' when
       Node :: node(),
       Cookie :: cookie().
@@ -101,35 +141,62 @@ node_cookie(Node, Cookie) ->
 
 %%--"New" interface-----------------------------------------------------
 
+-doc false.
 -spec get_cookie() -> 'nocookie' | cookie().
 
 get_cookie() ->
-    get_cookie(node()).
+    case whereis(auth) of
+        undefined ->
+            nocookie;
+        AuthPid ->
+            gen_server:call(AuthPid, get_our_cookie, infinity)
+    end.
 
+-doc false.
 -spec get_cookie(Node :: node()) -> 'nocookie' | cookie().
 
-get_cookie(Node) when Node =:= nonode@nohost ->
-    nocookie;
+get_cookie(Node) when Node =:= node() ->
+    get_cookie();
 get_cookie(Node) ->
-    gen_server:call(auth, {get_cookie, Node}, infinity).
+    case whereis(auth) of
+        undefined ->
+            nocookie;
+        AuthPid ->
+            gen_server:call(AuthPid, {get_cookie, Node}, infinity)
+    end.
 
+-doc false.
 -spec set_cookie(Cookie :: cookie()) -> 'true'.
 
 set_cookie(Cookie) ->
-    set_cookie(node(), Cookie).
+    case whereis(auth) of
+        undefined ->
+            erlang:error(distribution_not_started);
+        AuthPid ->
+            gen_server:call(AuthPid, {set_our_cookie, Cookie}, infinity)
+    end.
 
+-doc false.
 -spec set_cookie(Node :: node(), Cookie :: cookie()) -> 'true'.
 
-set_cookie(_Node, _Cookie) when node() =:= nonode@nohost ->
-    erlang:error(distribution_not_started);
+set_cookie(Node, Cookie) when Node =:= node() ->
+    set_cookie(Cookie);
 set_cookie(Node, Cookie) ->
-    gen_server:call(auth, {set_cookie, Node, Cookie}, infinity).
+    case whereis(auth) of
+        undefined ->
+            erlang:error(distribution_not_started);
+        AuthPid ->
+            gen_server:call(AuthPid, {set_cookie, Node, Cookie}, infinity)
+    end.
 
+-doc false.
 -spec sync_cookie() -> any().
 
 sync_cookie() ->
     gen_server:call(auth, sync_cookie, infinity).
 
+
+-doc false.
 -spec print(Node :: node(), Format :: string(), Args :: [_]) -> 'ok'.
 
 print(Node, Format, Args) ->
@@ -137,6 +204,7 @@ print(Node, Format, Args) ->
 
 %%--gen_server callbacks------------------------------------------------
 
+-doc false.
 -spec init([]) -> {'ok', state()}.
 
 init([]) ->
@@ -151,10 +219,11 @@ init([]) ->
                | {'get_cookie', node()}
                | {'set_cookie', node(), term()}.
 
+-doc false.
 -spec handle_call(calls(), {pid(), term()}, state()) ->
         {'reply', 'hello' | 'true' | 'nocookie' | cookie(), state()}.
 
-handle_call({get_cookie, Node}, {_From,_Tag}, State) when Node =:= node() ->
+handle_call(get_our_cookie, {_From,_Tag}, State) ->
     {reply, State#state.our_cookie, State};
 handle_call({get_cookie, Node}, {_From,_Tag}, State) ->
     case ets:lookup(State#state.other_cookies, Node) of
@@ -163,8 +232,7 @@ handle_call({get_cookie, Node}, {_From,_Tag}, State) ->
 	[] ->
 	    {reply, State#state.our_cookie, State}
     end;
-handle_call({set_cookie, Node, Cookie}, {_From,_Tag}, State) 
-  when Node =:= node() ->
+handle_call({set_our_cookie, Cookie}, {_From,_Tag}, State) ->
     {reply, true, State#state{our_cookie = Cookie}};
 
 %%
@@ -192,6 +260,7 @@ handle_call(echo, _From, O) ->
 %% handle_cast/2
 %%
 
+-doc false.
 -spec handle_cast({'print', string(), [term()]}, state()) ->
         {'noreply', state()}.
 
@@ -202,6 +271,7 @@ handle_cast({print,What,Args}, O) ->
 
 %% A series of bad messages that may come (from older distribution versions).
 
+-doc false.
 -spec handle_info(term(), state()) -> {'noreply', state()}.
 
 handle_info({From,badcookie,net_kernel,{From,spawn,_M,_F,_A,_Gleader}}, O) ->
@@ -251,11 +321,13 @@ handle_info({From,badcookie,Name,Mess}, Opened) ->
 handle_info(_, O) ->   % Ignore anything else especially EXIT signals
     {noreply, O}.
 
+-doc false.
 -spec code_change(term(), state(), term()) -> {'ok', state()}.
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
+-doc false.
 -spec terminate(term(), state()) -> 'ok'.
 
 terminate(_Reason, _State) ->
@@ -271,55 +343,148 @@ getnode(P) -> P.
 %%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-%% Read cookie from $HOME/.erlang.cookie and set it.
+%% Read and set cookie from command line or $HOME/.erlang.cookie.
 init_cookie() ->
-    case init:get_argument(nocookie) of
-	error ->
-	    case init:get_argument(setcookie) of
-		{ok, [[C0]]} ->
-		    C = list_to_atom(C0),
-		    #state{our_cookie = C,
-			   other_cookies = ets:new(cookies,
-						   [?COOKIE_ETS_PROTECTION])};
-		_ ->
-		    %% Here is the default 
-		    case read_cookie() of
-			{error, Error} ->
-			    error_logger:error_msg(Error, []),
-			    %% Is this really this serious?
-			    erlang:error(Error);
-			{ok, Co}  ->
-			    #state{our_cookie = list_to_atom(Co),
-				   other_cookies = ets:new(
-						     cookies,
-						     [?COOKIE_ETS_PROTECTION])}
-		    end
-	    end;
-	_Other ->
-	    #state{our_cookie = nocookie,
-		   other_cookies = ets:new(cookies, [?COOKIE_ETS_PROTECTION])}
+    case init:get_argument(setcookie) of
+        error ->
+            init_no_setcookie();
+        {ok, Setcookie} ->
+            init_setcookie(Setcookie, [], #{})
     end.
 
+%% No -setcookie argument
+init_no_setcookie() ->
+    case init:get_argument(nocookie) of
+        error ->
+            %% Here is the default
+            %% - no -setcookie nor -nocookie argument
+            case read_cookie() of
+                {error, Error} ->
+                    error_logger:error_msg(Error, []),
+                    %% Is this really this serious?
+                    erlang:error(Error);
+                {ok, Co}  ->
+                    #state{our_cookie = list_to_atom(Co),
+                           other_cookies = ets_new_cookies()}
+            end;
+        {ok, Nocookie} when is_list(Nocookie) ->
+            %% Ignore the value
+            #state{our_cookie = nocookie,
+                   other_cookies = ets_new_cookies()}
+    end.
+
+%% Process -setcookie options
+init_setcookie([SetCo | Setcookie], OurCookies, OtherCookies) ->
+    case SetCo of
+        %% Collect arity 0 and 1 options as our cookie
+        [] ->
+            init_setcookie(Setcookie, [SetCo | OurCookies], OtherCookies);
+        [_] ->
+            init_setcookie(Setcookie, [SetCo | OurCookies], OtherCookies);
+        [Node, Co] ->
+            %% Collect arity 2 options as other nodes' cookies
+            init_setcookie(
+              Setcookie, OurCookies,
+              case OtherCookies of
+                  #{Node := _} ->
+                      %% If a node's cookie is set more than once
+                      %% we pretend it was not set, a'la how
+                      %% setting our own cookie is handled
+                      OtherCookies#{Node := undefined};
+                  #{} ->
+                      OtherCookies#{Node => Co}
+              end);
+        _ when is_list(SetCo) ->
+            %% Ignore options of arity 3 or more, which changes
+            %% legacy behaviour which was to ignore our own
+            %% cookie due to invalid arity (only valid was 1)
+            init_setcookie(Setcookie, OurCookies, OtherCookies)
+    end;
+init_setcookie([], OurCookies, OtherCookies) ->
+    %% Options collected - handle them
+    State =
+        case OurCookies of
+            [[Co]] ->
+                %% We have no arity 0 and exactly one arity 1
+                %% option i.e our cookie
+                #state{
+                   our_cookie = list_to_atom(Co),
+                   other_cookies = ets_new_cookies()};
+            _ when is_list(OurCookies) ->
+                %% Any other combination of arity 0 and 1 options
+                %% makes us pretend they were not there;
+                %% legacy behaviour - we have no set cookie
+                init_no_setcookie()
+        end,
+    %% Register all other node's cookies (arity 2 options)
+    ets:insert(
+      State#state.other_cookies,
+      [{list_to_atom(Node), list_to_atom(Co)} ||
+          {Node, Co} <- maps:to_list(OtherCookies),
+          Co =/= undefined]),
+    State.
+
+ets_new_cookies() ->
+    ets:new(cookies, [?COOKIE_ETS_PROTECTION]).
+
+%% Read cookie from:
+%%  1. $HOME/.erlang.cookie
+%%  2. $XDG_CONFIG_HOME/erlang/.erlang.cookie
+%%
+%% If neither are present, we generate $HOME/.erlang.cookie
 read_cookie() ->
+    XDGPath = filename:join(
+                filename:basedir(user_config, "erlang"),
+                ".erlang.cookie"),
     case init:get_argument(home) of
 	{ok, [[Home]]} ->
-	    read_cookie(filename:join(Home, ".erlang.cookie"));
+            HomePath = filename:join(Home, ".erlang.cookie"),
+	    case read_cookie(HomePath) of
+                {error, enoent} ->
+                    case read_cookie(XDGPath) of
+                        {error, enoent} ->
+                            case create_cookie(HomePath) of
+                                ok ->
+                                    {ok, Cookie} = read_cookie(HomePath),
+                                    Cookie;
+                                Error -> Error
+                            end;
+                        {ok, Cookie} ->
+                            Cookie;
+                        Error ->
+                            Error
+                    end;
+                {ok, Cookie} ->
+                    Cookie;
+                Error ->
+                    Error
+            end;
 	_ ->
-	    {error, "No home for cookie file"}
+            %% Failed to read find home, try xdg path
+            case read_cookie(XDGPath) of
+                {error, enoent} ->
+                    case create_cookie(XDGPath) of
+                        ok ->
+                            {ok, Cookie} = read_cookie(XDGPath),
+                            Cookie;
+                        Error -> Error
+                    end;
+                {ok, Cookie} ->
+                    Cookie;
+                _Error ->
+                    {error, "No home for cookie file"}
+            end
     end.
 
 read_cookie(Name) ->
     case file:raw_read_file_info(Name) of
 	{ok, #file_info {type=Type, mode=Mode, size=Size}} ->
 	    case check_attributes(Name, Type, Mode, os:type()) of
-		ok -> read_cookie(Name, Size);
+		ok -> {ok, read_cookie(Name, Size)};
 		Error -> Error
 	    end;
-	{error, enoent} ->
-	    case create_cookie(Name) of
-		ok -> read_cookie(Name);
-		Error -> Error
-	    end;
+        {error, enoent} ->
+            {error, enoent};
 	{error, Reason} ->
 	    {error, make_error(Name, Reason)}
     end.
@@ -379,24 +544,24 @@ create_cookie(Name) ->
 	       bxor erlang:unique_integer()),
     Cookie = random_cookie(20, Seed, []),
     case file:open(Name, [write, raw]) of
-	{ok, File} ->
-	    R1 = file:write(File, Cookie),
-	    ok = file:close(File),
-	    R2 = file:raw_write_file_info(Name, make_info(Name)),
-	    case {R1, R2} of
-		{ok, ok} ->
-		    ok;
-		{{error,Reason}, _} ->
-		    {error,
-		     lists:flatten(
-		       io_lib:format("Failed to write to cookie file '~ts': ~p", [Name, Reason]))};
-		{ok, {error, Reason}} ->
-		    {error, "Failed to change mode: " ++ atom_to_list(Reason)}
-	    end;
-	{error,Reason} ->
-	    {error,
-	     lists:flatten(
-	       io_lib:format("Failed to create cookie file '~ts': ~p", [Name, Reason]))}
+        {ok, File} ->
+            R1 = file:write(File, Cookie),
+            ok = file:close(File),
+            R2 = file:raw_write_file_info(Name, make_info(Name)),
+            case {R1, R2} of
+                {ok, ok} ->
+                    ok;
+                {{error,Reason}, _} ->
+                    {error,
+                     lists:flatten(
+                       io_lib:format("Failed to write to cookie file '~ts': ~p", [Name, Reason]))};
+                {ok, {error, Reason}} ->
+                    {error, "Failed to change mode: " ++ atom_to_list(Reason)}
+            end;
+        {error,Reason} ->
+            {error,
+             lists:flatten(
+               io_lib:format("Failed to create cookie file '~ts': ~p", [Name, Reason]))}
     end.
 
 random_cookie(0, _, Result) ->

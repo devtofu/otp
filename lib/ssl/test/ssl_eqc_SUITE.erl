@@ -1,19 +1,22 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2015-2020. All Rights Reserved.
-%% 
-%% The contents of this file are subject to the Erlang Public License,
-%% Version 1.1, (the "License"); you may not use this file except in
-%% compliance with the License. You should have received a copy of the
-%% Erlang Public License along with this software. If not, it can be
-%% retrieved online at http://www.erlang.org/.
-%% 
-%% Software distributed under the License is distributed on an "AS IS"
-%% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See
-%% the License for the specific language governing rights and limitations
-%% under the License.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2015-2026. All Rights Reserved.
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%
 %% %CopyrightEnd%
 %%
 %%
@@ -32,40 +35,56 @@
 
 %% Test cases
 -export([tls_handshake_encoding/1,
+         tls_handshake_extensions/1,
          tls_cipher_suite_names/1,
          tls_cipher_openssl_suite_names/1,
          tls_anon_cipher_suite_names/1,
          tls_anon_cipher_openssl_suite_names/1,
+         tls_signature_algs/1,
          tls_unorded_chains/1,
          tls_extraneous_chain/1,
          tls_extraneous_chains/1,
          tls_extraneous_and_unorder_chains/1,
-         tls_client_cert_auth/1
+         tls_client_cert_auth/1,
+         tls_eccs/1
          ]).
 
 %%--------------------------------------------------------------------
 %% Common Test interface functions -----------------------------------
 %%--------------------------------------------------------------------
 
-all() -> 
+all() ->
     [
      tls_handshake_encoding,
+     tls_handshake_extensions,
      tls_cipher_suite_names,
      tls_cipher_openssl_suite_names,
      tls_anon_cipher_suite_names,
      tls_anon_cipher_openssl_suite_names,
+     tls_signature_algs,
      tls_unorded_chains,
      tls_extraneous_chain,
      tls_extraneous_chains,
      tls_extraneous_and_unorder_chains,
-     tls_client_cert_auth
+     tls_client_cert_auth,
+     tls_eccs
     ].
 
 %%--------------------------------------------------------------------
 init_per_suite(Config) ->
-    ct_property_test:init_per_suite(Config).
-end_per_suite(Config) ->
-    Config.
+    ct:timetrap({seconds, 20}),
+    _ = application:stop(crypto),
+    try application:start(crypto) of
+	ok ->
+            ssl_test_lib:clean_start(),
+            ct_property_test:init_per_suite(Config)
+    catch _:_ ->
+	    {skip, "Crypto did not start"}
+    end.
+
+end_per_suite(_Config) ->
+    ssl:stop(),
+    application:stop(crypto).
 
 init_per_testcase(_, Config0) ->
     Config0.
@@ -77,57 +96,73 @@ end_per_testcase(_TestCase, Config) ->
 %% Test Cases --------------------------------------------------------
 %%--------------------------------------------------------------------
 
+%% Note: In manual test eqc can be replaced by proper to
+%% use the proper tool instead.
+
 tls_handshake_encoding(Config) when is_list(Config) ->
-    %% manual test:  proper:quickcheck(ssl_eqc_handshake:prop_tls_hs_encode_decode()).
+    %% manual test:  eqc:quickcheck(ssl_eqc_handshake:prop_tls_hs_encode_decode()).
     true =  ct_property_test:quickcheck(ssl_eqc_handshake:prop_tls_hs_encode_decode(),
                                         Config).
-
+tls_handshake_extensions(Config) when is_list(Config) ->
+    %% manual test:  eqc:quickcheck(ssl_eqc_handshake:prop_hello_ext_unwrap()).
+    true =  ct_property_test:quickcheck(ssl_eqc_handshake:prop_hello_ext_unwrap(),
+                                        Config).
 tls_cipher_suite_names(Config) when is_list(Config) ->
-    %% manual test:  proper:quickcheck(ssl_eqc_cipher_format:prop_tls_cipher_suite_rfc_name()).
+    %% manual test:  eqc:quickcheck(ssl_eqc_cipher_format:prop_tls_cipher_suite_rfc_name()).
     true =  ct_property_test:quickcheck(ssl_eqc_cipher_format:prop_tls_cipher_suite_rfc_name(),
                                         Config).
 
 tls_cipher_openssl_suite_names(Config) when is_list(Config) ->
-    %% manual test:  proper:quickcheck(ssl_eqc_handshake:prop_tls_cipher_suite_openssl_name()).
+    %% manual test:  eqc:quickcheck(ssl_eqc_handshake:prop_tls_cipher_suite_openssl_name()).
     true =  ct_property_test:quickcheck(ssl_eqc_cipher_format:prop_tls_cipher_suite_openssl_name(),
                                         Config).
 tls_anon_cipher_suite_names(Config) when is_list(Config) ->
-    %% manual test:  proper:quickcheck(ssl_eqc_cipher_format:prop_tls_cipher_suite_rfc_name()).
+    %% manual test:  eqc:quickcheck(ssl_eqc_cipher_format:prop_tls_cipher_suite_rfc_name()).
     true =  ct_property_test:quickcheck(ssl_eqc_cipher_format:prop_tls_anon_cipher_suite_rfc_name(),
                                         Config).
 
 tls_anon_cipher_openssl_suite_names(Config) when is_list(Config) ->
-    %% manual test:  proper:quickcheck(ssl_eqc_handshake:prop_tls_cipher_suite_openssl_name()).
+    %% manual test:  eqc:quickcheck(ssl_eqc_handshake:prop_tls_cipher_suite_openssl_name()).
     true =  ct_property_test:quickcheck(ssl_eqc_cipher_format:prop_tls_anon_cipher_suite_openssl_name(),
                                         Config).
 
+tls_signature_algs(Config) when is_list(Config) ->
+    %% manual test:  eqc:quickcheck(ssl_eqc_handshake:prop_tls_signature_algs()).
+    true =  ct_property_test:quickcheck(ssl_eqc_cipher_format:prop_tls_signature_algs(),
+                                        Config).
+
 tls_unorded_chains(Config) when is_list(Config) ->
-    %% manual test:  proper:quickcheck(ssl_eqc_chain:prop_tls_ordered_path("/tmp")
+    %% manual test:  eqc:quickcheck(ssl_eqc_chain:prop_tls_ordered_path("/tmp")).
     ssl:start(),
     PrivDir = proplists:get_value(priv_dir, Config),
     true =  ct_property_test:quickcheck(ssl_eqc_chain:prop_tls_unordered_path(PrivDir),
                                         Config).
 
 tls_extraneous_chain(Config) when is_list(Config) ->
-    %% manual test:  proper:quickcheck(ssl_eqc_chain:prop_tls_ordered_path("/tmp")
+    %% manual test:  eqc:quickcheck(ssl_eqc_chain:prop_tls_ordered_path("/tmp")).
     ssl:start(),
     PrivDir = proplists:get_value(priv_dir, Config),
     true = ct_property_test:quickcheck(ssl_eqc_chain:prop_tls_extraneous_path(PrivDir),
                                         Config).
 
 tls_extraneous_chains(Config) when is_list(Config) ->
-    %% manual test:  proper:quickcheck(ssl_eqc_chain:prop_tls_ordered_path()
+    %% manual test:  eqc:quickcheck(ssl_eqc_chain:prop_tls_ordered_path()).
     ssl:start(),
     true = ct_property_test:quickcheck(ssl_eqc_chain:prop_tls_extraneous_paths(),
                                        Config).
 tls_extraneous_and_unorder_chains(Config) when is_list(Config) ->
-    %% manual test:  proper:quickcheck(ssl_eqc_chain:prop_tls_ordered_path()
+    %% manual test:  eqc:quickcheck(ssl_eqc_chain:prop_tls_ordered_path()).
     ssl:start(),
     true = ct_property_test:quickcheck(ssl_eqc_chain:prop_tls_extraneous_and_unordered_path(),
                                        Config).
 
 tls_client_cert_auth(Config) when is_list(Config) ->
-    %% manual test:  proper:quickcheck(ssl_eqc_chain:prop_client_cert_auth()
+    %% manual test:  eqc:quickcheck(ssl_eqc_chain:prop_client_cert_auth()).
     ssl:start(),
     true = ct_property_test:quickcheck(ssl_eqc_chain:prop_client_cert_auth(),
+                                       Config).
+tls_eccs(Config) when is_list(Config) ->
+    %% manual test:  eqc:quickcheck(ssl_eqc_ecc:prop_tls_ecc()).
+    ssl:start(),
+    true = ct_property_test:quickcheck(ssl_eqc_ecc:prop_tls_ecc(),
                                        Config).

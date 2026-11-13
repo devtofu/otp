@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2017. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -26,6 +28,8 @@
 	 type_tests/1,guard_bif_binary_part/1]).
 
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
+-include("erts_test_utils.hrl").
 
 -export([init/3]).
 -import(lists, [member/2]).
@@ -55,6 +59,19 @@ bad_tuple(Config) when is_list(Config) ->
     error = bad_tuple1({a, b}),
     x = bad_tuple1({x, b}),
     y = bad_tuple1({a, b, y}),
+
+    ?assertError(badarg, int_to_atom_1(-1)),
+    ?assertError(badarg, int_to_atom_1(0)),
+    ?assertError(badarg, int_to_atom_1(4)),
+    ?assertError(badarg, int_to_atom_1(4.2)),
+    ?assertError(badarg, int_to_atom_1(x)),
+
+    ?assertError(badarg, int_to_atom_2(-1)),
+    ?assertError(badarg, int_to_atom_2(0)),
+    ?assertError(badarg, int_to_atom_2(4)),
+    ?assertError(badarg, int_to_atom_2(3.0)),
+    ?assertError(badarg, int_to_atom_2(x)),
+
     ok.
 
 bad_tuple1(T) when element(1, T) == x ->
@@ -63,6 +80,22 @@ bad_tuple1(T) when element(3, T) == y ->
     y;
 bad_tuple1(_) ->
     error.
+
+int_to_atom_1(N) ->
+    if
+        is_integer(N) ->
+            element(N, {a,b,c});
+        true ->
+            element(N, {a,b,c})
+    end.
+
+int_to_atom_2(N0) ->
+    case id(N0) of
+        N when is_integer(N) ->
+            element(N, {a,b,c});
+        Other ->
+            element(Other, {a,b,c})
+    end.
 
 test_heap_guards(Config) when is_list(Config) ->
     ct:timetrap({minutes, 2}),
@@ -142,21 +175,14 @@ init(Fun, Args, Filler) ->
 dummy(_) ->
     ok.
 
--define(MASK_ERROR(EXPR),mask_error((catch (EXPR)))).
-mask_error({'EXIT',{Err,_}}) ->
-    Err;
-mask_error(Else) ->
-    Else.
 
 %% Test the binary_part/2,3 guard BIF's extensively
 guard_bif_binary_part(Config) when is_list(Config) ->
     %% Overflow tests that need to be unoptimized
-    badarg =
-	?MASK_ERROR(
+    ?assertError(badarg,
 	   binary_part(<<1,2,3>>,{16#FFFFFFFFFFFFFFFF,
 				 -16#7FFFFFFFFFFFFFFF-1})),
-    badarg =
-	?MASK_ERROR(
+    ?assertError(badarg,
 	   binary_part(<<1,2,3>>,{16#FFFFFFFFFFFFFFFF,
 				 16#7FFFFFFFFFFFFFFF})),
     F = fun(X) ->
@@ -218,17 +244,17 @@ do_binary_part_guard() ->
     <<2>> = binary_part(<<1,2,3>>,1,1),
     <<1>> = binary_part(<<2,1,3>>,1,1),
     % Compiler warnings due to constant evaluation expected (3)
-    badarg = ?MASK_ERROR(binary_part(<<1>>,1,1)),
-    badarg = ?MASK_ERROR(binary_part(<<>>,1,1)),
-    badarg = ?MASK_ERROR(binary_part(apa,1,1)),
+    ?assertError(badarg, binary_part(<<1>>,1,1)),
+    ?assertError(badarg, binary_part(<<>>,1,1)),
+    ?assertError(badarg, binary_part(apa,1,1)),
     <<3,3>> = binary_part(<<2,3,3>>,1,2),
     % Direct call through apply
     <<2>> = apply(erlang,binary_part,[<<1,2,3>>,1,1]),
     <<1>> = apply(erlang,binary_part,[<<2,1,3>>,1,1]),
     % Compiler warnings due to constant evaluation expected (3)
-    badarg = ?MASK_ERROR(apply(erlang,binary_part,[<<1>>,1,1])),
-    badarg = ?MASK_ERROR(apply(erlang,binary_part,[<<>>,1,1])),
-    badarg = ?MASK_ERROR(apply(erlang,binary_part,[apa,1,1])),
+    ?assertError(badarg, apply(erlang,binary_part,[<<1>>,1,1])),
+    ?assertError(badarg, apply(erlang,binary_part,[<<>>,1,1])),
+    ?assertError(badarg, apply(erlang,binary_part,[apa,1,1])),
     <<3,3>> = apply(erlang,binary_part,[<<2,3,3>>,1,2]),
     % Constant propagation
      Bin = <<1,2,3>>,
@@ -310,7 +336,7 @@ guard_bifs(Config) when is_list(Config) ->
     Big = -237849247829874297658726487367328971246284736473821617265433,
     Float = 387924.874,
 
-    %% Succeding use of guard bifs.
+    %% Succeeding use of guard bifs.
 
     try_gbif('abs/1', Big, -Big),
     try_gbif('float/1', Big, float(Big)),
@@ -391,6 +417,18 @@ guard_bifs(Config) when is_list(Config) ->
     try_fail_gbif('node/0', 0, xxxx),
     try_fail_gbif('node/1', self(), xxx),
     try_fail_gbif('node/1', yyy, xxx),
+
+    ?assertError(function_clause, gh_6634({a,b})),
+    ?assertError(function_clause, gh_6634(42)),
+
+    ok.
+
+gh_6634(X) when is_tuple(X) andalso not ok ->
+    %% `not ok` would be translated to an is_eq_exact instruction,
+    %% which the JIT would not handle correctly because it had two
+    %% immediate operands. In a release build incorrect code would be
+    %% generated, which might crash the runtime system; in a debug
+    %% build an assertion would fire at load time.
     ok.
 
 try_gbif(Id, X, Y) ->
@@ -402,12 +440,9 @@ try_gbif(Id, X, Y) ->
     end.
 
 try_fail_gbif(Id, X, Y) ->
-    case catch guard_bif(Id, X, Y) of
-	{'EXIT',{function_clause,[{?MODULE,guard_bif,[Id,X,Y],_}|_]}} ->
-	    io:format("guard_bif(~p, ~p, ~p) -- ok", [Id,X,Y]);
-	Other ->
-            ct:fail("guard_bif(~p, ~p, ~p) -- bad result: ~p\n", [Id, X, Y, Other])
-    end.
+    ?AssertErrorStack(function_clause,
+                      [{?MODULE,guard_bif,[Id,X,Y],_}|_],
+                      guard_bif(Id, X, Y)).
 
 guard_bif('abs/1', X, Y) when abs(X) == Y ->
     {'abs/1', X, Y};
@@ -462,21 +497,19 @@ type_tests(Test, [Type|T], Allowed) ->
     {TypeTag, Value} = Type,
     case member(TypeTag, Allowed) of
 	true ->
-	    case catch type_test(Test, Value) of
+            try type_test(Test, Value) of
 		Test ->
 		    ok;
 		_Other ->
+                    io:format("Test ~p(~p) failed", [Test, Value]),
+                    put(errors, get(errors) + 1)
+            catch
+                _:_ ->
 		    io:format("Test ~p(~p) failed", [Test, Value]),
 		    put(errors, get(errors) + 1)
 	    end;
 	false ->
-	    case catch type_test(Test, Value) of
-		{'EXIT',{function_clause,
-			 [{?MODULE,type_test,[Test,Value],Loc}|_]}}
-		when is_list(Loc) ->
-		    ok;
-		{'EXIT',Other} ->
-		    ct:fail({unexpected_error_reason,Other});
+            try type_test(Test, Value) of
 		tuple when is_function(Value) ->
 		    io:format("Standard violation: Test ~p(~p) should fail",
 			      [Test, Value]),
@@ -484,6 +517,17 @@ type_tests(Test, [Type|T], Allowed) ->
 		_Other ->
 		    io:format("Test ~p(~p) succeeded (should fail)", [Test, Value]),
 		    put(errors, get(errors) + 1)
+            catch
+                error:function_clause:Stk ->
+                    case Stk of
+                        [{?MODULE,type_test,[Test,Value],Loc}|_]
+                        when is_list(Loc) ->
+                            ok;
+                        _ ->
+                            ct:fail({unexpected_error_reason,function_clause})
+                    end;
+                _:Other ->
+                    ct:fail({unexpected_error_reason,Other})
 	    end
     end,
     type_tests(Test, T, Allowed);

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -69,7 +71,8 @@
 	  read_compressed_cooked/1, read_compressed_cooked_binary/1,
 	  read_cooked_tar_problem/1,
 	  write_compressed/1, compress_errors/1, catenated_gzips/1,
-	  compress_async_crash/1]).
+	  compress_async_crash/1,
+          zstd/1]).
 
 -export([ make_link/1, read_link_info_for_non_link/1, symlinks/1]).
 
@@ -81,8 +84,6 @@
 
 -export([ipread/1]).
 
--export([pid2name/1]).
-
 -export([interleaved_read_write/1]).
 
 -export([unicode/1]).
@@ -90,7 +91,8 @@
 
 -export([large_file/0, large_file/1, large_write/0, large_write/1]).
 
--export([read_line_1/1, read_line_2/1, read_line_3/1,read_line_4/1]).
+-export([read_line_1/1,read_line_2/1,read_line_3/1,read_line_4/1,read_line_5/1,
+         read_line_6/1]).
 
 -export([advise/1]).
 
@@ -136,9 +138,9 @@ all() ->
      {group, files}, delete, rename, names, volume_relative_paths, unc_paths,
      {group, errors}, {group, compression}, {group, links}, copy,
      delayed_write, read_ahead, segment_read, segment_write,
-     ipread, pid2name, interleaved_read_write, otp_5814, otp_10852,
+     ipread, interleaved_read_write, otp_5814, otp_10852,
      large_file, large_write, read_line_1, read_line_2, read_line_3,
-     read_line_4, standard_io, old_io_protocol,
+     read_line_4, read_line_5, read_line_6, standard_io, old_io_protocol,
      unicode_mode, {group, bench}
     ].
 
@@ -171,7 +173,8 @@ groups() ->
       [read_compressed_cooked, read_compressed_cooked_binary,
        read_cooked_tar_problem, read_not_really_compressed,
        write_compressed, compress_errors, catenated_gzips,
-       compress_async_crash]},
+       compress_async_crash,
+       zstd]},
      {links, [],
       [make_link, read_link_info_for_non_link, symlinks]},
      {bench, [],
@@ -535,6 +538,9 @@ read_write_file(Config) when is_list(Config) ->
     {error, enoent} = ?FILE_MODULE:read_file(Name2),
     {error, enoent} = ?FILE_MODULE:read_file(""),
     {error, enoent} = ?FILE_MODULE:read_file(''),
+    {error, enoent} = ?FILE_MODULE:read_file(Name2, [raw]),
+    {error, enoent} = ?FILE_MODULE:read_file("", [raw]),
+    {error, enoent} = ?FILE_MODULE:read_file('', [raw]),
 
     %% Try writing to a bad filename
     {error, enoent} = do_read_write_file("", Bin2),
@@ -559,12 +565,15 @@ do_read_write_file(Name, Data) ->
 	ok ->
 	    BinData = iolist_to_binary(Data),
 	    {ok,BinData} = ?FILE_MODULE:read_file(Name),
+	    {ok,BinData} = ?FILE_MODULE:read_file(Name, [raw]),
 
 	    ok = ?FILE_MODULE:write_file(Name, Data, []),
 	    {ok,BinData} = ?FILE_MODULE:read_file(Name),
+	    {ok,BinData} = ?FILE_MODULE:read_file(Name, [raw]),
 
 	    ok = ?FILE_MODULE:write_file(Name, Data, [raw]),
 	    {ok,BinData} = ?FILE_MODULE:read_file(Name),
+	    {ok,BinData} = ?FILE_MODULE:read_file(Name, [raw]),
 
 	    ok;
 	{error,_}=Res ->
@@ -809,10 +818,12 @@ list_dir_1(TestDir, Cnt, Sorted0) ->
 
 untranslatable_names(Config) ->
     case no_untranslatable_names() of
-	true ->
-	    {skip,"Not a problem on this OS"};
 	false ->
-	    untranslatable_names_1(Config)
+	    untranslatable_names_1(Config);
+        os ->
+	    {skip,"Not a problem on this OS"};
+        fs ->
+            {skip,"Not a problem on this FS"}
     end.
 
 untranslatable_names_1(Config) ->
@@ -820,7 +831,7 @@ untranslatable_names_1(Config) ->
     PrivDir = proplists:get_value(priv_dir, Config),
     Dir = filename:join(PrivDir, "untranslatable_names"),
     ok = file:make_dir(Dir),
-    Node = start_node(untranslatable_names, "+fnu"),
+    {ok, Peer, Node} = ?CT_PEER(["+fnu"]),
     try
 	ok = file:set_cwd(Dir),
 	[ok = file:write_file(F, F) || {_,F} <- untranslatable_names()],
@@ -841,19 +852,21 @@ untranslatable_names_1(Config) ->
 	io:format("ExpectedListDirAll: ~p\n", [ExpectedListDirAll]),
 	ExpectedListDirAll = call_and_sort(Node, file, list_dir_all, [Dir])
     after
-	catch test_server:stop_node(Node),
+	catch peer:stop(Peer),
 	file:set_cwd(OldCwd),
-	[file:delete(F) || {_,F} <- untranslatable_names()],
+        [file:delete(filename:join(Dir, F)) || {_,F} <- untranslatable_names()],
 	file:del_dir(Dir)
     end,
     ok.
 
 untranslatable_names_error(Config) ->
     case no_untranslatable_names() of
-	true ->
-	    {skip,"Not a problem on this OS"};
 	false ->
-	    untranslatable_names_error_1(Config)
+	    untranslatable_names_error_1(Config);
+        os ->
+	    {skip,"Not a problem on this OS"};
+        fs ->
+            {skip,"Not a problem on this FS"}
     end.
 
 untranslatable_names_error_1(Config) ->
@@ -861,7 +874,7 @@ untranslatable_names_error_1(Config) ->
     PrivDir = proplists:get_value(priv_dir, Config),
     Dir = filename:join(PrivDir, "untranslatable_names_error"),
     ok = file:make_dir(Dir),
-    Node = start_node(untranslatable_names, "+fnue"),
+    {ok, Peer, Node} = ?CT_PEER(["+fnue"]),
     try
 	ok = file:set_cwd(Dir),
 	[ok = file:write_file(F, F) || {_,F} <- untranslatable_names()],
@@ -875,9 +888,9 @@ untranslatable_names_error_1(Config) ->
 	true = lists:keymember(BadFile, 2, untranslatable_names())
 
     after
-	catch test_server:stop_node(Node),
+	catch peer:stop(Peer),
 	file:set_cwd(OldCwd),
-	[file:delete(F) || {_,F} <- untranslatable_names()],
+        [file:delete(filename:join(Dir, F)) || {_,F} <- untranslatable_names()],
 	file:del_dir(Dir)
     end,
     ok.
@@ -896,22 +909,22 @@ call_and_sort(Node, M, F, A) ->
 
 no_untranslatable_names() ->
     case os:type() of
-	{unix,darwin} -> true;
-	{win32,_} -> true;
-	_ -> false
+	{unix,darwin} -> os;
+	{win32,_} -> os;
+	_ ->
+            %% If we are using utf8only on zfs then we cannot create latin1 characters.
+            case os:find_executable("zfs") of
+                false ->
+                    false;
+                _Zfs ->
+                    case os:cmd("zfs get utf8only `pwd` | grep utf8only | awk '{print $3}'") of
+                        "on" ++ _ ->
+                            fs;
+                        _ ->
+                            false
+                    end
+            end
     end.
-
-start_node(Name, Args) ->
-    [_,Host] = string:lexemes(atom_to_list(node()), "@"),
-    ct:log("Trying to start ~w@~s~n", [Name,Host]),
-    case test_server:start_node(Name, peer, [{args,Args}]) of
-	{error,Reason} ->
-	    ct:fail(Reason);
-	{ok,Node} ->
-	    ct:log("Node ~p started~n", [Node]),
-	    Node
-    end.
-
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -1089,7 +1102,7 @@ close(Config) when is_list(Config) ->
     {ok,Fd1} = ?FILE_MODULE:open(Name,read_write),
     %% Just closing it is no fun, we did that a million times already
     %% This is a common error, for code written before Erlang 4.3
-    %% bacause then ?FILE_MODULE:open just returned a Pid, and not everyone
+    %% because then ?FILE_MODULE:open just returned a Pid, and not everyone
     %% really checked what they got.
     {'EXIT',_Msg} = (catch ok = ?FILE_MODULE:close({ok,Fd1})),
     ok = ?FILE_MODULE:close(Fd1),
@@ -1253,7 +1266,7 @@ append(Config) when is_list(Config) ->
     ok = ?FILE_MODULE:make_dir(NewDir),
 
     First = "First line\n",
-    Second = "Seond lines comes here\n",
+    Second = "Second lines comes here\n",
     Third = "And here is the third line\n",
 
     %% Write a small text file.
@@ -1415,8 +1428,8 @@ file_info_basic_file(Config) when is_list(Config) ->
 
     %% Create a short file.
     Name = filename:join(RootDir,
-			 atom_to_list(?MODULE)
-			 ++"_basic_test.fil"),
+			 atom_to_list(?MODULE) ++ "_" ++
+                         atom_to_list(?FUNCTION_NAME) ++ ".fil"),
     {ok,Fd1} = ?FILE_MODULE:open(Name, write),
     io:put_chars(Fd1, "foo bar"),
     ok = ?FILE_MODULE:close(Fd1),
@@ -1521,8 +1534,8 @@ file_info_int(Config) ->
     io:format("RootDir = ~p", [RootDir]),
 
     Name = filename:join(RootDir,
-			 atom_to_list(?MODULE)
-			 ++"_file_info.fil"),
+			 atom_to_list(?MODULE) ++ "_" ++
+                         atom_to_list(?FUNCTION_NAME) ++ ".fil"),
     {ok,Fd1} = ?FILE_MODULE:open(Name,write),
     io:put_chars(Fd1,"foo"),
 
@@ -1600,8 +1613,8 @@ file_handle_info_basic_file(Config) when is_list(Config) ->
 
     %% Create a short file.
     Name = filename:join(RootDir,
-			 atom_to_list(?MODULE)
-			 ++"_basic_test.fil"),
+			 atom_to_list(?MODULE) ++ "_" ++
+			 atom_to_list(?FUNCTION_NAME) ++ ".fil"),
     {ok,Fd1} = ?FILE_MODULE:open(Name, write),
     io:put_chars(Fd1, "foo bar"),
     ok = ?FILE_MODULE:close(Fd1),
@@ -1696,8 +1709,8 @@ file_handle_info_int(Config) ->
     io:format("RootDir = ~p", [RootDir]),
 
     Name = filename:join(RootDir,
-			 atom_to_list(?MODULE)
-			 ++"_file_info.fil"),
+			 atom_to_list(?MODULE) ++ "_" ++
+			 atom_to_list(?FUNCTION_NAME) ++ ".fil"),
     {ok,Fd1} = ?FILE_MODULE:open(Name, write),
     io:put_chars(Fd1,"foo"),
     {ok,FileInfo1} = ?FILE_MODULE:read_file_info(Fd1),
@@ -2238,7 +2251,7 @@ allocate(Config) when is_list(Config) ->
 
 allocate_and_assert(Fd, Offset, Length) ->
     %% Just verify that calls to ?PRIM_FILE:allocate/3 don't crash or have
-    %% any other negative side effect. We can't really asssert against a
+    %% any other negative side effect. We can't really assert against a
     %% specific return value, because support for file space pre-allocation
     %% depends on the OS, OS version and underlying filesystem.
     %%
@@ -2329,6 +2342,23 @@ delete(Config) when is_list(Config) ->
     {error, _} = ?FILE_MODULE:open(Name2, read),
     %% Try deleting a nonexistent file with the raw option
     {error, enoent} = ?FILE_MODULE:delete(Name2, [raw]),
+
+    Name3 = filename:join(RootDir,
+                          atom_to_list(?MODULE)
+                          ++"_delete_3.fil"),
+    {ok, Fd5} = ?FILE_MODULE:open(Name3, write),
+    io:format(Fd5,"ok.\n",[]),
+    ok = ?FILE_MODULE:close(Fd5),
+    %% Check that the file is readable
+    {ok, Fd6} = ?FILE_MODULE:open(Name3, read),
+    ok = ?FILE_MODULE:close(Fd6),
+    %% Try deleting with no option, should be equivalent to delete/1
+    ok = ?FILE_MODULE:delete(Name3, []),
+    %% Check that the file is not readable anymore
+    {error, _} = ?FILE_MODULE:open(Name3, read),
+    %% Try deleting a nonexistent file with no option
+    {error, enoent} = ?FILE_MODULE:delete(Name3, []),
+
     [] = flush(),
     ok.
 
@@ -2603,7 +2633,7 @@ e_rename(Config) when is_list(Config) ->
 				      ok ->
 					  {ok, {comment,
 						"Moving between filesystems "
-						"suceeded, files are probably "
+						"succeeded, files are probably "
 						"in the same filesystem!"}};
 				      {error, eperm} ->
 					  {ok, {comment, "SBS! You don't "
@@ -2998,6 +3028,25 @@ compress_async_crash_loop(N, Path, ExpectedData) ->
             ct:fail(worker_timeout)
     end,
     compress_async_crash_loop(N - 1, Path, ExpectedData).
+
+zstd(Config) when is_list(Config) ->
+    DataDir = proplists:get_value(data_dir, Config),
+    Path = filename:join(DataDir, "test.zstd"),
+    ExpectedData = <<"qwerty">>,
+
+    _ = ?FILE_MODULE:delete(Path),
+    {ok, FdW} = ?FILE_MODULE:open(Path, [write, binary, {zstd, #{}}]),
+    ok = ?FILE_MODULE:write(FdW, ExpectedData),
+    ok = ?FILE_MODULE:close(FdW),
+
+    {ok, FdR} = ?FILE_MODULE:open(Path, [read, binary, {zstd, #{}}]),
+    {ok, ExpectedData} = ?FILE_MODULE:read(FdR, 1 bsl 10),
+    ok = ?FILE_MODULE:close(FdR),
+
+    {ok, Compressed} = ?FILE_MODULE:read_file(Path),
+    ExpectedData = iolist_to_binary(zstd:decompress(Compressed)),
+
+    ok.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -3434,24 +3483,6 @@ delayed_write(Config) when is_list(Config) ->
     ok = ?FILE_MODULE:close(Fd5),
     %%
     [] = flush(),
-    ok.
-
-
-%% Tests file:pid2name/1.
-pid2name(Config) when is_list(Config) ->
-    RootDir = proplists:get_value(priv_dir, Config),
-    Base = test_server:temp_name(
-	     filename:join(RootDir, "pid2name_")),
-    Name1 = [Base, '.txt'],
-    Name2 = Base ++ ".txt",
-    %%
-    {ok, Pid} = file:open(Name1, [write]),
-    {ok, Name2} = file:pid2name(Pid),
-    undefined = file:pid2name(self()),
-    ok = file:close(Pid),
-    ct:sleep(1000),
-    false = is_process_alive(Pid),
-    undefined = file:pid2name(Pid),
     ok.
 
 
@@ -4003,50 +4034,62 @@ ok.
 
 %% OTP-10852. +fnu and latin1 filenames.
 otp_10852(Config) when is_list(Config) ->
-    Node = start_node(erl_pp_helper, "+fnu"),
+    case no_untranslatable_names() of
+        fs ->
+            {skip,"Not a problem on this FS"};
+	_ ->
+	    otp_10852_1(Config)
+    end.
+
+otp_10852_1(Config) ->
+    {ok, Peer, Node} = ?CT_PEER(["+fnu"]),
     Dir = proplists:get_value(priv_dir, Config),
     B = filename:join(Dir, <<"\xE4">>),
-    ok = rpc_call(Node, get_cwd, [B]),
-    {error, no_translation} = rpc_call(Node, set_cwd, [B]),
-    ok = rpc_call(Node, delete, [B]),
-    ok = rpc_call(Node, rename, [B, B]),
-    ok = rpc_call(Node, read_file_info, [B]),
-    ok = rpc_call(Node, read_link_info, [B]),
-    ok = rpc_call(Node, read_link, [B]),
-    ok = rpc_call(Node, write_file_info, [B,#file_info{}]),
-    ok = rpc_call(Node, list_dir, [B]),
-    ok = rpc_call(Node, list_dir_all, [B]),
-    ok = rpc_call(Node, read_file, [B]),
-    ok = rpc_call(Node, make_link, [B,B]),
-    case rpc_call(Node, make_symlink, [B,B]) of
-        {error, eilseq} ->
-            %% Some versions of OS X refuse to create files with illegal names.
-            {unix,darwin} = os:type();
-        {error, eperm} ->
-            %% The test user might not have permission to create symlinks.
-            {win32,_} = os:type();
-        ok ->
-            ok
+    try
+        ok = rpc_call(Node, get_cwd, [B]),
+        {error, no_translation} = rpc_call(Node, set_cwd, [B]),
+        ok = rpc_call(Node, delete, [B]),
+        ok = rpc_call(Node, rename, [B, B]),
+        ok = rpc_call(Node, read_file_info, [B]),
+        ok = rpc_call(Node, read_link_info, [B]),
+        ok = rpc_call(Node, read_link, [B]),
+        ok = rpc_call(Node, write_file_info, [B,#file_info{}]),
+        ok = rpc_call(Node, list_dir, [B]),
+        ok = rpc_call(Node, list_dir_all, [B]),
+        ok = rpc_call(Node, read_file, [B]),
+        ok = rpc_call(Node, make_link, [B,B]),
+        case rpc_call(Node, make_symlink, [B,B]) of
+            {error, eilseq} ->
+                %% Some versions of OS X refuse to create files with illegal names.
+                {unix,darwin} = os:type();
+            {error, eperm} ->
+                %% The test user might not have permission to create symlinks.
+                {win32,_} = os:type();
+            ok ->
+                ok
+        end,
+        ok = rpc_call(Node, delete, [B]),
+        case rpc_call(Node, make_dir, [B]) of
+            {error, eilseq} ->
+                {unix,darwin} = os:type();
+            ok ->
+                ok
+        end,
+        ok = rpc_call(Node, del_dir, [B]),
+        case rpc_call(Node, write_file, [B,B]) of
+            {error, eilseq} ->
+                {unix,darwin} = os:type();
+            ok ->
+                {ok, Fd} = rpc_call(Node, open, [B,[read]]),
+                ok = rpc_call(Node, close, [Fd]),
+                {ok,0} = rpc_call(Node, copy, [B,B]),
+                {ok, Fd2, B} = rpc_call(Node, path_open, [["."], B, [read]]),
+                ok = rpc_call(Node, close, [Fd2])
+        end
+    after
+        file:delete(B),
+        peer:stop(Peer)
     end,
-    ok = rpc_call(Node, delete, [B]),
-    case rpc_call(Node, make_dir, [B]) of
-        {error, eilseq} ->
-            {unix,darwin} = os:type();
-        ok ->
-            ok
-    end,
-    ok = rpc_call(Node, del_dir, [B]),
-    case rpc_call(Node, write_file, [B,B]) of
-        {error, eilseq} ->
-            {unix,darwin} = os:type();
-        ok ->
-            {ok, Fd} = rpc_call(Node, open, [B,[read]]),
-            ok = rpc_call(Node, close, [Fd]),
-            {ok,0} = rpc_call(Node, copy, [B,B]),
-            {ok, Fd2, B} = rpc_call(Node, path_open, [["."], B, [read]]),
-            ok = rpc_call(Node, close, [Fd2])
-    end,
-    true = test_server:stop_node(Node),
     ok.
 
 rpc_call(N, F, As) ->
@@ -4104,6 +4147,30 @@ do_large_file(Name) ->
     {ok,R}   = ?FILE_MODULE:read(F1, L+1),
     ok       = ?FILE_MODULE:close(F1),
 
+    %% Reopen the file try to read all of it; used to fail on macOS
+    %% We open with binary in order to not get a memory explosion.
+    {ok, F2} = ?FILE_MODULE:open(Name, [raw,read,binary]),
+    IsWindows = element(1,os:type()) =:= win32,
+    case {?FILE_MODULE:read(F2, P), erlang:system_info(wordsize)} of
+        {{ok, B}, 8} ->
+            P = byte_size(B);
+        {eof, 8} when IsWindows ->
+            ok;
+        {eof, 4} ->
+            %% Cannot read such large files on 32-bit
+            ok;
+        {{error,enomem}, 8} ->
+            case memsize() of
+                MemSize when MemSize < 12_000_000_000 ->
+                    %% Expected memory fail.
+                    ok;
+                _ ->
+                    %% Memory should be sufficient.
+                    error(enomem)
+            end
+    end,
+    ok = ?FILE_MODULE:close(F2),
+
     ok.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -4131,6 +4198,10 @@ do_large_write(Name) ->
 	    Bin = <<0:Size/unit:8>>,
 	    ok = file:write_file(Name, Bin),
 	    {ok,#file_info{size=Size}} = file:read_file_info(Name),
+
+            %% Even multiples of MAX_SYSIOVEC_IOVLEN would cause a crash
+            ok = file:write_file(Name, binary:part(Bin, 0, 1 bsl 31)),
+	    {ok,#file_info{size=1 bsl 31}} = file:read_file_info(Name),
 	    ok
     end.
 
@@ -4536,6 +4607,50 @@ read_line_4(Config) when is_list(Config) ->
       end || {_,File,_,Y} <- All , Y =:= fail],
     read_line_remove_files(All),
     ok.
+%% read_line with ram file.
+read_line_5(Config) when is_list(Config) ->
+    PrivDir = proplists:get_value(priv_dir, Config),
+    All = read_line_testdata(PrivDir),
+    read_line_create_files(All),
+    [ begin
+          io:format("read_line_all: ~s~n",[File]),
+          {X,_} = read_line_all5(File),
+          true
+      end || {_,File,X,_} <- All ],
+    [ begin
+          io:format("read_line_all_alternating: ~s~n",[File]),
+          {Y,_} = read_line_all_alternating5(File),
+          true
+      end || {_,File,_,Y} <- All , Y =/= fail],
+    [ begin
+          io:format("read_line_all_alternating (failing as should): ~s~n",[File]),
+          {'EXIT',_} = (catch read_line_all_alternating5(File)),
+          true
+      end || {_,File,_,Y} <- All , Y =:= fail],
+    read_line_remove_files(All),
+    ok.
+%% read_line with cooked ram file.
+read_line_6(Config) when is_list(Config) ->
+    PrivDir = proplists:get_value(priv_dir, Config),
+    All = read_line_testdata(PrivDir),
+    read_line_create_files(All),
+    [ begin
+          io:format("read_line_all: ~s~n",[File]),
+          {X,_} = read_line_all6(File),
+          true
+      end || {_,File,X,_} <- All ],
+    [ begin
+          io:format("read_line_all_alternating: ~s~n",[File]),
+          {Y,_} = read_line_all_alternating6(File),
+          true
+      end || {_,File,_,Y} <- All , Y =/= fail],
+    [ begin
+          io:format("read_line_all_alternating (failing as should): ~s~n",[File]),
+          {'EXIT',_} = (catch read_line_all_alternating6(File)),
+          true
+      end || {_,File,_,Y} <- All , Y =:= fail],
+    read_line_remove_files(All),
+    ok.
 
 rl_lines() ->
     [ <<"hej">>,<<"hopp">>,<<"i">>,<<"lingon\rskogen">>].
@@ -4650,6 +4765,24 @@ read_line_all4(Filename) ->
     Bin = re:replace(list_to_binary([element(2,file:read_file(Filename))]),
 		     "\r\n","\n",[global,{return,binary}]),
     {length(X),Bin}.
+read_line_all5(Filename) ->
+    {ok, Content} = file:read_file(Filename),
+    {ok,F} = file:open(Content,[read,binary,ram]),
+    X=read_rl_lines2(F),
+    file:close(F),
+    Bin = list_to_binary([B || {ok,B} <- X]),
+    Bin = re:replace(list_to_binary([element(2,file:read_file(Filename))]),
+                     "\r\n","\n",[global,{return,binary}]),
+    {length(X),Bin}.
+read_line_all6(Filename) ->
+    {ok, Content} = file:read_file(Filename),
+    {ok,F} = file:open(Content,[read,binary,ram,cooked]),
+    X=read_rl_lines2(F),
+    file:close(F),
+    Bin = list_to_binary([B || {ok,B} <- X]),
+    Bin = re:replace(list_to_binary([element(2,file:read_file(Filename))]),
+                     "\r\n","\n",[global,{return,binary}]),
+    {length(X),Bin}.
 
 read_rl_lines(F) ->
     case ?PRIM_FILE:read_line(F) of
@@ -4703,6 +4836,24 @@ read_line_all_alternating4(Filename) ->
     Bin = list_to_binary([B || {ok,B} <- X]),
     Bin = re:replace(list_to_binary([element(2,file:read_file(Filename))]),
 		     "\r\n","\n",[global,{return,binary}]),
+    {length(X),Bin}.
+read_line_all_alternating5(Filename) ->
+    {ok, Content} = file:read_file(Filename),
+    {ok,F} = file:open(Content,[read,binary,ram]),
+    X=read_rl_lines2(F,true),
+    file:close(F),
+    Bin = list_to_binary([B || {ok,B} <- X]),
+    Bin = re:replace(list_to_binary([element(2,file:read_file(Filename))]),
+                     "\r\n","\n",[global,{return,binary}]),
+    {length(X),Bin}.
+read_line_all_alternating6(Filename) ->
+    {ok, Content} = file:read_file(Filename),
+    {ok,F} = file:open(Content,[read,binary,ram,cooked]),
+    X=read_rl_lines2(F,true),
+    file:close(F),
+    Bin = list_to_binary([B || {ok,B} <- X]),
+    Bin = re:replace(list_to_binary([element(2,file:read_file(Filename))]),
+                     "\r\n","\n",[global,{return,binary}]),
     {length(X),Bin}.
 
 read_rl_lines(F,Alternate) ->
@@ -4809,28 +4960,37 @@ do_run_large_file_test(Config, Run, Name0) ->
     Name = filename:join(proplists:get_value(priv_dir, Config),
 			 ?MODULE_STRING ++ Name0),
 
+    %% We run the test in a peer node in case the OOM killer
+    {ok, Peer, Node} = ?CT_PEER(),
+
+    erpc:call(Node, application, ensure_all_started, [os_mon]),
+
     %% Set up a process that will delete this file.
     Tester = self(),
     Deleter = 
-	spawn(
-	  fun() ->
-		  Mref = erlang:monitor(process, Tester),
-		  receive
-		      {'DOWN',Mref,_,_,_} -> ok;
-		      {Tester,done} -> ok
-		  end,
-		  ?FILE_MODULE:delete(Name)
-	  end),
+        spawn(
+          fun() ->
+                  Mref = erlang:monitor(process, Tester),
+                  receive
+                      {'DOWN',Mref,_,_,_} -> ok;
+                      {Tester,done} -> ok
+                  end,
+                  ?FILE_MODULE:delete(Name)
+          end),
 
     %% Run the test case.
-    Res = Run(Name),
+    try
+        Res = erpc:call(Node, fun() -> Run(Name) end),
 
-    %% Delete file and finish deleter process.
-    Mref = erlang:monitor(process, Deleter),
-    Deleter ! {Tester,done},
-    receive {'DOWN',Mref,_,_,_} -> ok end,
+        %% Delete file and finish deleter process.
+        Mref = erlang:monitor(process, Deleter),
+        Deleter ! {Tester,done},
+        receive {'DOWN',Mref,_,_,_} -> ok end,
 
-    Res.
+        Res
+    after
+        peer:stop(Peer)
+    end.
 
 disc_free(Path) ->
     Data = disksup:get_disk_data(),
@@ -4848,5 +5008,10 @@ disc_free(Path) ->
     end.
 
 memsize() ->
-    {Tot,_Used,_}  = memsup:get_memory_data(),
-    Tot.
+    case proplists:get_value(available_memory, memsup:get_system_memory_data()) of
+        undefined ->
+            {Tot,_Used,_}  = memsup:get_memory_data(),
+            Tot;
+        Available ->
+            Available
+    end.

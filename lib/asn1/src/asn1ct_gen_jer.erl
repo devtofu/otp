@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2019-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2019-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,6 +21,10 @@
 %%
 %%
 -module(asn1ct_gen_jer).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}},
+          {nowarn_possibly_unsafe_function, {erlang, binary_to_atom, 1}}]).
 
 %% Generate erlang module which handles (PER) encode and decode for
 %% all types in an ASN.1 module
@@ -104,9 +110,13 @@ gen_encode_sequence(Gen, Typename, #type{}=D) ->
 	end,
     CompTypes = gen_enc_comptypes(Gen, Typename, CompList1, 1, EncObj, []),
     Prefix = asn1ct_gen:get_record_name_prefix(Gen),
-    {sequence,
+    {SequenceTag,NewCompTypes} = case Gen#gen.pack of
+        map -> {sequence_map,[{BinName,binary_to_atom(BinName),Type,OptOrDefault}||{BinName,Type,OptOrDefault} <- CompTypes]};
+        _ -> {sequence,CompTypes} 
+    end,
+    {SequenceTag,
      list_to_atom(lists:concat([Prefix,asn1ct_gen:list2name(Typename)])),
-     length(CompList1),CompTypes}.
+     length(CompList1),NewCompTypes}.
 
 gen_decode_sequence(_,_,_) -> ok.
 
@@ -155,10 +165,9 @@ gen_encode_choice(Erules,TypeName,D) when is_record(D,type) ->
 		    {Rl,El} -> Rl ++ El;
 		    _ -> CompList
 		end,
-    {choice,maps:from_list(
-              [{AltName,AltType}||
-                  {AltName,AltType,_OptOrMand} <- 
-                      gen_enc_comptypes(Erules,TypeName,CompList1,0,0,[])])}.
+    {choice,#{AltName => AltType ||
+                {AltName,AltType,_OptOrMand} <-
+                    gen_enc_comptypes(Erules,TypeName,CompList1,0,0,[])}}.
 
 gen_decode_choice(_,_,_) -> ok.
 
@@ -352,7 +361,7 @@ suppress({M,F,A}=MFA) ->
 	    ok;
 	true ->
 	    Args = [lists:concat(["element(",I,", Arg)"]) || I <- lists:seq(1, A)],
-	    emit(["    ",{call,M,F,Args},com,nl])
+	    emit(["    _ = ",{call,M,F,Args},com,nl])
     end.
 
 %%===============================================================================
@@ -407,11 +416,7 @@ gen_encode_user(Erules, #typedef{}=D, _Wrapper) ->
     Typename = [D#typedef.name],
     Type = D#typedef.typespec,
     InnerType = asn1ct_gen:get_inner(Type#type.def),
-    emit([nl,nl,"%%================================"]),
-    emit([nl,"%%  ",Typename]),
-    emit([nl,"%%================================",nl]),
-    FuncName = {asis,typeinfo_func(asn1ct_gen:list2name(Typename))},
-    emit([FuncName,"() ->",nl]),
+    emit([typeinfo,"('",asn1ct_gen:list2name(Typename),"') ->",nl]),
     CurrentMod = get(currmod),
     TypeInfo = 
         case asn1ct_gen:type(InnerType) of
@@ -428,7 +433,7 @@ gen_encode_user(Erules, #typedef{}=D, _Wrapper) ->
                                 Type#type{def='ASN1_OPEN_TYPE'},
                                 "Val")
         end,
-    emit([{asis,TypeInfo},".",nl,nl]).
+    emit(["  ",{asis,TypeInfo},";",nl]).
 
 gen_typeinfo(Erules, Typename, Type) ->
     InnerType = asn1ct_gen:get_inner(Type#type.def),
@@ -448,19 +453,14 @@ gen_typeinfo(Erules, Typename, Type) ->
 			    "Val")
     end.
 
-gen_encode_prim(_Erules, #type{}=D, _Value) ->
-    BitStringConstraint = get_size_constraint(D#type.constraint),    
-    IntConstr = int_constr(D#type.constraint),
+gen_encode_prim(Erules, #type{constraint=C}=D, _Value) ->
+    SizeConstraint = get_size_constraint(C),
+    IntConstr = int_constr(C),
+    Containing = containing_constraint(Erules, C),
 
-    %% MaxBitStrSize = case BitStringConstraint of
-    %%     		[] -> none;
-    %%     		{_,'MAX'} -> none;
-    %%     		{_,Max} -> Max;
-    %%     		Max when is_integer(Max) -> Max
-    %%     	    end,
     asn1ct_name:new(enumval),
     Type = case D#type.def of
-	       'OCTET STRING'    -> maybe_legacy_octet_string();
+	       'OCTET STRING'    -> maybe_legacy_octet_string(SizeConstraint);
                'UTF8String'      -> string;
 	       'ObjectDescriptor'-> string;
 	       'NumericString'   -> string;
@@ -474,27 +474,35 @@ gen_encode_prim(_Erules, #type{}=D, _Value) ->
 	       'IA5String'       -> string;
 	       'UTCTime'         -> string;
 	       'GeneralizedTime' -> string;
-               B1 = 'BIT STRING' -> maybe_legacy_bit_string(B1,BitStringConstraint);
+               B1 = 'BIT STRING' -> maybe_legacy_bit_string(B1,SizeConstraint);
                B2 = {'BIT STRING',_NNL} -> 
-                   maybe_legacy_bit_string(B2,BitStringConstraint);
+                   maybe_legacy_bit_string(B2,SizeConstraint);
                {'INTEGER',NNL} -> {'INTEGER_NNL',NNL};
                {'ENUMERATED',{NNL,Ext}} -> {'ENUMERATED_EXT',maps:from_list(NNL++Ext)};
                {'ENUMERATED',NNL} -> {'ENUMERATED',maps:from_list(NNL)};
 	       Other             -> Other
 	   end,
-    case IntConstr of
-        [] -> % No constraint
+    case {IntConstr,Containing} of
+        {[],[]} ->
             Type;
-        _ ->
-            {Type,IntConstr}
+        {_,[]} ->
+            {Type,IntConstr};
+        {[],_} ->
+            {container,Type,Containing}
     end.
 
-maybe_legacy_octet_string() ->
-    case asn1ct:use_legacy_types() of
-        true ->
-            legacy_octet_string;
-        false ->
-            octet_string
+maybe_legacy_octet_string(SizeConstraint) ->
+    Type = case asn1ct:use_legacy_types() of
+               true ->
+                   legacy_octet_string;
+               false ->
+                   octet_string
+           end,
+    case SizeConstraint of
+        [] ->
+            Type;
+        _ ->
+            {Type,SizeConstraint}
     end.
 
 maybe_legacy_bit_string(BitStrType,SizeConstraint) ->
@@ -515,15 +523,16 @@ maybe_legacy_bit_string(BitStrType,SizeConstraint) ->
                     {list_to_atom(lists:concat([Type,"_nnl"])),NNL}
             end,
     case SizeConstraint of
-        S when is_integer(S) ->
-            {Type1,S};
+        [] ->
+            Type1;
         _ ->
-            Type1
+            {Type1,SizeConstraint}
     end.
+
 %%===========================================================================
 %% Generate DECODING
 %%===========================================================================
-%% dummy functions beause we don't generate anything special for decode 
+%% dummy functions because we don't generate anything special for decode 
 %%===========================================================================
 
 gen_decode(_,_) -> ok.
@@ -538,8 +547,6 @@ gen_decode(_,_,_) -> ok.
 
 gen_dec_prim(_Att, _BytesVar) -> ok.
 
-%% Simplify an integer constraint so that we can efficiently test it.
--spec int_constr(term()) -> [] | {integer(),integer()|'MAX'}.
 int_constr(C) ->
     case asn1ct_imm:effective_constraint(integer, C) of
 	[{_,[]}] ->
@@ -556,25 +563,37 @@ int_constr(C) ->
 	    []
     end.
 
+containing_constraint(Erules, [{contentsconstraint,#type{def=Def}=OuterType,[]}|_]) ->
+    %% This is a CONTAINING constraint without an ENCODED BY clause.
+    InnerType = asn1ct_gen:get_inner(Def),
+    case asn1ct_gen:type(InnerType) of
+        #'Externaltypereference'{module=Mod,type=TypeName} ->
+            {typeinfo,{Mod,typeinfo_func(TypeName)}};
+        {primitive,bif} ->
+	    gen_encode_prim(Erules, OuterType, "Val");
+        _ ->
+            []
+    end;
+containing_constraint(Erules, [_|Cs]) ->
+    containing_constraint(Erules, Cs);
+containing_constraint(_Erules, []) ->
+    [].
+
 gen_obj_code(_Erules,_Module,_Obj) -> ok.
 
 gen_objectset_code(Erules,ObjSet) ->
     ObjSetName = ObjSet#typedef.name,
     Def = ObjSet#typedef.typespec,
     Set = Def#'ObjectSet'.set,
-    emit([nl,nl,nl,
-          "%%================================",nl,
-          "%%  ",ObjSetName,nl,
-          "%%================================",nl]),
-    FuncName = {asis,typeinfo_func(asn1ct_gen:list2name([ObjSetName]))},
-    SelectValMap = 
+    TypeName = {asis,typeinfo_func(asn1ct_gen:list2name([ObjSetName]))},
+    SelectValMap =
         maps:from_list([{SelectVal,
                          maps:from_list(
                            gen_enc_classtypes(Erules,ObjSetName,
                                              [TNameType || TNameType = {_TypeName,#typedef{}} <-TypeList],
                                              []))} || {_,SelectVal,TypeList} <- Set]),
-    emit([FuncName,"() ->",nl]),
-    emit([{asis,SelectValMap},".",nl]).
+    emit([typeinfo,"(",TypeName,") ->",nl]),
+    emit(["  ",{asis,SelectValMap},";",nl]).
 
 
 get_size_constraint(C) ->
@@ -599,7 +618,7 @@ extaddgroup2sequence(ExtList) when is_list(ExtList) ->
 		 end, ExtList).
 
 typeinfo_func(Tname) ->
-    list_to_atom(lists:concat(["typeinfo_",Tname])).    
+    Tname.
 
 enc_func(Tname) ->
     list_to_atom(lists:concat(["enc_",Tname])).

@@ -1,7 +1,10 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson 2017-2021. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson 2017-2022. All Rights Reserved.
+ * Copyright Ericsson AB 2017-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,6 +44,8 @@
 #endif
 
 #include <utime.h>
+
+#define FALLBACK_RW_LENGTH ((1ull << 31) - 1)
 
 /* Macros for testing file types. */
 #ifdef NO_UMASK
@@ -139,11 +144,7 @@ static int get_flags(enum efile_modes_t modes) {
     if(modes & EFILE_MODE_READ && !(modes & EFILE_MODE_WRITE)) {
         flags |= O_RDONLY;
     } else if(modes & EFILE_MODE_WRITE && !(modes & EFILE_MODE_READ)) {
-        if(!(modes & EFILE_MODE_NO_TRUNCATE)) {
-            flags |= O_TRUNC;
-        }
-
-        flags |= O_WRONLY | O_CREAT;
+        flags |= O_TRUNC | O_WRONLY | O_CREAT;
     } else if(modes & EFILE_MODE_READ_WRITE) {
         flags |= O_RDWR | O_CREAT;
     } else {
@@ -317,6 +318,11 @@ Sint64 efile_readv(efile_data_t *d, SysIOVec *iov, int iovlen) {
 
         if(use_fallback) {
             result = read(u->fd, iov->iov_base, iov->iov_len);
+
+            /* Some OSs (e.g. macOS) does not allow reads greater than 2 GB,
+               so if we get EINVAL in the fallback, we try with a smaller length */
+            if (result < 0 && errno == EINVAL && iov->iov_len > FALLBACK_RW_LENGTH)
+                result = read(u->fd, iov->iov_base, FALLBACK_RW_LENGTH);
         }
 
         if(result > 0) {
@@ -362,6 +368,11 @@ Sint64 efile_writev(efile_data_t *d, SysIOVec *iov, int iovlen) {
 
         if(use_fallback) {
             result = write(u->fd, iov->iov_base, iov->iov_len);
+
+            /* Some OSs (e.g. macOS) does not allow writes greater than 2 GB,
+               so if we get EINVAL in the fallback, we try with a smaller length */
+            if (result < 0 && errno == EINVAL && iov->iov_len > FALLBACK_RW_LENGTH)
+                result = write(u->fd, iov->iov_base, FALLBACK_RW_LENGTH);
         }
 
         if(result > 0) {
@@ -542,7 +553,9 @@ int efile_sync(efile_data_t *d, int data_only) {
     }
 #endif
 
-#if defined(__DARWIN__) && defined(F_FULLFSYNC)
+#if defined(__DARWIN__) && defined(F_BARRIERFSYNC)
+    if(fcntl(u->fd, F_BARRIERFSYNC) < 0) {
+#elif defined(__DARWIN__) && defined(F_FULLFSYNC)
     if(fcntl(u->fd, F_FULLFSYNC) < 0) {
 #else
     if(fsync(u->fd) < 0) {

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2018-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,6 +22,7 @@
 -module(counters_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
 -export([suite/0, all/0]).
 -export([basic/1, bad/1, limits/1, indep/1, write_concurrency/1,
@@ -83,21 +86,21 @@ max_atomic_sz() ->
     end.
 
 bad(Config) when is_list(Config) ->
-    {'EXIT',{badarg,_}} = (catch counters:new(-(1 bsl 64),[])),
-    {'EXIT',{badarg,_}} = (catch counters:new(0,[])),
-    {'EXIT',{badarg,_}} = (catch counters:new(10,[bad])),
-    {'EXIT',{badarg,_}} = (catch counters:new(10,[atomic, bad])),
-    {'EXIT',{badarg,_}} = (catch counters:new(10,[write_concurrency | bad])),
+    ?assertError(badarg, counters:new(-(1 bsl 64),[])),
+    ?assertError(badarg, counters:new(0,[])),
+    ?assertError(badarg, counters:new(10,[bad])),
+    ?assertError(badarg, counters:new(10,[atomic, bad])),
+    ?assertError(badarg, counters:new(10,[write_concurrency | bad])),
 
-    {'EXIT',{system_limit,_}} = (catch counters:new(1 bsl 64,[write_concurrency])),
+    ?assertError(system_limit, counters:new(1 bsl 64,[write_concurrency])),
 
     Ref = counters:new(10,[]),
-    {'EXIT',{badarg,_}} = (catch counters:get(1742, 7)),
-    {'EXIT',{badarg,_}} = (catch counters:get(make_ref(), 7)),
-    {'EXIT',{badarg,_}} = (catch counters:get(Ref, -1)),
-    {'EXIT',{badarg,_}} = (catch counters:get(Ref, 0)),
-    {'EXIT',{badarg,_}} = (catch counters:get(Ref, 11)),
-    {'EXIT',{badarg,_}} = (catch counters:get(Ref, 7.0)),
+    ?assertError(badarg, counters:get(1742, 7)),
+    ?assertError(badarg, counters:get(make_ref(), 7)),
+    ?assertError(badarg, counters:get(Ref, -1)),
+    ?assertError(badarg, counters:get(Ref, 0)),
+    ?assertError(badarg, counters:get(Ref, 11)),
+    ?assertError(badarg, counters:get(Ref, 7.0)),
     ok.
 
 
@@ -125,10 +128,10 @@ limits_do(Ref) ->
     ok = counters:put(Ref, 1, 0),
     ok = counters:add(Ref, 1, IncrMax),
     -1 = counters:get(Ref, 1),
-    {'EXIT',{badarg,_}} = (catch counters:add(Ref, 1, IncrMax+1)),
-    {'EXIT',{badarg,_}} = (catch counters:add(Ref, 1, Min-1)),
-    {'EXIT',{badarg,_}} = (catch counters:put(Ref, 1, Max+1)),
-    {'EXIT',{badarg,_}} = (catch counters:add(Ref, 1, Min-1)),
+    ?assertError(badarg, counters:add(Ref, 1, IncrMax+1)),
+    ?assertError(badarg, counters:add(Ref, 1, Min-1)),
+    ?assertError(badarg, counters:put(Ref, 1, Max+1)),
+    ?assertError(badarg, counters:add(Ref, 1, Min-1)),
     ok.
 
 

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2011-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2011-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,8 +21,6 @@
 %%
 
 -module(installer).
-
--include("test_lib.hrl").
 
 %%-compile(export_all).
 -export([install_1/2]).
@@ -330,7 +330,7 @@ install_11(TestNode) ->
     true = lists:member("a-1.0", Libs),
     false = lists:member("a-1.1", Libs),
     {ok, Dirs} = file:list_dir(code:root_dir()),
-    ErtsDir = "erts-"++?ertsvsn,
+    ErtsDir = "erts-"++rh_test_lib:old_app_vsn(erts),
     [ErtsDir] = lists:filter(fun(Dir) -> lists:prefix("erts-",Dir) end, Dirs),
     ?print(["install_11 file checks ok"]),
     ok.
@@ -383,7 +383,7 @@ install_14(TestNode) ->
 
 
 %%%-----------------------------------------------------------------
-%%% Ths test checks that an upgrade which both upgrades to a new
+%%% The test checks that an upgrade which both upgrades to a new
 %%% emulator version, and had a restart_emulator option to
 %%% systools:make_relup will be restarted twice on upgrade.
 %%% (On downgrade it will happen only once.)
@@ -413,7 +413,7 @@ upgrade_restart_2(TestNode) ->
 	{"SASL-test","P2B"} ->
 	    upgrade_restart_2a(TestNode);
 	{"SASL-test","__new_emulator__P1G"} ->
-	    %% catched the node too early - give it another try
+	    %% caught the node too early - give it another try
 	    {wait,whereis(init)}
     end.
 
@@ -887,6 +887,9 @@ trace_disallowed_calls(Node) ->
 
 check_disallowed_calls(TestNode,Line) ->
     receive
+        {trace,_,call,{file,read_file_info,["/bin/sh",[raw]]},{os,internal_init_cmd_shell,1}} ->
+            %% This call is done when kernel is started/reloaded and is ok
+            ok;
 	Trace when element(1,Trace)==trace ->
 	    ?print_line(Line,["Disallowed function called",Trace]),
 	    exit({disallowed_function_call,Trace})
@@ -918,7 +921,9 @@ start_client_unix(TestNode,Sname,Node) ->
 start_client_win32(TestNode,Client,ClientSname) ->
     Name = atom_to_list(ClientSname) ++ "_P1G",
     RootDir = code:root_dir(),
-    ErtsBinDir = filename:join([RootDir,"erts-"++?ertsvsn,"bin"]),
+    ErtsBinDir = filename:join([RootDir,
+                                "erts-"++rh_test_lib:old_app_vsn(erts),
+                                "bin"]),
 
     {ClientArgs,RelClientDir} = rh_test_lib:get_client_args(Client,ClientSname,
 							    RootDir),

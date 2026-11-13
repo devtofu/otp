@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2000-2016. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2000-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -182,7 +184,7 @@ public class OtpCookedConnection extends AbstractConnection {
     }
 
     /*
-     * this one called explicitely by user code => use exit2
+     * this one called explicitly by user code => use exit2
      */
     void exit2(final OtpErlangPid from, final OtpErlangPid to,
             final OtpErlangObject reason) {

@@ -1,7 +1,9 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 1997-2020. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 1997-2025. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -42,6 +44,7 @@ MODULES= \
 	testChoTypeRefSeq \
 	testChoTypeRefSet \
 	testConstraints \
+	testContaining \
 	testDef \
 	testExtensionDefault \
 	testOpt \
@@ -101,6 +104,7 @@ MODULES= \
 	testDER \
 	test_selective_decode \
 	test_special_decode_performance \
+	test_exclusive_decode_rest \
 	testTCAP \
 	testSSLspecs \
 	testSelectionTypes \
@@ -137,7 +141,8 @@ RELSYSDIR = $(RELEASE_PATH)/asn1_test
 # ----------------------------------------------------
 # FLAGS
 # ----------------------------------------------------
-ERL_COMPILE_FLAGS += +warnings_as_errors +nowarn_export_all
+ERL_COMPILE_FLAGS += +warnings_as_errors +nowarn_export_all +nowarn_missing_spec_documented
+ERL_COMPILE_FLAGS := $(filter-out +deterministic,$(ERL_COMPILE_FLAGS))
 EBIN = .
 
 # ----------------------------------------------------
@@ -147,7 +152,7 @@ EBIN = .
 $(EMAKEFILE): $(ERL_FILES) $(HRL_FILES)
 	$(ERL_TOP)/make/make_emakefile $(ERL_COMPILE_FLAGS) -o$(EBIN) $(MODULES) $(ERL_FILES) >$(EMAKEFILE)
 
-tests debug opt: $(EMAKEFILE)
+tests $(TYPES): $(EMAKEFILE)
 
 clean:
 	rm -f core

@@ -1,35 +1,17 @@
-// AsmJit - Machine code generation for C++
+// This file is part of AsmJit project <https://asmjit.com>
 //
-//  * Official AsmJit Home Page: https://asmjit.com
-//  * Official Github Repository: https://github.com/asmjit/asmjit
-//
-// Copyright (c) 2008-2020 The AsmJit Authors
-//
-// This software is provided 'as-is', without any express or implied
-// warranty. In no event will the authors be held liable for any damages
-// arising from the use of this software.
-//
-// Permission is granted to anyone to use this software for any purpose,
-// including commercial applications, and to alter it and redistribute it
-// freely, subject to the following restrictions:
-//
-// 1. The origin of this software must not be misrepresented; you must not
-//    claim that you wrote the original software. If you use this software
-//    in a product, an acknowledgment in the product documentation would be
-//    appreciated but is not required.
-// 2. Altered source versions must be plainly marked as such, and must not be
-//    misrepresented as being the original software.
-// 3. This notice may not be removed or altered from any source distribution.
+// See <asmjit/core.h> or LICENSE.md for license and copyright information
+// SPDX-License-Identifier: Zlib
 
 #ifndef ASMJIT_CORE_JITRUNTIME_H_INCLUDED
 #define ASMJIT_CORE_JITRUNTIME_H_INCLUDED
 
-#include "../core/api-config.h"
+#include <asmjit/core/api-config.h>
 #ifndef ASMJIT_NO_JIT
 
-#include "../core/codeholder.h"
-#include "../core/jitallocator.h"
-#include "../core/target.h"
+#include <asmjit/core/codeholder.h>
+#include <asmjit/core/jitallocator.h>
+#include <asmjit/core/target.h>
 
 ASMJIT_BEGIN_NAMESPACE
 
@@ -38,12 +20,10 @@ class CodeHolder;
 //! \addtogroup asmjit_virtual_memory
 //! \{
 
-// ============================================================================
-// [asmjit::JitRuntime]
-// ============================================================================
-
-//! JIT execution runtime is a special `Target` that is designed to store and
-//! execute the generated code.
+//! JIT execution runtime is a special `Target` that is designed to store and execute a generated code.
+//!
+//! JIT runtime is the easiest way of using AsmJit as it abstracts allocation and deallocation of virtual memory
+//! where executable code can be placed and from which it can be executed as well.
 class ASMJIT_VIRTAPI JitRuntime : public Target {
 public:
   ASMJIT_NONCOPYABLE(JitRuntime)
@@ -55,12 +35,27 @@ public:
   //! \{
 
   //! Creates a `JitRuntime` instance.
-  explicit ASMJIT_API JitRuntime(const JitAllocator::CreateParams* params = nullptr) noexcept;
-  //! Destroys the `JitRuntime` instance.
-  ASMJIT_API virtual ~JitRuntime() noexcept;
+  ASMJIT_API explicit JitRuntime(const JitAllocator::CreateParams* params = nullptr) noexcept;
 
-  inline void reset(uint32_t resetPolicy = Globals::kResetSoft) noexcept {
-    _allocator.reset(resetPolicy);
+  //! Creates a `JitRuntime` instance.
+  ASMJIT_INLINE explicit JitRuntime(const JitAllocator::CreateParams& params) noexcept
+    : JitRuntime(&params) {}
+
+  //! Destroys the `JitRuntime` instance.
+  ASMJIT_API ~JitRuntime() noexcept override;
+
+  //! \}
+
+  //! \name Accessors
+  //! \{
+
+  //! Resets the \ref JitRuntime, freeing everything that was allocated by it.
+  //!
+  //! Depending on `reset_policy` the currently held memory can be either freed entirely when ResetPolicy::kHard is used,
+  //! or the allocator can keep some of it for next allocations when ResetPolicy::kSoft is used, which is the default
+  //! behavior.
+  ASMJIT_INLINE_NODEBUG void reset(ResetPolicy reset_policy = ResetPolicy::kSoft) noexcept {
+    _allocator.reset(reset_policy);
   }
 
   //! \}
@@ -69,7 +64,8 @@ public:
   //! \{
 
   //! Returns the associated `JitAllocator`.
-  inline JitAllocator* allocator() const noexcept { return const_cast<JitAllocator*>(&_allocator); }
+  [[nodiscard]]
+  ASMJIT_INLINE_NODEBUG JitAllocator& allocator() const noexcept { return const_cast<JitAllocator&>(_allocator); }
 
   //! \}
 
@@ -79,20 +75,18 @@ public:
   // NOTE: To allow passing function pointers to `add()` and `release()` the
   // virtual methods are prefixed with `_` and called from templates instead.
 
-  //! Allocates memory needed for a code stored in the `CodeHolder` and relocates
-  //! the code to the pointer allocated.
+  //! Allocates memory needed for a code stored in the `CodeHolder` and relocates the code to the pointer allocated.
   //!
-  //! The beginning of the memory allocated for the function is returned in `dst`.
-  //! If failed `Error` code is returned and `dst` is explicitly set to `nullptr`
-  //! (this means that you don't have to set it to null before calling `add()`).
+  //! The beginning of the memory allocated for the function is returned in `dst`. If failed `Error` code is returned
+  //! and `dst` is explicitly set to `nullptr`  (this means that you don't have to set it to null before calling `add()`).
   template<typename Func>
-  inline Error add(Func* dst, CodeHolder* code) noexcept {
+  ASMJIT_INLINE_NODEBUG Error add(Func* dst, CodeHolder* code) noexcept {
     return _add(Support::ptr_cast_impl<void**, Func*>(dst), code);
   }
 
   //! Releases `p` which was obtained by calling `add()`.
   template<typename Func>
-  inline Error release(Func p) noexcept {
+  ASMJIT_INLINE_NODEBUG Error release(Func p) noexcept {
     return _release(Support::ptr_cast_impl<void*, Func>(p));
   }
 

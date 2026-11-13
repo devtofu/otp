@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2001-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2001-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,6 +22,7 @@
 %% Purpose: Information about the Erlang built-in functions.
 
 -module(erl_bifs).
+-moduledoc false.
 
 -export([is_pure/3, is_safe/3, is_exit_bif/3]).
 
@@ -100,8 +103,12 @@ is_pure(erlang, float_to_list, 1) -> true;
 is_pure(erlang, float_to_binary, 1) -> true;
 is_pure(erlang, floor, 1) -> true;
 is_pure(erlang, hd, 1) -> true;
+is_pure(erlang, integer_set_bits, 1) -> true;
+is_pure(erlang, integer_signed_width, 1) -> true;
 is_pure(erlang, integer_to_binary, 1) -> true;
 is_pure(erlang, integer_to_list, 1) -> true;
+is_pure(erlang, integer_trailing_zeroes, 1) -> true;
+is_pure(erlang, integer_unsigned_width, 1) -> true;
 is_pure(erlang, is_atom, 1) -> true;
 is_pure(erlang, is_boolean, 1) -> true;
 is_pure(erlang, is_binary, 1) -> true;
@@ -111,12 +118,14 @@ is_pure(erlang, is_float, 1) -> true;
 is_pure(erlang, is_function, 1) -> true;
 is_pure(erlang, is_function, 2) -> true;
 is_pure(erlang, is_integer, 1) -> true;
+is_pure(erlang, is_integer, 3) -> true;
 is_pure(erlang, is_list, 1) -> true;
 is_pure(erlang, is_map, 1) -> true;
 is_pure(erlang, is_map_key, 2) -> true;
 is_pure(erlang, is_number, 1) -> true;
 is_pure(erlang, is_pid, 1) -> true;
 is_pure(erlang, is_port, 1) -> true;
+is_pure(erlang, is_record, 1) -> true;
 is_pure(erlang, is_record, 2) -> true;
 is_pure(erlang, is_record, 3) -> true;
 is_pure(erlang, is_reference, 1) -> true;
@@ -134,12 +143,12 @@ is_pure(erlang, make_fun, 3) -> true;
 is_pure(erlang, map_get, 2) -> true;
 is_pure(erlang, min, 2) -> true;
 is_pure(erlang, phash, 2) -> false;
+is_pure(erlang, pid_to_binary, 1) -> true;
 is_pure(erlang, pid_to_list, 1) -> true;
 is_pure(erlang, round, 1) -> true;
 is_pure(erlang, setelement, 3) -> true;
 is_pure(erlang, size, 1) -> true;
 is_pure(erlang, split_binary, 2) -> true;
-is_pure(erlang, term_to_binary, 1) -> true;
 is_pure(erlang, tl, 1) -> true;
 is_pure(erlang, trunc, 1) -> true;
 is_pure(erlang, tuple_size, 1) -> true;
@@ -225,6 +234,7 @@ is_safe(erlang, is_map, 1) -> true;
 is_safe(erlang, is_number, 1) -> true;
 is_safe(erlang, is_pid, 1) -> true;
 is_safe(erlang, is_port, 1) -> true;
+is_safe(erlang, is_record, 1) -> true;
 is_safe(erlang, is_reference, 1) -> true;
 is_safe(erlang, is_tuple, 1) -> true;
 is_safe(erlang, make_ref, 0) -> true;

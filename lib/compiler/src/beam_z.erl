@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2012-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2012-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,26 +23,23 @@
 %%          (Mandatory.)
 
 -module(beam_z).
+-moduledoc false.
 
 -export([module/2]).
 
--import(lists, [dropwhile/2,map/2,sort/1]).
+-import(lists, [dropwhile/2,sort/1]).
 
 -spec module(beam_utils:module_code(), [compile:option()]) ->
                     {'ok',beam_asm:module_code()}.
 
-module({Mod,Exp,Attr,Fs0,Lc}, Opts) ->
-    NoGetHdTl = proplists:get_bool(no_get_hd_tl, Opts),
-    NoInitYregs = proplists:get_bool(no_init_yregs, Opts),
-    Fs = [function(F, NoGetHdTl, NoInitYregs) || F <- Fs0],
-    {ok,{Mod,Exp,Attr,Fs,Lc}}.
+module({Mod,Exp,Attr,Anno,Fs0,Lc}, _Opts) ->
+    Fs = [function(F) || F <- Fs0],
+    {ok,{Mod,Exp,Attr,Anno,Fs,Lc}}.
 
-function({function,Name,Arity,CLabel,Is0}, NoGetHdTl, NoInitYregs) ->
+function({function,Name,Arity,CLabel,Is0}) ->
     try
 	Is1 = undo_renames(Is0),
-        Is2 = maybe_eliminate_get_hd_tl(Is1, NoGetHdTl),
-        Is3 = maybe_eliminate_init_yregs(Is2, NoInitYregs),
-        Is = remove_redundant_lines(Is3),
+        Is = remove_redundant_lines(Is1),
 	{function,Name,Arity,CLabel,Is}
     catch
         Class:Error:Stack ->
@@ -85,36 +84,10 @@ undo_renames([{bif,raise,_,_,_}=I|Is0]) ->
 		      (_) -> true
 		   end, Is0),
     [I|undo_renames(Is)];
-undo_renames([{get_hd,Src,Hd},{get_tl,Src,Tl}|Is]) ->
+undo_renames([{get_hd,Src,Hd},{get_tl,Src,Tl}|Is]) when Src =/= Hd ->
     get_list(Src, Hd, Tl, Is);
-undo_renames([{get_tl,Src,Tl},{get_hd,Src,Hd}|Is]) ->
+undo_renames([{get_tl,Src,Tl},{get_hd,Src,Hd}|Is]) when Src =/= Tl ->
     get_list(Src, Hd, Tl, Is);
-undo_renames([{bs_put,_,{bs_put_binary,1,_},
-               [{atom,all},{literal,<<>>}]}|Is]) ->
-    undo_renames(Is);
-undo_renames([{bs_put,Fail,{bs_put_binary,1,_Flags},
-               [{atom,all},{literal,BinString}]}|Is0])
-  when is_bitstring(BinString)->
-    Bits = bit_size(BinString),
-    Bytes = Bits div 8,
-    case Bits rem 8 of
-        0 ->
-            I = {bs_put_string,byte_size(BinString),
-                 {string,BinString}},
-            [undo_rename(I)|undo_renames(Is0)];
-        Rem ->
-            <<Binary:Bytes/bytes,Int:Rem>> = BinString,
-            PutInt = {bs_put_integer,Fail,{integer,Rem},1,
-                      {field_flags,[unsigned,big]},{integer,Int}},
-            Is = [PutInt|undo_renames(Is0)],
-            case Binary of
-                <<>> ->
-                    Is;
-                _ ->
-                    [{bs_put_string,byte_size(Binary),
-                      {string,Binary}}|Is]
-            end
-    end;
 undo_renames([I|Is]) ->
     [undo_rename(I)|undo_renames(Is)];
 undo_renames([]) -> [].
@@ -129,24 +102,6 @@ get_list(Src, Hd, Tl, [{swap,R1,R2}|Is]=Is0) ->
 get_list(Src, Hd, Tl, Is) ->
     [{get_list,Src,Hd,Tl}|undo_renames(Is)].
 
-undo_rename({bs_put,F,{I,U,Fl},[Sz,Src]}) ->
-    {I,F,Sz,U,Fl,Src};
-undo_rename({bs_put,F,{I,Fl},[Src]}) ->
-    {I,F,Fl,Src};
-undo_rename({bif,bs_add=I,F,[Src1,Src2,{integer,U}],Dst}) ->
-    {I,F,[Src1,Src2,U],Dst};
-undo_rename({bif,bs_utf8_size=I,F,[Src],Dst}) ->
-    {I,F,Src,Dst};
-undo_rename({bif,bs_utf16_size=I,F,[Src],Dst}) ->
-    {I,F,Src,Dst};
-undo_rename({bs_init,F,{I,U,Flags},none,[Sz,Src],Dst}) ->
-    {I,F,Sz,U,Src,Flags,Dst};
-undo_rename({bs_init,F,{I,Extra,Flags},Live,[Sz],Dst}) ->
-    {I,F,Sz,Extra,Live,Flags,Dst};
-undo_rename({bs_init,F,{I,Extra,U,Flags},Live,[Sz,Src],Dst}) ->
-    {I,F,Sz,Extra,Live,U,Src,Flags,Dst};
-undo_rename({bs_init,_,bs_init_writable=I,_,_,_}) ->
-    I;
 undo_rename({put_map,Fail,assoc,S,D,R,L}) ->
     {put_map_assoc,Fail,S,D,R,L};
 undo_rename({put_map,Fail,exact,S,D,R,L}) ->
@@ -161,39 +116,6 @@ undo_rename({select,I,Reg,Fail,List}) ->
     {I,Reg,Fail,{list,List}};
 undo_rename(I) -> I.
 
-%%%
-%%% Eliminate get_hd/get_tl instructions if requested by
-%%% the no_get_hd_tl option.
-%%%
-
-maybe_eliminate_get_hd_tl(Is, true) ->
-    map(fun({get_hd,Cons,Hd}) ->
-                {get_list,Cons,Hd,{x,1022}};
-           ({get_tl,Cons,Tl}) ->
-                {get_list,Cons,{x,1022},Tl};
-           (I) -> I
-        end, Is);
-maybe_eliminate_get_hd_tl(Is, false) -> Is.
-
-%%%
-%%% Eliminate the init_yreg/1 instruction if requested by
-%%% the no_init_yregs option.
-%%%
-maybe_eliminate_init_yregs(Is, true) ->
-    eliminate_init_yregs(Is);
-maybe_eliminate_init_yregs(Is, false) -> Is.
-
-eliminate_init_yregs([{allocate,Ns,Live},{init_yregs,_}|Is]) ->
-    [{allocate_zero,Ns,Live}|eliminate_init_yregs(Is)];
-eliminate_init_yregs([{allocate_heap,Ns,Nh,Live},{init_yregs,_}|Is]) ->
-    [{allocate_heap_zero,Ns,Nh,Live}|eliminate_init_yregs(Is)];
-eliminate_init_yregs([{init_yregs,{list,Yregs}}|Is]) ->
-    Inits = [{init,Y} || Y <- Yregs],
-    Inits ++ eliminate_init_yregs(Is);
-eliminate_init_yregs([I|Is]) ->
-    [I|eliminate_init_yregs(Is)];
-eliminate_init_yregs([]) -> [].
-
 %% Remove all `line` instructions having the same location as the
 %% previous `line` instruction. It turns out that such redundant
 %% `line` instructions are quite common. Removing them decreases the
@@ -203,6 +125,10 @@ eliminate_init_yregs([]) -> [].
 remove_redundant_lines(Is) ->
     remove_redundant_lines_1(Is, none).
 
+remove_redundant_lines_1([{debug_line,_,_,_,_}=I|Is], _PrevLoc) ->
+    [I|remove_redundant_lines_1(Is, none)];
+remove_redundant_lines_1([{executable_line,_,_}=I|Is], _PrevLoc) ->
+    [I|remove_redundant_lines_1(Is, none)];
 remove_redundant_lines_1([{line,Loc}=I|Is], PrevLoc) ->
     if
         Loc =:= PrevLoc ->

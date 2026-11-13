@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2003-2020. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2003-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,25 +16,28 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(trycatch_SUITE).
 
 -export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1, 
 	 init_per_group/2,end_per_group/2,basic/1,lean_throw/1,
-	 try_of/1,try_after/1,%after_bind/1,
+	 try_of/1,try_after/1,
 	 catch_oops/1,after_oops/1,eclectic/1,rethrow/1,
 	 nested_of/1,nested_catch/1,nested_after/1,
 	 nested_horrid/1,last_call_optimization/1,bool/1,
-	 plain_catch_coverage/1,andalso_orelse/1,get_in_try/1,
+	 andalso_orelse/1,get_in_try/1,
 	 hockey/1,handle_info/1,catch_in_catch/1,grab_bag/1,
          stacktrace/1,nested_stacktrace/1,raise/1,
          no_return_in_try_block/1,
          expression_export/1,
-         coverage/1]).
+         throw_opt_crash/1,
+         coverage/1,
+         throw_opt_funs/1]).
 
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
 suite() -> [{ct_hooks,[ts_install_cth]}].
 
@@ -44,11 +49,13 @@ groups() ->
       [basic,lean_throw,try_of,try_after,catch_oops,
        after_oops,eclectic,rethrow,nested_of,nested_catch,
        nested_after,nested_horrid,last_call_optimization,
-       bool,plain_catch_coverage,andalso_orelse,get_in_try,
+       bool,andalso_orelse,get_in_try,
        hockey,handle_info,catch_in_catch,grab_bag,
        stacktrace,nested_stacktrace,raise,
        no_return_in_try_block,expression_export,
-       coverage]}].
+       throw_opt_crash,
+       coverage,
+       throw_opt_funs]}].
 
 
 init_per_suite(Config) ->
@@ -119,7 +126,7 @@ basic(Conf) when is_list(Conf) ->
     %% Try/of
     ok = try V of
 	     {a,variable} -> ok
-	 catch nisse -> erro
+	 catch nisse -> error
 	 end,
 
     %% Unmatchable clauses.
@@ -324,35 +331,6 @@ try_after_try(X, Y) ->
                         catch
                             _ -> ok
                         end).
-
--ifdef(begone).
-
-after_bind(Conf) when is_list(Conf) ->
-    V = [make_ref(),self()|value],
-    {value,{value,V}} =
-	after_bind_1({value,V}, V, {value,V}),
-    ok.
-
-after_bind_1(X, V, Y) ->
-    try
-        Try =
-            try foo(X) of
-                V -> value
-            catch
-                C1:V -> {caught,C1}
-            after
-                After = foo(Y)
-	    end,
-        {Try,After} 
-    of
-        V -> {value,V}
-    catch
-        C:D -> {caught,{C,D}}
-    end.
-
--endif.
-
-
 
 catch_oops(Conf) when is_list(Conf) ->
     V = {v,[a,l|u],{e},self()},
@@ -986,7 +964,7 @@ bool(Config) when is_list(Config) ->
     error = do_bool(true, false),
     error = do_bool(true, true),
     error = do_bool(true, blurf),
-    {'EXIT',_} = (catch do_bool(blurf, false)),
+    ?assertError(_, do_bool(blurf, false)),
     ok.
 
 %% The following function used to cause a crash in beam_bool.
@@ -1002,18 +980,10 @@ do_bool(A0, B) ->
 	    error
     end.
 
-plain_catch_coverage(Config) when is_list(Config) ->
-    %% Cover some code in beam_block:alloc_may_pass/1.
-    {a,[42]} = do_plain_catch_list(42).
-
-do_plain_catch_list(X) ->
-    B = [X],
-    catch id({a,B}).
-
 andalso_orelse(Config) when is_list(Config) ->
     {2,{a,42}} = andalso_orelse_1(true, {a,42}),
     {b,{b}} = andalso_orelse_1(false, {b}),
-    {catched,no_tuple} = andalso_orelse_1(false, no_tuple),
+    {caught,no_tuple} = andalso_orelse_1(false, no_tuple),
 
     ok = andalso_orelse_2({type,[a]}),
     also_ok = andalso_orelse_2({type,[]}),
@@ -1029,7 +999,7 @@ andalso_orelse_1(A, B) ->
 		 element(1, B)
 	 end
      catch error:_ ->
-	     catched
+	     caught
      end,B}.
 
 andalso_orelse_2({Type,Keyval}) ->
@@ -1157,7 +1127,9 @@ grab_bag(_Config) ->
 
     <<>> = grab_bag_2(whatever),
 
-    {'EXIT',_} = (catch grab_bag_3()),
+    ?assertError(_, grab_bag_3()),
+
+    true = grab_bag_4(),
 
     ok.
 
@@ -1204,7 +1176,7 @@ grab_bag_3() ->
     try 2 of
         true ->
             <<
-              "" || [V0] = door
+              "" || true =:= ([V0] = door)
             >>
     catch
         error:true:V0 ->
@@ -1212,6 +1184,16 @@ grab_bag_3() ->
             %% The default clause here (which re-throws the exception)
             %% would not return two values as expected.
     end =:= (V0 = 42).
+
+grab_bag_4() ->
+    try
+        erlang:yield()
+    after
+        %% beam_jump would do an unsafe sharing of blocks, resulting
+        %% in an ambiguous_catch_try_state diagnostic from beam_validator.
+        catch <<>> = size(catch ([_ | _] = ok))
+    end.
+
 
 stacktrace(_Config) ->
     V = [make_ref()|self()],
@@ -1257,7 +1239,7 @@ stacktrace(_Config) ->
     try
         throw(x)
     catch
-        throw:x:IntentionallyUnused ->
+        throw:x:_IntentionallyUnused ->
             ok
     end.
 
@@ -1552,10 +1534,37 @@ expr_export_5() ->
         ok
     end.
 
-coverage(_Config) ->
-    {'EXIT',{{badfun,true},[_|_]}} = (catch coverage_1()),
+%% GH-4953: Type inference in throw optimization could crash in rare
+%% circumstances when a thrown type conflicted with one that was matched in
+%% a catch clause.
+throw_opt_crash(_Config) ->
+    try
+        throw_opt_crash_1(id(false), {pass, id(b), id(c)}),
+        throw_opt_crash_1(id(false), {crash, id(b)}),
+        ok
+    catch
+        throw:{pass, B, C} ->
+            {error, gurka, {B, C}};
+        throw:{beta, B, C} ->
+            {error, gaffel, {B, C}};
+        throw:{gamma, B, C} ->
+            {error, grammofon, {B, C}}
+    end.
+
+throw_opt_crash_1(true, {_, _ ,_}=Term) ->
+    throw(Term);
+throw_opt_crash_1(true, {_, _}=Term) ->
+    throw(Term);
+throw_opt_crash_1(false, _Term) ->
+    ok.
+
+coverage(Config) ->
+    ?assertError({badfun,true}, coverage_1()),
     ok = coverage_ssa_throw(),
     error = coverage_pre_codegen(),
+    {a,[42]} = do_plain_catch_list(42),
+    cover_raise(Config),
+
     ok.
 
 %% Cover some code in beam_trim.
@@ -1576,9 +1585,10 @@ coverage_1() ->
 %% Cover some code in beam_ssa_throw.
 coverage_ssa_throw() ->
     cst_trivial(),
-    cst_raw(),
-    cst_stacktrace(),
     cst_types(),
+    cst_stacktrace(),
+    cst_raw(),
+    cst_hang(),
 
     ok.
 
@@ -1646,6 +1656,20 @@ cst_raw() ->
 
 cst_raw_1() -> throw(id(gurka)).
 
+cst_hang() ->
+    try cst_hang_1()
+    catch throw:gurka ->
+            ok;
+        _C:_R:Stack ->
+            %% Receive creates a label loop which used to cause
+            %% an infinite loop in the throw optimization.
+            Y = receive a -> 1; b -> 2 end,
+            id(Stack),
+            Y
+    end.
+
+cst_hang_1() -> throw(id(gurka)).
+
 %% Cover some code in beam_ssa_pre_codegen.
 coverage_pre_codegen() ->
     try not (catch 22) of
@@ -1656,5 +1680,52 @@ coverage_pre_codegen() ->
             error
     end.
 
+%% Cover some code in beam_block:alloc_may_pass/1.
+do_plain_catch_list(X) ->
+    B = [X],
+    catch id({a,B}).
+
+cover_raise(Config) ->
+    UncertainClass = uncertain_class(Config),
+    badarg = erlang:raise(UncertainClass, reason, []),
+    BadClass = bad_class(Config),
+    badarg = erlang:raise(BadClass, reason, []),
+    ok.
+
+uncertain_class(Config) ->
+    case Config of
+        [never_ever] ->  error;
+        _ -> undefined_class
+    end.
+
+bad_class(Config) ->
+    case Config of
+        [never_ever] -> bad_class;
+        _ -> also_bad
+    end.
+
+%% GH-7356: Funs weren't considered when checking whether an exception could
+%% escape the module, erroneously triggering the optimization in some cases.
+throw_opt_funs(_Config) ->
+    try throw_opt_funs_1(id(a)) of
+        _ -> unreachable
+    catch
+        _:Val -> a = id(Val)                    %Assertion.
+    end,
+
+    F = id(fun throw_opt_funs_1/1),
+
+    try F(a) of
+        _ -> unreachable
+    catch
+        _:_:Stack -> true = length(Stack) > 0   %Assertion.
+    end,
+
+    ok.
+
+throw_opt_funs_1(a) ->
+    throw(a);
+throw_opt_funs_1(I) ->
+    I.
 
 id(I) -> I.

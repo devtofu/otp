@@ -1,7 +1,9 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 1999-2018. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 1999-2025. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -42,6 +44,7 @@ BEHAVIOUR_MODULES=
 
 MODULES= \
 	ftp \
+	ftp_internal \
 	ftp_app \
 	ftp_progress \
 	ftp_response \
@@ -70,7 +73,7 @@ APPUP_TARGET= $(EBIN)/$(APPUP_FILE)
 # ----------------------------------------------------
 # FLAGS
 # ----------------------------------------------------
-EXTRA_ERLC_FLAGS = +warn_unused_vars
+EXTRA_ERLC_FLAGS = +warn_unused_vars +nowarn_deprecated_catch
 ERL_COMPILE_FLAGS += -I$(ERL_TOP)/lib/kernel/src \
 	-pz $(EBIN) \
 	-pz $(ERL_TOP)/lib/public_key/ebin \
@@ -83,7 +86,7 @@ ERL_COMPILE_FLAGS += -I$(ERL_TOP)/lib/kernel/src \
 
 $(TARGET_FILES): $(BEHAVIOUR_TARGET_FILES)
 
-debug opt: $(TARGET_FILES) $(APP_TARGET) $(APPUP_TARGET) 
+$(TYPES): $(TARGET_FILES) $(APP_TARGET) $(APPUP_TARGET) 
 
 clean:
 	rm -f $(TARGET_FILES) $(APP_TARGET) $(APPUP_TARGET) $(BEHAVIOUR_TARGET_FILES) 
@@ -115,4 +118,5 @@ release_docs_spec:
 # ----------------------------------------------------
 # Dependencies
 # ----------------------------------------------------
+include $(ERL_TOP)/make/dep.mk
 

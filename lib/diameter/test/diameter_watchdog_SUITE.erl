@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2010-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2010-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -25,18 +27,31 @@
 
 -module(diameter_watchdog_SUITE).
 
--export([suite/0,
+%% testcases, no common_test dependency
+-export([run/0,
+         run/1]).
+
+%% common_test wrapping
+-export([
+         %% Framework functions
+         suite/0,
          all/0,
          init_per_suite/1,
-         end_per_suite/1]).
+         end_per_suite/1,
+         init_per_testcase/2,
+         end_per_testcase/2,
 
-%% testcases
--export([reopen/0, reopen/1, reopen/4, reopen/6,
-         suspect/1, suspect/4,
-         okay/1, okay/4]).
+         %% The test cases
+         reopen/1,
+         suspect/1,
+         okay/1
+        ]).
 
--export([id/1,    %% jitter callback
-         run1/1,
+%% internal callbacks
+-export([reopen/4, reopen/6,
+         suspect/4,
+         okay/4,
+         id/1,    %% jitter callback
          abuse/1,
          abuse/2]).
 
@@ -48,11 +63,12 @@
 -export([message/3]).
 
 -include("diameter.hrl").
--include("diameter_ct.hrl").
+-include("diameter_util.hrl").
 
 %% ===========================================================================
 
--define(util, diameter_util).
+-define(WL(F),    ?WL(F, [])).
+-define(WL(F, A), ?LOG("DWD", F, A)).
 
 -define(BASE, ?DIAMETER_DICT_COMMON).
 -define(REALM, "erlang.org").
@@ -104,50 +120,120 @@
               end,
               [])).
 
-%% Log to make failures identifiable.
--define(LOG(T),     ?LOG("~p", [T])).
--define(LOG(F,A),   ct:pal("~p: " ++ F, [self() | A])).
--define(WARN(F,A),  ct:pal(error, "~p: " ++ F, [self() | A])).
 
 %% ===========================================================================
 
 suite() ->
-    [{timetrap, {seconds, 90}}].
+    [{timetrap, {seconds, 315}}].
 
 all() ->
-    [reopen,
-     suspect,
-     okay].
+    [reopen, suspect, okay].
+
 
 init_per_suite(Config) ->
-    ok = diameter:start(),
+    ?DUTIL:init_per_suite(Config).
+
+end_per_suite(Config) ->
+    ?DUTIL:end_per_suite(Config).
+
+
+%% This test case can take a *long* time, so if the machine is too slow, skip
+init_per_testcase(Case, Config) when is_list(Config) ->
+    ?WL("init_per_testcase(~w) -> check factor", [Case]),
+    Key = dia_factor,
+    case lists:keysearch(Key, 1, Config) of
+        {value, {Key, Factor}} when (Factor > 10) ->
+            ?WL("init_per_testcase(~w) -> Too slow (~w) => SKIP",
+                [Case, Factor]),
+            {skip, {machine_too_slow, Factor}};
+        _ ->
+            ?WL("init_per_testcase(~w) -> run test", [Case]),
+            Config
+    end.
+%% init_per_testcase(Case, Config) ->
+%%     ?WL("init_per_testcase(~w) -> entry", [Case]),
+%%     Config.
+
+
+end_per_testcase(Case, Config) when is_list(Config) ->
+    ?WL("end_per_testcase(~w) -> entry", [Case]),
     Config.
 
-end_per_suite(_Config) ->
-    ok = diameter:stop().
+
+
 
 %% ===========================================================================
-%% # reopen/1
+
+reopen(_Config) ->
+    ?WL("~w -> entry", [?FUNCTION_NAME]),
+    Res = run([reopen]),
+    ?WL("~w -> done when"
+        "~n   Res: ~p", [?FUNCTION_NAME, Res]),
+    Res.
+
+suspect(_Config) ->
+    ?WL("~w -> entry", [?FUNCTION_NAME]),
+    Res = run([suspect]),
+    ?WL("~w -> done when"
+        "~n   Res: ~p", [?FUNCTION_NAME, Res]),
+    Res.
+
+okay(_Config) ->
+    ?WL("~w -> entry", [?FUNCTION_NAME]),
+    Res = run([okay]),
+    ?WL("~w -> done when"
+        "~n   Res: ~p", [?FUNCTION_NAME, Res]),
+    Res.
+
+
+%% ===========================================================================
+
+%% run/0
+
+run() ->
+    run(all()).
+
+%% run/1.
+
+run(reopen) ->
+    reopen();   %% 20 watchdogs @ 15 sec
+
+run(suspect) ->
+    suspect();
+
+run(okay) ->
+    okay();
+
+run(List) ->
+    ok = diameter:start(),
+    try
+        ?RUN([{[fun run/1, T], maps:get(T, #{reopen => 300000}, 90000)}
+              || T <- List])
+    after
+        ok = diameter:stop()
+    end.
+
+
+%% ===========================================================================
+%% # reopen/0
 %% ===========================================================================
 
 %% Test the watchdog state machine for the required failover, failback
 %% and reopen behaviour by examining watchdog events.
 
 reopen() ->
-    [{timetrap, {minutes, 5}}]. %% 20 watchdogs @ 15 sec
-
-reopen(_) ->
-    [] = run([[reopen, T, W, N, M]
-              || T <- [listen, connect], %% watchdog to test
-                 W <- ?WD_TIMERS,        %% watchdog_timer value
-                 N <- [0,1,2],           %% DWR's to answer before ignoring
-                 M <- ['DWR', 'DWA', 'RAA']]). %% how to induce failback
+    ?RUN([{?MODULE, reopen, [T, W, N, M]}
+          || T <- [listen, connect], %% watchdog to test
+             W <- ?WD_TIMERS,        %% watchdog_timer value
+             N <- [0,1,2],           %% DWR's to answer before ignoring
+             M <- ['DWR', 'DWA', 'RAA']]). %% how to induce failback
 
 reopen(Test, Wd, N, M) ->
     %% Publish a ref ensure the connecting transport is added only
     %% once events from the listening transport are subscribed to.
     Ref = make_ref(),
-    [] = run([[reopen, T, Test, Ref, Wd, N, M] || T <- [listen, connect]]).
+    ?RUN([{?MODULE, reopen, [T, Test, Ref, Wd, N, M]}
+          || T <- [listen, connect]]).
 
 %% reopen/6
 
@@ -164,7 +250,7 @@ cfg(_Type, _Test, _Wd) ->
 
 %% The watchdog to be tested.
 reopen(Type, Type, SvcName, Ref, Wd, N, M) ->
-    ?LOG("node ~p", [[Type, SvcName, Ref, Wd, N, M]]),
+    ?WL("node ~p", [[Type, SvcName, Ref, Wd, N, M]]),
 
     %% Connection should come up immediately as a consequence of
     %% starting the watchdog process. In the accepting case this
@@ -298,7 +384,7 @@ reopen(Type, Type, SvcName, Ref, Wd, N, M) ->
 
 %% The misbehaving peer.
 reopen(Type, _, SvcName, Ref, Wd, N, M) ->
-    ?LOG("peer ~p", [[Type, SvcName, Ref, Wd, N, M]]),
+    ?WL("peer ~p", [[Type, SvcName, Ref, Wd, N, M]]),
 
     %% First transport process.
     {initial, okay} = ?WD_EVENT(Ref),
@@ -321,12 +407,12 @@ reopen(Type, _, SvcName, Ref, Wd, N, M) ->
     ok.
 
 log_wd({From, To} = T) ->
-    ?LOG("~p -> ~p", [From, To]),
+    ?WL("~p -> ~p", [From, To]),
     T.
 
 log_event(E) ->
     T = element(1,E),
-    T == watchdog orelse ?LOG("~p", [T]),
+    T == watchdog orelse ?WL("~p", [T]),
     E.
 
 %% recv_reopen/2
@@ -377,14 +463,14 @@ tpid(Ref, [[{ref, Ref},
     TPid.
 
 %% ===========================================================================
-%% # suspect/1
+%% # suspect/0
 %% ===========================================================================
 
 %% Configure transports to require a set number of watchdog timeouts
 %% before moving from OKAY to SUSPECT.
 
-suspect(_) ->
-    [] = run([[abuse, [suspect, N]] || N <- [0,1,3]]).
+suspect() ->
+    ?RUN([{?MODULE, abuse, [[suspect, N]]} || N <- [0,1,3]]).
 
 suspect(Type, Fake, Ref, N)
   when is_reference(Ref) ->
@@ -417,29 +503,30 @@ suspect(TRef, false, SvcName, N) ->
 %% abuse/1
 
 abuse(F) ->
-    [] = run([[abuse, F, T] || T <- [listen, connect]]).
+    ?RUN([{?MODULE, abuse, [F, T]} || T <- [listen, connect]]).
 
 abuse(F, [_,_,_|_] = Args) ->
-    ?LOG("~p", [Args]),
+    ?WL("~p", [Args]),
     apply(?MODULE, F, Args);
 
 abuse([F|A], Test) ->
     Ref = make_ref(),
-    [] = run([[abuse, F, [T, T == Test, Ref] ++ A]
-              || T <- [listen, connect]]);
+    ?RUN([{?MODULE, abuse, [F, [T, T == Test, Ref] ++ A]}
+          || T <- [listen, connect]]);
 
 abuse(F, Test) ->
     abuse([F], Test).
 
+
 %% ===========================================================================
-%% # okay/1
+%% # okay/0
 %% ===========================================================================
 
 %% Configure the number of watchdog exchanges before moving from
 %% REOPEN to OKAY.
 
-okay(_) ->
-    [] = run([[abuse, [okay, N]] || N <- [0,2,3]]).
+okay() ->
+    ?RUN([{?MODULE, abuse, [[okay, N]]} || N <- [0,2,3]]).
 
 okay(Type, Fake, Ref, N)
   when is_reference(Ref) ->
@@ -521,7 +608,7 @@ cfg(listen, _) ->
 cfg(connect, Ref) ->
     [{{_, _, SvcName}, _Pid}] = diameter_reg:wait({listen, Ref, '_'}),
     [[{ref, LRef} | _]] = diameter:service_info(SvcName, transport),
-    [LP] = ?util:lport(tcp, LRef),
+    [LP] = ?LPORT(tcp, LRef),
     [{raddr, ?ADDR}, {rport, LP}].
 
 %% ===========================================================================
@@ -614,6 +701,7 @@ peer_up(_SvcName, _Peer, S) ->
 peer_down(_SvcName, _Peer, S) ->
     S.
 
+
 %% ===========================================================================
 
 choose(true, X, _)  -> X;
@@ -626,23 +714,6 @@ choose(false, _, X) -> X.
 id(T) ->
     T.
 
-%% run/1
-%%
-%% A more useful badmatch in case of failure.
-
-run(Fs) ->
-    ?util:run([{?MODULE, [run1, F]} || F <- Fs]).
-
-run1([F|A]) ->
-    ok = try
-             apply(?MODULE, F, A),
-             ok
-         catch
-             E:R:Stack ->
-                 ?WARN("~p", [{A, E, R, Stack}]),
-                 Stack
-         end.
-
 %% jitter/2
 
 jitter(?WD(T), _) ->
@@ -652,7 +723,7 @@ jitter(T,D) ->
 
 %% Generate a unique hostname for the faked peer.
 hostname() ->
-    ?util:unique_string().
+    ?UNIQUE_STRING().
 
 putr(Key, Val) ->
     put({?MODULE, Key}, Val).

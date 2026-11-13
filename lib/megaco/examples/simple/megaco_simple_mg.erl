@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2001-2016. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2001-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -30,6 +32,8 @@
 %%----------------------------------------------------------------------
 
 -module(megaco_simple_mg).
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
 
 -behaviour(megaco_user).
 
@@ -107,6 +111,13 @@ parse_args(Key, Val, Args) ->
 get_arg(Key, Args) ->
     {value, {Key, Val}} = lists:keysearch(Key, 1, Args),
     Val.
+
+
+-spec init_batch(ReplyTo :: pid(),
+                 MgcHost :: term(),
+                 Trace   :: term(),
+                 Debug   :: term()) ->
+           no_return().
 
 init_batch(ReplyTo, MgcHost, Trace, Debug) ->
     register(?MODULE, self()),
@@ -284,7 +295,7 @@ stop(Mid) ->
 		    Pid = megaco:conn_info(CH, control_pid),
 		    megaco:disconnect(CH, Reason),
 		    megaco:cancel(CH, Reason),
-		    exit(Pid, Reason)
+                    erlang:exit_signal(Pid, Reason)
 	    end,
     lists:map(Disco, megaco:user_info(Mid, connections)),
     megaco:stop_user(Mid).

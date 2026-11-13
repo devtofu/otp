@@ -1,7 +1,9 @@
 %
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2005-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2005-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -55,6 +57,7 @@
          pos_read/1,
          pos_write/1,
          position/1,
+         read_6GB/1,
          read_crypto_tar/1,
          read_dir/1,
          read_file/1,
@@ -81,8 +84,10 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("kernel/include/file.hrl").
 -include("ssh_test_lib.hrl").
-						% Default timetrap timeout
--define(default_timeout, ?t:minutes(1)).
+-include_lib("stdlib/include/assert.hrl").
+
+%% Default timetrap timeout
+-define(default_timeout, test_server:minutes(0.5)).
 
 %%--------------------------------------------------------------------
 %% Common Test interface functions -----------------------------------
@@ -90,7 +95,7 @@
 
 suite() ->
     [{ct_hooks,[ts_install_cth]},
-     {timetrap,{seconds,40}}].
+     {timetrap,{seconds,20}}].
 
 all() -> 
     [{group, not_unicode},
@@ -119,6 +124,7 @@ groups() ->
 
      {unicode, [], [{group,erlang_server},
 		    {group,openssh_server},
+                    read_6GB,
 		    sftp_nonexistent_subsystem
                    ]},
 
@@ -224,28 +230,12 @@ init_per_group(erlang_server, Config) ->
 	ssh_test_lib:daemon([{system_dir, SysDir},
 			     {user_dir, PrivDir},
 			     {user_passwords,
-			      [{User, Passwd}]}]),
+                              [{User, Passwd}]},
+                             {subsystems, [ssh_sftpd:subsystem_spec([])]}]),
     [{peer, {fmt_host(HostX),PortX}}, {group, erlang_server}, {sftpd, Sftpd} | Config];
 
 init_per_group(openssh_server, Config) ->
-    ct:comment("Begin ~p",[grps(Config)]),
-    Host = ssh_test_lib:hostname(),
-    case (catch ssh_sftp:start_channel(Host,
-				       [{user_interaction, false},
-					{silently_accept_hosts, true},
-                                        {save_accepted_host, false}
-                                       ])) of
-	{ok, _ChannelPid, Connection} ->
-	    [{peer, {_HostName,{IPx,Portx}}}] = ssh:connection_info(Connection,[peer]),
-	    ssh:close(Connection),
-	    [{w2l, fun w2l/1},
-             {peer, {fmt_host(IPx),Portx}}, {group, openssh_server} | Config];
-	{error,"Key exchange failed"} ->
-	    {skip, "openssh server doesn't support the tested kex algorithm"};
-	Other ->
-            ct:log("No openssh server. Cause:~n~p~n",[Other]),
-	    {skip, "No openssh daemon (see log in testcase)"} 
-    end;
+    verify_openssh(Config);
 
 init_per_group(remote_tar, Config) ->
     ct:comment("Begin ~p",[grps(Config)]),
@@ -287,7 +277,21 @@ end_per_group(_, Config) ->
     Config.
 
 %%--------------------------------------------------------------------
-
+init_per_testcase(read_6GB, Config) ->
+    case verify_openssh(Config) of
+        Result = {skip, _} ->
+            Result;
+        _ ->
+            case {os:type(), erlang:system_info(system_architecture)} of
+                {{win32, _}, _} ->
+                    {skip, "/dev/zero not available on Windows"};
+                %% Raspberry Pi (frodo) — too slow for 6GB SFTP read
+                {_, "aarch64-unknown-linux-gnu"} ->
+                    {skip, "machine too slow for test"};
+                _ ->
+                    init_per_testcase(read_6GB_prepare_openssh_server, Config)
+            end
+    end;
 init_per_testcase(sftp_nonexistent_subsystem, Config) ->
     PrivDir = proplists:get_value(priv_dir, Config),
     SysDir =  proplists:get_value(data_dir, Config),
@@ -300,7 +304,6 @@ init_per_testcase(sftp_nonexistent_subsystem, Config) ->
 				  [{User, Passwd}]}
 				]),
     [{sftpd, Sftpd} | Config];
-
 init_per_testcase(version_option, Config0) ->
     Config = prepare(Config0),
     TmpConfig0 = lists:keydelete(watchdog, 1, Config),
@@ -320,7 +323,6 @@ init_per_testcase(version_option, Config0) ->
                                ]),
     Sftp = {ChannelPid, Connection},
     [{sftp,Sftp}, {watchdog, Dog} | TmpConfig];
-
 init_per_testcase(Case, Config00) ->
     Config0 = prepare(Config00),
     Config1 = lists:keydelete(watchdog, 1, Config0),
@@ -332,11 +334,24 @@ init_per_testcase(Case, Config00) ->
 		   undefined -> [];
 		   Sz -> [{packet_size,Sz}]
 	       end,
+    PrepareOpenSSHServer =
+        fun() ->
+                Host = ssh_test_lib:hostname(),
+        	{ok, ChannelPid, Connection} =
+        	    ssh_sftp:start_channel(Host,
+        				   [{user_interaction, false},
+        				    {silently_accept_hosts, true},
+                                            {save_accepted_host, false}
+                                           | PktSzOpt
+        				   ]),
+        	Sftp = {ChannelPid, Connection},
+        	[{sftp, Sftp}, {watchdog, Dog} | Config2]
+        end,
     Config =
 	case proplists:get_value(group,Config2) of
 	    erlang_server ->
-		{_,Host, Port} =  proplists:get_value(sftpd, Config2),
-		{ok, ChannelPid, Connection}  = 
+		{_,Host, Port} = proplists:get_value(sftpd, Config2),
+		{ok, ChannelPid, Connection} =
 		    ssh_sftp:start_channel(Host, Port,
 					   [{user, User},
 					    {password, Passwd},
@@ -351,18 +366,10 @@ init_per_testcase(Case, Config00) ->
 	    openssh_server when Case == links ->
 		{skip, "known bug in openssh"};
 	    openssh_server ->
-		Host = ssh_test_lib:hostname(),
-		{ok, ChannelPid, Connection} = 
-		    ssh_sftp:start_channel(Host, 
-					   [{user_interaction, false},
-					    {silently_accept_hosts, true},
-                                            {save_accepted_host, false}
-					    | PktSzOpt
-					   ]),
-		Sftp = {ChannelPid, Connection},
-		[{sftp, Sftp}, {watchdog, Dog} | Config2]
+                PrepareOpenSSHServer();
+            _ when Case == read_6GB_prepare_openssh_server ->
+                PrepareOpenSSHServer()
 	end,
-
     case catch proplists:get_value(remote_tar,Config) of
 	%% The 'catch' is for the case of Config={skip,...}
 	true ->
@@ -563,26 +570,62 @@ links(Config) when is_list(Config) ->
 retrieve_attributes(Config) when is_list(Config) ->
     FileName = proplists:get_value(filename, Config),
     SftpFileName = w2l(Config, FileName),
-
     {Sftp, _} = proplists:get_value(sftp, Config),
-    {ok, FileInfo} = ssh_sftp:read_file_info(Sftp, SftpFileName),
-    {ok, NewFileInfo} = file:read_file_info(FileName),
-
-    %% TODO comparison. There are some differences now is that ok?
-    ct:log("SFTP: ~p   FILE: ~p~n", [FileInfo, NewFileInfo]).
+    {ok, SftpFileInfo} = ssh_sftp:read_file_info(Sftp, SftpFileName),
+    {ok, FileFileInfo} = file:read_file_info(FileName),
+    ct:log("ssh_sftp:read_file_info(): ~p~n"
+           "file:read_file_info(): ~p",
+           [SftpFileInfo, FileFileInfo]),
+    {ExpectedUid, ExpectedGid} =
+        case {os:type(), proplists:get_value(group,Config)} of
+            {{win32, _}, openssh_server} ->
+                %% Windows compiled Erlang is expected will return 0;
+                %% but when Erlang(Windows) client interacts with
+                %% OpenSSH server - value 1000 is received by client
+                %% over SFTP (because OpenSSH is compiled for Linux
+                %% and runs on WSL)
+                {1000, 1000};
+            _ ->
+                {FileFileInfo#file_info.uid, FileFileInfo#file_info.gid}
+        end,
+    ?assertEqual(ExpectedUid, SftpFileInfo#file_info.uid),
+    ?assertEqual(ExpectedGid, SftpFileInfo#file_info.gid),
+    ok.
 
 %%--------------------------------------------------------------------
 set_attributes(Config) when is_list(Config) ->
     FileName = proplists:get_value(testfile, Config),
     SftpFileName = w2l(Config, FileName),
-
     {Sftp, _} = proplists:get_value(sftp, Config),
     {ok,Fd} = file:open(FileName, write),
     io:put_chars(Fd,"foo"),
-    ok = ssh_sftp:write_file_info(Sftp, SftpFileName, #file_info{mode=8#400}),
-    {error, eacces} = file:write_file(FileName, "hello again"),
-    ok = ssh_sftp:write_file_info(Sftp, SftpFileName, #file_info{mode=8#600}),
-    ok = file:write_file(FileName, "hello again").
+    TestWriting =
+        fun(FInfo) ->
+                ok = ssh_sftp:write_file_info(Sftp, SftpFileName,
+                                              FInfo#file_info{mode=8#400}),
+                {error, eacces} = file:write_file(FileName, "hello again"),
+                ok = ssh_sftp:write_file_info(Sftp, SftpFileName,
+                                              FInfo#file_info{mode=8#600}),
+                ok = file:write_file(FileName, "hello again")
+        end,
+    TestWriting(#file_info{}),
+    IsErlangServer =
+        fun() ->
+                TcGroupPath = proplists:get_value(tc_group_path, Config),
+                {_, Path} = lists:unzip(lists:flatten(TcGroupPath)),
+                lists:member(erlang_server, Path)
+        end,
+    case IsErlangServer() of
+        true ->
+            ct:log("Testing with writing a complete #file_info record"),
+            {ok, FileInfo} = file:read_file_info(SftpFileName),
+            TestWriting(FileInfo);
+        _ ->
+            %% with OpenSSH daemon started by other user above instruction end
+            %% up with permission denied
+            ok
+    end,
+    ok.
 
 %%--------------------------------------------------------------------
 file_owner_access(Config) when is_list(Config) ->
@@ -675,6 +718,29 @@ position(Config) when is_list(Config) ->
 
     {ok, 1} = ssh_sftp:position(Sftp, Handle, cur),
     {ok, "2"} = ssh_sftp:read(Sftp, Handle, 1).
+
+read_6GB(Config) when is_list(Config) ->
+    ct:timetrap(test_server:minutes(20)),
+    FileName = "/dev/zero",
+    SftpFileName = w2l(Config, FileName),
+    {SftpChannel, _ConnectionRef} = proplists:get_value(sftp, Config),
+    ChunkSize = 65535,
+    N = 100000,
+    {ok, Handle} = ssh_sftp:open(SftpChannel, SftpFileName, [read]),
+    ExpectedList = lists:duplicate(ChunkSize, 0),
+    [begin
+         MBTransferred = io_lib:format("~.2f", [I * ChunkSize / 1048576.0]),
+         case ssh_sftp:read(SftpChannel, Handle, ChunkSize, timer:minutes(1)) of
+             {ok, ExpectedList} ->
+                 [ct:log("~n~s MB read~n", [MBTransferred]) || I rem 10000 == 0];
+             Result ->
+                 ct:log("## After reading ~s MB~n## Unexpected result received = ~p",
+                        [MBTransferred, Result]),
+                 ct:fail(unexpected_reason)
+         end
+     end ||
+        I <- lists:seq(0, N)],
+    ok.
 
 %%--------------------------------------------------------------------
 pos_read(Config) when is_list(Config) ->
@@ -1234,4 +1300,36 @@ w2l(Config, P) ->
     W2L = proplists:get_value(w2l, Config, fun(X) -> X end),
     W2L(P).
 
-    
+verify_openssh(Config) ->
+    ct:comment("Begin ~p",[grps(Config)]),
+    Host = ssh_test_lib:hostname(),
+    verify_openssh_loop(Host, Config, 3, 2000).
+
+verify_openssh_loop(_Host, _Config, 0, _Delay) ->
+    ?CT_LOG("verify_openssh: all retries exhausted"),
+    {skip, "No openssh daemon (retries exhausted)"};
+verify_openssh_loop(Host, Config, Retries, Delay) ->
+    case (catch ssh_sftp:start_channel(Host,
+                                       [{user_interaction, false},
+                                        {silently_accept_hosts, true},
+                                        {save_accepted_host, false},
+                                        {connect_timeout, 10000},
+                                        {timeout, 10000}
+                                       ])) of
+        {ok, _ChannelPid, Connection} ->
+            [{peer, {_HostName,{IPx,Portx}}}] =
+                ssh:connection_info(Connection,[peer]),
+            ssh:close(Connection),
+            [{w2l, fun w2l/1},
+             {peer, {fmt_host(IPx),Portx}}, {group, openssh_server} | Config];
+        {error,"Key exchange failed"} ->
+            {skip, "openssh server doesn't support the tested kex algorithm"};
+        Other when Retries > 0 ->
+            ?CT_LOG("verify_openssh: attempt failed (~p retries left): ~p",
+                    [Retries - 1, Other]),
+            timer:sleep(Delay),
+            verify_openssh_loop(Host, Config, Retries - 1, Delay * 2);
+        Other ->
+            ?CT_LOG("No openssh server. Cause:~n~p~n",[Other]),
+            {skip, "No openssh daemon (see log in testcase)"}
+    end.

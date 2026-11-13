@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -24,9 +26,13 @@
 %% 	exit/1
 %%	exit/2
 %%	process_info/1,2
+%%      suspend_process/2 (partially)
 %%	register/2 (partially)
 
+-include_lib("stdlib/include/assert.hrl").
 -include_lib("common_test/include/ct.hrl").
+
+-compile([nowarn_deprecated_catch]).
 
 -define(heap_binary_size, 64).
 
@@ -37,23 +43,42 @@
 	 t_exit_2_catch/1, trap_exit_badarg/1, trap_exit_badarg_in_bif/1,
 	 exit_and_timeout/1, exit_twice/1,
 	 t_process_info/1, process_info_other/1, process_info_other_msg/1,
+         process_info_other_message_queue_len_signal_race/1,
 	 process_info_other_dist_msg/1,
+         process_info_other_status/1,
 	 process_info_2_list/1, process_info_lock_reschedule/1,
 	 process_info_lock_reschedule2/1,
 	 process_info_lock_reschedule3/1,
          process_info_garbage_collection/1,
+         process_info_parent/1,
          process_info_smoke_all/1,
          process_info_status_handled_signal/1,
          process_info_reductions/1,
+         process_info_self_signal/1,
+         process_info_self_msgq_len/1,
+         process_info_self_msgq_len_messages/1,
+         process_info_self_msgq_len_more/1,
+         process_info_msgq_len_no_very_long_delay/1,
+         process_info_dict_lookup/1,
+         process_info_label/1,
+         suspend_process_pausing_proc_timer/1,
+         suspend_process_pausing_proc_timer_multi_suspend/1,
+         suspend_process_pausing_bif_timer/1,
+         suspend_process_pausing_bif_timer_multi_suspend/1,
+         suspend_process_pausing_bif_timer_mass/1,
+         suspend_process_bif_timer_on_suspended/1,
 	 bump_reductions/1, low_prio/1, binary_owner/1, yield/1, yield2/1,
-	 otp_4725/1, bad_register/1, garbage_collect/1, otp_6237/1,
+	 otp_4725/1, dist_unlink_ack_exit_leak/1, bad_register/1,
+         garbage_collect/1, otp_6237/1,
 	 process_info_messages/1, process_flag_badarg/1,
          process_flag_fullsweep_after/1, process_flag_heap_size/1,
+         command_line_max_heap_size/1,
 	 spawn_opt_heap_size/1, spawn_opt_max_heap_size/1,
 	 processes_large_tab/1, processes_default_tab/1, processes_small_tab/1,
 	 processes_this_tab/1, processes_apply_trap/1,
 	 processes_last_call_trap/1, processes_gc_trap/1,
 	 processes_term_proc_list/1,
+         processes_send_infant/1,
 	 otp_7738_waiting/1, otp_7738_suspended/1,
 	 otp_7738_resume/1,
 	 garb_other_running/1,
@@ -72,15 +97,26 @@
          spawn_request_monitor_child_exit/1,
          spawn_request_link_child_exit/1,
          spawn_request_link_parent_exit/1,
+         spawn_request_link_parent_exit_compound_reason/1,
+         spawn_request_link_parent_exit_nodedown/1,
          spawn_request_abandon_bif/1,
          dist_spawn_monitor/1,
-         spawn_old_node/1,
-         spawn_new_node/1,
+         spawn_against_ei_node/1,
+         spawn_against_old_node/1,
+         spawn_against_new_node/1,
          spawn_request_reply_option/1,
+         dist_spawn_arg_list_mixup/1,
          alias_bif/1,
+         dist_frag_alias/1,
+         dist_frag_unaliased/1,
          monitor_alias/1,
          spawn_monitor_alias/1,
-         monitor_tag/1]).
+         demonitor_aliasmonitor/1,
+         down_aliasmonitor/1,
+         monitor_time_offset_alias/1,
+         monitor_tag/1,
+         no_pid_wrap/1,
+         processes_iter/1]).
 
 -export([prio_server/2, prio_client/2, init/1, handle_event/2]).
 
@@ -89,6 +125,8 @@
 -export([hangaround/2, processes_bif_test/0, do_processes/1,
 	 processes_term_proc_list_test/1, huge_arglist_child/255]).
 
+-export([spawn_request_test_exit_child/1]).
+
 suite() ->
     [{ct_hooks,[ts_install_cth]},
      {timetrap, {minutes, 9}}].
@@ -96,48 +134,79 @@ suite() ->
 all() ->
     [spawn_with_binaries, t_exit_1, {group, t_exit_2},
      trap_exit_badarg, trap_exit_badarg_in_bif,
-     t_process_info, process_info_other, process_info_other_msg,
-     process_info_other_dist_msg, process_info_2_list,
-     process_info_lock_reschedule,
-     process_info_lock_reschedule2,
-     process_info_lock_reschedule3,
-     process_info_garbage_collection,
-     process_info_smoke_all,
-     process_info_status_handled_signal,
-     process_info_reductions,
      bump_reductions, low_prio, yield, yield2, otp_4725,
-     bad_register, garbage_collect, process_info_messages,
+     dist_unlink_ack_exit_leak, bad_register, garbage_collect,
      process_flag_badarg,
      process_flag_fullsweep_after, process_flag_heap_size,
+     command_line_max_heap_size,
      spawn_opt_heap_size, spawn_opt_max_heap_size,
      spawn_huge_arglist,
-     spawn_request_bif,
-     spawn_request_monitor_demonitor,
-     spawn_request_monitor_child_exit,
-     spawn_request_link_child_exit,
-     spawn_request_link_parent_exit,
-     spawn_request_abandon_bif,
-     dist_spawn_monitor,
-     spawn_old_node,
-     spawn_new_node,
-     spawn_request_reply_option,
      otp_6237,
+     {group, spawn_request},
+     {group, process_info_bif},
+     {group, suspend_process_bif},
      {group, processes_bif},
      {group, otp_7738}, garb_other_running,
      {group, system_task},
      {group, alias},
-     monitor_tag].
+     monitor_tag,
+     no_pid_wrap].
 
 groups() -> 
     [{t_exit_2, [],
       [t_exit_2_other, t_exit_2_other_normal, self_exit,
        normal_suicide_exit, abnormal_suicide_exit,
        t_exit_2_catch, exit_and_timeout, exit_twice]},
+     {spawn_request, [],
+      [spawn_request_bif,
+       spawn_request_monitor_demonitor,
+       spawn_request_monitor_child_exit,
+       spawn_request_link_child_exit,
+       spawn_request_link_parent_exit,
+       spawn_request_link_parent_exit_compound_reason,
+       spawn_request_link_parent_exit_nodedown,
+       spawn_request_abandon_bif,
+       dist_spawn_monitor,
+       spawn_against_ei_node,
+       spawn_against_old_node,
+       spawn_against_new_node,
+       spawn_request_reply_option,
+       dist_spawn_arg_list_mixup]},
      {processes_bif, [],
       [processes_large_tab, processes_default_tab,
        processes_small_tab, processes_this_tab,
        processes_last_call_trap, processes_apply_trap,
-       processes_gc_trap, processes_term_proc_list]},
+       processes_gc_trap, processes_term_proc_list,
+       processes_send_infant,
+       processes_iter]},
+     {process_info_bif, [],
+      [t_process_info, process_info_messages,
+       process_info_other, process_info_other_msg,
+       process_info_other_message_queue_len_signal_race,
+       process_info_other_dist_msg, process_info_other_status,
+       process_info_2_list,
+       process_info_lock_reschedule,
+       process_info_lock_reschedule2,
+       process_info_lock_reschedule3,
+       process_info_garbage_collection,
+       process_info_parent,
+       process_info_smoke_all,
+       process_info_status_handled_signal,
+       process_info_reductions,
+       process_info_self_signal,
+       process_info_self_msgq_len,
+       process_info_self_msgq_len_messages,
+       process_info_self_msgq_len_more,
+       process_info_msgq_len_no_very_long_delay,
+       process_info_dict_lookup,
+       process_info_label]},
+     {suspend_process_bif, [],
+      [suspend_process_pausing_proc_timer,
+       suspend_process_pausing_proc_timer_multi_suspend,
+       suspend_process_pausing_bif_timer,
+       suspend_process_pausing_bif_timer_multi_suspend,
+       suspend_process_pausing_bif_timer_mass,
+       suspend_process_bif_timer_on_suspended]},
      {otp_7738, [],
       [otp_7738_waiting, otp_7738_suspended,
        otp_7738_resume]},
@@ -147,7 +216,10 @@ groups() ->
        gc_request_when_gc_disabled, gc_request_blast_when_gc_disabled,
        otp_16436, otp_16642]},
      {alias, [],
-      [alias_bif, monitor_alias, spawn_monitor_alias]}].
+      [alias_bif, monitor_alias, spawn_monitor_alias,
+       demonitor_aliasmonitor, down_aliasmonitor,
+       monitor_time_offset_alias,
+       dist_frag_alias, dist_frag_unaliased]}].
 
 init_per_suite(Config) ->
     A0 = case application:start(sasl) of
@@ -163,7 +235,8 @@ init_per_suite(Config) ->
 end_per_suite(Config) ->
     As = proplists:get_value(started_apps, Config),
     lists:foreach(fun (A) -> application:stop(A) end, As),
-    catch erts_debug:set_internal_state(available_internal_state, false),
+    try erts_debug:set_internal_state(available_internal_state, false)
+    catch _:_ -> ok end,
     Config.
 
 init_per_group(_GroupName, Config) ->
@@ -178,7 +251,7 @@ init_per_testcase(Func, Config)
     case erlang:system_info(build_type) of
         BT when BT =:= debug; BT =:= valgrind ->
             {skip, "Don't run in debug/valgrind"};
-        false ->
+        _ ->
             [{testcase, Func} | Config]
     end;
 init_per_testcase(Func, Config) when is_atom(Func), is_list(Config) ->
@@ -189,8 +262,9 @@ end_per_testcase(Func, Config) when is_atom(Func), is_list(Config) ->
     erlang:system_flag(max_heap_size,
                        #{size => 0,
                          kill => true,
+                         include_shared_binaries => false,
                          error_logger => true}),
-    ok.
+    erts_test_utils:ept_check_leaked_nodes(Config).
 
 fun_spawn(Fun) ->
     spawn_link(erlang, apply, [Fun, []]).
@@ -307,7 +381,7 @@ abnormal_suicide_exit(Config) when is_list(Config) ->
 	      Other -> ct:fail({bad_message, Other})
 	  end.
 
-%% Tests that exit(self(), die) cannot be catched.
+%% Tests that exit(self(), die) cannot be caught.
 t_exit_2_catch(Config) when is_list(Config) ->
     process_flag(trap_exit, true),
     Pid = fun_spawn(fun() -> catch exit(self(), die) end),
@@ -326,7 +400,19 @@ trap_exit_badarg(Config) when is_list(Config) ->
     ct:timetrap({seconds, 10}),
     start_spawner(),
     process_flag(trap_exit, true),
-    test_server:do_times(10, fun trap_exit_badarg/0),
+    try
+        %% suppress  =ERROR REPORT=== emulator messages
+        ok = logger:add_primary_filter(suppress_log_spam, {
+            fun(#{meta := #{error_logger := #{emulator := true, tag := error}}}, _Report) ->
+                stop;
+            (_Meta, _Report) ->
+                ignore
+            end, ok}),
+        test_server:do_times(10, fun trap_exit_badarg/0),
+        ct:sleep(500) %% flush logging
+    after
+        ok = logger:remove_primary_filter(suppress_log_spam)
+    end,
     stop_spawner(),
     ok.
 
@@ -482,7 +568,8 @@ t_process_info(Config) when is_list(Config) ->
     {status, running} = process_info(self(), status),
     {min_heap_size, 233} = process_info(self(), min_heap_size),
     {min_bin_vheap_size,46422} = process_info(self(), min_bin_vheap_size),
-    {max_heap_size, #{ size := 0, kill := true, error_logger := true}} =
+    {max_heap_size, #{ size := 0, kill := true, error_logger := true,
+                       include_shared_binaries := false}} =
         process_info(self(), max_heap_size),
     {current_function,{?MODULE,t_process_info,1}} =
 	process_info(self(), current_function),
@@ -501,7 +588,7 @@ t_process_info(Config) when is_list(Config) ->
 
     Gleader = group_leader(),
     {group_leader, Gleader} = process_info(self(), group_leader),
-    {'EXIT',{badarg,_Info}} = (catch process_info('not_a_pid')),
+    ?assertError(badarg, process_info('not_a_pid')),
     ok.
 
 verify_stacktrace_depth() ->
@@ -640,18 +727,82 @@ process_info_other_msg(Config) when is_list(Config) ->
 
     {min_heap_size, 233} = process_info(Pid, min_heap_size),
     {min_bin_vheap_size, 46422} = process_info(Pid, min_bin_vheap_size),
-    {max_heap_size, #{ size := 0, kill := true, error_logger := true}} =
-        process_info(self(), max_heap_size),
+    {max_heap_size, #{ size := 0, kill := true, error_logger := true,
+                       include_shared_binaries := false}} =
+        process_info(Pid, max_heap_size),
 
     Pid ! stop,
     ok.
+
+process_info_other_message_queue_len_signal_race(Config) when is_list(Config) ->
+    %% OTP-18169
+    %%
+    %% The race window triggering this bug is quite small. This test
+    %% wont fail even with the bug present, but it may trigger an
+    %% assertion in the debug compiled emulator if the bug is
+    %% present...
+    process_flag(priority, high),
+    SSchdlr = case erlang:system_info(schedulers_online) of
+                  1 -> 1;
+                  _ -> 2
+              end,
+    Flush = fun Flush () ->
+                    receive _ -> Flush()
+                    after 0 -> ok
+                    end
+            end,
+    RFun = fun RFun () ->
+                   receive
+                       {flush, From} ->
+                           Flush(),
+                           From ! flushed
+                   end,
+                   RFun()
+           end,
+    R = spawn_opt(RFun, [link,
+                         {scheduler, 1},
+                         {message_queue_data, on_heap}]),
+    SFun = fun SFun () ->
+                   receive go -> ok end,
+                   M = erlang:monitor(process, R),
+                   R ! hi,
+                   receive
+                       {demonitor, From} ->
+                           _ = erlang:demonitor(M),
+                           From ! demonitored
+                   end,
+                   SFun()
+           end,
+    S = spawn_opt(SFun, [link,
+                         {scheduler, SSchdlr},
+                         {priority, high}]),
+    process_info_other_message_queue_len_signal_race_test(10000, S, R),
+    unlink(R),
+    exit(R, kill),
+    unlink(S),
+    exit(S, kill),
+    false = is_process_alive(R),
+    false = is_process_alive(S),
+    ok.
+
+process_info_other_message_queue_len_signal_race_test(0, _S, _R) ->
+    ok;
+process_info_other_message_queue_len_signal_race_test(N, S, R) ->
+    S ! go,
+    erlang:yield(),
+    _ = process_info(R, message_queue_len),
+    S ! {demonitor, self()},
+    receive demonitored -> ok end,
+    R ! {flush, self()},
+    receive flushed -> ok end,
+    process_info_other_message_queue_len_signal_race_test(N-1, S, R).
 
 process_info_other_dist_msg(Config) when is_list(Config) ->
     %%
     %% Check that process_info can handle messages that have not been
     %% decoded yet.
     %%
-    {ok, Node} = start_node(Config),
+    {ok, Peer, Node} = ?CT_PEER(),
     Self = self(),
     Pid = spawn_link(fun() -> other_process(Self) end),
     receive {go_ahead,Pid} -> ok end,
@@ -694,9 +845,25 @@ process_info_other_dist_msg(Config) when is_list(Config) ->
 	  end,
     {messages,[]} = process_info(Pid, messages),
     Pid ! stop,
-    stop_node(Node),
+    stop_node(Peer, Node),
     ok.
-    
+
+process_info_other_status(Config) when is_list(Config) ->
+    %% OTP-17628: status was erroneously reported as 'running',
+    %% when it should be 'waiting', when the priority of the
+    %% caller exceeded the priority of the processes being
+    %% checked (due to prio elevation).
+    Self = self(),
+    Other = spawn_link(fun () -> other_process(Self) end),
+    receive {go_ahead, Other} -> ok end,
+    receive after 100 -> ok end,
+    {status, waiting} = process_info(Other, status),
+    process_flag(priority, high),
+    {status, waiting} = process_info(Other, status),
+    process_flag(priority, max),
+    {status, waiting} = process_info(Other, status),
+    Other ! stop,
+    ok.
 
 other_process(Parent) ->
     self() ! {my,own,message},
@@ -953,6 +1120,20 @@ check_proc_infos(A, B) ->
 
     GC = lists:keysearch(garbage_collection, 1, A),
     GC = lists:keysearch(garbage_collection, 1, B),
+    {value, {garbage_collection, GClist}} = GC,
+
+    %% This is not really documented
+    true = is_integer(gv(minor_gcs, GClist)),
+    true = is_integer(gv(fullsweep_after, GClist)),
+    true = is_integer(gv(min_heap_size, GClist)),
+    #{error_logger := Bool1,
+      include_shared_binaries := Bool2,
+      kill := Bool3,
+      size := MaxHeapSize} = gv(max_heap_size, GClist),
+    true = is_boolean(Bool1),
+    true = is_boolean(Bool2),
+    true = is_boolean(Bool3),
+    true = is_integer(MaxHeapSize),
 
     ok.
 
@@ -1032,6 +1213,30 @@ process_info_garbage_collection(_Config) ->
 gv(Key,List) ->
     proplists:get_value(Key,List).
 
+process_info_parent(Config) when is_list(Config) ->
+    Child = spawn_link(fun () -> receive stop -> ok end end),
+    ?assertEqual({parent, self()}, erlang:process_info(Child, parent)),
+    Child ! stop,
+    ?assertEqual({parent, undefined}, erlang:process_info(whereis(init), parent)),
+
+    {ok, Peer, Node} = ?CT_PEER(),
+    RemoteChild = spawn_link(Node,
+                             fun () ->
+                                     {parent, Parent} = process_info(self(), parent),
+                                     garbage_collect(),
+                                     {parent, Parent} = process_info(self(), parent),
+                                     garbage_collect(),
+                                     Parent ! remote_child_hello,
+                                     receive stop -> ok end
+                             end),
+    ?assertEqual({parent, self()},
+                 erpc:call(Node, erlang, process_info, [RemoteChild, parent])),
+    receive remote_child_hello -> ok end,
+    unlink(RemoteChild),
+    RemoteChild ! stop,
+    peer:stop(Peer),
+    ok.
+
 process_info_smoke_all_tester() ->
     register(process_info_smoke_all_tester, self()),
     put(ets_ref, ets:new(blupp, [])),
@@ -1086,9 +1291,10 @@ process_info_smoke_all(Config) when is_list(Config) ->
                     message_queue_data,
                     garbage_collection_info,
                     magic_ref,
-                    fullsweep_after],
+                    fullsweep_after,
+                    {dictionary, ets_ref}],
 
-    {ok, Node} = start_node(Config, ""),
+    {ok, Peer, Node} = ?CT_PEER(),
     RP = spawn_link(Node, fun process_info_smoke_all_tester/0),
     LP = spawn_link(fun process_info_smoke_all_tester/0),
     RP ! {other_process, LP},
@@ -1108,7 +1314,7 @@ process_info_smoke_all(Config) when is_list(Config) ->
     exit(RP, kill),
     exit(LP, kill),
     false = is_process_alive(LP),
-    stop_node(Node),
+    stop_node(Peer, Node),
     ok.
 
 process_info_status_handled_signal(Config) when is_list(Config) ->
@@ -1215,6 +1421,689 @@ pi_reductions_main_unlocker_loop(Other) ->
     erlang:yield(),
     pi_reductions_main_unlocker_loop(Other).
 
+process_info_self_signal(Config) when is_list(Config) ->
+    %% Test that signals that we have sent to ourselves are
+    %% visible in process_info() result. This is not strictly
+    %% a necessary property, but implemented so now. See
+    %% process_info.c:process_info_bif() for more info.
+    Self = self(),
+    Ref = make_ref(),
+    pi_sig_spam_test(fun () ->
+                             process_info_self_signal_spammer(Self)
+                     end,
+                     fun () ->
+                             self() ! Ref,
+                             process_info(self(), messages)
+                     end,
+                     fun (Res) ->
+                             {messages, [Ref]} = Res
+                     end).
+
+process_info_self_signal_spammer(To) ->
+    erlang:demonitor(erlang:monitor(process, To)),
+    process_info_self_signal_spammer(To).
+
+process_info_self_msgq_len(Config) when is_list(Config) ->
+    %% Spam ourselves with signals forcing us to flush own
+    %% signal queue..
+    Self = self(),
+    pi_sig_spam_test(fun () ->
+                             process_info_self_msgq_len_spammer(Self)
+                     end,
+                     fun () ->
+                             process_info(self(), message_queue_len)
+                     end,
+                     fun (Res) ->
+                             {message_queue_len, Len} = Res,
+                             true = Len > 0,
+                             ok
+                     end).
+
+
+process_info_self_msgq_len_messages(Config) when is_list(Config) ->
+    %% Spam ourselves with signals normally forcing us to flush own
+    %% signal queue, but since we also want messages wont be flushed...
+    Self = self(),
+    pi_sig_spam_test(fun () ->
+                             process_info_self_msgq_len_spammer(Self, 100000)
+                     end,
+                     fun () ->
+                             process_info(self(),
+                                          [message_queue_len,
+                                           messages])
+                     end,
+                     fun (Res) ->
+                             [{message_queue_len, Len},
+                              {messages, Msgs}] = Res,
+                             Len = length(Msgs),
+                             ok
+                     end).
+
+process_info_self_msgq_len_more(Config) when is_list(Config) ->
+    self() ! hej,
+    BodyRes = process_info_self_msgq_len_more_caller_body(),
+    ok = process_info_self_msgq_len_more_caller_body_result(BodyRes),
+    TailRes = process_info_self_msgq_len_more_caller_tail(),
+    ok = process_info_self_msgq_len_more_caller_tail_result(TailRes),
+    receive hej -> ok end,
+    %% Check that current_function, current_location, and
+    %% current_stacktrace give sane results flushing or not...
+    Self = self(),
+    pi_sig_spam_test(fun () ->
+                             process_info_self_msgq_len_spammer(Self)
+                     end,
+                     fun process_info_self_msgq_len_more_caller_body/0,
+                     fun process_info_self_msgq_len_more_caller_body_result/1),
+    pi_sig_spam_test(fun () ->
+                             process_info_self_msgq_len_spammer(Self)
+                     end,
+                     fun process_info_self_msgq_len_more_caller_tail/0,
+                     fun process_info_self_msgq_len_more_caller_tail_result/1).
+
+process_info_self_msgq_len_more_caller_body() ->
+    Res = process_info(self(),
+                       [message_queue_len,
+                        current_function,
+                        current_location,
+                        current_stacktrace]),
+    id(Res).
+
+process_info_self_msgq_len_more_caller_body_result(Res) ->
+    [{message_queue_len, Len},
+     {current_function, {process_SUITE,process_info_self_msgq_len_more_caller_body,0}},
+     {current_location, {process_SUITE,process_info_self_msgq_len_more_caller_body,0,_}},
+     {current_stacktrace,
+      [{process_SUITE,process_info_self_msgq_len_more_caller_body,0,_} | _]}] = Res,
+    true = Len > 0,
+    ok.
+
+process_info_self_msgq_len_more_caller_tail() ->
+    process_info(self(),
+                 [message_queue_len,
+                  current_function,
+                  current_location,
+                  current_stacktrace]).
+
+process_info_self_msgq_len_more_caller_tail_result(Res) ->
+    [{message_queue_len, Len},
+     {current_function, {process_SUITE,process_info_self_msgq_len_more_caller_tail,0}},
+     {current_location, {process_SUITE,process_info_self_msgq_len_more_caller_tail,0,_}},
+     {current_stacktrace,
+      [{process_SUITE,process_info_self_msgq_len_more_caller_tail,0,_} | _]}] = Res,
+    true = Len > 0,
+    ok.
+    
+
+process_info_self_msgq_len_spammer(To) ->
+    process_info_self_msgq_len_spammer(To, 10000000).
+
+process_info_self_msgq_len_spammer(_To, 0) ->
+    ok;
+process_info_self_msgq_len_spammer(To, N) ->
+    To ! hejhopp,
+    erlang:demonitor(erlang:monitor(process, To)),
+    process_info_self_msgq_len_spammer(To, N-1).
+
+pi_sig_spam_test(SpamFun, PITest, PICheckRes) ->
+    SO = erlang:system_flag(schedulers_online, 1),
+    try
+        Self = self(),
+        SigSpammer = spawn_link(SpamFun),
+        process_flag(priority, low),
+        receive after 10 -> ok end,
+        Res = PITest(),
+        process_flag(priority, high),
+        unlink(SigSpammer),
+        exit(SigSpammer, kill),
+        false = is_process_alive(SigSpammer),
+        PICheckRes(Res)
+    after
+        _ = erlang:system_flag(schedulers_online, SO)
+    end.
+
+process_info_msgq_len_no_very_long_delay(Config) when is_list(Config) ->
+    Tester = self(),
+    P1 = spawn_link(fun () ->
+                            receive after infinity -> ok end
+                    end),
+    {message_queue_len, 0} = process_info(self(), message_queue_len),
+    {message_queue_len, 0} = process_info(P1, message_queue_len),
+    P2 = spawn_link(fun () ->
+                            Tester ! hello,
+                            P1 ! hello,
+                            receive after infinity -> ok end
+                    end),
+    receive after 100 -> ok end,
+    {message_queue_len, 1} = process_info(self(), message_queue_len),
+    {message_queue_len, 1} = process_info(P1, message_queue_len),
+    receive hello -> ok end,
+    {message_queue_len, 0} = process_info(self(), message_queue_len),
+    unlink(P1),
+    exit(P1, kill),
+    unlink(P2),
+    exit(P2, kill),
+    false = is_process_alive(P1),
+    false = is_process_alive(P2),
+    ok.
+
+process_info_dict_lookup(Config) when is_list(Config) ->
+    Pid = spawn_link(fun proc_dict_helper/0),
+    {async_dist, AsyncDist} = process_info(Pid, async_dist),
+    Ref = make_ref(),
+    Bin = <<17:4096>>,
+    Int0 = 9999999999999999999999999999999999,
+    Int1 = 1111111111111111111111111111111111,
+    Tuple = {make_ref(), erlang:monotonic_time()},
+
+    %% Check that we can lookup dictionary values on another process...
+    pdh(Pid, put_async, [hej, hopp]),
+    pdh(Pid, put_async, [hopp, hej]),
+    pdh(Pid, put_async, [Ref, Int0]),
+    pdh(Pid, put_async, [Int0, Int1]),
+    pdh(Pid, put_async, [Pid, Ref]),
+    pdh(Pid, put_async, [Tuple, Bin]),
+    undefined = pdh(Pid, put, [Bin, Ref]),
+
+    erlang:garbage_collect(Pid),
+
+    {{dictionary, Ref}, Int0} = process_info(Pid, {dictionary, Ref}),
+    [{{dictionary, Ref}, Int0}] = process_info(Pid, [{dictionary, Ref}]),
+
+    PIRes = process_info(Pid, [async_dist,
+                               trap_exit,
+                               {dictionary, hej},
+                               {dictionary, hopp},
+                               {dictionary, Ref},
+                               {dictionary, Int0},
+                               async_dist,
+                               trap_exit,
+                               {dictionary, Pid},
+                               {dictionary, Tuple},
+                               {dictionary, Bin}]),
+    ct:log("PIRes = ~p", [PIRes]),
+    PIRes = [{async_dist, AsyncDist},
+             {trap_exit, false},
+             {{dictionary, hej}, hopp},
+             {{dictionary, hopp}, hej},
+             {{dictionary, Ref}, Int0},
+             {{dictionary, Int0}, Int1},
+             {async_dist, AsyncDist},
+             {trap_exit, false},
+             {{dictionary, Pid}, Ref},
+             {{dictionary, Tuple}, Bin},
+             {{dictionary, Bin}, Ref}],
+
+    pdh(Pid, erase_async, [hej]),
+    pdh(Pid, erase_async, [hopp]),
+    pdh(Pid, erase_async, [Ref]),
+    pdh(Pid, erase_async, [Int0]),
+    pdh(Pid, erase_async, [Pid]),
+    pdh(Pid, erase_async, [Tuple]),
+    Ref = pdh(Pid, erase, [Bin]),
+
+    erlang:garbage_collect(Pid),
+
+    {{dictionary, Ref}, undefined} = process_info(Pid, {dictionary, Ref}),
+    [{{dictionary, Ref}, undefined}] = process_info(Pid, [{dictionary, Ref}]),
+
+    PIRes2 = process_info(Pid, [async_dist,
+                                trap_exit,
+                                {dictionary, hej},
+                                {dictionary, hopp},
+                                {dictionary, Ref},
+                                {dictionary, Int0},
+                                async_dist,
+                                trap_exit,
+                                {dictionary, Pid},
+                                {dictionary, Tuple},
+                                {dictionary, Bin}]),
+    ct:log("PIRes2 = ~p", [PIRes2]),
+
+    PIRes2 = [{async_dist, AsyncDist},
+             {trap_exit, false},
+             {{dictionary, hej}, undefined},
+             {{dictionary, hopp}, undefined},
+             {{dictionary, Ref}, undefined},
+             {{dictionary, Int0}, undefined},
+             {async_dist, AsyncDist},
+             {trap_exit, false},
+             {{dictionary, Pid}, undefined},
+             {{dictionary, Tuple}, undefined},
+             {{dictionary, Bin}, undefined}],
+
+    unlink(Pid),
+    exit(Pid,kill),
+
+    %% Also check that it works on ourself...
+
+    put(hej, hopp),
+    put(hopp, hej),
+    put(Ref, Int0),
+    put(Int0, Int1),
+    put(Pid, Ref),
+    put(Tuple, Bin),
+    undefined = put(Bin, Ref),
+
+    erlang:garbage_collect(),
+
+    {{dictionary, Ref}, Int0} = process_info(self(), {dictionary, Ref}),
+    [{{dictionary, Ref}, Int0}] = process_info(self(), [{dictionary, Ref}]),
+
+    PIRes3 = process_info(self(), [async_dist,
+                                   trap_exit,
+                                   {dictionary, hej},
+                                   {dictionary, hopp},
+                                   {dictionary, Ref},
+                                   {dictionary, Int0},
+                                   async_dist,
+                                   trap_exit,
+                                   {dictionary, Pid},
+                                   {dictionary, Tuple},
+                                   {dictionary, Bin}]),
+    ct:log("PIRes3 = ~p", [PIRes3]),
+    PIRes3 = [{async_dist, AsyncDist},
+              {trap_exit, false},
+              {{dictionary, hej}, hopp},
+              {{dictionary, hopp}, hej},
+              {{dictionary, Ref}, Int0},
+              {{dictionary, Int0}, Int1},
+              {async_dist, AsyncDist},
+              {trap_exit, false},
+              {{dictionary, Pid}, Ref},
+              {{dictionary, Tuple}, Bin},
+              {{dictionary, Bin}, Ref}],
+
+    erase(hej),
+    erase(hopp),
+    erase(Ref),
+    erase(Int0),
+    erase(Pid),
+    erase(Tuple),
+    Ref = erase(Bin),
+
+    erlang:garbage_collect(),
+
+    {{dictionary, Ref}, undefined} = process_info(self(), {dictionary, Ref}),
+    [{{dictionary, Ref}, undefined}] = process_info(self(), [{dictionary, Ref}]),
+
+    PIRes4 = process_info(self(), [async_dist,
+                                   trap_exit,
+                                   {dictionary, hej},
+                                   {dictionary, hopp},
+                                   {dictionary, Ref},
+                                   {dictionary, Int0},
+                                   async_dist,
+                                   trap_exit,
+                                   {dictionary, Pid},
+                                   {dictionary, Tuple},
+                                   {dictionary, Bin}]),
+    ct:log("PIRes4 = ~p", [PIRes4]),
+
+    PIRes4 = [{async_dist, AsyncDist},
+              {trap_exit, false},
+              {{dictionary, hej}, undefined},
+              {{dictionary, hopp}, undefined},
+              {{dictionary, Ref}, undefined},
+              {{dictionary, Int0}, undefined},
+              {async_dist, AsyncDist},
+              {trap_exit, false},
+              {{dictionary, Pid}, undefined},
+              {{dictionary, Tuple}, undefined},
+              {{dictionary, Bin}, undefined}],
+
+    false = is_process_alive(Pid),
+    ok.
+
+process_info_label(Config) when is_list(Config) ->
+    Pid = spawn_link(fun proc_dict_helper/0),
+    LabelKey = '$process_label',
+    Ref = make_ref(),
+    Tuple = {make_ref(), erlang:monotonic_time()},
+
+    undefined = pdh(Pid, put, [LabelKey, Tuple]),
+    erlang:garbage_collect(Pid),
+
+    {label,Tuple} = process_info(Pid, label),
+    Self = self(),
+    [{label,Tuple},{registered_name,[]},{links,[Self]}] =
+        process_info(Pid, [label,registered_name,links]),
+
+    put(LabelKey, Ref),
+    {label,Ref} = process_info(self(), label),
+
+    ok.
+
+pdh(Pid, AsyncOp, Args) when AsyncOp == put_async;
+                             AsyncOp == erase_async ->
+    Pid ! {AsyncOp, Args},
+    ok;
+pdh(Pid, SyncOp, Args) ->
+    Ref = make_ref(),
+    Pid ! {SyncOp, self(), Ref, Args},
+    receive {Ref, Res} -> Res end.
+
+proc_dict_helper() ->
+    receive
+        {put, From, Ref, [Key, Value]} ->
+            From ! {Ref, put(Key, Value)};
+        {get, From, Ref, [Key]} ->
+            From ! {Ref, get(Key)};
+        {get, From, Ref, []} ->
+            From ! {Ref, get()};
+        {erase, From, Ref, [Key]} ->
+            From ! {Ref, erase(Key)};
+        {put_async, [Key, Value]} ->
+            _ = put(Key, Value);
+        {erase_async, [Key]} ->
+            _ = erase(Key)
+    end,
+    proc_dict_helper().
+
+suspend_process_pausing_proc_timer(_Config) ->
+    BeforeSuspend = fun(_Pid) -> ok end,
+    AfterResume = fun(_Pid) -> ok end,
+    suspend_process_pausing_proc_timer_aux(BeforeSuspend, AfterResume),
+    ok.
+
+suspend_process_pausing_proc_timer_aux(BeforeSuspend, AfterResume) ->
+    TcProc = self(),
+    Pid = erlang:spawn_link(
+        fun() ->
+            TcProc ! {sync, self()},
+            receive go -> ok
+            after 2_000 -> exit(timer_not_paused)
+            end,
+            TcProc ! {sync, self()},
+            receive _ -> error(unexpected)
+            after 2_000 -> ok
+            end,
+            TcProc ! {sync, self()}
+        end
+    ),
+
+    WaitForSync = fun () ->
+        receive {sync, Pid} -> ok
+        after 10_000 -> error(timeout)
+        end
+    end,
+    EnsureWaiting = fun() ->
+        wait_until(fun () -> process_info(Pid, status) == {status, waiting} end)
+    end,
+
+    WaitForSync(),
+    EnsureWaiting(),
+
+    BeforeSuspend(Pid),
+    true = erlang:suspend_process(Pid),
+    timer:sleep(5_000),
+    true = erlang:resume_process(Pid),
+    AfterResume(Pid),
+    timer:sleep(1_000),
+    Pid ! go,
+
+    WaitForSync(),
+    EnsureWaiting(),
+
+    BeforeSuspend(Pid),
+    true = erlang:suspend_process(Pid),
+    true = erlang:resume_process(Pid),
+    AfterResume(Pid),
+    WaitForSync(),
+    ok.
+
+suspend_process_pausing_bif_timer(Config) ->
+    TcProc = self(),
+    Pid = erlang:spawn_link(
+        fun() ->
+        TcProc ! {sync, self(), start},
+        receive
+            {timeout, _, timer_msg_1} -> TcProc ! {sync, self(), received_message_1};
+            {timeout, _, timer_msg_2} -> exit(timer_2_before_1_receiver)
+            after 2_000 -> exit(timer_not_resumed_receiver)
+        end,
+        receive
+            {timeout, _, timer_msg_1} -> exit(timer_1_before_2_receiver);
+            {timeout, _, timer_msg_2} -> TcProc ! {sync, self(), received_message_2}
+            after 2_000 -> exit(timer_not_resumed_receiver_2)
+        end
+    end),
+
+    % Wait for the process to start
+    receive
+        {sync, Pid, start} -> ok
+        after 10_000 -> error(timeout)
+    end,
+
+    % Start the timers, but immediately suspend the process
+    _TimerRef = erlang:start_timer(1_000, Pid, timer_msg_1),
+    _TimerRef2 = erlang:start_timer(2_000, Pid, timer_msg_2),
+    true = erlang:suspend_process(Pid),
+    timer:sleep(5_000),
+    receive
+        {sync, Pid, received_message_1} -> exit(timer_1_not_paused);
+        {sync, Pid, received_message_2} -> exit(timer_2_not_paused)
+        after 2_000 -> ok
+    end,
+
+    % Resume the process and wait for the timer to fire
+    true = erlang:resume_process(Pid),
+    receive
+        {sync, Pid, received_message_1} -> ok;
+        {sync, Pid, received_message_2} -> exit(timer_2_before_1_spawner)
+        after 2_000 -> exit(timer_not_resumed_spawner)
+    end,
+    receive
+        {sync, Pid, received_message_2} -> ok;
+        {sync, Pid, received_message_1} -> exit(timer_1_before_2_spawner)
+        after 2_000 -> exit(timer_not_resumed_spawner_2)
+    end,
+    ok.
+
+% Same idea as the previous test, but with thousand of processes and timers
+% The goal is to check that race conditions do not cause timers to be unpaused
+bif_timer_receiver_aux(OwnerPid) ->
+    receive
+        {timeout, _, _} -> bif_timer_receiver_aux(OwnerPid);
+        no_more_timeouts -> receive
+            {timeout, _, N} -> OwnerPid ! {timeout, self(), N};
+            exit -> OwnerPid ! {success, self()}
+        end
+    end.
+
+bif_timer_sender_aux(ReceiverPid, N) ->
+    % This time should be long enough to for all the receivers to be awoken and then receive the exit signal before they receive it
+    _TimerRef = erlang:start_timer(3_000, ReceiverPid, N),
+    receive
+            exit -> ok
+    after 10 -> bif_timer_sender_aux(ReceiverPid, N + 1)
+    end.
+
+suspend_process_pausing_bif_timer_mass(Config) ->
+    NumProcesses = 1000,
+    Self = self(),
+    ReceiverPids = [erlang:spawn_link(fun() -> bif_timer_receiver_aux(Self) end) || _ <- lists:seq(1, NumProcesses)],
+    SenderPids = [erlang:spawn_link(fun () -> bif_timer_sender_aux(ReceiverPid, 0) end) || ReceiverPid <- ReceiverPids],
+    % Wait for all the spawned processes to get scheduled and do stuff
+    timer:sleep(2_000),
+    [erlang:suspend_process(Pid) || Pid <- ReceiverPids],
+    [Pid ! exit || Pid <- SenderPids],
+    [Pid ! no_more_timeouts || Pid <- ReceiverPids],
+    timer:sleep(5_000),
+    % Significantly less than the length of the timers created by sender_aux - initial sleep.
+    % The goal is to detect if the iteration of all receiver processes to wake them up takes so long that the timers can fire.
+    erlang:start_timer(900, Self, slow_wakeup),
+    [erlang:resume_process(Pid) || Pid <- ReceiverPids],
+    [Pid ! exit || Pid <- ReceiverPids],
+    [receive
+        {timeout, _, slow_wakeup} -> exit({slow_wakeup, Pid});
+        {success, Pid} -> ok;
+        {timeout, Pid, N} -> exit({timeout, Pid, N})
+    end || Pid <- ReceiverPids],
+    ok.
+
+suspend_process_pausing_proc_timer_multi_suspend(_Config) ->
+    TcProc = self(),
+    Child = erlang:spawn_link(
+        fun() ->
+            TcProc ! {sync, self()},
+            receive go -> ok
+            after 2_000 -> exit(timer_not_paused)
+            end,
+            TcProc ! {sync, self()},
+            receive _ -> error(unexpected)
+            after 2_000 -> ok
+            end,
+            TcProc ! {sync, self()}
+        end
+    ),
+
+    WaitForSync = fun () ->
+        receive {sync, Child} -> ok
+        after 10_000 -> error(timeout)
+        end
+    end,
+    EnsureWaiting = fun() ->
+        wait_until(fun () -> process_info(Child, status) == {status, waiting} end)
+    end,
+
+    WaitForSync(),
+    EnsureWaiting(),
+
+    Suspender = erlang:spawn_link(fun() ->
+        true = erlang:suspend_process(Child),
+        TcProc ! {suspended, self()},
+        receive do_resume -> true = erlang:resume_process(Child) end
+    end),
+    receive {suspended, Suspender} -> ok after 10_000 -> error(timeout) end,
+
+    true = erlang:suspend_process(Child),
+    timer:sleep(5_000),
+    true = erlang:resume_process(Child),
+    timer:sleep(1_000),
+    Child ! go,
+    Suspender ! do_resume,
+
+    WaitForSync(),
+    EnsureWaiting(),
+
+    Suspender2 = erlang:spawn_link(fun() ->
+        true = erlang:suspend_process(Child),
+        TcProc ! {suspended, self()},
+        receive do_resume -> true = erlang:resume_process(Child) end
+    end),
+    receive {suspended, Suspender2} -> ok after 10_000 -> error(timeout) end,
+
+    true = erlang:suspend_process(Child),
+    true = erlang:resume_process(Child),
+    Suspender2 ! do_resume,
+    WaitForSync(),
+    ok.
+
+suspend_process_pausing_bif_timer_multi_suspend(_Config) ->
+    TcProc = self(),
+    Pid = erlang:spawn_link(
+        fun() ->
+        TcProc ! {sync, self(), start},
+        receive
+            {timeout, _, timer_msg_1} -> TcProc ! {sync, self(), received_message_1};
+            {timeout, _, timer_msg_2} -> exit(timer_2_before_1_receiver)
+            after 4_000 -> exit(timer_not_resumed_receiver)
+        end,
+        receive
+            {timeout, _, timer_msg_1} -> exit(timer_1_before_2_receiver);
+            {timeout, _, timer_msg_2} -> TcProc ! {sync, self(), received_message_2}
+            after 4_000 -> exit(timer_not_resumed_receiver_2)
+        end
+    end),
+
+    receive
+        {sync, Pid, start} -> ok
+        after 10_000 -> error(timeout)
+    end,
+
+    _TimerRef = erlang:start_timer(1_000, Pid, timer_msg_1),
+    _TimerRef2 = erlang:start_timer(2_000, Pid, timer_msg_2),
+
+    Suspender = erlang:spawn_link(fun() ->
+        true = erlang:suspend_process(Pid),
+        TcProc ! {suspended, self()},
+        receive do_resume -> true = erlang:resume_process(Pid) end
+    end),
+    receive {suspended, Suspender} -> ok after 10_000 -> error(timeout) end,
+
+    true = erlang:suspend_process(Pid),
+    timer:sleep(5_000),
+    receive
+        {sync, Pid, received_message_1} -> exit(timer_1_not_paused);
+        {sync, Pid, received_message_2} -> exit(timer_2_not_paused)
+        after 2_000 -> ok
+    end,
+
+    true = erlang:resume_process(Pid),
+    timer:sleep(3_000),
+    receive
+        {sync, Pid, received_message_1} -> exit(timer_1_not_paused_after_first_resume);
+        {sync, Pid, received_message_2} -> exit(timer_2_not_paused_after_first_resume)
+        after 2_000 -> ok
+    end,
+
+    Suspender ! do_resume,
+    receive
+        {sync, Pid, received_message_1} -> ok;
+        {sync, Pid, received_message_2} -> exit(timer_2_before_1_spawner)
+        after 4_000 -> exit(timer_not_resumed_spawner)
+    end,
+    receive
+        {sync, Pid, received_message_2} -> ok;
+        {sync, Pid, received_message_1} -> exit(timer_1_before_2_spawner)
+        after 4_000 -> exit(timer_not_resumed_spawner_2)
+    end,
+    ok.
+
+suspend_process_bif_timer_on_suspended(_Config) ->
+    TcProc = self(),
+    Pid = erlang:spawn_link(
+        fun() ->
+        TcProc ! {sync, self(), start},
+        receive
+            msg_before -> TcProc ! {sync, self(), received_before}
+            after 4_000 -> exit(timer_not_resumed_receiver)
+        end,
+        receive
+            msg_during -> TcProc ! {sync, self(), received_during}
+            after 4_000 -> exit(timer_not_resumed_receiver_2)
+        end
+    end),
+
+    receive
+        {sync, Pid, start} -> ok
+        after 10_000 -> error(timeout)
+    end,
+    wait_until(fun () -> process_info(Pid, status) == {status, waiting} end),
+
+    _Ref1 = erlang:send_after(1_000, Pid, msg_before),
+    true = erlang:suspend_process(Pid),
+    _Ref2 = erlang:send_after(2_000, Pid, msg_during),
+
+    timer:sleep(5_000),
+    receive
+        {sync, Pid, received_before} -> exit(timer_before_not_paused);
+        {sync, Pid, received_during} -> exit(timer_during_not_paused)
+        after 2_000 -> ok
+    end,
+
+    true = erlang:resume_process(Pid),
+    receive
+        {sync, Pid, received_before} -> ok;
+        {sync, Pid, received_during} -> exit(during_before_before)
+        after 4_000 -> exit(timer_not_resumed_spawner)
+    end,
+    receive
+        {sync, Pid, received_during} -> ok;
+        {sync, Pid, received_before} -> exit(before_before_during)
+        after 4_000 -> exit(timer_not_resumed_spawner_2)
+    end,
+    ok.
 
 %% Tests erlang:bump_reductions/1.
 bump_reductions(Config) when is_list(Config) ->
@@ -1322,19 +2211,16 @@ make_sub_binary(Bin) when is_binary(Bin) ->
 make_sub_binary(List) ->
     make_sub_binary(list_to_binary(List)).
 
-make_unaligned_sub_binary(Bin0) ->
-    Bin1 = <<0:3,Bin0/binary,31:5>>,
-    Sz = size(Bin0),
-    <<0:3,Bin:Sz/binary,31:5>> = id(Bin1),
-    Bin.
+make_unaligned_sub_binary(Bin) ->
+    erts_debug:unaligned_bitstring(Bin, 3).
 
 %% Tests erlang:yield/1
 yield(Config) when is_list(Config) ->
-    case catch erlang:system_info(modified_timing_level) of
+    case erlang:system_info(modified_timing_level) of
 	Level when is_integer(Level) ->
 	    {skipped,
 	     "Modified timing (level " ++ integer_to_list(Level)
-	     ++ ") is enabled. Testcase gets messed up by modfied "
+	     ++ ") is enabled. Testcase gets messed up by modified "
 	     "timing."};
 	_ ->
 	    MS = erlang:system_flag(multi_scheduling, block_normal),
@@ -1473,11 +2359,48 @@ next_tmsg(Pid) ->
 	    none
     end.
 
+dist_unlink_ack_exit_leak(Config) when is_list(Config) ->
+    %% Verification of nc reference counts when stopping node
+    %% will find the bug if it exists...
+    {ok, Peer, Node} = ?CT_PEER(),
+    ParentFun =
+        fun () ->
+                %% Give parent some work to do when
+                %% exiting to increase the likelyhood
+                %% of the bug triggereing...
+                T = ets:new(x,[]),
+                ets:insert(T, lists:map(fun (I) ->
+                                                {I,I}
+                                        end,
+                                        lists:seq(1,10000))),
+                Chld = spawn_link(Node,
+                                  fun () ->
+                                          receive
+                                          after infinity ->
+                                                  ok
+                                          end
+                                  end),
+                erlang:yield(),
+                unlink(Chld),
+                exit(bye)
+        end,
+    PMs = lists:map(fun (_) ->
+                            spawn_monitor(ParentFun)
+                    end, lists:seq(1, 10)),
+    lists:foreach(fun ({P, M}) ->
+                          receive
+                              {'DOWN', M, process, P, bye} ->
+                                  ok
+                          end
+                  end, PMs),
+    stop_node(Peer, Node),
+    ok.
+
 %% Test that bad arguments to register/2 cause an exception.
 bad_register(Config) when is_list(Config) ->
     Name = a_long_and_unused_name,
 
-    {'EXIT',{badarg,_}} = (catch register({bad,name}, self())),
+    ?assertError(badarg, register({bad,name}, self())),
     fail_register(undefined, self()),
     fail_register([bad,name], self()),
 
@@ -1493,8 +2416,8 @@ bad_register(Config) when is_list(Config) ->
     ok.
 
 fail_register(Name, Process) ->
-    {'EXIT',{badarg,_}} = (catch register(Name, Process)),
-    {'EXIT',{badarg,_}} = (catch Name ! anything_goes),
+    ?assertError(badarg, register(Name, Process)),
+    ?assertError(badarg, Name ! anything_goes),
     ok.
 
 garbage_collect(Config) when is_list(Config) ->
@@ -1619,6 +2542,8 @@ process_flag_badarg(Config) when is_list(Config) ->
     chk_badarg(fun () -> process_flag(max_heap_size, #{ size => 233,
                                                         error_logger => gurka }) end),
     chk_badarg(fun () -> process_flag(max_heap_size, #{ size => 233,
+                                                        include_shared_binaries => gurka}) end),
+    chk_badarg(fun () -> process_flag(max_heap_size, #{ size => 233,
                                                         kill => true,
                                                         error_logger => gurka }) end),
     chk_badarg(fun () -> process_flag(max_heap_size, #{ size => 1 bsl 64 }) end),
@@ -1687,7 +2612,8 @@ otp_6237_whereis_loop() ->
 	  end.
 	     
 otp_6237_select_loop() ->
-    catch ets:select(otp_6237, ets:fun2ms(fun({K, does_not_exist}) -> K end)),
+    try ets:select(otp_6237, ets:fun2ms(fun({K, does_not_exist}) -> K end))
+    catch _:_ -> ok end,
     otp_6237_select_loop().
 
 
@@ -1703,9 +2629,9 @@ otp_6237_select_loop() ->
 			     debug_level}).
 
 processes_large_tab(Config) when is_list(Config) ->
-    sys_mem_cond_run(2048, fun () -> processes_large_tab_test(Config) end).
+    sys_mem_cond_run(2048, fun () -> processes_large_tab_test() end).
 
-processes_large_tab_test(Config) ->
+processes_large_tab_test() ->
     enable_internal_state(),
     MaxDbgLvl = 20,
     MinProcTabSize = 2*(1 bsl 15),
@@ -1739,8 +2665,7 @@ processes_large_tab_test(Config) ->
 			    true -> MinProcTabSize;
 			    false -> ProcTabSize3
 			end,
-    {ok, LargeNode} = start_node(Config,
-				       "+P " ++ integer_to_list(ProcTabSize)),
+    {ok, Peer, LargeNode} = ?CT_PEER(["+P", integer_to_list(ProcTabSize)]),
     Res = rpc:call(LargeNode, ?MODULE, processes_bif_test, []),
     case rpc:call(LargeNode,
 			erts_debug,
@@ -1750,23 +2675,23 @@ processes_large_tab_test(Config) ->
 							    Chunks > 1 -> ok;
 	      PBInfo -> ct:fail(PBInfo)
 	  end,
-    stop_node(LargeNode),
+    stop_node(Peer, LargeNode),
     chk_processes_bif_test_res(Res).
 
 processes_default_tab(Config) when is_list(Config) ->
-    sys_mem_cond_run(1024, fun () -> processes_default_tab_test(Config) end).
+    sys_mem_cond_run(1024, fun () -> processes_default_tab_test() end).
 
-processes_default_tab_test(Config) ->
-    {ok, DefaultNode} = start_node(Config, ""),
+processes_default_tab_test() ->
+    {ok, Peer, DefaultNode} = ?CT_PEER(),
     Res = rpc:call(DefaultNode, ?MODULE, processes_bif_test, []),
-    stop_node(DefaultNode),
+    stop_node(Peer, DefaultNode),
     chk_processes_bif_test_res(Res).
 
 processes_small_tab(Config) when is_list(Config) ->
-    {ok, SmallNode} = start_node(Config, "+P 1024"),
+    {ok, Peer, SmallNode} = ?CT_PEER(["+P","1024"]),
     Res    = rpc:call(SmallNode, ?MODULE, processes_bif_test, []),
     PBInfo = rpc:call(SmallNode, erts_debug, get_internal_state, [processes_bif_info]),
-    stop_node(SmallNode),
+    stop_node(Peer, SmallNode),
     true = PBInfo#ptab_list_bif_info.tab_chunks < 10,
     chk_processes_bif_test_res(Res).
 
@@ -1916,13 +2841,20 @@ processes_bif_test() ->
 	    processes()
     end,
 
+    IterProcesses =
+        fun () ->
+                erts_debug:set_internal_state(reds_left, WantReds),
+                iter_all_processes()
+        end,
+
     ok = do_processes_bif_test(WantReds, WillTrap, Processes),
+    ok = do_processes_bif_test(WantReds, false, IterProcesses()),
 
     case WillTrap of
 	false ->
 	    ok;
 	true ->
-	    %% Do it again with a process suspended while
+	    %% Do it against with a process suspended while
 	    %% in the processes/0 bif.
 	    erlang:system_flag(multi_scheduling, block_normal),
 	    Suspendee = spawn_link(fun () ->
@@ -1953,7 +2885,19 @@ processes_bif_test() ->
 	undefined -> ok;
 	Comment -> {comment, Comment}
     end.
-    
+
+iter_all_processes() ->
+    Iter = erlang:processes_iterator(),
+    iter_all_processes(Iter).
+
+iter_all_processes(Iter0) ->
+    case erlang:processes_next(Iter0) of
+        {Pid, Iter} ->
+            [Pid|iter_all_processes(Iter)];
+        none ->
+            none
+    end.
+
 do_processes_bif_test(WantReds, DieTest, Processes) ->
     Tester = self(),
     SpawnProcesses = fun (Prio) ->
@@ -2236,6 +3180,18 @@ process_flag_heap_size(Config) when is_list(Config) ->
     VHSize = erlang:process_flag(min_bin_vheap_size, OldVHmin),
     ok.
 
+%% test that max_heap_size is correctly handled when passed via command line
+command_line_max_heap_size(Config) when is_list(Config) ->
+    %% test maximum heap size
+    HMax = case erlang:system_info(wordsize) of
+               8 -> (1 bsl 59) - 1;
+               4 -> (1 bsl 27) - 1
+           end,
+    {ok, Peer, Node} = ?CT_PEER(["+hmax", integer_to_list(HMax)]),
+    Pid = erlang:spawn(Node, fun () -> receive after infinity -> ok end end),
+    {max_heap_size, #{size := HMax}} = rpc:call(Node, erlang, process_info, [Pid, max_heap_size]),
+    peer:stop(Peer).
+
 spawn_opt_heap_size(Config) when is_list(Config) ->
     HSize  = 987,   % must be gc fib+ number
     VHSize = 46422, % must be gc fib+ number
@@ -2257,61 +3213,72 @@ spawn_opt_max_heap_size(_Config) ->
             flush()
     end,
 
+    spawn_opt_max_heap_size_do(fun oom_fun/1),
+
+    io:format("Repeat tests with refc binaries\n",[]),
+
+    spawn_opt_max_heap_size_do(fun oom_bin_fun/1),
+
+    error_logger:delete_report_handler(?MODULE),
+    ok.
+
+spawn_opt_max_heap_size_do(OomFun) ->
+    Max = 2024,
     %% Test that numerical limit works
-    max_heap_size_test(1024, 1024, true, true),
+    max_heap_size_test(Max, Max, true, true, OomFun),
 
     %% Test that map limit works
-    max_heap_size_test(#{ size => 1024 }, 1024, true, true),
+    max_heap_size_test(#{ size => Max }, Max, true, true, OomFun),
 
     %% Test that no kill is sent
-    max_heap_size_test(#{ size => 1024, kill => false }, 1024, false, true),
+    max_heap_size_test(#{ size => Max, kill => false }, Max, false, true, OomFun),
 
     %% Test that no error_logger report is sent
-    max_heap_size_test(#{ size => 1024, error_logger => false }, 1024, true, false),
+    max_heap_size_test(#{ size => Max, error_logger => false }, Max, true, false, OomFun),
 
     %% Test that system_flag works
-    erlang:system_flag(max_heap_size, #{ size => 0, kill => false,
-                                         error_logger => true}),
-    max_heap_size_test(#{ size => 1024 }, 1024, false, true),
-    max_heap_size_test(#{ size => 1024, kill => true }, 1024, true, true),
+    erlang:system_flag(max_heap_size, OomFun(#{ size => 0, kill => false,
+                                                error_logger => true})),
+    max_heap_size_test(#{ size => Max }, Max, false, true, OomFun),
+    max_heap_size_test(#{ size => Max, kill => true }, Max, true, true, OomFun),
 
-    erlang:system_flag(max_heap_size, #{ size => 0, kill => true,
-                                         error_logger => false}),
-    max_heap_size_test(#{ size => 1024 }, 1024, true, false),
-    max_heap_size_test(#{ size => 1024, error_logger => true }, 1024, true, true),
+    erlang:system_flag(max_heap_size, OomFun(#{ size => 0, kill => true,
+                                                error_logger => false})),
+    max_heap_size_test(#{ size => Max }, Max, true, false, OomFun),
+    max_heap_size_test(#{ size => Max, error_logger => true }, Max, true, true, OomFun),
 
-    erlang:system_flag(max_heap_size, #{ size => 1 bsl 20, kill => true,
-                                         error_logger => true}),
-    max_heap_size_test(#{ }, 1 bsl 20, true, true),
+    erlang:system_flag(max_heap_size, OomFun(#{ size => 1 bsl 16, kill => true,
+                                                error_logger => true})),
+    max_heap_size_test(#{ }, 1 bsl 16, true, true, OomFun),
 
     erlang:system_flag(max_heap_size, #{ size => 0, kill => true,
                                          error_logger => true}),
 
     %% Test that ordinary case works as expected again
-    max_heap_size_test(1024, 1024, true, true),
-
+    max_heap_size_test(Max, Max, true, true, OomFun),
     ok.
 
-max_heap_size_test(Option, Size, Kill, ErrorLogger)
-  when map_size(Option) == 0 ->
-    max_heap_size_test([], Size, Kill, ErrorLogger);
-max_heap_size_test(Option, Size, Kill, ErrorLogger)
-  when is_map(Option); is_integer(Option) ->
-    max_heap_size_test([{max_heap_size, Option}], Size, Kill, ErrorLogger);
-max_heap_size_test(Option, Size, Kill, ErrorLogger) ->
-    OomFun = fun () -> oom_fun([]) end,
-    Pid = spawn_opt(OomFun, Option),
+
+mhs_spawn_opt(Option) when map_get(size, Option) > 0;
+                           is_integer(Option) ->
+    [{max_heap_size, Option}];
+mhs_spawn_opt(_) ->
+    [].
+
+max_heap_size_test(Option, Size, Kill, ErrorLogger, OomFun) ->
+    SpOpt = mhs_spawn_opt(OomFun(Option)),
+    Pid = spawn_opt(fun()-> OomFun(run) end, SpOpt),
     {max_heap_size, MHSz} = erlang:process_info(Pid, max_heap_size),
-    ct:log("Default: ~p~nOption: ~p~nProc: ~p~n",
-           [erlang:system_info(max_heap_size), Option, MHSz]),
+    ct:log("Default: ~p~nOption: ~p~nProc: ~p~nSize = ~p~nSpOpt = ~p~n",
+           [erlang:system_info(max_heap_size), Option, MHSz, Size, SpOpt]),
 
     #{ size := Size} = MHSz,
 
     Ref = erlang:monitor(process, Pid),
     if Kill ->
             receive
-                {'DOWN', Ref, process, Pid, killed} ->
-                    ok
+                {'DOWN', Ref, process, Pid, Reason} ->
+                    killed = Reason
             end;
        true ->
             ok
@@ -2342,12 +3309,37 @@ max_heap_size_test(Option, Size, Kill, ErrorLogger) ->
     %% Make sure that there are no unexpected messages.
     receive_unexpected().
 
-oom_fun(Acc0) ->
+oom_fun(Max) when is_integer(Max) -> Max;
+oom_fun(Map) when is_map(Map)-> Map;
+oom_fun(run) ->
+    io:format("oom_fun() started\n",[]),
+    oom_run_fun([], 100).
+
+oom_run_fun(Acc0, 0) ->
+    done;
+oom_run_fun(Acc0, N) ->
     %% This is tail-recursive since the compiler is smart enough to figure
     %% out that a body-recursive variant never returns, and loops forever
     %% without keeping the list alive.
     timer:sleep(5),
-    oom_fun([lists:seq(1, 1000) | Acc0]).
+    oom_run_fun([lists:seq(1, 1000) | Acc0], N-1).
+
+oom_bin_fun(Max) when is_integer(Max) -> oom_bin_fun(#{size => Max});
+oom_bin_fun(Map) when is_map(Map) -> Map#{include_shared_binaries => true};
+oom_bin_fun(run) ->
+    oom_bin_run_fun([], 10).
+
+oom_bin_run_fun(Acc0, 0) ->
+    done;
+oom_bin_run_fun(Acc0, N) ->
+    timer:sleep(5),
+    oom_bin_run_fun([build_refc_bin(160, <<>>) | Acc0], N-1).
+
+build_refc_bin(0, Acc) ->
+    Acc;
+build_refc_bin(N, Acc) ->
+    build_refc_bin(N-1, <<Acc/binary, 0:(1000*8)>>).
+
 
 receive_error_messages(Pid) ->
     receive
@@ -2458,11 +3450,11 @@ spawn_huge_arglist(Config) when is_list(Config) ->
     spawn_huge_arglist_test(true, node(), ArgList),
     io:format("Testing spawn with huge argument list on local node with Node...~n", []),
     spawn_huge_arglist_test(false, node(), ArgList),
-    {ok, Node} = start_node(Config),
+    {ok, Peer, Node} = ?CT_PEER(),
     _ = rpc:call(Node, ?MODULE, module_info, []),
     io:format("Testing spawn with huge argument list on remote node ~p...~n", [Node]),
     spawn_huge_arglist_test(false, Node, ArgList),
-    stop_node(Node),
+    stop_node(Peer, Node),
     ok.
 
 spawn_huge_arglist_test(Local, Node, ArgList) ->
@@ -2544,10 +3536,10 @@ spawn_request_bif(Config) when is_list(Config) ->
     spawn_request_bif_test(true, node()),
     io:format("Testing spawn_request() on local node with Node...~n", []),
     spawn_request_bif_test(false, node()),
-    {ok, Node} = start_node(Config),
+    {ok, Peer, Node} = ?CT_PEER(),
     io:format("Testing spawn_request() on remote node ~p...~n", [Node]),
     spawn_request_bif_test(false, Node),
-    stop_node(Node),
+    stop_node(Peer, Node),
     ok.
                        
 spawn_request_bif_test(Local, Node) ->
@@ -2816,7 +3808,7 @@ spawn_request_bif_test(Local, Node) ->
 
 
 spawn_request_monitor_demonitor(Config) when is_list(Config) ->
-    {ok, Node} = start_node(Config),
+    {ok, Peer, Node} = ?CT_PEER(),
     BlockFun = fun () ->
                        erts_debug:set_internal_state(available_internal_state, true),
                        erts_debug:set_internal_state(block, 1000),
@@ -2827,25 +3819,20 @@ spawn_request_monitor_demonitor(Config) when is_list(Config) ->
     spawn_request(Node, BlockFun, [{priority,max}, link]),
     receive after 100 -> ok end,
 
-    erlang:display(spawning),
     erlang:yield(),
     R = spawn_request(Node, timer, sleep, [10000], [monitor]),
     %% Should not be possible to demonitor
     %% before operation has succeeded...
-    erlang:display(premature_demonitor),
     {monitors, []} = process_info(self(), monitors),
     false = erlang:demonitor(R, [info]), %% Should be ignored by VM...
-    erlang:display(wait_success),
     receive
         {spawn_reply, R, ok, P} ->
-            erlang:display(demonitor),
             {monitors, [{process,P}]} = process_info(self(), monitors),
             true = erlang:demonitor(R, [info]),
             {monitors, []} = process_info(self(), monitors),
             exit(P, kill)
     end,
-    erlang:display(done),
-    stop_node(Node),
+    stop_node(Peer, Node),
     ok.
 
 spawn_request_monitor_child_exit(Config) when is_list(Config) ->
@@ -2859,7 +3846,7 @@ spawn_request_monitor_child_exit(Config) when is_list(Config) ->
                     {undef, _} = Reason1
             end
     end,
-    {ok, Node} = start_node(Config),
+    {ok, Peer, Node} = ?CT_PEER(),
     R2 = spawn_request(Node, nonexisting_module, nonexisting_function, [], [{reply_tag, Tag}, monitor]),
     receive
         {Tag, R2, ok, P2} ->
@@ -2868,7 +3855,7 @@ spawn_request_monitor_child_exit(Config) when is_list(Config) ->
                     {undef, _} = Reason2
             end
     end,
-    stop_node(Node),
+    stop_node(Peer, Node),
     ok.
 
 spawn_request_link_child_exit(Config) when is_list(Config) ->
@@ -2883,7 +3870,7 @@ spawn_request_link_child_exit(Config) when is_list(Config) ->
                     {undef, _} = Reason1
             end
     end,
-    {ok, Node} = start_node(Config),
+    {ok, Peer, Node} = ?CT_PEER(),
     R2 = spawn_request(Node, nonexisting_module, nonexisting_function, [], [link, {reply_tag, Tag}]),
     receive
         {Tag, R2, ok, P2} ->
@@ -2892,70 +3879,163 @@ spawn_request_link_child_exit(Config) when is_list(Config) ->
                     {undef, _} = Reason2
             end
     end,
-    stop_node(Node),
+    stop_node(Peer, Node),
     ok.
 
 spawn_request_link_parent_exit(Config) when is_list(Config) ->
-    C1 = spawn_request_link_parent_exit_test(node()),
-    {ok, Node} = start_node(Config),
-    C2 = spawn_request_link_parent_exit_test(Node),
-    stop_node(Node),
+    C1 = spawn_request_link_parent_exit_test(node(), false),
+    {ok, Peer, Node} = ?CT_PEER(),
+    C2 = spawn_request_link_parent_exit_test(Node, false),
+    stop_node(Peer, Node),
     {comment, C1 ++ " " ++ C2}.
 
-spawn_request_link_parent_exit_test(Node) ->
+spawn_request_link_parent_exit_compound_reason(Config) when is_list(Config) ->
+    C1 = spawn_request_link_parent_exit_test(node(), true),
+    {ok, Peer, Node} = ?CT_PEER(),
+    C2 = spawn_request_link_parent_exit_test(Node, true),
+    stop_node(Peer, Node),
+    {comment, C1 ++ " " ++ C2}.
+
+spawn_request_link_parent_exit_test(Node, CompoundExitReason) ->
     %% Early parent exit...
     Tester = self(),
+
+    ExitReason = if CompoundExitReason -> "kaboom";
+                    true -> kaboom
+                 end,
 
     verify_nc(node()),
 
     %% Ensure code loaded on other node...
     _ = rpc:call(Node, ?MODULE, module_info, []),
 
-    ChildFun = fun () ->
-                       Child = self(),
-                       spawn_opt(fun () ->
-                                         process_flag(trap_exit, true),
-                                         receive
-                                             {'EXIT', Child, Reason} ->
-                                                 Tester ! {parent_exit, Reason}
-                                         end
-                                 end, [link,{priority,max}]),
-                       receive after infinity -> ok end
-               end,
     ParentFun = case node() == Node of
                     true ->
                         fun (Wait) ->
-                                spawn_request(ChildFun, [link,{priority,max}]),
+                                spawn_request(?MODULE, spawn_request_test_exit_child,
+                                              [Tester], [link,{priority,max}]),
                                 receive after Wait -> ok end,
-                                exit(kaboom)
+                                exit(ExitReason)
                         end;
                     false ->
                         fun (Wait) ->
-                                spawn_request(Node, ChildFun, [link,{priority,max}]),
+                                spawn_request(Node, ?MODULE,
+                                              spawn_request_test_exit_child,
+                                              [Tester], [link,{priority,max}]),
                                 receive after Wait -> ok end,
-                                exit(kaboom)
+                                exit(ExitReason)
                         end
                 end,
     lists:foreach(fun (N) ->
-                          spawn(fun () -> ParentFun(N rem 10) end)
+                          spawn_opt(fun () ->
+                                            %% Give parent some work to do when
+                                            %% exiting and by this increase
+                                            %% possibilities for races...
+                                            T = ets:new(x,[]),
+                                            ets:insert(T, lists:map(fun (I) ->
+                                                                            {I,I}
+                                                                    end,
+                                                                    lists:seq(1,10000))),
+                                            ParentFun(N rem 10) end,
+                                    [{priority, max}])
                   end,
-                  lists:seq(1, 1000)),
-    N = gather_parent_exits(kaboom, false),
-    Comment = case node() == Node of
-                  true ->
-                      C = "Got " ++ integer_to_list(N) ++ " node local kabooms!",
-                      erlang:display(C),
-                      C;
-                  false ->
-                      C = "Got " ++ integer_to_list(N) ++ " node remote kabooms!",
-                      erlang:display(C),
-                      true = N /= 0,
-                      C
-              end,
+                  lists:seq(1, 10000)),
+    N = gather_parent_exits(ExitReason, false),
+    CFs = erpc:call(Node,
+                    fun () ->
+                            %% Ensure all children have had time to enter an exiting state...
+                            receive after 100*test_server:timetrap_scale_factor() -> ok end,
+                            lists:map(fun (P) ->
+                                              {P, process_info(P, current_function)}
+                                      end, processes())
+                    end),
+    lists:foreach(fun ({P, {current_function, {?MODULE, spawn_request_test_exit_child, 1}}}) ->
+                          ct:fail({missing_exit_to_child_detected, P});
+                      (_) ->
+                          ok
+                  end, CFs),
+    Comment =
+        "Got "
+        ++ integer_to_list(N)
+        ++ if node() == Node -> " node local";
+                  true -> " node remote"
+           end
+        ++ if CompoundExitReason -> " \"kaboom\"";
+              true -> " \'kaboom\'"
+           end
+        ++ " exits!",
+    erlang:display(Comment),
     Comment.
 
+spawn_request_link_parent_exit_nodedown(Config) when is_list(Config) ->
+    {ok, Peer, Node} = ?CT_PEER(#{connection => 0}),
+    N = 1000,
+    ExitCounter = spawn(Node, fun exit_counter/0),
+    lists:foreach(fun (_) ->
+                          spawn_request_link_parent_exit_nodedown_test(Node)
+                  end,
+                  lists:seq(1, N)),
+    ResRef = make_ref(),
+    ExitCounter ! {get_results, self(), ResRef},
+    Cmnt = receive
+               {ResRef, CntMap} ->
+                   lists:flatten(
+                     ["In total ", integer_to_list(N), " exits. ",
+                      "Detected exits: ",
+                      maps:fold(fun (ExitReason, Count, "") ->
+                                        io_lib:format("~p exit ~p times",
+                                                      [ExitReason, Count]);
+                                    (ExitReason, Count, Acc) ->
+                                        [Acc, io_lib:format("; ~p exit ~p times",
+                                                            [ExitReason, Count])]
+                                end,
+                                "",
+                                CntMap),
+                      "."])
+           end,
+    io:format("~s~n", [Cmnt]),
+    stop_node(Peer, Node),
+    {comment, Cmnt}.
+
+exit_counter() ->
+    true = register(exit_counter, self()),
+    exit_counter(#{}).
+
+exit_counter(CntMap) ->
+    receive
+        {get_results, From, Ref} ->
+            From ! {Ref, CntMap};
+        {exit, Reason} ->
+            OldCnt = maps:get(Reason, CntMap, 0),
+            exit_counter(CntMap#{Reason => OldCnt+1})
+    end.
+
+spawn_request_link_parent_exit_nodedown_test(Node) ->
+    pong = net_adm:ping(Node),
+    ChildFun = fun () ->
+                       process_flag(trap_exit, true),
+                       receive
+                           {'EXIT', _, Reason} ->
+                               exit_counter ! {exit, Reason}
+                       end
+               end,
+    {Pid, Mon} = spawn_monitor(fun () ->
+                                       _ReqID = spawn_request(Node,
+                                                              ChildFun,
+                                                              [link,
+                                                               {priority,max}]),
+                                       exit(bye)
+                               end),
+    receive
+        {'DOWN', Mon, process, Pid, Reason} ->
+            bye = Reason,
+            erlang:disconnect_node(Node)
+    end,
+    ok.
+
+
 spawn_request_abandon_bif(Config) when is_list(Config) ->
-    {ok, Node} = start_node(Config),
+    {ok, Peer, Node} = ?CT_PEER(),
     false = spawn_request_abandon(make_ref()),
     false = spawn_request_abandon(spawn_request(fun () -> ok end)),
     false = spawn_request_abandon(rpc:call(Node, erlang, make_ref, [])),
@@ -2981,19 +4061,10 @@ spawn_request_abandon_bif(Config) when is_list(Config) ->
     TotOps = 1000,
     Tester = self(),
 
-    ChildFun = fun () ->
-                       Child = self(),
-                       spawn_opt(fun () ->
-                                         process_flag(trap_exit, true),
-                                         receive
-                                             {'EXIT', Child, Reason} ->
-                                                 Tester ! {parent_exit, Reason}
-                                         end
-                                 end, [link,{priority,max}]),
-                       receive after infinity -> ok end
-               end,
     ParentFun = fun (Wait, Opts) ->
-                        ReqId = spawn_request(Node, ChildFun, Opts),
+                        ReqId = spawn_request(Node, ?MODULE,
+                                              spawn_request_test_exit_child,
+                                              [Tester], Opts),
                         receive after Wait -> ok end,
                         case spawn_request_abandon(ReqId) of
                             true ->
@@ -3033,6 +4104,19 @@ spawn_request_abandon_bif(Config) when is_list(Config) ->
                   end,
                   lists:seq(1, TotOps)),
     NoA2 = gather_parent_exits(abandoned, true),
+    CFs = erpc:call(Node,
+                    fun () ->
+                            %% Ensure all children have had time to enter an exiting state...
+                            receive after 100*test_server:timetrap_scale_factor() -> ok end,
+                            lists:map(fun (P) ->
+                                              {P, process_info(P, current_function)}
+                                      end, processes())
+                    end),
+    lists:foreach(fun ({P, {current_function, {?MODULE, spawn_request_test_exit_child, 1}}}) ->
+                          ct:fail({missing_exit_to_child_detected, P});
+                      (_) ->
+                          ok
+                  end, CFs),
     %% Parent exit early...
     lists:foreach(fun (N) ->
                           spawn_opt(fun () ->
@@ -3055,16 +4139,26 @@ spawn_request_abandon_bif(Config) when is_list(Config) ->
                   end,
                   lists:seq(1, TotOps)),
     0 = gather_parent_exits(abandoned, true),
-    stop_node(Node),
+    stop_node(Peer, Node),
     C = "Got " ++ integer_to_list(NoA1) ++ " and "
         ++ integer_to_list(NoA2) ++ " abandoneds of 2*"
         ++ integer_to_list(TotOps) ++ " ops!",
-    erlang:display(C),
     true = NoA1 /= 0,
     true = NoA1 /= TotOps,
     true = NoA2 /= 0,
     true = NoA2 /= TotOps,
     {comment, C}.
+
+spawn_request_test_exit_child(Tester) ->
+  Child = self(),
+  _ = spawn_opt(fun () ->
+                        process_flag(trap_exit, true),
+                        receive
+                            {'EXIT', Child, Reason} ->
+                                Tester ! {parent_exit, Reason}
+                        end
+                end, [link,{priority,max}]),
+  receive after infinity -> ok end.
 
 gather_parent_exits(Reason, AllowOther) ->
     receive after 2000 -> ok end,
@@ -3085,7 +4179,7 @@ gather_parent_exits(Reason, AllowOther, N) ->
             N
     end.
 dist_spawn_monitor(Config) when is_list(Config) ->
-    {ok, Node} = start_node(Config),
+    {ok, Peer, Node} = ?CT_PEER(),
     R1 = spawn_request(Node, erlang, exit, [hej], [monitor]),
     receive
         {spawn_reply, R1, ok, P1} ->
@@ -3104,76 +4198,90 @@ dist_spawn_monitor(Config) when is_list(Config) ->
         {'DOWN', Mon3, process, P3, Reason3} ->
             hej = Reason3
     end,
-    stop_node(Node),
+    stop_node(Peer, Node),
     ok.
-    
-spawn_old_node(Config) when is_list(Config) ->
-    Cookie = atom_to_list(erlang:get_cookie()),
-    Rel = "22_latest",
-    case test_server:is_release_available(Rel) of
-	false ->
-	    {skipped, "No OTP 22 available"};
-        true ->
-	    {ok, OldNode} = test_server:start_node(make_nodename(Config),
-                                                   peer,
-                                                   [{args, " -setcookie "++Cookie},
-                                                    {erl, [{release, Rel}]}]),
+
+spawn_against_ei_node(Config) when is_list(Config) ->
+    %% Spawn against an ei node which does not support spawn
+    {ok, EiNode} = start_ei_node(Config),
+    try
+        %% First spawn triggering a new connection; which
+        %% will trigger hopeful data transcoding
+        %% of spawn requests...
+        io:format("~n~nDoing initial connect tests...~n", []),
+        spawn_ei_node_test(EiNode, true),
+        %% Spawns on an already existing connection...
+        io:format("~n~nDoing already connected tests...~n", []),
+        spawn_ei_node_test(EiNode, false),
+        ok
+    after
+        ok = stop_ei_node(EiNode)
+    end.
+
+spawn_against_old_node(Config) when is_list(Config) ->
+    %% Same spawn tests against a two releases old node as against
+    %% ei node above
+    OldRel = integer_to_list(list_to_integer(erlang:system_info(otp_release))-2),
+    OldRelName = OldRel ++ "_latest",
+    %% We clear all ERL_FLAGS for the old node as all options may not
+    %% be supported.
+    ClearEnv = lists:foldl(
+                 fun({Key,_Value}, Acc) ->
+                         case re:run(Key,"^ERL_.*FLAGS$") of
+                             {match,_} ->
+                                 [{Key,""}|Acc];
+                             nomatch ->
+                                 Acc
+                         end
+                 end, [], os:env()),
+    case ?CT_PEER_REL(#{connection => 0, env => ClearEnv },
+                      OldRelName,
+                      proplists:get_value(priv_dir, Config)) of
+	not_available ->
+            {skipped, "No OTP "++OldRel++" available"};
+        {ok, Peer, OldNode} ->
             try
                 %% Spawns triggering a new connection; which
                 %% will trigger hopeful data transcoding
                 %% of spawn requests...
                 io:format("~n~nDoing initial connect tests...~n", []),
-                spawn_old_node_test(OldNode, true),
-                %% Spawns on an already existing connection...
+                spawn_node_test(OldNode, true),
                 io:format("~n~nDoing already connected tests...~n", []),
-                spawn_old_node_test(OldNode, false)
+                %% Spawns on an already existing connection...
+                spawn_node_test(OldNode, false),
+                ok
             after
-                test_server:stop_node(OldNode)
-            end,
-	    ok
+                peer:stop(Peer)
+            end
     end.
 
-spawn_new_node(Config) when is_list(Config) ->
-    Cookie = atom_to_list(erlang:get_cookie()),
-    %% Test that the same operations as in spawn_old_node test
-    %% works as expected on current OTP...
-    {ok, CurrNode} = test_server:start_node(make_nodename(Config),
-                                            peer,
-                                            [{args, " -setcookie "++Cookie}]),
+spawn_against_new_node(Config) when is_list(Config) ->
+    {ok, Peer, CurrNode} = ?CT_PEER(#{connection => 0}),
     try
         %% Spawns triggering a new connection; which
         %% will trigger hopeful data transcoding
         %% of spawn requests...
         io:format("~n~nDoing initial connect tests...~n", []),
-        spawn_current_node_test(CurrNode, true),
+        spawn_node_test(CurrNode, true),
         io:format("~n~nDoing already connected tests...~n", []),
         %% Spawns on an already existing connection...
-        spawn_current_node_test(CurrNode, false)
+        spawn_node_test(CurrNode, false),
+        ok
     after
-        test_server:stop_node(CurrNode)
+        peer:stop(Peer)
     end.
 
-disconnect_node(Node, Disconnect) ->
-    case Disconnect of
-        false ->
-            ok;
-        true ->
-            monitor_node(Node, true),
-            erlang:disconnect_node(Node),
-            receive {nodedown, Node} -> ok end
-    end.
-
-spawn_old_node_test(Node, Disconnect) ->
-    io:format("Testing spawn_request() on old node...", []),
+spawn_ei_node_test(Node, Disconnect) ->
+    io:format("Testing spawn_request() against ei node...", []),
     disconnect_node(Node, Disconnect),
-    R1 = spawn_request(Node, erlang, exit, [hej], [monitor, {reply_tag, a_tag}]),
+    Ref1 = spawn_request(Node, erlang, exit, [hej], [monitor, {reply_tag, a_tag}]),
     receive
-        {a_tag, R1, Err, Notsup} ->
+        {a_tag, Ref1, Err, Notsup} ->
             error = Err,
             notsup = Notsup,
             ok
     end,
-    io:format("Testing spawn_monitor() on old node...", []),
+    io:format("Testing spawn_monitor() against ei node...", []),
     disconnect_node(Node, Disconnect),
     try
         spawn_monitor(Node, erlang, exit, [hej])
@@ -3181,34 +4289,41 @@ spawn_old_node_test(Node, Disconnect) ->
         error:notsup ->
             ok
     end,
-    io:format("Testing spawn_opt() with monitor on old node...", []),
+    io:format("Testing spawn_opt() with monitor against ei node...", []),
     disconnect_node(Node, Disconnect),
-    try
-        spawn_opt(Node, erlang, exit, [hej], [monitor])
-    catch
-        error:badarg ->
-            ok
+    {P0, M0} = spawn_opt(Node, erlang, exit, [hej], [monitor]),
+    receive
+        {'DOWN', M0, process, P0, R0} ->
+            notsup = R0
     end,
-    io:format("Testing spawn_opt() with link on old node...", []),
+    io:format("Testing spawn_opt() with link against ei node...", []),
     disconnect_node(Node, Disconnect),
     process_flag(trap_exit, true),
     P1 = spawn_opt(Node, erlang, exit, [hej], [link]),
-    Node = node(P1),
     receive
-        {'EXIT', P1, hej} ->
-            ok
+        {'EXIT', P1, R1} ->
+            notsup = R1
     end,
-    io:format("Testing spawn_link() on old node...", []),
+    io:format("Testing spawn_link() against ei node...", []),
     disconnect_node(Node, Disconnect),
     P2 = spawn_link(Node, erlang, exit, [hej]),
-    Node = node(P2),
     receive
-        {'EXIT', P2, hej} ->
-            ok
+        {'EXIT', P2, R2} ->
+            notsup = R2
+    end,
+    ok.
+
+disconnect_node(_Node, false) ->
+    ok;
+disconnect_node(Node, true) ->
+    lists:member(Node, nodes([visible, hidden])) andalso begin
+        monitor_node(Node, true),
+        true = erlang:disconnect_node(Node),
+        receive {nodedown, Node} -> ok end
     end.
 
-spawn_current_node_test(Node, Disconnect) ->
-    io:format("Testing spawn_request() on new node...", []),
+spawn_node_test(Node, Disconnect) ->
+    io:format("Testing spawn_request()...", []),
     disconnect_node(Node, Disconnect),
     R1 = spawn_request(Node, erlang, exit, [hej], [monitor, {reply_tag, a_tag}]),
     receive
@@ -3218,21 +4333,21 @@ spawn_current_node_test(Node, Disconnect) ->
                 {'DOWN', R1, process, P1, hej} -> ok
             end
     end,
-    io:format("Testing spawn_monitor() on new node...", []),
+    io:format("Testing spawn_monitor()...", []),
     disconnect_node(Node, Disconnect),
     {P2, M2} = spawn_monitor(Node, erlang, exit, [hej]),
     receive
         {'DOWN', M2, process, P2, hej} -> ok
     end,
     Node = node(P2),
-    io:format("Testing spawn_opt() with monitor on new node...", []),
+    io:format("Testing spawn_opt() with monitor...", []),
     disconnect_node(Node, Disconnect),
     {P3, M3} = spawn_opt(Node, erlang, exit, [hej], [monitor]),
     receive
         {'DOWN', M3, process, P3, hej} -> ok
     end,
     Node = node(P3),
-    io:format("Testing spawn_opt() with link on new node...", []),
+    io:format("Testing spawn_opt() with link...", []),
     disconnect_node(Node, Disconnect),
     process_flag(trap_exit, true),
     P4 = spawn_opt(Node, erlang, exit, [hej], [link]),
@@ -3241,7 +4356,7 @@ spawn_current_node_test(Node, Disconnect) ->
         {'EXIT', P4, hej} ->
             ok
     end,
-    io:format("Testing spawn_link() on new node...", []),
+    io:format("Testing spawn_link()...", []),
     disconnect_node(Node, Disconnect),
     P5 = spawn_link(Node, erlang, exit, [hej]),
     Node = node(P5),
@@ -3251,11 +4366,11 @@ spawn_current_node_test(Node, Disconnect) ->
     end.
 
 spawn_request_reply_option(Config) when is_list(Config) ->
-    spawn_request_reply_option_test(node()),
-    {ok, Node} = start_node(Config),
-    spawn_request_reply_option_test(Node).
+    spawn_request_reply_option_test(undefined, node()),
+    {ok, Peer, Node} = ?CT_PEER(),
+    spawn_request_reply_option_test(Peer, Node).
     
-spawn_request_reply_option_test(Node) ->
+spawn_request_reply_option_test(Peer, Node) ->
     io:format("Testing on node: ~p~n", [Node]),
     Parent = self(),
     Done1 = make_ref(),
@@ -3318,7 +4433,7 @@ spawn_request_reply_option_test(Node) ->
         true ->
             ok;
         false ->
-            stop_node(Node),
+            stop_node(Peer, Node),
             RID9 = spawn_request(Node, fun () -> ok end, [{reply, yes}]),
             receive
                 {spawn_reply, RID9, error, noconnection} -> ok
@@ -3340,27 +4455,223 @@ spawn_request_reply_option_test(Node) ->
             ok
     end.
 
+dist_spawn_arg_list_mixup(Config) when is_list(Config) ->
+    %% A process newly spawned via the distribution is passed the
+    %% argument list to use as the first message followed by an intialization
+    %% message. Those two messages *must* be the first messages in its queue
+    %% when it begins execution. The parallel receive/send signal optimization
+    %% could potentially cause reordering of messages if certain future
+    %% changes are made. This test case tries to cause a situation where a
+    %% message reordering potentially could happen, and hopefully will detect
+    %% such problematic changes.
+    Tester = self(),
+    NoScheds = 8,
+    NoSchedsStr = integer_to_list(NoScheds),
+    NoSchedsList = lists:seq(1, NoScheds),
+    {ok, Peer, Node} = ?CT_PEER(["+S"++NoSchedsStr++":"++NoSchedsStr]),
+    AttackMsg = make_ref(),
+    AttackArgList = [Tester, AttackMsg],
+    OkMsg = make_ref(),
+    As = lists:map(
+           fun (_) ->
+                   spawn_opt(
+                     Node,
+                     fun () ->
+                             dist_spawn_arg_list_mixup_sender(AttackArgList,
+                                                              1000)
+                     end, [{priority, high}, link])
+           end, NoSchedsList),
+    Relay = spawn_opt(
+              Node,
+              fun () ->
+                      receive
+                          {attack, Victim} ->
+                              lists:foreach(fun (A) ->
+                                                    A ! {attack, Victim}
+                                            end, As)
+                      end
+              end, [{priority, max}, link]),
+    receive after 100 -> ok end,
+    Victim = spawn_opt(Node, erlang, send, [Tester, OkMsg],
+                       [{message_queue_data, off_heap},
+                        {priority, normal},
+                        link]),
+    Relay ! {attack, Victim},
+    receive
+        OkMsg ->
+            ok;
+        AttackMsg ->
+            ct:fail(child_process_used_message_as_argument_list)
+    end,
+    lists:foreach(fun (P) ->
+                          unlink(P)
+                  end, [Victim] ++ [Relay] ++ As),
+    peer:stop(Peer),
+    ok.
+
+dist_spawn_arg_list_mixup_sender(Msg, N) ->
+    receive
+        {attack, Victim} ->
+            dist_spawn_arg_list_mixup_sender(Victim, Msg, N)
+    after
+        0 ->
+            dist_spawn_arg_list_mixup_sender(Msg, N)
+    end.
+
+dist_spawn_arg_list_mixup_sender(_Pid, _Msg, 0) ->
+    ok;
+dist_spawn_arg_list_mixup_sender(Pid, Msg, N) ->
+    Pid ! Msg,
+    dist_spawn_arg_list_mixup_sender(Pid, Msg, N-1).
+
 processes_term_proc_list(Config) when is_list(Config) ->
     Tester = self(),
 
     Run = fun(Args) ->
-              {ok, Node} = start_node(Config, Args),
+              {ok, Peer, Node} = ?CT_PEER(Args),
               RT = spawn_link(Node, fun () ->
                               receive after 1000 -> ok end,
                               as_expected = processes_term_proc_list_test(false),
                               Tester ! {it_worked, self()}
                       end),
               receive {it_worked, RT} -> ok end,
-              stop_node(Node)
+              stop_node(Peer, Node)
           end,
 
     %% We have to run this test case with +S1 since instrument:allocations()
     %% will report a free()'d block as present until it's actually deallocated
     %% by its employer.
-    Run("+MSe true +Muatags false +S1"),
-    Run("+MSe true +Muatags true +S1"),
+    Run(["+MSe", "true", "+Muatags", "false", "+S1"]),
+    Run(["+MSe", "true", "+Muatags", "true", "+S1"]),
 
     ok.
+
+processes_iter(Config) when is_list(Config) ->
+    ProcessLimit = erlang:system_info(process_limit),
+    ?assertError(badarg, erts_internal:processes_next(ProcessLimit + 1)),
+    ?assertError(badarg, erts_internal:processes_next(-1)),
+    ?assertError(badarg, erts_internal:processes_next(1 bsl 32)),
+    ?assertError(badarg, erts_internal:processes_next(1 bsl 64)),
+    ?assertError(badarg, erts_internal:processes_next(abc)),
+
+    none = erts_internal:processes_next(ProcessLimit),
+
+    ok.
+
+
+%% OTP-18322: Send msg to spawning process pid returned from processes/0
+processes_send_infant(_Config) ->
+    case erlang:system_info(schedulers_online) of
+        1 ->
+            {skip, "Only one scheduler online"};
+        NScheds ->
+            processes_send_infant_do(NScheds)
+    end.
+
+processes_send_infant_do(NScheds) ->
+    IgnoreList = erlang:processes(),
+    IgnorePids = maps:from_keys(IgnoreList, ignore),
+    Tester = self(),
+
+    %% To provoke bug we need sender and spawner on different schedulers.
+    %% Let spawners use schedulers nr 2 to NScheds
+    NSpawnerScheds = NScheds - 1,
+    NSpawners = 2 * NSpawnerScheds,
+    [spawn_link(fun() ->
+                        processes_send_infant_spawner((I rem  NSpawnerScheds) + 2,
+                                                      Tester, Tester, 1)
+                end)
+     || I <- lists:seq(0, NSpawners-1)],
+
+    %% and make sure sender use scheduler 1
+    {Sender,SenderMon} =
+        spawn_opt(
+          fun() ->
+                  timeout = processes_send_infant_loop(IgnorePids)
+          end,
+          [link, monitor, {scheduler,1}]),
+
+    %% Run test for a little while and see if VM crashes
+    {ok, _TRef} = timer:send_after(1000, Sender, timeout),
+    {'DOWN', SenderMon, process, Sender, normal} = receive_any(),
+
+    %% Stop spawners and collect stats
+    processes_send_infant_broadcast(erlang:processes(),
+                                    {processes_send_infant, stop},
+                                    IgnorePids),
+    {TotSpawn, TheLastOfUs} =
+        lists:foldl(fun(_, {SpawnCnt, Pids}) ->
+                            {Pid, Generation} = receive_any(),
+                            io:format("Got ~p from ~p\n", [Generation, Pid]),
+                            {SpawnCnt+Generation, [Pid | Pids]}
+                    end,
+                    {0, []},
+                    lists:seq(1, NSpawners)),
+    io:format("Total spawned processes: ~p\n", [TotSpawn]),
+    Aliens = (erlang:processes() -- IgnoreList) -- TheLastOfUs,
+    io:format("Alien processes: ~p\n", [Aliens]),
+    ok.
+
+
+
+processes_send_infant_loop(IgnorePids) ->
+    %% Send message identifying this test case, in case we send
+    %% to alien processes spawned during the test.
+    Msg = processes_send_infant,
+    processes_send_infant_broadcast(erlang:processes(),
+                                    Msg,
+                                    IgnorePids),
+    receive timeout -> timeout
+    after 0 ->
+            processes_send_infant_loop(IgnorePids)
+    end.
+
+processes_send_infant_broadcast([Pid | Tail], Msg, IgnorePids) ->
+    case maps:is_key(Pid, IgnorePids) of
+        false ->
+            Pid ! Msg;
+        true ->
+            ignore
+    end,
+    processes_send_infant_broadcast(Tail, Msg, IgnorePids);
+processes_send_infant_broadcast([], _, _) ->
+    ok.
+
+processes_send_infant_spawner(Sched, Tester, Parent, Generation) ->
+    link(Tester),
+    case receive_any() of
+        processes_send_infant ->
+            case Parent of
+                Tester -> ok;
+                _ -> Parent ! {die, self()}
+            end,
+            Self = self(),
+            Child = spawn_opt(fun() ->
+                                      processes_send_infant_spawner(Sched, Tester,
+                                                                    Self,
+                                                                    Generation+1)
+                              end,
+                             [{message_queue_data, off_heap},
+                              {scheduler, Sched}]),
+            process_send_infant_spawner_epilogue(Child);
+
+        {processes_send_infant, stop} ->
+            Tester ! {self(), Generation}
+    end.
+
+process_send_infant_spawner_epilogue(Child) ->
+    %% Parent stays alive only to ensure child gets stop message
+    case receive_any() of
+        processes_send_infant ->
+            process_send_infant_spawner_epilogue(Child);
+        {die, Child} ->
+            ok;
+        {processes_send_infant, stop}=Stop ->
+            %% We are not sure child was spawned when stop message was sent
+            %% so we relay it.
+            Child ! Stop
+    end.
+
 
 -define(CHK_TERM_PROC_LIST(MC, XB),
 	chk_term_proc_list(?LINE, MC, XB)).
@@ -4002,9 +5313,9 @@ otp_16642(Config) when is_list(Config) ->
 
 alias_bif(Config) when is_list(Config) ->
     alias_bif_test(node()),
-    {ok, Node} = start_node(Config),
+    {ok, Peer, Node} = ?CT_PEER(),
     alias_bif_test(Node),
-    stop_node(Node),
+    stop_node(Peer, Node),
     ok.
 
 alias_bif_test(Node) ->
@@ -4046,13 +5357,90 @@ alias_bif_test(Node) ->
                               end),
     [{A3,1},{'DOWN', M3, _, _, _}] = recv_msgs(2),
     ok.
-             
+
+dist_frag_alias(Config) when is_list(Config) ->
+    Tester = self(),
+    {ok, Peer, Node} = ?CT_PEER(),
+    {P,M} = spawn_monitor(Node,
+                          fun () ->
+                                  Alias = alias(),
+                                  Tester ! {alias, Alias},
+                                  receive
+                                      {data, Data} ->
+                                          garbage_collect(),
+                                          Tester ! {received_data, Data}
+                                  end,
+                                  exit(end_of_test)
+                          end),
+    Data = term_to_binary(lists:seq(1, 1000000)),
+    receive
+        {alias, Alias} ->
+            Alias ! {data, Data},
+            receive
+                {received_data, RecvData} ->
+                    Data = RecvData;
+                {'DOWN', M, process, P, R2} ->
+                    ct:fail(R2)
+            end;
+        {'DOWN', M, process, P, R1} ->
+            ct:fail(R1)
+    end,
+    receive
+        {'DOWN', M, process, P, R3} ->
+            end_of_test = R3
+    end,
+    peer:stop(Peer),
+    ok.
+
+dist_frag_unaliased(Config) when is_list(Config) ->
+    %% Leak fixed by PR-7915 would have been detected using asan or valgrind
+    %% when running this test...
+    Tester = self(),
+    {ok, Peer, Node} = ?CT_PEER(),
+    {P,M} = spawn_monitor(Node,
+                          fun () ->
+                                  Alias = alias(),
+                                  Tester ! {alias, Alias},
+                                  receive
+                                      {data, Data} ->
+                                          garbage_collect(),
+                                          unalias(Alias),
+                                          Tester ! {received_data, Data},
+                                          receive
+                                              {data, _Data} ->
+                                                  exit(received_data_again);
+                                              end_of_test ->
+                                                  exit(end_of_test)
+                                          end
+                                  end
+                          end),
+    Data = term_to_binary(lists:seq(1, 1000000)),
+    receive
+        {alias, Alias} ->
+            Alias ! {data, Data},
+            receive
+                {received_data, RecvData} ->
+                    Data = RecvData;
+                {'DOWN', M, process, P, R2} ->
+                    ct:fail(R2)
+            end,
+            Alias ! {data, Data},
+            P ! end_of_test;
+        {'DOWN', M, process, P, R1} ->
+            ct:fail(R1)
+    end,
+    receive
+        {'DOWN', M, process, P, R3} ->
+            end_of_test = R3
+    end,
+    peer:stop(Peer),
+    ok.
 
 monitor_alias(Config) when is_list(Config) ->
     monitor_alias_test(node()),
-    {ok, Node} = start_node(Config),
+    {ok, Peer, Node} = ?CT_PEER(),
     monitor_alias_test(Node),
-    stop_node(Node),
+    stop_node(Peer, Node),
     ok.
 
 monitor_alias_test(Node) ->
@@ -4136,21 +5524,64 @@ monitor_alias_test(Node) ->
 spawn_monitor_alias(Config) when is_list(Config) ->
     %% Exit signals with immediate exit reasons are sent
     %% in a different manner than compound exit reasons.
-    spawn_monitor_alias_test(node(), spawn_opt, normal),
-    spawn_monitor_alias_test(node(), spawn_opt, make_ref()),
-    spawn_monitor_alias_test(node(), spawn_request, normal),
-    spawn_monitor_alias_test(node(), spawn_request, make_ref()),
-    {ok, Node1} = start_node(Config),
-    spawn_monitor_alias_test(Node1, spawn_opt, normal),
-    {ok, Node2} = start_node(Config),    
-    spawn_monitor_alias_test(Node2, spawn_opt, make_ref()),
-    {ok, Node3} = start_node(Config),
-    spawn_monitor_alias_test(Node3, spawn_request, normal),
-    {ok, Node4} = start_node(Config),
-    spawn_monitor_alias_test(Node4, spawn_request, make_ref()),
+    spawn_monitor_alias_test(undefined, node(), spawn_opt, normal),
+    spawn_monitor_alias_test(undefined, node(), spawn_opt, make_ref()),
+    spawn_monitor_alias_test(undefined, node(), spawn_request, normal),
+    spawn_monitor_alias_test(undefined, node(), spawn_request, make_ref()),
+    {ok, Peer1, Node1} = ?CT_PEER(),
+    spawn_monitor_alias_test(Peer1, Node1, spawn_opt, normal),
+    {ok, Peer2, Node2} = ?CT_PEER(),
+    spawn_monitor_alias_test(Peer2, Node2, spawn_opt, make_ref()),
+    {ok, Peer3, Node3} = ?CT_PEER(),
+    spawn_monitor_alias_test(Peer3, Node3, spawn_request, normal),
+    {ok, Peer4, Node4} = ?CT_PEER(),
+    spawn_monitor_alias_test(Peer4, Node4, spawn_request, make_ref()),
+
+    %% Make sure we don't get a monitor alias if a spawn_request fails on noconnect...
+
+    {ok, Peer5, Node5} = ?CT_PEER(#{args => ["-kernel", "connect_all", "false"]}),
+    {ok, Peer6, Node6} = ?CT_PEER(#{args => ["-kernel", "connect_all", "false"]}),
+
+    ThisNode = node(),
+    ok = erpc:call(Node5, net_kernel, allow, [[ThisNode]]),
+    {ok, [ThisNode]} = erpc:call(Node5, net_kernel, allowed, []),
+    ok = erpc:call(Node6, net_kernel, allow, [[ThisNode]]),
+    {ok, [ThisNode]} = erpc:call(Node6, net_kernel, allowed, []),
+
+    wait_until(fun () ->
+                       _ = erpc:call(Node5, erlang, disconnect_node, [Node6]),
+                       _ = erpc:call(Node6, erlang, disconnect_node, [Node5]),
+                       Res5 = erpc:call(Node5, erlang, nodes, []),
+                       Res6 = erpc:call(Node6, erlang, nodes, []),
+                       Res5 == [ThisNode] andalso Res6 == [ThisNode]
+               end),
+
+    MonAliasFun =
+        fun (UnaliasOpt) ->
+                fun () ->
+                        erlang:yield(),
+                        MAF = spawn_request(Node6, fun () -> ok end,
+                                            [{monitor, [{alias, UnaliasOpt}]}]),
+                        MAF ! should_not_be_delivered_1,
+                        [{spawn_reply, MAF, ResType, Result}] = recv_msgs(1),
+                        error = ResType,
+                        noconnection = Result,
+                        MAF ! should_not_be_delivered_2,
+                        self() ! should_be_delivered,
+                        [should_be_delivered] = recv_msgs(1),
+                        ok
+                end
+        end,
+
+    ok = erpc:call(Node5, MonAliasFun(explicit_unalias)),
+    ok = erpc:call(Node5, MonAliasFun(reply_demonitor)),
+    ok = erpc:call(Node5, MonAliasFun(demonitor)),
+
+    peer:stop(Peer5),
+    peer:stop(Peer6),
     ok.
 
-spawn_monitor_alias_test(Node, SpawnType, ExitReason) ->
+spawn_monitor_alias_test(Peer, Node, SpawnType, ExitReason) ->
     Spawn = case SpawnType of
                 spawn_opt ->
                     fun (F, O) ->
@@ -4266,6 +5697,29 @@ spawn_monitor_alias_test(Node, SpawnType, ExitReason) ->
     P5 ! {alias, MA5},
     [{MA5,1},{'DOWN', M_5, _, _, ExitReason}] = recv_msgs(2),
 
+    if SpawnType == spawn_request ->
+            %% Make sure we don't get a monitor alias if a spawn_request fails on badopt...
+            MonAliasFun =
+                fun (UnaliasOpt) ->
+                        erlang:yield(),
+                        MAF = spawn_request(Node, fun () -> ok end,
+                                            [{monitor, [{alias, UnaliasOpt}]}, invalid_opt]),
+                        MAF ! should_not_be_delivered_1,
+                        [{spawn_reply, MAF, ResType, Result}] = recv_msgs(1),
+                        error = ResType,
+                        badopt = Result,
+                        MAF ! should_not_be_delivered_2,
+                        self() ! should_be_delivered,
+                        [should_be_delivered] = recv_msgs(1),
+                        ok
+                end,
+            MonAliasFun(explicit_unalias),
+            MonAliasFun(reply_demonitor),
+            MonAliasFun(demonitor);
+       true ->
+            ok
+    end,
+
     case Node == node() of
         true ->
             ok;
@@ -4277,7 +5731,7 @@ spawn_monitor_alias_test(Node, SpawnType, ExitReason) ->
                                       receive after infinity -> ok end
                               end, [{monitor, [{alias, demonitor}]}]),
             P6 ! {alias, MA6},
-            stop_node(Node),
+            stop_node(Peer, Node),
             [{MA6,1},{MA6,2},{'DOWN', MA6, _, _, noconnection}] = recv_msgs(3),
             {_P6_1, M6_1} = spawn_monitor(fun () ->
                                                   MA6 ! {MA6, 3},
@@ -4288,38 +5742,161 @@ spawn_monitor_alias_test(Node, SpawnType, ExitReason) ->
             ok
     end.
 
+demonitor_aliasmonitor(Config) when is_list(Config) ->
+    {ok, Peer, Node} = ?CT_PEER(),
+    Fun = fun () ->
+                  receive
+                      {alias, Alias} ->
+                          Alias ! {alias_reply, Alias, self()}
+                  end
+          end,
+    LPid = spawn(Fun),
+    RPid = spawn(Node, Fun),
+    AliasMonitor = erlang:monitor(process, LPid, [{alias, explicit_unalias}]),
+    erlang:demonitor(AliasMonitor),
+    LPid ! {alias, AliasMonitor},
+    receive {alias_reply, AliasMonitor, LPid} -> ok end,
+    %% Demonitor signal has been received and cleaned up. Cleanup of
+    %% it erroneously removed it from the alias table which caused
+    %% remote use of the alias to stop working...
+    RPid ! {alias, AliasMonitor},
+    receive {alias_reply, AliasMonitor, RPid} -> ok end,
+    exit(LPid, kill),
+    peer:stop(Peer),
+    false = is_process_alive(LPid),
+    ok.
+
+down_aliasmonitor(Config) when is_list(Config) ->
+    {ok, Peer, Node} = ?CT_PEER(),
+    LPid = spawn(fun () -> receive infinty -> ok end end),
+    RPid = spawn(Node,
+                 fun () ->
+                         receive
+                             {alias, Alias} ->
+                                 Alias ! {alias_reply, Alias, self()}
+                         end
+                 end),
+    AliasMonitor = erlang:monitor(process, LPid, [{alias, explicit_unalias}]),
+    exit(LPid, bye),
+    receive {'DOWN', AliasMonitor, process, LPid, bye} -> ok end,
+    %% Down signal has been received and cleaned up. Cleanup of
+    %% it erroneously removed it from the alias table which caused
+    %% remote use of the alias to stop working...
+    RPid ! {alias, AliasMonitor},
+    receive {alias_reply, AliasMonitor, RPid} -> ok end,
+    peer:stop(Peer),
+    ok.
+
+monitor_time_offset_alias(Config) when is_list(Config) ->
+    monitor_time_offset_alias_test(explicit_unalias),
+    monitor_time_offset_alias_test(demonitor),
+    monitor_time_offset_alias_test(reply_demonitor).
+
+monitor_time_offset_alias_test(Deactivate) ->
+    Me = self(),
+    {ok, Peer, Node} = ?CT_PEER(#{args => ["+C", "single_time_warp"]}),
+    TrySelfAlias = fun (Alias) ->
+                           Ref = make_ref(),
+                           Alias ! Ref,
+                           receive Ref -> active
+                           after 0 -> inactive
+                           end
+                   end,
+    Tester = spawn_link(Node,
+                        fun () ->
+                                MonAlias = monitor(time_offset, clock_service,
+                                                   [{alias, Deactivate}]),
+                                Me ! {self(), mon_alias, MonAlias},
+                                receive
+                                    {Me, finalize_time_offset} ->
+                                        ok
+                                end,
+                                preliminary = erlang:system_flag(time_offset, finalize),
+                                receive
+                                    {'CHANGE', MonAlias, time_offset, clock_service, _} ->
+                                        ok
+                                after
+                                    1000 ->
+                                        exit(missing_time_offset_change_message)
+                                end,
+                                Me ! {self(), finalized_time_offset},
+                                receive
+                                    {Me, alias_message} ->
+                                        Me ! {self(), alias_message}
+                                end,
+                                case Deactivate of
+                                    explicit_unalias ->
+                                        active = TrySelfAlias(MonAlias),
+                                        unalias(MonAlias);
+                                    demonitor ->
+                                        active = TrySelfAlias(MonAlias),
+                                        demonitor(MonAlias);
+                                    reply_demonitor ->
+                                        ok
+                                end,
+                                inactive = TrySelfAlias(MonAlias),
+                                receive
+                                    {Me, pid_message} ->
+                                        Me ! {self(), pid_message}
+                                end
+                        end),
+    Alias = receive
+                {Tester, mon_alias, MonAlias} ->
+                    MonAlias
+            end,
+    Tester ! {self(), finalize_time_offset},
+    receive
+        {Tester, finalized_time_offset} ->
+            ok
+    end,
+    Alias ! {self(), alias_message},
+    Tester ! {self(), pid_message},
+    receive
+        {Tester, alias_message} ->
+            ok;
+        {Tester, pid_message} ->
+            ct:fail(alias_did_not_work)
+    end,
+    receive
+        {Tester, pid_message} ->
+            ok
+    end,
+    unlink(Tester),
+    peer:stop(Peer),
+    ok.
+
 monitor_tag(Config) when is_list(Config) ->
     %% Exit signals with immediate exit reasons are sent
     %% in a different manner than compound exit reasons, and
     %% immediate tags are stored in a different manner than
     %% compound tags.
-    monitor_tag_test(node(), spawn_opt, immed, normal),
-    monitor_tag_test(node(), spawn_opt, make_ref(), normal),
-    monitor_tag_test(node(), spawn_opt, immed, make_ref()),
-    monitor_tag_test(node(), spawn_opt, make_ref(), make_ref()),
-    monitor_tag_test(node(), spawn_request, immed, normal),
-    monitor_tag_test(node(), spawn_request, make_ref(), normal),
-    monitor_tag_test(node(), spawn_request, immed, make_ref()),
-    monitor_tag_test(node(), spawn_request, make_ref(), make_ref()),
-    {ok, Node1} = start_node(Config),
-    monitor_tag_test(Node1, spawn_opt, immed, normal),
-    {ok, Node2} = start_node(Config),
-    monitor_tag_test(Node2, spawn_opt, make_ref(), normal),
-    {ok, Node3} = start_node(Config),
-    monitor_tag_test(Node3, spawn_opt, immed, make_ref()),
-    {ok, Node4} = start_node(Config),
-    monitor_tag_test(Node4, spawn_opt, make_ref(), make_ref()),
-    {ok, Node5} = start_node(Config),
-    monitor_tag_test(Node5, spawn_request, immed, normal),
-    {ok, Node6} = start_node(Config),
-    monitor_tag_test(Node6, spawn_request, make_ref(), normal),
-    {ok, Node7} = start_node(Config),
-    monitor_tag_test(Node7, spawn_request, immed, make_ref()),
-    {ok, Node8} = start_node(Config),
-    monitor_tag_test(Node8, spawn_request, make_ref(), make_ref()),
+    monitor_tag_test(undefined, node(), spawn_opt, immed, normal),
+    monitor_tag_test(undefined, node(), spawn_opt, make_ref(), normal),
+    monitor_tag_test(undefined, node(), spawn_opt, immed, make_ref()),
+    monitor_tag_test(undefined, node(), spawn_opt, make_ref(), make_ref()),
+    monitor_tag_test(undefined, node(), spawn_request, immed, normal),
+    monitor_tag_test(undefined, node(), spawn_request, make_ref(), normal),
+    monitor_tag_test(undefined, node(), spawn_request, immed, make_ref()),
+    monitor_tag_test(undefined, node(), spawn_request, make_ref(), make_ref()),
+    {ok, Peer1, Node1} = ?CT_PEER(),
+    monitor_tag_test(Peer1, Node1, spawn_opt, immed, normal),
+    {ok, Peer2, Node2} = ?CT_PEER(),
+    monitor_tag_test(Peer2, Node2, spawn_opt, make_ref(), normal),
+    {ok, Peer3, Node3} = ?CT_PEER(),
+    monitor_tag_test(Peer3, Node3, spawn_opt, immed, make_ref()),
+    {ok, Peer4, Node4} = ?CT_PEER(),
+    monitor_tag_test(Peer4, Node4, spawn_opt, make_ref(), make_ref()),
+    {ok, Peer5, Node5} = ?CT_PEER(),
+    monitor_tag_test(Peer5, Node5, spawn_request, immed, normal),
+    {ok, Peer6, Node6} = ?CT_PEER(),
+    monitor_tag_test(Peer6, Node6, spawn_request, make_ref(), normal),
+    {ok, Peer7, Node7} = ?CT_PEER(),
+    monitor_tag_test(Peer7, Node7, spawn_request, immed, make_ref()),
+    {ok, Peer8, Node8} = ?CT_PEER(),
+    monitor_tag_test(Peer8, Node8, spawn_request, make_ref(), make_ref()),
     ok.
 
-monitor_tag_test(Node, SpawnType, Tag, ExitReason) ->
+monitor_tag_test(Peer, Node, SpawnType, Tag, ExitReason) ->
 
     P1 = spawn(Node, fun () -> receive go -> ok end, exit(ExitReason) end),
     M1 = monitor(process, P1, [{tag, Tag}]),
@@ -4365,7 +5942,7 @@ monitor_tag_test(Node, SpawnType, Tag, ExitReason) ->
         false ->
             {P3, M3} = Spawn(fun () -> receive after infinity -> ok end end,
                              [{monitor, [{tag, Tag}]}]),
-            stop_node(Node),
+            stop_node(Peer, Node),
             [{Tag, M3, process, P3, noconnection}] = recv_msgs(1),
 
             case SpawnType == spawn_opt of
@@ -4377,6 +5954,54 @@ monitor_tag_test(Node, SpawnType, Tag, ExitReason) ->
                     ok
             end,
             ok
+    end.
+
+no_pid_wrap(Config) when is_list(Config) ->
+    process_flag(priority, high),
+    SOnln = erlang:system_info(schedulers_online),
+    Pid = spawn(fun () -> ok end),
+    exit(Pid, kill),
+    false = is_process_alive(Pid),
+    ChkSpwndPid = fun () ->
+                          check_spawned_pid(Pid)
+                  end,
+    MPs = maps:from_list(lists:map(fun (_) ->
+                                           {P, M} = spawn_monitor(ChkSpwndPid),
+                                           {M, P}
+                                   end, lists:seq(1, SOnln))),
+    Res = receive
+              {'DOWN', M, process, _, pid_reused} when is_map_key(M, MPs) ->
+                  case erlang:system_info(wordsize) of
+                      8 ->
+                          ct:fail("Process identifier reused"),
+                          error;
+                      4 ->
+                          {comment,
+                           "Process identifer reused, but this is"
+                           ++ "expected since this is a 32-bit system"}
+                  end;
+              {'DOWN', _, _, _, _} = Down ->
+                  ct:fail({unexpected_down, Down}),
+                  error
+          after
+              3*60*1000 ->
+                  ok
+          end,
+    maps:foreach(fun (_, P) ->
+                         exit(P, kill)
+                 end, MPs),
+    maps:foreach(fun (_, P) ->
+                         false = is_process_alive(P)
+                 end, MPs),
+    Res.
+
+check_spawned_pid(OldPid) ->
+    Pid = spawn(fun () -> ok end),
+    case OldPid == Pid of
+        false ->
+            check_spawned_pid(OldPid);
+        true ->
+            exit(pid_reused)
     end.
 
 %% Internal functions
@@ -4408,27 +6033,10 @@ tok_loop(hopp) ->
 
 id(I) -> I.
 
-make_nodename(Config) when is_list(Config) ->
-    list_to_atom(atom_to_list(?MODULE)
-                 ++ "-"
-                 ++ atom_to_list(proplists:get_value(testcase, Config))
-                 ++ "-"
-                 ++ integer_to_list(erlang:system_time(second))
-                 ++ "-"
-                 ++ integer_to_list(erlang:unique_integer([positive]))).
-    
-start_node(Config) ->
-    start_node(Config, "").
-
-start_node(Config, Args) when is_list(Config) ->
-    Pa = filename:dirname(code:which(?MODULE)),
-    Name = make_nodename(Config),
-    test_server:start_node(Name, slave, [{args, "-pa "++Pa++" "++Args}]).
-
-stop_node(Node) ->
+stop_node(Peer, Node) ->
     verify_nc(node()),
     verify_nc(Node),
-    test_server:stop_node(Node).
+    peer:stop(Peer).
 
 verify_nc(Node) ->
     P = self(),
@@ -4452,9 +6060,11 @@ verify_nc(Node) ->
     end.
 
 enable_internal_state() ->
-    case catch erts_debug:get_internal_state(available_internal_state) of
+    try erts_debug:get_internal_state(available_internal_state) of
 	true -> true;
 	_ -> erts_debug:set_internal_state(available_internal_state, true)
+    catch
+        _:_ -> erts_debug:set_internal_state(available_internal_state, true)
     end.
 
 sys_mem_cond_run(OrigReqSizeMB, TestFun) when is_integer(OrigReqSizeMB) ->
@@ -4472,18 +6082,135 @@ sys_mem_cond_run(OrigReqSizeMB, TestFun) when is_integer(OrigReqSizeMB) ->
 
 
 total_memory() ->
-    %% Totat memory in MB.
+    %% Total memory in MB.
     try
-	MemoryData = memsup:get_system_memory_data(),
-	case lists:keysearch(total_memory, 1, MemoryData) of
-	    {value, {total_memory, TM}} ->
-		TM div (1024*1024);
-	    false ->
-		{value, {system_total_memory, STM}} =
-		    lists:keysearch(system_total_memory, 1, MemoryData),
-		STM div (1024*1024)
-	end
+	SMD = memsup:get_system_memory_data(),
+        TM = proplists:get_value(
+               available_memory, SMD,
+               proplists:get_value(
+                 total_memory, SMD,
+                 proplists:get_value(
+                   system_total_memory, SMD))),
+        TM div (1024*1024)
     catch
 	_ : _ ->
 	    undefined
     end.
+
+start_ei_node(Config) when is_list(Config) ->
+    DataDir = proplists:get_value(data_dir, Config),
+    FwdNodeExe = filename:join(DataDir, "fwd_node"),
+    Name = atom_to_list(?MODULE)
+        ++ "-" ++ "ei_node"
+        ++ "-" ++ integer_to_list(erlang:system_time(second))
+        ++ "-" ++ integer_to_list(erlang:unique_integer([positive])),
+    Cookie = atom_to_list(erlang:get_cookie()),
+    HostName = get_hostname(),
+    Node = list_to_atom(Name++"@"++HostName),
+    Creation = integer_to_list(rand:uniform((1 bsl 15) - 4) + 3),
+    Parent = self(),
+    Pid = spawn_link(fun () ->
+                             register(cnode_forward_receiver, self()),
+                             process_flag(trap_exit, true),
+                             Args = ["-sname", Name,
+                                     "-cookie", Cookie,
+                                     "-creation", Creation],
+                             io:format("Starting ei_node: ~p ~p~n",
+                                       [FwdNodeExe, Args]),
+                             Port = erlang:open_port({spawn_executable, FwdNodeExe},
+                                                     [use_stdio, {args, Args}]),
+                             receive
+                                 {Port, {data, "accepting"}} -> ok
+                             end,
+                             ei_node_handler_loop(Node, Parent, Port)
+                     end),
+    put({ei_node_handler, Node}, Pid),
+    case check_ei_node(Node) of
+        ok -> {ok, Node};
+        Error -> Error
+    end.
+
+check_ei_node(Node) ->
+    Key = {ei_node_handler, Node},
+    case get(Key) of
+        undefined ->
+            {error, no_handler};
+        Pid when is_pid(Pid) ->
+            Pid ! {check_node, self()},
+            receive
+                {check_node, Pid, Res} ->
+                    Res
+            after 3000 ->
+                    {error, no_handler_response}
+            end
+    end.
+
+stop_ei_node(Node) ->
+    case check_ei_node(Node) of
+        ok ->
+            Key = {ei_node_handler, Node},
+            case get(Key) of
+                undefined ->
+                    {error, no_handler};
+                Pid when is_pid(Pid) ->
+                    Pid ! {stop_node, self()},
+                    receive
+                        {stop_node, Pid} ->
+                            put(Key, undefined),
+                            ok
+                    after 2000 ->
+                            {error, no_handler_response}
+                    end
+            end;
+        Error ->
+            Error
+    end.
+
+ei_node_handler_loop(Node, Parent, Port) ->
+    receive
+        {'EXIT', Parent, Reason} ->
+            erlang:disconnect_node(Node),
+            try port_close(Port) catch _:_ -> ok end,
+            exit(Reason);
+        {stop_node, Parent} ->
+            erlang:disconnect_node(Node),
+            try port_close(Port) catch _:_ -> ok end,
+            Parent ! {stop_node, self()},
+            exit(normal);
+        {check_node, Parent} ->
+            Ref = make_ref(),
+            {a_name, Node} ! Ref,
+            receive
+                Ref ->
+                    Parent ! {check_node, self(), ok}
+            after
+                2000 ->
+                    Parent ! {check_node, self(), {error, no_node_response}}
+            end;
+        Msg ->
+            Msgs = fetch_all_messages([Msg]),
+            erlang:disconnect_node(Node),
+            try port_close(Port) catch _:_ -> ok end,
+            exit({ei_node_handler, Node, unexpected_messages, Msgs})
+    end,
+    ei_node_handler_loop(Node, Parent, Port).
+
+fetch_all_messages(Msgs) ->
+    receive
+        Msg ->
+            fetch_all_messages([Msg|Msgs])
+    after
+        0 ->
+            Msgs
+    end.
+
+get_hostname() ->
+    get_hostname(atom_to_list(node())).
+
+get_hostname([$@ | HostName]) ->
+    HostName;
+get_hostname([_ | Rest]) ->
+    get_hostname(Rest).
+
+receive_any() ->
+    receive M -> M end.

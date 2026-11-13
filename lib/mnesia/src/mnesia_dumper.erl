@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,6 +22,7 @@
 
 %%
 -module(mnesia_dumper).
+-moduledoc false.
 
 %% The InitBy arg may be one of the following:
 %% scan_decisions     Initial scan for decisions
@@ -86,7 +89,7 @@ adjust_log_writes(DoCast) ->
 		false ->
 		    ignore;
 		true ->
-		    mnesia_controller:async_dump_log(write_threshold)
+		    ?CATCH(mnesia_controller:async_dump_log(write_threshold))
 	    end,
 	    Max = mnesia_monitor:get_env(dump_log_write_threshold),
 	    Left = mnesia_lib:read_counter(trans_log_writes_left),
@@ -508,7 +511,7 @@ disc_delete_table(Tab, Storage) ->
 		    case get({?MODULE,Tab}) of
 			{opened_dumper, dcl} ->
 			    del_opened_tab(Tab),
-			    mnesia_log:unsafe_close_log(Tab);
+                            mnesia_log:unsafe_close_log({?MODULE, Tab});
 			_ ->
 			    ok
 		    end,
@@ -526,8 +529,8 @@ disc_delete_table(Tab, Storage) ->
 disc_delete_indecies(Tab, Cs, Storage) ->
     case storage_semantics(Storage) of
 	disc_only_copies ->
-	    Indecies = Cs#cstruct.index,
-	    mnesia_index:del_transient(Tab, Indecies, Storage);
+	    Indices = Cs#cstruct.index,
+	    mnesia_index:del_transient(Tab, Indices, Storage);
 	_ ->
 	    ok
     end.
@@ -612,6 +615,7 @@ insert_op(Tid, _, {op, change_table_copy_type, N, FromS, ToS, TabDef}, InPlace, 
 				    Cs#cstruct.type],
 			    mnesia_monitor:mktab(Tab, Args),
 			    ok = load_from_logfile(ToS, Tab, Logtmp),
+			    ok = mnesia_log:ets2dcd(Tab),
 			    file:delete(Logtmp);
 			disc_only_copies ->
 			    %% ok = ensure_rename(Dmp, Dat),
@@ -711,7 +715,6 @@ insert_op(Tid, _, {op, restore_recreate, TabDef}, InPlace, InitBy) ->
 		end,
     %% Delete all possibly existing files and tables
     disc_delete_table(Tab, Storage),
-    disc_delete_indecies(Tab, Cs, Storage),
     case InitBy of
 	startup ->
 	    ignore;
@@ -727,7 +730,7 @@ insert_op(Tid, _, {op, restore_recreate, TabDef}, InPlace, InitBy) ->
     
     %% And create new ones..
     if
-	(InitBy == startup) or (Semantics == unknown) ->
+	InitBy == startup; Semantics == unknown ->
 	    ignore;
 	Semantics == ram_copies ->
 	    EtsProps = proplists:get_value(ets, StorageProps, []),
@@ -815,7 +818,7 @@ insert_op(Tid, _, {op, create_table, TabDef}, InPlace, InitBy) ->
 			ram_copies ->
 			    ignore;
 			_ ->
-			    %% Indecies are still created by loader
+			    %% Indices are still created by loader
 			    disc_delete_indecies(Tab, Cs, Storage)
 			    %% disc_delete_table(Tab, Storage)
 		    end,
@@ -859,7 +862,10 @@ insert_op(Tid, _, {op, delete_table, TabDef}, InPlace, InitBy) ->
 		    ignore;
 		_ ->
 		    mnesia_schema:ram_delete_table(Tab, Storage),
-		    mnesia_checkpoint:tm_del_copy(Tab, node())
+                mnesia_checkpoint:tm_del_copy(Tab, node()),
+                %% Subscriptions to Tab are removed, but the gvar still exists
+                ?eval_debug_fun({?MODULE, delete_table, post_unsubscribe},
+                                [{tab, Tab}])
 	    end
     end,
     delete_cstruct(Tid, Cs, InPlace, InitBy);
@@ -1433,10 +1439,10 @@ chunk_from_log(eof, _, _, _) ->
 %%
 %% This is a poor mans substitute for a fair scheduler algorithm
 %% in the Erlang emulator. The mnesia_dumper process performs many
-%% costly BIF invokations and must pay for this. But since the
+%% costly BIF invocations and must pay for this. But since the
 %% Emulator does not handle this properly we must compensate for
 %% this with some form of load regulation of ourselves in order to
-%% not steal all computation power in the Erlang Emulator ans make
+%% not steal all computation power in the Erlang Emulator and make
 %% other processes starve. Hopefully this is a temporary solution.
 
 start_regulator() ->

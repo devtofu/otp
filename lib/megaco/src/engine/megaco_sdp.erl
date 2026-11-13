@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2001-2016. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2001-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -24,6 +26,17 @@
 %%----------------------------------------------------------------------
 
 -module(megaco_sdp).
+-moduledoc """
+SDP utility module.
+
+This module contains various things related to SDP.
+
+## Version note
+
+This module has existed in the megaco app for long time,
+but as of 27.0 its also documented.
+""".
+-moduledoc(#{since => "OTP 27.0"}).
 
 %%----------------------------------------------------------------------
 %% Include files
@@ -46,10 +59,78 @@
 	 get_sdp_record_from_PropertyGroup/2
         ]).
 
+-export_type([
+              property_parm/0,
+              property_group/0,
+              property_groups/0,
+
+              sdp/0,
+              sdp_v/0,
+              sdp_c/0, sdp_o/0, sdp_s/0, sdp_i/0, sdp_u/0,
+              sdp_e/0, sdp_p/0, sdp_b/0, sdp_z/0, sdp_k/0,
+              sdp_a/0, sdp_a_rtpmap/0, sdp_a_ptime/0,
+              sdp_a_quality/0, sdp_a_fmtp/0,
+              sdp_t/0, sdp_r/0, sdp_m/0,
+              sdp_property_parm/0,
+              sdp_property_group/0,
+              sdp_property_groups/0
+             ]).
+
 
 %%----------------------------------------------------------------------
 %% Internal exports
 %%----------------------------------------------------------------------
+
+
+%%----------------------------------------------------------------------
+%% Types
+%%----------------------------------------------------------------------
+
+-type property_parm()   :: #'PropertyParm'{}.
+-type property_group()  :: [property_parm()].
+-type property_groups() :: [property_group()].
+
+-type sdp() :: sdp_o() | sdp_s() | sdp_i() | sdp_u() | sdp_e() |
+               sdp_p() | sdp_c() | sdp_b() | sdp_k() | sdp_a() |
+               sdp_a_rtpmap() | sdp_a_ptime() |
+               sdp_z() | sdp_t() | sdp_r() | sdp_m().
+
+-doc "Protocol version.".
+-type sdp_v()         :: #megaco_sdp_v{}. % Protocol version
+-doc "Owner/creator and session identifier.".
+-type sdp_o()         :: #megaco_sdp_o{}. % Owner/creator and session identifier
+-doc "Session name.".
+-type sdp_s()         :: #megaco_sdp_s{}. % Session name
+-doc "Session information.".
+-type sdp_i()         :: #megaco_sdp_i{}. % Session information
+-doc "URI of description.".
+-type sdp_u()         :: #megaco_sdp_u{}. % URI of description
+-doc "Email address.".
+-type sdp_e()         :: #megaco_sdp_e{}. % Email address
+-doc "Phone number.".
+-type sdp_p()         :: #megaco_sdp_p{}. % Phone number
+-doc "Connection information.".
+-type sdp_c()         :: #megaco_sdp_c{}. % Connection information
+-doc "Bandwidth information.".
+-type sdp_b()         :: #megaco_sdp_b{}. % Bandwidth information
+-doc "Encryption key.".
+-type sdp_k()         :: #megaco_sdp_k{}. % Encryption key
+-doc "Session attribute.".
+-type sdp_a()         :: #megaco_sdp_a{}. % Session attribute
+-type sdp_a_rtpmap()  :: #megaco_sdp_a_rtpmap{}.
+-type sdp_a_ptime()   :: #megaco_sdp_a_ptime{}.
+-type sdp_a_quality() :: #megaco_sdp_a_quality{}.
+-type sdp_a_fmtp()    :: #megaco_sdp_a_fmtp{}.
+-doc "Time zone adjustment.".
+-type sdp_z()         :: #megaco_sdp_z{}. % Time zone adjustment
+-type sdp_t()         :: #megaco_sdp_t{}. % Time the session is active
+-doc "Repeat times.".
+-type sdp_r()         :: #megaco_sdp_r{}. % Repeat times
+-doc "Media name and transport address.".
+-type sdp_m()         :: #megaco_sdp_m{}. % Media name and transport address
+-type sdp_property_parm()   :: sdp() | property_parm().
+-type sdp_property_group()  :: [sdp_property_parm()].
+-type sdp_property_groups() :: [sdp_property_group()].
 
 
 %%----------------------------------------------------------------------
@@ -76,6 +157,7 @@
 %% 
 %% ---------------------------------------------------------------------
 
+-doc false.
 decode(SDP) ->
     case (catch do_decode(SDP)) of
 	{ok, _} = OK ->
@@ -110,6 +192,7 @@ do_decode(Bad) ->
 %% 
 %% ---------------------------------------------------------------------
 
+-doc false.
 encode(SDP) ->
     case (catch do_encode(SDP)) of
 	{ok, _} = OK ->
@@ -463,8 +546,9 @@ encode_PropertyParm(SDP) ->
 %%              property group
 %%-----------------------------------------------------------------
 
+-doc false.
 get_sdp_record_from_PropertyGroup(Type, PG) 
-  when is_atom(Type) and is_list(PG) ->
+  when is_atom(Type), is_list(PG) ->
     F = fun(R) -> not is_pg_record(Type, R) end,
     lists:filter(F, PG).
 
@@ -800,7 +884,7 @@ encode_conn_data_conn_addr(ip4, CA)
   when is_record(CA, megaco_sdp_c_conn_addr) ->
     encode_conn_data_conn_addr(CA);
 encode_conn_data_conn_addr(AT, CA) 
-  when is_list(AT) and is_record(CA, megaco_sdp_c_conn_addr) ->
+  when is_list(AT), is_record(CA, megaco_sdp_c_conn_addr) ->
     case tolower(AT) of
 	"ip4" ->
 	    encode_conn_data_conn_addr(CA);
@@ -1002,7 +1086,7 @@ encode_rtimes_list_of_offsets(BadLoo) ->
 	    
 %% ===== Time Zones =====
 %% 
-decode_pp_tzones(Value) when is_list(Value) and (length(Value) > 0) ->
+decode_pp_tzones([_|_] = Value) ->
     ?d("decode_pp_ztimes -> entry with"
        "~n   Value: ~p", [Value]),
     LOA = decode_tzones_list_of_adjustments(string:tokens(Value, " \t"), []),
@@ -1099,7 +1183,7 @@ encode_pp_encryption_keys(uri = _Method, EncryptionKey)
     #'PropertyParm'{name  = "k", 
 		    value = ["uri:" ++ EncryptionKey]};
 encode_pp_encryption_keys(Method, EncryptionKey) 
-  when is_list(Method) and is_list(EncryptionKey) ->
+  when is_list(Method), is_list(EncryptionKey) ->
     ?d("encode_pp_encryption_keys -> entry with"
        "~n   Method:        ~p"
        "~n   EncryptionKey: ~p", [Method, EncryptionKey]),
@@ -1116,7 +1200,7 @@ decode_pp_attribute(Value) ->
        "~n   Value: ~p", [Value]),
     First = string:chr(Value, $:),
     if 
-	(First > 0) and (First < length(Value)) ->
+	First > 0, First < length(Value) ->
 	    ?d("decode_pp_attribute -> value attribute", []),
 	    Attr      = string:substr(Value, 1, First -1),
 	    AttrValue = string:substr(Value, First + 1),
@@ -1243,7 +1327,7 @@ decode_pp_attribute_value("fmtp", AttrValue) ->
     FMTP = AttrValue, 
     First = string:chr(FMTP, $ ),
     if 
-	(First > 0) and (First < length(FMTP)) ->
+	First > 0, First < length(FMTP) ->
 	    ?d("decode_pp_attribute_value -> valid fmtp with params", []),
 	    Format = string:substr(FMTP, 1, First - 1),
 	    Params = string:substr(FMTP, First + 1),
@@ -1464,7 +1548,7 @@ encode_pp_attribute(Attr, undefined) when is_list(Attr) ->
        "~n   Attr: ~p", [Attr]),
     #'PropertyParm'{name  = "a", 
 		    value = [Attr]};
-encode_pp_attribute(Attr, Value) when is_list(Attr) and is_list(Value) ->
+encode_pp_attribute(Attr, Value) when is_list(Attr), is_list(Value) ->
     ?d("encode_pp_attribute_rtpmap -> entry with"
        "~n   Attr:  ~p"
        "~n   Value: ~p", [Attr, Value]),

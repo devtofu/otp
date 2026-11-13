@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2009-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2009-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,9 +20,15 @@
 %% %CopyrightEnd%
 %%
 -module(standard_error).
+-moduledoc false.
 -behaviour(supervisor_bridge).
 
-%% Basic standard i/o server for user interface port.
+-compile(nowarn_deprecated_catch).
+-compile([{nowarn_deprecated_function, [{erlang,exit,2}]}]).
+
+-include_lib("kernel/include/logger.hrl").
+
+%% Basic standard i/o server for standard_error.
 -export([start_link/0, init/1, terminate/2]).
 
 -define(NAME, standard_error).
@@ -47,176 +55,192 @@ terminate(_Reason,Pid) ->
 -spec init([]) -> {'error','no_stderror'} | {'ok',pid(),pid()}.
 
 init([]) ->
-    case (catch start_port([out,binary])) of
-	Pid when is_pid(Pid) ->
-	    {ok,Pid,Pid};
-	_ ->
-	    {error,no_stderror}
+    case (catch start()) of
+        Pid when is_pid(Pid) ->
+            {ok,Pid,Pid};
+        _ ->
+            {error,no_stderror}
     end.
 
-start_port(PortSettings) ->
-    Id = spawn(fun () -> server({fd,2,2}, PortSettings) end),
-    register(?NAME, Id),
-    Id.
+start() ->
+    spawn(fun server/0).
 
-server(PortName,PortSettings) ->
+server() ->
     process_flag(trap_exit, true),
-    Port = open_port(PortName,PortSettings),
-    run(Port).
+    register(?NAME, self()),
+    ok = prim_tty:load(),
+    TTY = prim_tty:init(#{ input => disabled,
+                           output => cooked,
+                           ofd => stderr}),
+    run(TTY).
 
-run(P) ->
-    put(encoding, latin1),
-    server_loop(P).
+run(TTY) ->
+    put(encoding, encoding(TTY)),
+    put(onlcr, prim_tty:isatty(stderr)),
+    put(log, none),
+    server_loop(TTY).
 
-server_loop(Port) ->
+encoding(TTY) ->
+    case prim_tty:unicode(TTY) of
+        true -> unicode;
+        false -> latin1
+    end.
+
+server_loop(TTY) ->
     receive
-	{io_request,From,ReplyAs,Request} when is_pid(From) ->
-	    _ = do_io_request(Request, From, ReplyAs, Port),
-	    server_loop(Port);
-	{'EXIT',Port,badsig} ->			% Ignore badsig errors
-	    server_loop(Port);
-	{'EXIT',Port,What} ->			% Port has exited
-	    exit(What);
-	_Other ->				% Ignore other messages
-	    server_loop(Port)
+        {io_request,From,ReplyAs,Request} = IoReq when is_pid(From) ->
+            group:log_io_request(IoReq, get(log), ?MODULE),
+            case io_request(Request, TTY) of
+                {stop, Reason} ->
+                    io_reply(From, ReplyAs, {error, Reason}),
+                    stop;
+                {reply, Reply} ->
+                    io_reply(From, ReplyAs, Reply),
+                    server_loop(TTY)
+            end;
+        _Other ->               % Ignore other messages
+            server_loop(TTY)
     end.
 
-get_fd_geometry(Port) ->
-    case (catch port_control(Port,?CTRL_OP_GET_WINSIZE,[])) of
-	List when length(List) =:= 8 ->
-	    <<W:32/native,H:32/native>> = list_to_binary(List),
-	    {W,H};
-	_ ->
-	    error
+get_fd_geometry(TTY) ->
+    case prim_tty:window_size(TTY) of
+        {ok, {W, H}} -> {W, H};
+        _ -> error
     end.
-
-%% NewSaveBuffer = io_request(Request, FromPid, ReplyAs, Port, SaveBuffer)
-
-do_io_request(Req, From, ReplyAs, Port) ->
-    {_Status,Reply}  = io_request(Req, Port),
-    io_reply(From, ReplyAs, Reply).
 
 %% New in R13B
 %% Encoding option (unicode/latin1)
-io_request({put_chars,unicode,Chars}, Port) ->
+io_request({put_chars,unicode,Chars}, TTY) ->
     case wrap_characters_to_binary(Chars, unicode, get(encoding)) of
         error ->
-            {error,{error,put_chars}};
+            {reply,{error,put_chars}};
         Bin ->
-            put_chars(Bin, Port)
+            put_chars(Bin, TTY)
     end;
-io_request({put_chars,unicode,Mod,Func,Args}, Port) ->
+io_request({put_chars,unicode,Mod,Func,Args}, TTY) ->
     case catch apply(Mod, Func, Args) of
         Data when is_list(Data); is_binary(Data) ->
             case wrap_characters_to_binary(Data, unicode, get(encoding)) of
                 Bin when is_binary(Bin) ->
-                    put_chars(Bin, Port);
+                    put_chars(Bin, TTY);
                 error ->
-                    {error,{error,put_chars}}
+                    {reply,{error,put_chars}}
             end;
         _ ->
-            {error,{error,put_chars}}
+            {reply,{error,put_chars}}
     end;
-io_request({put_chars,latin1,Chars}, Port) ->
+io_request({put_chars,latin1,Chars}, TTY) ->
     case catch unicode:characters_to_binary(Chars, latin1, get(encoding)) of
         Data when is_binary(Data) ->
-            put_chars(Data, Port);
+            put_chars(Data, TTY);
         _ ->
-            {error,{error,put_chars}}
+            {reply,{error,put_chars}}
     end;
-io_request({put_chars,latin1,Mod,Func,Args}, Port) ->
+io_request({put_chars,latin1,Mod,Func,Args}, TTY) ->
     case catch apply(Mod, Func, Args) of
         Data when is_list(Data); is_binary(Data) ->
             case
                 catch unicode:characters_to_binary(Data, latin1, get(encoding))
             of
                 Bin when is_binary(Bin) ->
-                    put_chars(Bin, Port);
+                    put_chars(Bin, TTY);
                 _ ->
-                    {error,{error,put_chars}}
+                    {reply,{error,put_chars}}
             end;
         _ ->
-            {error,{error,put_chars}}
+            {reply,{error,put_chars}}
     end;
 %% BC if called from pre-R13 node
-io_request({put_chars,Chars}, Port) -> 
-    io_request({put_chars,latin1,Chars}, Port); 
-io_request({put_chars,Mod,Func,Args}, Port) ->
-    io_request({put_chars,latin1,Mod,Func,Args}, Port);
+io_request({put_chars,Chars}, TTY) ->
+    io_request({put_chars,latin1,Chars}, TTY);
+io_request({put_chars,Mod,Func,Args}, TTY) ->
+    io_request({put_chars,latin1,Mod,Func,Args}, TTY);
 %% New in R12
-io_request({get_geometry,columns},Port) ->
-    case get_fd_geometry(Port) of
-	{W,_H} ->
-	    {ok,W};
-	_ ->
-	    {error,{error,enotsup}}
+io_request({get_geometry,columns},TTY) ->
+    case get_fd_geometry(TTY) of
+        {W,_H} ->
+            {reply,W};
+        _ ->
+            {reply,{error,enotsup}}
     end;
-io_request({get_geometry,rows},Port) ->
-    case get_fd_geometry(Port) of
-	{_W,H} ->
-	    {ok,H};
-	_ ->
-	    {error,{error,enotsup}}
+io_request({get_geometry,rows},TTY) ->
+    case get_fd_geometry(TTY) of
+        {_W,H} ->
+            {reply,H};
+        _ ->
+            {reply,{error,enotsup}}
     end;
-io_request(getopts, _Port) ->
+io_request(getopts, _TTY) ->
     getopts();
-io_request({setopts,Opts}, _Port) when is_list(Opts) ->
+io_request({setopts,Opts}, _TTY) when is_list(Opts) ->
     setopts(Opts);
-io_request({requests,Reqs}, Port) ->
-    io_requests(Reqs, {ok,ok}, Port);
-io_request(R, _Port) ->                      %Unknown request
-    {error,{error,{request,R}}}.		%Ignore but give error (?)
+io_request({requests,Reqs}, TTY) ->
+    io_requests(Reqs, {reply,ok}, TTY);
+io_request(R, _TTY) ->                      %Unknown request
+    {reply,{error,{request,R}}}.        %Ignore but give error (?)
 
-%% Status = io_requests(RequestList, PrevStat, Port)
+%% Status = io_requests(RequestList, PrevStat, TTY)
 %%  Process a list of output requests as long as the previous status is 'ok'.
-
-io_requests([R|Rs], {ok,_Res}, Port) ->
-    io_requests(Rs, io_request(R, Port), Port);
+io_requests([_|_], {reply,{error, _}} = Error, _TTY) ->
+    Error;
+io_requests([R|Rs], {reply,_Ok}, TTY) ->
+    io_requests(Rs, io_request(R, TTY), TTY);
 io_requests([_|_], Error, _) ->
     Error;
 io_requests([], Stat, _) ->
     Stat.
-
-%% put_port(DeepList, Port)
-%%  Take a deep list of characters, flatten and output them to the
-%%  port.
-
-put_port(List, Port) ->
-    send_port(Port, {command, List}).
-
-%% send_port(Port, Command)
-
-send_port(Port, Command) ->
-    Port ! {self(),Command}.
-
 
 %% io_reply(From, ReplyAs, Reply)
 %%  The function for sending i/o command acknowledgement.
 %%  The ACK contains the return value.
 
 io_reply(From, ReplyAs, Reply) ->
-    From ! {io_reply,ReplyAs,Reply}.
+    From ! {io_reply,ReplyAs,Reply},
+    ok.
 
 %% put_chars
-put_chars(Chars, Port) when is_binary(Chars) ->
-    _ = put_port(Chars, Port),
-    {ok,ok}.
+put_chars(Chars, TTY) when is_binary(Chars) ->
+    {ok, MonitorRef} = prim_tty:write(TTY, Chars, self()),
+    #{ write := WriteRef } = prim_tty:handles(TTY),
+    receive
+        {WriteRef, ok} ->
+            erlang:demonitor(MonitorRef, [flush]),
+            {reply, ok};
+        {'DOWN', MonitorRef, _, _, Reason} ->
+            ?LOG_INFO("Failed to write to standard error (~p)", [Reason]),
+            {stop, Reason}
+    end.
 
 %% setopts
 setopts(Opts0) ->
     Opts = expand_encoding(Opts0),
     case check_valid_opts(Opts) of
         true ->
-            do_setopts(Opts);
+            lists:foreach(
+              fun({encoding, Enc}) ->
+                      put(encoding, Enc);
+                 ({onlcr, Bool}) ->
+                      put(onlcr, Bool);
+                 ({log, Bool}) ->
+                      put(log, Bool)
+              end, Opts),
+            {reply, ok};
         false ->
-            {error,{error,enotsup}}
+            {reply,{error,enotsup}}
     end.
 
 check_valid_opts([]) ->
     true;
-check_valid_opts([{encoding,Valid}|T]) when Valid =:= unicode;
-                                            Valid =:= utf8; Valid =:= latin1 ->
+check_valid_opts([{encoding,Valid}|T]) when Valid =:= unicode; Valid =:= utf8;
+                                            Valid =:= latin1 ->
     check_valid_opts(T);
+check_valid_opts([{onlcr,Bool}|T]) when is_boolean(Bool) ->
+    check_valid_opts(T);
+check_valid_opts([{log,Flag}|T]) ->
+    case lists:member(Flag, [none, output, input, all]) of
+        true -> check_valid_opts(T);
+        false -> false
+    end;
 check_valid_opts(_) ->
     false.
 
@@ -226,32 +250,28 @@ expand_encoding([latin1 | T]) ->
     [{encoding,latin1} | expand_encoding(T)];
 expand_encoding([unicode | T]) ->
     [{encoding,unicode} | expand_encoding(T)];
+expand_encoding([utf8 | T]) ->
+    [{encoding,unicode} | expand_encoding(T)];
+expand_encoding([{encoding,utf8} | T]) ->
+    [{encoding,unicode} | expand_encoding(T)];
 expand_encoding([H|T]) ->
     [H|expand_encoding(T)].
 
-do_setopts(Opts) ->
-    case proplists:get_value(encoding, Opts) of
-        Valid when Valid =:= unicode; Valid =:= utf8 ->
-            put(encoding, unicode);
-        latin1 ->
-            put(encoding, latin1);
-        undefined ->
-            ok
-    end,
-    {ok,ok}.
-
 getopts() ->
     Uni = {encoding,get(encoding)},
-    {ok,[Uni]}.
+    Onlcr = {onlcr, get(onlcr)},
+    Log = {log, get(log)},
+    Terminal = {terminal, get(onlcr)},
+    {reply,[Uni, Onlcr, Log, Terminal]}.
 
 wrap_characters_to_binary(Chars,From,To) ->
-    TrNl = (whereis(user_drv) =/= undefined),
-    Limit = case To of 
-		latin1 ->
-		    255;
-		_Else ->
-		    16#10ffff
-	    end,
+    TrNl = get(onlcr),
+    Limit = case To of
+                latin1 ->
+                    255;
+                _Else ->
+                    16#10ffff
+            end,
     case catch unicode:characters_to_list(Chars, From) of
         L when is_list(L) ->
             unicode:characters_to_binary(

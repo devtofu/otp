@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 1997-2020. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 1997-2025. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,7 +16,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * %CopyrightEnd%
  */
 /* 
@@ -48,8 +50,11 @@
  * thread-safe according to curl - but bizarrely, since AIX 4.3, libc
  * is thread-safe in a manner that makes the normal gethostbyname OK
  * for re-entrant use.
+ *
+ * gethostbyaddr_r was added in Android 6.0 Marshmallow so check if
+ * the build is targeting at least the corresponding API level 23.
  */
-#if defined(_AIX) || defined(__NetBSD__)
+#if defined(_AIX) || defined(__NetBSD__) || (defined(__ANDROID__) && (__ANDROID_API__ < 23))
 #undef HAVE_GETHOSTBYNAME_R
 #endif
 
@@ -73,7 +78,7 @@ int ei_init_resolve(void)
 static ei_mutex_t *ei_gethost_sem = NULL;
 #endif /* _REENTRANT */
 static int ei_resolve_initialized = 0;
-#if !defined(__WIN32__) && !defined(_AIX) && !defined(__NetBSD__)
+#if !defined(__WIN32__) && !defined(_AIX) && !defined(__NetBSD__) && !(defined(__ANDROID__) && (__ANDROID_API__ < 23))
 int h_errno;
 #endif
 
@@ -102,7 +107,7 @@ int ei_init_resolve(void)
   return 0;
 }
 
-#if _REENTRANT
+#ifdef _REENTRANT
 
 /* 
  * Copy the contents of one struct hostent to another, i.e. don't just
@@ -290,10 +295,6 @@ static struct hostent *my_gethostbyname_r(const char *name,
   return rval;
 }
 
-#endif /* _REENTRANT */
-
-#if EI_THREADS != false
-
 static struct hostent *my_gethostbyaddr_r(const char *addr,
 					  int length, 
 					  int type, 
@@ -358,7 +359,7 @@ static struct hostent *my_gethostbyaddr_r(const char *addr,
   return rval;
 }
 
-#endif /*  EI_THREADS != false */
+#endif /* _REENTRANT */
 
 #endif /* !HAVE_GETHOSTBYNAME_R */
 
@@ -394,14 +395,12 @@ struct hostent *ei_gethostbyaddr_r(const char *addr,
 				int buflen, 
 				int *h_errnop)
 {
-#if (EI_THREADS == false)
+#ifndef _REENTRANT
   /* threads disabled, no need to call reentrant function */
-  return gethostbyaddr(addr, length, type); 
-#else
-#ifndef HAVE_GETHOSTBYNAME_R
+  return gethostbyaddr(addr, length, type);
+#elif !defined(HAVE_GETHOSTBYNAME_R)
   return my_gethostbyaddr_r(addr,length,type,hostp,buffer,buflen,h_errnop);
-#else
-#if (defined(__GLIBC__) || defined(__linux__) || (__FreeBSD_version >= 602000) || defined(__DragonFly__))
+#elif (defined(__GLIBC__) || defined(__linux__) || (defined(__FreeBSD_version) && (__FreeBSD_version >= 602000)) || defined(__DragonFly__))
   struct hostent *result;
 
   gethostbyaddr_r(addr, length, type, hostp, buffer, buflen, &result,
@@ -410,8 +409,6 @@ struct hostent *ei_gethostbyaddr_r(const char *addr,
   return result;
 #else
   return gethostbyaddr_r(addr,length,type,hostp,buffer,buflen,h_errnop);
-#endif
-#endif
 #endif
 }
 
@@ -424,11 +421,9 @@ struct hostent *ei_gethostbyname_r(const char *name,
 #ifndef _REENTRANT
   /* threads disabled, no need to call reentrant function */
   return gethostbyname(name);
-#else
-#ifndef HAVE_GETHOSTBYNAME_R
+#elif !defined(HAVE_GETHOSTBYNAME_R)
   return my_gethostbyname_r(name,hostp,buffer,buflen,h_errnop);
-#else
-#if (defined(__GLIBC__) || defined(__linux__) || (__FreeBSD_version >= 602000) || defined(__DragonFly__) || defined(__ANDROID__))
+#elif (defined(__GLIBC__) || defined(__linux__) || (defined(__FreeBSD_version) && (__FreeBSD_version >= 602000)) || defined(__DragonFly__) || defined(__ANDROID__))
   struct hostent *result;
   int err;
 
@@ -439,8 +434,6 @@ struct hostent *ei_gethostbyname_r(const char *name,
   return result;
 #else
   return gethostbyname_r(name,hostp,buffer,buflen,h_errnop);
-#endif
-#endif
 #endif
 }
 

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,10 +22,10 @@
 -module(binary_module_SUITE).
 
 -export([all/0, suite/0,
-	 interesting/1,scope_return/1,random_ref_comp/1,random_ref_sr_comp/1,
+         interesting/1,ac_simd_root_skip/1,scope_return/1,random_ref_comp/1,random_ref_sr_comp/1,
 	 random_ref_fla_comp/1,parts/1, bin_to_list/1, list_to_bin/1,
 	 copy/1, referenced/1,guard/1,encode_decode/1,badargs/1,longest_common_trap/1,
-         check_no_invalid_read_bug/1,error_info/1, hex_encoding/1]).
+         check_no_invalid_read_bug/1,error_info/1, hex_encoding/1, join/1, doctests/1]).
 
 -export([random_number/1, make_unaligned/1]).
 
@@ -34,11 +36,12 @@ suite() ->
      {timetrap,{minutes,10}}].
 
 all() ->
-    [scope_return,interesting, random_ref_fla_comp, random_ref_sr_comp,
+    [scope_return,interesting, ac_simd_root_skip,
+     random_ref_fla_comp, random_ref_sr_comp,
      random_ref_comp, parts, bin_to_list, list_to_bin, copy,
      referenced, guard, encode_decode, badargs,
      longest_common_trap, check_no_invalid_read_bug,
-     error_info, hex_encoding].
+     error_info, hex_encoding, join, doctests].
 
 
 -define(MASK_ERROR(EXPR),mask_error((catch (EXPR)))).
@@ -78,6 +81,15 @@ badargs(Config) when is_list(Config) ->
 	   binary:match(<<1,2,3>>,<<1>>,
 			[{scope,{16#FFFFFFFFFFFFFFFF,
 				 16#7FFFFFFFFFFFFFFF}}])),
+    badarg = ?MASK_ERROR(binary:match(<<>>,foobar)),
+    badarg = ?MASK_ERROR(binary:match(<<"abc">>,foobar,
+                                      [{scope,{0,0}}])),
+    badarg = ?MASK_ERROR(binary:matches(<<>>,foobar)),
+    badarg = ?MASK_ERROR(binary:matches(<<"abc">>,foobar,
+                                        [{scope,{0,0}}])),
+    badarg = ?MASK_ERROR(binary:replace(<<>>,foobar,<<>>)),
+    badarg = ?MASK_ERROR(binary:replace(<<"abc">>,foobar,<<>>,
+                                        [{scope,{0,0}}])),
     badarg =
 	?MASK_ERROR(
 	   binary:part(<<1,2,3>>,{16#FF,
@@ -116,6 +128,11 @@ badargs(Config) when is_list(Config) ->
 	?MASK_ERROR(
 	   binary_part(make_unaligned(<<1,2,3>>),{16#FF,
 						  -16#7FFF})),
+    badarg = ?MASK_ERROR(binary:part(<<1:1>>, id({0,0}))),
+    badarg = ?MASK_ERROR(binary_part(<<1:1>>, id({0,0}))),
+    badarg = ?MASK_ERROR(binary:part(<<1:1>>, id(0), 0)),
+    badarg = ?MASK_ERROR(binary_part(<<1:1>>, id(0), 0)),
+
     badarg =
 	?MASK_ERROR(
 	   binary:bin_to_list(<<1,2,3>>,{16#FF,
@@ -238,11 +255,21 @@ badargs(Config) when is_list(Config) ->
 	?MASK_ERROR(
 	   binary:at([1,2,4],2)),
 
+    badarg = ?MASK_ERROR(binary:split(<<>>,foobar)),
+    badarg = ?MASK_ERROR(binary:split(<<"abc">>,foobar,[{scope,{0,0}}])),
+
     badarg = ?MASK_ERROR(binary:encode_hex("abc")),
     badarg = ?MASK_ERROR(binary:encode_hex(123)),
     badarg = ?MASK_ERROR(binary:encode_hex([])),
     badarg = ?MASK_ERROR(binary:encode_hex(#{})),
     badarg = ?MASK_ERROR(binary:encode_hex(foo)),
+
+    badarg = ?MASK_ERROR(binary:join(<<"">>, ",")),
+    badarg = ?MASK_ERROR(binary:join([""], <<",">>)),
+    badarg = ?MASK_ERROR(binary:join([123], <<",">>)),
+    badarg = ?MASK_ERROR(binary:join(123, <<",">>)),
+    badarg = ?MASK_ERROR(binary:join(#{}, <<",">>)),
+    badarg = ?MASK_ERROR(binary:join(foo, <<",">>)),
     ok.
 
 %% Whitebox test to force special trap conditions in
@@ -356,6 +383,59 @@ scope_loop(Bin,N,M) ->
 interesting(Config) when is_list(Config) ->
     X = do_interesting(binary),
     X = do_interesting(binref).
+
+%% Exercise the SIMD filter used to skip 16-byte subject blocks while an
+%% Aho-Corasick search is at its root by covering lengths of 3 and 9.
+ac_simd_root_skip(Config) when is_list(Config) ->
+    ThreeRoots = binary:compile_pattern([<<Byte>> || Byte <- lists:seq(1, 3)]),
+    {31, 1} = binary:match(<<0:248, 3>>, ThreeRoots),
+
+    NineRoots = binary:compile_pattern([<<Byte>> || Byte <- lists:seq(1, 9)]),
+    {31, 1} = binary:match(<<0:248, 9>>, NineRoots),
+
+    Patterns = [<<Byte>> || Byte <- lists:seq(1, 16)],
+    Compiled = binary:compile_pattern(Patterns),
+    {ac, _} = Compiled,
+
+    nomatch = binary:match(<<0, 0, 0>>, Compiled),
+    {3, 1} = binary:match(<<0, 0, 0, 16>>, Compiled),
+    {31, 1} = binary:match(<<0:248, 16>>, Compiled),
+    {2, 1} = binary:match(<<0, 0, 1, 16>>, Compiled,
+                          [{scope, {2, 2}}]),
+    [{1, 1}, {3, 1}] = binary:matches(<<0, 1, 0, 16>>, Compiled),
+    [{15, 1}, {32, 1}] = binary:matches(<<0:120, 1, 0:128, 2>>,
+                                        Compiled),
+    [<<0>>, <<0, 16>>] = binary:split(<<0, 1, 0, 16>>, Compiled),
+    [<<0>>, <<0>>, <<>>] = binary:split(<<0, 1, 0, 16>>, Compiled,
+                                           [global]),
+
+    Duplicate = binary:compile_pattern([<<7>>, <<7>>, <<9>>]),
+    {1, 1} = binary:match(<<0, 9, 7>>, Duplicate),
+    {ac, _} = binary:compile_pattern([<<7>>, <<7>>]),
+
+    UnalignedPatterns = [make_unaligned2(Pattern) || Pattern <- Patterns],
+    {2, 1} = binary:match(make_unaligned(<<0, 0, 8>>),
+                          binary:compile_pattern(UnalignedPatterns)),
+
+    %% The root filter is also used for ordinary multi-byte AC tries. Match
+    %% selection remains AC's leftmost-longest result after the skipped data.
+    Mixed = binary:compile_pattern([<<"ab">>, <<"abc">>, <<"bc">>]),
+    {32, 3} = binary:match(<<0:256, "abc">>, Mixed),
+    [{16, 3}, {36, 2}] = binary:matches(<<0:128, "abc", 0:136, "bc">>,
+                                         Mixed),
+
+    %% Multiple patterns may share a single unique root transition.
+    SingleRoot = binary:compile_pattern([<<"ab">>, <<"abc">>, <<"ad">>]),
+    {32, 3} = binary:match(<<0:256, "abc">>, SingleRoot),
+    [{16, 3}, {36, 2}] = binary:matches(<<0:128, "abc", 0:136, "ad">>,
+                                         SingleRoot),
+
+    %% More unique root bytes than fit in the SIMD filter continue to use
+    %% the scalar Aho-Corasick search loop.
+    Fallback = binary:compile_pattern([<<Byte>> || Byte <- lists:seq(1, 17)]),
+    {ac, _} = Fallback,
+    {2, 1} = binary:match(<<0, 0, 17>>, Fallback),
+    ok.
 
 do_interesting(Module) ->
     {0,4} = Module:match(<<"123456">>,
@@ -495,26 +575,53 @@ do_interesting(Module) ->
     [] = binary:split(<<>>, <<",">>, [global,trim]),
     [] = binary:split(<<>>, <<",">>, [global,trim_all]),
 
+    %% Assert empty binaries are shared
+    [<<"a">>, <<>> = WS1, WS2, <<"b">>] = binary:split(<<"a,,,b">>, <<",">>, [global]),
+    true = erts_debug:same(WS1, WS2),
+
+    ReplaceFn = fun(Match) -> << <<(B + 1)>> || <<B>> <= Match >> end,
     badarg = ?MASK_ERROR(
 		Module:replace(<<1,2,3,4,5,6,7,8>>,
 			       [<<4,5>>,<<7>>,<<8>>],<<99>>,
 			       [global,trim,{scope,{0,5}}])),
+    badarg = ?MASK_ERROR(
+		Module:replace(<<1,2,3,4,5,6,7,8>>,
+			       [<<4,5>>,<<7>>,<<8>>],ReplaceFn,
+			       [global,trim,{scope,{0,5}}])),
     <<1,2,3,99,6,7,8>> = Module:replace(<<1,2,3,4,5,6,7,8>>,
 					[<<4,5>>,<<7>>,<<8>>],<<99>>,[]),
+    <<1,2,3,5,6,6,7,8>> = Module:replace(<<1,2,3,4,5,6,7,8>>,
+					[<<4,5>>,<<7>>,<<8>>],ReplaceFn,[]),
     <<1,2,3,99,6,99,99>> = Module:replace(<<1,2,3,4,5,6,7,8>>,
 					  [<<4,5>>,<<7>>,<<8>>],<<99>>,
+					  [global]),
+    <<1,2,3,5,6,6,8,9>> = Module:replace(<<1,2,3,4,5,6,7,8>>,
+					  [<<4,5>>,<<7>>,<<8>>],ReplaceFn,
 					  [global]),
     <<1,2,3,99,6,7,8>> = Module:replace(<<1,2,3,4,5,6,7,8>>,
 					[<<4,5>>,<<7>>,<<8>>],<<99>>,
 					[global,{scope,{0,5}}]),
-    <<1,2,3,99,6,7,8>> = Module:replace(<<1,2,3,4,5,6,7,8>>,
-					[<<4,5>>,<<7>>,<<8>>],<<99>>,
+    <<1,2,3,5,6,6,7,8>> = Module:replace(<<1,2,3,4,5,6,7,8>>,
+					[<<4,5>>,<<7>>,<<8>>],ReplaceFn,
 					[global,{scope,{0,5}}]),
     <<1,2,3,99,6,7,8>> = Module:replace(<<1,2,3,4,5,6,7,8>>,
 					[<<4,5>>,<<7>>,<<8>>],<<99>>,
+					[global,{scope,{0,5}}]),
+    <<1,2,3,5,6,6,7,8>> = Module:replace(<<1,2,3,4,5,6,7,8>>,
+					[<<4,5>>,<<7>>,<<8>>],ReplaceFn,
+					[global,{scope,{0,5}}]),
+    <<1,2,3,99,6,7,8>> = Module:replace(<<1,2,3,4,5,6,7,8>>,
+					[<<4,5>>,<<7>>,<<8>>],<<99>>,
+					[global,{scope,{0,5}}]),
+    <<1,2,3,5,6,6,7,8>> = Module:replace(<<1,2,3,4,5,6,7,8>>,
+					[<<4,5>>,<<7>>,<<8>>],ReplaceFn,
 					[global,{scope,{0,5}}]),
     badarg = ?MASK_ERROR(Module:replace(<<1,2,3,4,5,6,7,8>>,
 					[<<4,5>>,<<7>>,<<8>>],<<99>>,
+					[global,{scope,{0,5}},
+					 {insert,1}])),
+    badarg = ?MASK_ERROR(Module:replace(<<1,2,3,4,5,6,7,8>>,
+					[<<4,5>>,<<7>>,<<8>>],ReplaceFn,
 					[global,{scope,{0,5}},
 					 {insert,1}])),
     <<1,2,3,99,4,5,6,7,8>> = Module:replace(<<1,2,3,4,5,6,7,8>>,
@@ -698,12 +805,13 @@ encode_decode_loop(Range, X) ->
     R = binary:decode_unsigned(make_unaligned(PaddedLittle),little),
     S = binref:decode_unsigned(PaddedLittle,little),
     T = binref:decode_unsigned(PaddedBig),
-    case (((A =:= B) and (B =:= C) and (C =:= D)) and
-						    ((E =:= F)) and
-								  ((N =:= G) and (G =:= H) and (H =:= I) and
-													   (I =:= J) and (J =:= K) and (K =:= L) and (L =:= M)) and
-																				  ((M =:= O) and (O =:= P) and (P =:= Q) and (Q =:= R) and
-																											 (R =:= S) and (S =:= T)))of
+
+    CmpFn = fun(Cmp1) -> fun(Cmp2) -> Cmp2 =:= Cmp1 end end,
+    case
+        lists:all(CmpFn(A), [B, C, D]) andalso
+        E =:= F andalso
+        lists:all(CmpFn(G), [H, I, J, K, L, M, N, O, P, Q, R, S, T])
+    of
 	true ->
 	    encode_decode_loop(Range,X-1);
 	_ ->
@@ -765,6 +873,8 @@ copy(Config) when is_list(Config) ->
     true = RS =:= RS2,
     false = erts_debug:same(RS, RS2),
     <<>> = ?MASK_ERROR(binary:copy(<<1,2,3>>,0)),
+    badarg = ?MASK_ERROR(binary:copy(<<1:1>>,0)),
+    badarg = ?MASK_ERROR(binary:copy(<<1,2,3:3>>,0)),
     badarg = ?MASK_ERROR(binary:copy(<<1,2,3:3>>,2)),
     badarg = ?MASK_ERROR(binary:copy([],0)),
     <<>> = ?MASK_ERROR(binary:copy(<<>>,0)),
@@ -1253,7 +1363,7 @@ do_split_comp(N,H,Opts) ->
     A = ?MASK_ERROR(binref:split(H,N,Opts)),
     D = ?MASK_ERROR(binary:split(H,binary:compile_pattern(N),Opts)),
     if
-	(A =/= [N]) and is_list(A) ->
+	A =/= [N] andalso is_list(A) ->
 	    put(success_counter,get(success_counter)+1);
 	true ->
 	    ok
@@ -1301,7 +1411,7 @@ do_replace_comp(N,H,R,Opts) ->
     A = ?MASK_ERROR(binref:replace(H,N,R,Opts)),
     D = ?MASK_ERROR(binary:replace(H,binary:compile_pattern(N),R,Opts)),
     if
-	(A =/= N) and is_binary(A) ->
+	A =/= N andalso is_binary(A) ->
 	    put(success_counter,get(success_counter)+1);
 	true ->
 	    ok
@@ -1357,16 +1467,11 @@ mask_error({'EXIT',{Err,_}}) ->
 mask_error(Else) ->
     Else.
 
-make_unaligned(Bin0) when is_binary(Bin0) ->
-    Bin1 = <<0:3,Bin0/binary,31:5>>,
-    Sz = byte_size(Bin0),
-    <<0:3,Bin:Sz/binary,31:5>> = id(Bin1),
-    Bin.
-make_unaligned2(Bin0) when is_binary(Bin0) ->
-    Bin1 = <<31:5,Bin0/binary,0:3>>,
-    Sz = byte_size(Bin0),
-    <<31:5,Bin:Sz/binary,0:3>> = id(Bin1),
-    Bin.
+make_unaligned(Bin) when is_binary(Bin) ->
+    erts_debug:unaligned_bitstring(Bin, 3).
+
+make_unaligned2(Bin) when is_binary(Bin) ->
+    erts_debug:unaligned_bitstring(Bin, 5).
 
 check_no_invalid_read_bug(Config) when is_list(Config) ->
     check_no_invalid_read_bug(24);
@@ -1411,6 +1516,12 @@ error_info(_Config) ->
 
          {last,[<<1:1>>]},
          {last,[<<>>]},
+
+         {join,[no_list,<<>>]},
+         {join,[[a|b],<<>>]},
+         {join,[[a],<<>>]},
+         {join,[[],<<1:7>>]},
+         {join,[[],bad_separator]},
 
          {list_to_bin,[<<1,2,3>>]},
          {list_to_bin,[{1,2,3}]},
@@ -1462,10 +1573,15 @@ error_info(_Config) ->
          {split, [<<1,2,3>>, {bm,make_ref()}, []]},
          {split, [<<1,2,3>>, <<"2">>, [bad_option]]},
 
-         {encode_hex, [{no,a,binary}]},
-         {decode_hex, [{no,a,binary}]},
-         {decode_hex, [<<"000">>],[allow_rename]},
-         {decode_hex, [<<"GG">>],[allow_rename]}
+         {encode_hex, [{no,binary}]},
+         {encode_hex, [{no,binary}, lowercase]},
+         {encode_hex, [<<"foobar">>, othercase]},
+         {encode_hex, [no_binary, othercase], [{1,".*"}, {2,".*"}]},
+
+         {decode_hex, [{no,binary}]},
+         {decode_hex, [<<"000">>]},
+         {decode_hex, [<<"GG">>]},
+         {decode_hex, [<<255>>]}
         ],
     error_info_lib:test_error_info(binary, L).
 
@@ -1478,6 +1594,23 @@ hex_encoding(Config) when is_list(Config) ->
     <<"666F6F62">> = binary:encode_hex(<<"foob">>),
     <<"666F6F6261">> = binary:encode_hex(<<"fooba">>),
     <<"666F6F626172">> = binary:encode_hex(<<"foobar">>),
+
+
+    <<>> = binary:encode_hex(<<>>, uppercase),
+    <<"66">> = binary:encode_hex(<<"f">>, uppercase),
+    <<"666F">> = binary:encode_hex(<<"fo">>, uppercase),
+    <<"666F6F">> = binary:encode_hex(<<"foo">>, uppercase),
+    <<"666F6F62">> = binary:encode_hex(<<"foob">>, uppercase),
+    <<"666F6F6261">> = binary:encode_hex(<<"fooba">>, uppercase),
+    <<"666F6F626172">> = binary:encode_hex(<<"foobar">>, uppercase),
+
+    <<>> = binary:encode_hex(<<>>, lowercase),
+    <<"66">> = binary:encode_hex(<<"f">>, lowercase),
+    <<"666f">> = binary:encode_hex(<<"fo">>, lowercase),
+    <<"666f6f">> = binary:encode_hex(<<"foo">>, lowercase),
+    <<"666f6f62">> = binary:encode_hex(<<"foob">>, lowercase),
+    <<"666f6f6261">> = binary:encode_hex(<<"fooba">>, lowercase),
+    <<"666f6f626172">> = binary:encode_hex(<<"foobar">>, lowercase),
 
     <<>> = binary:decode_hex(<<>>),
     <<"f">> = binary:decode_hex(<<"66">>),
@@ -1494,7 +1627,37 @@ hex_encoding(Config) when is_list(Config) ->
     <<"foobar">> = binary:decode_hex(<<"666f6f626172">>),
 
     <<"foobar">> = binary:decode_hex(<<"666f6F626172">>),
+
+    rand:seed(default),
+    io:format("*** SEED: ~p ***\n", [rand:export_seed()]),
+    Bytes = iolist_to_binary([rand:bytes(256), lists:seq(0, 255)]),
+    do_hex_roundtrip(Bytes),
+
     ok.
+
+do_hex_roundtrip(Bytes) ->
+    UpperHex = binary:encode_hex(Bytes),
+    UpperHex = binary:encode_hex(Bytes, uppercase),
+    LowerHex = binary:encode_hex(Bytes, lowercase),
+
+    Bytes = binary:decode_hex(UpperHex),
+    Bytes = binary:decode_hex(LowerHex),
+
+    case Bytes of
+        <<_, Rest/binary>> ->
+            do_hex_roundtrip(Rest);
+        <<>> ->
+            ok
+    end.
+
+join(Config) when is_list(Config) ->
+    ~"a, b, c" = binary:join([~"a", ~"b", ~"c"], ~", "),
+    ~"a" = binary:join([~"a"], ~", "),
+    ~"" = binary:join([], ~", ").
+
+doctests(_Config) ->
+    ct_doctest:module(binary, [{skipped_blocks, 1},
+                                {missing_tests, [{list_to_bin, 1}]}]).
 
 %%%
 %%% Utilities.

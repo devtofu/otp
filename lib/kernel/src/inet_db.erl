@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2021. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,6 +21,10 @@
 %%
 
 -module(inet_db).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {file, consult, 1}},
+          {nowarn_possibly_unsafe_function, {erlang, binary_to_term, 1}}]).
 
 %% Store info about ip addresses, names, aliases host files resolver
 %% options.
@@ -47,7 +53,7 @@
 -export([set_cache_size/1, set_cache_refresh/1]).
 -export([set_timeout/1, set_retry/1, set_servfail_retry_timeout/1,
          set_inet6/1, set_usevc/1]).
--export([set_edns/1, set_udp_payload_size/1]).
+-export([set_edns/1, set_udp_payload_size/1, set_dnssec_ok/1]).
 -export([set_resolv_conf/1, set_hosts_file/1, get_hosts_file/0]).
 -export([tcp_module/0, set_tcp_module/1]).
 -export([udp_module/0, set_udp_module/1]).
@@ -67,11 +73,11 @@
 -export([res_option/1, res_option/2, res_check_option/2]).
 -export([socks_option/1]).
 -export([getbyname/2, get_searchlist/0]).
--export([gethostbyaddr/1]).
--export([res_gethostbyaddr/2,res_hostent_by_domain/3]).
+-export([gethostbyaddr/2]).
+-export([res_gethostbyaddr/3,res_hostent_by_domain/3]).
 -export([res_update_conf/0, res_update_hosts/0]).
 %% inet help functions
--export([tolower/1]).
+-export([tolower/1, eq_domains/2]).
 -ifdef(DEBUG).
 -define(dbg(Fmt, Args), io:format(Fmt, Args)).
 -else.
@@ -227,6 +233,8 @@ set_edns(Version) -> res_option(edns, Version).
 
 set_udp_payload_size(Size) -> res_option(udp_payload_size, Size).
 
+set_dnssec_ok(DnssecOk) -> res_option(dnssec_ok, DnssecOk).
+
 set_resolv_conf(Fname) when is_list(Fname) ->
     res_option(resolv_conf, Fname).
 
@@ -278,13 +286,12 @@ add_rc(File) ->
 	Error -> Error
     end.
 
-%% Add an inetrc binary term must be a rc list
+%% Add an inetrc binary term that must be an rc list
 add_rc_bin(Bin) ->
-    case catch binary_to_term(Bin) of
-	List when is_list(List) ->
-	    add_rc_list(List);
-	_ ->
-	    {error, badarg}
+    try binary_to_term(Bin) of
+        List when is_list(List)     -> add_rc_list(List);
+        _                           -> {error, badarg}
+    catch error : _                 -> {error, badarg}
     end.
 
 add_rc_list(List) -> call({add_rc_list, List}).
@@ -308,11 +315,11 @@ translate_lookup([]) -> [].
 valid_lookup() -> [dns, file, yp, nis, nisplus, native].
     
 
-%% Reconstruct an inetrc sturcture from inet_db
+%% Reconstruct an inetrc structure from inet_db
 get_rc() -> 
     get_rc([hosts, domain, nameservers, search, alt_nameservers,
-	    timeout, retry, servfail_retry_timeout, inet6, usevc,
-	    edns, udp_payload_size, resolv_conf, hosts_file,
+	    timeout, retry, servfail_retry_timeout, inet6, usevc, random,
+	    edns, udp_payload_size, dnssec_ok, resolv_conf, hosts_file,
 	    socks5_server,  socks5_port, socks5_methods, socks5_noproxy,
 	    udp, sctp, tcp, host, cache_size, cache_refresh, lookup], []).
 
@@ -353,6 +360,10 @@ get_rc([K | Ks], Ls) ->
                                          res_usevc,
                                          false,
                                          Ks, Ls);
+	random                 -> get_rc(random,
+                                         res_random,
+                                         true,
+                                         Ks, Ls);
 	edns                   -> get_rc(edns,
                                          res_edns,
                                          false,
@@ -360,6 +371,10 @@ get_rc([K | Ks], Ls) ->
 	udp_payload_size       -> get_rc(udp_payload_size,
                                          res_udp_payload_size,
                                          ?DNS_UDP_PAYLOAD_SIZE,
+                                         Ks, Ls);
+	dnssec_ok              -> get_rc(dnssec_ok,
+                                         res_dnssec_ok,
+                                         false,
                                          Ks, Ls);
 	resolv_conf            -> get_rc(resolv_conf,
                                          res_resolv_conf,
@@ -440,18 +455,15 @@ get_rc_hosts([], Ls) ->
 get_rc_hosts([{{_Fam, IP}, Names} | Hosts], Ls) ->
     get_rc_hosts(Hosts, [{host, IP, Names} | Ls]).
 
+%% Some odd features stuffed into this API
+%%
+res_option(next_id) ->
+    generate_next_id();
+res_option(random_port) ->
+    generate_random_port();
 %%
 %% Resolver options
 %%
-res_option(next_id)        ->
-    Cnt = ets:update_counter(inet_db, res_id, 1),
-    case Cnt band 16#ffff of
-	0 ->
-	    ets:update_counter(inet_db, res_id, -Cnt),
-	    0;
-	Id ->
-	    Id
-    end;
 res_option(Option) ->
     case res_optname(Option) of
 	undefined ->
@@ -481,8 +493,10 @@ res_optname(servfail_retry_timeout) -> res_servfail_retry_timeout;
 res_optname(timeout) -> res_timeout;
 res_optname(inet6) -> res_inet6;
 res_optname(usevc) -> res_usevc;
+res_optname(random) -> res_random;
 res_optname(edns) -> res_edns;
 res_optname(udp_payload_size) -> res_udp_payload_size;
+res_optname(dnssec_ok) -> res_dnssec_ok;
 res_optname(resolv_conf) -> res_resolv_conf;
 res_optname(resolv_conf_name) -> res_resolv_conf;
 res_optname(hosts_file) -> res_hosts_file;
@@ -515,8 +529,10 @@ res_check_option(servfail_retry_timeout, T) when is_integer(T), T >= 0 -> true;
 res_check_option(timeout, T) when is_integer(T), T > 0 -> true;
 res_check_option(inet6, Bool) when is_boolean(Bool) -> true;
 res_check_option(usevc, Bool) when is_boolean(Bool) -> true;
+res_check_option(random, Bool) when is_boolean(Bool) -> true;
 res_check_option(edns, V) when V =:= false; V =:= 0 -> true;
 res_check_option(udp_payload_size, S) when is_integer(S), S >= 512 -> true;
+res_check_option(dnssec_ok, D) when is_boolean(D) -> true;
 res_check_option(resolv_conf, "") -> true;
 res_check_option(resolv_conf, F) ->
     res_check_option_absfile(F);
@@ -550,7 +566,6 @@ res_check_ns({{A,B,C,D}, Port})
   when ?ip(A,B,C,D), Port band 65535 =:= Port -> true;
 res_check_ns(_) -> false.
 
-res_check_search("") -> true;
 res_check_search(Dom) -> inet_parse:visible_string(Dom).
 
 socks_option(server)  -> db_get(socks5_server);
@@ -579,24 +594,43 @@ res_update(Option, TagTm) ->
     end.
 
 db_get(Name) ->
-    try ets:lookup_element(inet_db, Name, 2)
-    catch error:badarg -> undefined
+    try
+        ets:lookup_element(inet_db, Name, 2, undefined)
+    catch
+        %% Case where the table does not exist yet.
+        error:badarg -> undefined
     end.
 
 add_rr(RR) ->
-    call({add_rr, RR}).
+    %% Questionable if we need to support this;
+    %% not used by OTP
+    %%
+    res_cache_answer([RR]).
 
 add_rr(Domain, Class, Type, TTL, Data) ->
-    call({add_rr, dns_rr_add(Domain, Class, Type, TTL, Data)}).
+    %% Only used from a test suite within OTP,
+    %% can be optimized to create the whole record inline
+    %% and call {add_rrs, [RR]} directly
+    RR =
+        #dns_rr{
+           domain = Domain, class = Class, type = Type,
+           ttl = TTL, data = Data},
+    res_cache_answer([RR]).
 
 del_rr(Domain, Class, Type, Data) ->
-    call({del_rr, dns_rr_match(Domain, Class, Type, Data)}).
+    call({del_rr, dns_rr_match(tolower(Domain), Class, Type, Data)}).
 
-res_cache_answer(Rec) ->
-    lists:foreach( fun(RR) -> add_rr(RR) end, Rec#dns_rec.anlist).
 
-    
-
+res_cache_answer(RRs) ->
+    TM = times(),
+    call(
+      {add_rrs,
+       [RR#dns_rr{
+          bm = tolower(RR#dns_rr.domain), tm = TM, cnt = TM}
+        || #dns_rr{ttl = TTL} = RR <- RRs,
+           %% Do not cache TTL 0 entries - they are only used
+           %% to resolve the current lookup
+           0 < TTL]}).
 
 %%
 %% getbyname (cache version)
@@ -607,15 +641,23 @@ res_cache_answer(Rec) ->
 getbyname(Name, Type) ->
     {EmbeddedDots, TrailingDot} = inet_parse:dots(Name),
     Dot = if TrailingDot -> ""; true -> "." end,
-    if  TrailingDot ->
+    if
+        TrailingDot ->
 	    hostent_by_domain(Name, Type);
 	EmbeddedDots =:= 0 ->
-	    getbysearch(Name, Dot, get_searchlist(), Type, {error,nxdomain});
+            case
+                getbysearch(
+                  Name, Dot, get_searchlist(), Type, {error,nxdomain})
+            of
+                {error,_} ->
+                    hostent_by_domain(Name, Type);
+                Other1 -> Other1
+            end;
 	true ->
 	    case hostent_by_domain(Name, Type) of
 		{error,_}=Error ->
 		    getbysearch(Name, Dot, get_searchlist(), Type, Error);
-		Other -> Other
+		Other2 -> Other2
 	    end
     end.
 
@@ -637,6 +679,34 @@ get_searchlist() ->
 	L -> L
     end.
 
+
+%%
+%% hostent_by_domain (cache version)
+%%
+hostent_by_domain(Domain, Type) ->
+    ?dbg("hostent_by_domain: ~p~n", [Domain]),
+    case resolve_cnames(stripdot(Domain), Type, fun lookup_cache_data/2) of
+        {error, _} = Error ->
+            Error;
+        {D, Addrs, Aliases} ->
+            {ok, make_hostent(D, Addrs, Aliases, Type)}
+    end.
+
+%%
+%% hostent_by_domain (newly resolved version)
+%% match data field directly and cache RRs.
+%%
+res_hostent_by_domain(Domain, Type, Rec) ->
+    RRs = res_filter_rrs(Type, Rec#dns_rec.anlist),
+    ?dbg("res_hostent_by_domain: ~p - ~p~n", [Domain, RRs]),
+    LookupFun = res_lookup_fun(RRs),
+    case resolve_cnames(stripdot(Domain), Type, LookupFun) of
+        {error, _} = Error ->
+            Error;
+        {D, Addrs, Aliases} ->
+            res_cache_answer(RRs),
+            {ok, make_hostent(D, Addrs, Aliases, Type)}
+    end.
 
 make_hostent(Name, Addrs, Aliases, ?S_A) ->
     #hostent {
@@ -664,149 +734,114 @@ make_hostent(Name, Datas, Aliases, Type) ->
 	      h_aliases = Aliases
 	     }.
 
-hostent_by_domain(Domain, Type) ->
-    ?dbg("hostent_by_domain: ~p~n", [Domain]),
-    hostent_by_domain(stripdot(Domain), [], [], Type).
 
-hostent_by_domain(Domain, Aliases, LAliases, Type) ->
-    case lookup_type(Domain, Type) of
-	[] ->
-	    case lookup_cname(Domain) of
-		[] ->  
-		    {error, nxdomain};
-		[CName | _] ->
-		    LDomain = tolower(Domain),
-		    case lists:member(CName, [LDomain | LAliases]) of
-                        true -> 
-			    {error, nxdomain};
+
+res_filter_rrs(Type, RRs) ->
+    [RR#dns_rr{bm = tolower(N)} ||
+        #dns_rr{
+           domain = N,
+           class = in,
+           type = T} = RR <- RRs,
+        T =:= Type orelse T =:= ?S_CNAME].
+
+res_lookup_fun(RRs) ->
+    fun (LcDomain, Type) ->
+            [Data
+             || #dns_rr{bm = LcD, type = T, data = Data}
+                    <- RRs,
+                LcD =:= LcDomain,
+                T   =:= Type]
+    end.
+
+
+resolve_cnames(Domain, Type, LookupFun) ->
+    resolve_cnames(Domain, Type, LookupFun, tolower(Domain), [], []).
+
+resolve_cnames(Domain, Type, LookupFun, LcDomain, Aliases, LcAliases) ->
+    case LookupFun(LcDomain, Type) of
+        [] ->
+            case LookupFun(LcDomain, ?S_CNAME) of
+                [] ->
+                    %% Did not find neither Type nor CNAME record
+                    {error, nxdomain};
+                [CName] ->
+                    LcCname = tolower(CName),
+                    case lists:member(LcCname, [LcDomain | LcAliases]) of
+                        true ->
+                            %% CNAME loop
+                            {error, nxdomain};
                         false ->
-			    hostent_by_domain(CName, [Domain | Aliases],
-					      [LDomain | LAliases], Type)
-		    end
-	    end;
-	Addrs ->
-	    {ok, make_hostent(Domain, Addrs, Aliases, Type)}
+                            %% Repeat with the (more) canonical domain name
+                            resolve_cnames(
+                              CName, Type, LookupFun, LcCname,
+                              [Domain | Aliases], [LcDomain | LcAliases])
+                    end;
+                [_ | _] = _CNames ->
+                    ?dbg("resolve_cnames duplicate cnames=~p~n", [_CNames]),
+                    {error, nxdomain}
+            end;
+        [_ | _] = Results ->
+            {Domain, Results, Aliases}
     end.
 
-%% lookup address record
-lookup_type(Domain, Type) ->
-    [R#dns_rr.data || R <- lookup_rr(Domain, in, Type) ].
-
-%% lookup canonical name
-lookup_cname(Domain) ->
-    [R#dns_rr.data || R <- lookup_rr(Domain, in, ?S_CNAME) ].
-
-lookup_cname(Domain, Type) ->
-    case Type of
-     a -> [];
-     aaaa -> [];
-     cname -> lookup_cname(Domain);
-     _ -> []
-    end.
-
-
-%% lookup resource record
-lookup_rr(Domain, Class, Type) ->
-    match_rr(dns_rr_match(tolower(Domain), Class, Type)).
-
-%%
-%% hostent_by_domain (newly resolved version)
-%% match data field directly and cache RRs.
-%%
-res_hostent_by_domain(Domain, Type, Rec) ->
-    RRs = lists:map(fun lower_rr/1, Rec#dns_rec.anlist),
-    res_cache_answer(Rec#dns_rec{anlist = RRs}),
-    ?dbg("res_hostent_by_domain: ~p - ~p~n", [Domain, RRs]),
-    res_hostent_by_domain(stripdot(Domain), [], [], Type, RRs).
-
-res_hostent_by_domain(Domain, Aliases, LAliases, Type, RRs) ->
-    LDomain = tolower(Domain),
-    case res_lookup_type(LDomain, Type, RRs) of
-	[] ->
-	    case res_lookup_type(LDomain, ?S_CNAME, RRs) of
-		[] ->  
-		    {error, nxdomain};
-		[CName | _] ->
-		    case lists:member(tolower(CName), [LDomain | LAliases]) of
-			true -> 
-			    {error, nxdomain};
-			false ->
-			    res_hostent_by_domain(CName, [Domain | Aliases],
-						  [LDomain | LAliases], Type,
-						  RRs)
-		    end
-	    end;
-	Addrs ->
-	    {ok, make_hostent(Domain, Addrs, Aliases, Type)}
-    end.
-
-%% newly resolved lookup address record
-res_lookup_type(Domain,Type,RRs) ->
-    [R#dns_rr.data || R <- RRs,
-		      R#dns_rr.domain =:= Domain,
-		      R#dns_rr.type =:= Type].
 
 %%
 %% gethostbyaddr (cache version)
 %% match data field directly
 %%
-gethostbyaddr(IP) ->
-    case dnip(IP) of
-	{ok, {IP1, HType, HLen, DnIP}} ->
-            RRs = match_rr(dns_rr_match(DnIP, in, ptr)),
-	    ent_gethostbyaddr(RRs,  IP1, HType, HLen);
-	Error -> Error
+gethostbyaddr(Domain, IP) ->
+    ?dbg("gethostbyaddr: ~p~n", [IP]),
+    case resolve_cnames(Domain, ?S_PTR, fun lookup_cache_data/2) of
+        {error, _} = Error ->
+            Error;
+        {_D, Domains, _Aliases} ->
+            ent_gethostbyaddr(Domains, IP)
     end.
 
 %%
 %% res_gethostbyaddr (newly resolved version)
 %% match data field directly and cache RRs.
 %%
-res_gethostbyaddr(IP, Rec) ->
-    {ok, {IP1, HType, HLen}} = dnt(IP),
-    RRs = lists:map(fun lower_rr/1, Rec#dns_rec.anlist),
-    res_cache_answer(Rec#dns_rec{anlist = RRs}),
-    ent_gethostbyaddr(Rec#dns_rec.anlist, IP1, HType, HLen).
-
-ent_gethostbyaddr(RRs, IP, AddrType, Length) ->
-    case RRs of
-	[] -> {error, nxdomain};
-	[RR|TR] ->
-	    %% debug
-	    if TR =/= [] ->
-		    ?dbg("gethostbyaddr found extra=~p~n", [TR]);
-	       true -> ok
-	    end,
-            Type = RR#dns_rr.type,
-	    Domain = RR#dns_rr.data,
-	    H = #hostent { h_name = Domain,
-			   h_aliases = lookup_cname(Domain, Type),
-			   h_addr_list = [IP],
-			   h_addrtype = AddrType,
-			   h_length = Length },
-	    {ok, H}
+res_gethostbyaddr(Domain, IP, Rec) ->
+    RRs = res_filter_rrs(?S_PTR, Rec#dns_rec.anlist),
+    ?dbg("res_gethostbyaddr: ~p - ~p~n", [IP, RRs]),
+    LookupFun = res_lookup_fun(RRs),
+    case resolve_cnames(Domain, ?S_PTR, LookupFun) of
+        {error, _} = Error ->
+            Error;
+        {_D, Domains, _Aliases} ->
+            case ent_gethostbyaddr(Domains, IP) of
+                {ok, _HEnt} = Result ->
+                    res_cache_answer(RRs),
+                    Result;
+                {error, _} = Error ->
+                    Error
+            end
     end.
 
-dnip(IP) ->
-    case dnt(IP) of
-	{ok,{IP1 = {A,B,C,D}, inet, HLen}} ->
-	    {ok,{IP1, inet, HLen, dn_in_addr_arpa(A,B,C,D)}};
-	{ok,{IP1 = {A,B,C,D,E,F,G,H}, inet6, HLen}} ->
-	    {ok,{IP1, inet6, HLen, dn_ip6_int(A,B,C,D,E,F,G,H)}};
-	_ ->
-	    {error, formerr}
-    end.
+ent_gethostbyaddr([Domain], IP) ->
+    HEnt =
+        if
+            tuple_size(IP) =:= 4 ->
+                #hostent{
+                   h_name = Domain,
+                   h_aliases = [],
+                   h_addr_list = [IP],
+                   h_addrtype = inet,
+                   h_length = 4};
+            tuple_size(IP) =:= 8 ->
+                #hostent{
+                   h_name = Domain,
+                   h_aliases = [],
+                   h_addr_list = [IP],
+                   h_addrtype = inet6,
+                   h_length = 16}
+        end,
+    {ok, HEnt};
+ent_gethostbyaddr([_ | _] = _Domains, _IP) ->
+    ?dbg("gethostbyaddr duplicate domains=~p~n", [_Domains]),
+    {error, nxdomain}.
 
-
-dnt(IP = {A,B,C,D}) when ?ip(A,B,C,D) ->
-    {ok, {IP, inet, 4}};
-dnt({0,0,0,0,0,16#ffff,G,H}) when is_integer(G+H) ->
-    A = G div 256, B = G rem 256, C = H div 256, D = H rem 256,
-    {ok, {{A,B,C,D}, inet, 4}};
-dnt(IP = {A,B,C,D,E,F,G,H}) when ?ip6(A,B,C,D,E,F,G,H) ->
-    {ok, {IP, inet6, 16}};
-dnt(_) ->
-    {error, formerr}.
 
 %%
 %% Register socket Modules
@@ -860,15 +895,16 @@ take_socket_type(MRef) ->
 %% res_search     [Domain]        - list of domains for short names
 %% res_domain     Domain          - local domain for short names
 %% res_recurse    Bool            - recursive query 
-%% res_usevc      Bool            - use tcp only
 %% res_id         Integer         - NS query identifier
 %% res_retry      Integer         - Retry count for UDP query
 %% res_servfail_retry_timeout Integer - Timeout to next query after a failure
 %% res_timeout    Integer         - UDP query timeout before retry
 %% res_inet6      Bool            - address family inet6 for gethostbyname/1
 %% res_usevc      Bool            - use Virtual Circuit (TCP)
+%% res_random     Bool            - use random res_id and port number
 %% res_edns       false|Integer   - false or EDNS version
 %% res_udp_payload_size Integer   - size for EDNS, both query and reply
+%% res_dnssec_ok  Bool            - the DO bit in RFC6891 & RFC3225
 %% res_resolv_conf Filename       - file to watch for resolver config i.e
 %%                                  {res_ns, res_search}
 %% res_hosts_file Filename        - file to watch for hosts config
@@ -890,7 +926,7 @@ take_socket_type(MRef) ->
 %% --------------------
 %% {node_auth,N}  Ls              - List of authentication for node N
 %% {node_crypt,N} Ls              - List of encryption methods for node N
-%% node_auth      Ls              - Default authenication
+%% node_auth      Ls              - Default authentication
 %% node_crypt     Ls              - Default encryption
 %%
 %% Socket type (used for socket monitors)
@@ -911,7 +947,7 @@ init([]) ->
     end,
     Db = ets:new(inet_db, [public, named_table]),
     reset_db(Db),
-    CacheOpts = [public, bag, {keypos,#dns_rr.domain}, named_table],
+    CacheOpts = [public, bag, {keypos,#dns_rr.bm}, named_table],
     Cache = ets:new(inet_cache, CacheOpts),
     HostsByname = ets:new(inet_hosts_byname, [named_table]),
     HostsByaddr = ets:new(inet_hosts_byaddr, [named_table]),
@@ -939,6 +975,7 @@ reset_db(Db) ->
        {res_lookup, []},
        {res_recurse, true},
        {res_usevc, false},
+       {res_random, true},
        {res_id, 0},
        {res_retry, ?RES_RETRY},
        {res_servfail_retry_timeout, ?RES_SERVFAIL_RETRY_TO},
@@ -946,6 +983,7 @@ reset_db(Db) ->
        {res_inet6, false},
        {res_edns, false},
        {res_udp_payload_size, ?DNS_UDP_PAYLOAD_SIZE},
+       {res_dnssec_ok, false},
        {cache_size, ?CACHE_LIMIT},
        {cache_refresh_interval,?CACHE_REFRESH},
        {socks5_server, ""},
@@ -999,10 +1037,9 @@ handle_call(Request, From, #state{db=Db}=State) ->
 			IP),
 	    {reply, ok, State};
 
-	{add_rr, RR} when is_record(RR, dns_rr) ->
-	    ?dbg("add_rr: ~p~n", [RR]),
-	    do_add_rr(RR, Db, State),
-	    {reply, ok, State};
+	{add_rrs, RRs} ->
+	    ?dbg("add_rrs: ~p~n", [RRs]),
+	    {reply, do_add_rrs(RRs, Db, State#state.cache), State};
 
 	{del_rr, RR} when is_record(RR, dns_rr) ->
 	    Cache = State#state.cache,
@@ -1036,7 +1073,7 @@ handle_call(Request, From, #state{db=Db}=State) ->
 	    end;
 
 	{set_hostname, Name} ->
-	    case inet_parse:visible_string(Name) of
+	    case inet_parse:visible_string(Name) andalso Name =/= "" of
 		true ->
 		    ets:insert(Db, {hostname, Name}),
 		    {reply, ok, State};
@@ -1197,7 +1234,7 @@ handle_call(Request, From, #state{db=Db}=State) ->
 	    Reply = handle_put_socket_type(State#state.sockets, MRef, Type),
 	    {reply, Reply, State};
 
-	%% Take (in the 'maps' sence of the word) the socket type of
+	%% Take (in the 'maps' sense of the word) the socket type of
 	%% this socket monitor (reference).
 	{take_socket_type, MRef} ->
 	    Reply = handle_take_socket_type(State#state.sockets, MRef),
@@ -1325,8 +1362,8 @@ handle_update_file(
             %% File updated - read content
             ets:insert(Db, {TagInfo, Finfo_1}),
             Bin =
-                case erl_prim_loader:get_file(File) of
-                    {ok, B, _} -> B;
+                case erl_prim_loader:read_file(File) of
+                    {ok, B} -> B;
                     _ -> <<>>
                 end,
             handle_set_file(ParseFun, File, Bin, From, State);
@@ -1628,8 +1665,10 @@ is_res_set(servfail_retry_timeout) -> true;
 is_res_set(retry) -> true;
 is_res_set(inet6) -> true;
 is_res_set(usevc) -> true;
+is_res_set(random) -> true;
 is_res_set(edns) -> true;
 is_res_set(udp_payload_size) -> true;
+is_res_set(dnssec_ok) -> true;
 is_res_set(resolv_conf) -> true;
 is_res_set(hosts_file) -> true;
 is_res_set(_) -> false.
@@ -1646,35 +1685,37 @@ is_reqname(_) -> false.
 %% #dns_rr.cnt is used to store the access time
 %% instead of number of accesses.
 %%
-do_add_rr(RR, Db, State) ->
-    CacheDb = State#state.cache,
-    TM = times(),
-    case alloc_entry(Db, CacheDb, TM) of
+do_add_rrs([], _Db, _CacheDb) ->
+    ok;
+do_add_rrs([RR | RRs], Db, CacheDb) ->
+    Size = ets:lookup_element(Db, cache_size, 2),
+    case alloc_entry(CacheDb, #dns_rr.tm, Size) of
 	true ->
             %% Add to cache
+            %%
             #dns_rr{
-               domain = Domain, class = Class, type = Type,
+               bm = LcDomain, class = Class, type = Type,
                data = Data} = RR,
             DeleteRRs =
                 ets:match_object(
-                  CacheDb, dns_rr_match(Domain, Class, Type, Data)),
-            InsertRR = RR#dns_rr{tm = TM, cnt = TM},
+                  CacheDb, dns_rr_match(LcDomain, Class, Type, Data)),
             %% Insert before delete to always have an RR present.
             %% Watch out to not delete what we insert.
-            case lists:member(InsertRR, DeleteRRs) of
+            case lists:member(RR, DeleteRRs) of
                 true ->
                     _ = [ets:delete_object(CacheDb, DelRR) ||
                             DelRR <- DeleteRRs,
-                            DelRR =/= InsertRR],
-                    true;
+                            DelRR =/= RR],
+                    ok;
                 false ->
-                    ets:insert(CacheDb, InsertRR),
+                    ets:insert(CacheDb, RR),
                     _ = [ets:delete_object(CacheDb, DelRR) ||
                             DelRR <- DeleteRRs],
-                    true
-            end;
+                    ok
+            end,
+            do_add_rrs(RRs, Db, CacheDb);
 	false ->
-	    false
+	    ok
     end.
 
 
@@ -1698,91 +1739,104 @@ dns_rr_match_cnt(Cnt) ->
        domain = '_', class = '_', type = '_', data = '_',
        cnt = Cnt, tm = '_', ttl = '_', bm = '_', func = '_'}.
 %%
-dns_rr_match(Domain, Class, Type) ->
+dns_rr_match(LcDomain, Class, Type) ->
     #dns_rr{
-       domain = Domain, class = Class, type = Type, data = '_',
-       cnt = '_', tm = '_', ttl = '_', bm = '_', func = '_'}.
+       domain = '_', class = Class, type = Type, data = '_',
+       cnt = '_', tm = '_', ttl = '_', bm = LcDomain, func = '_'}.
 %%
-dns_rr_match(Domain, Class, Type, Data) ->
+dns_rr_match(LcDomain, Class, Type, Data) ->
     #dns_rr{
-       domain = Domain, class = Class, type = Type, data = Data,
-       cnt = '_', tm = '_', ttl = '_', bm = '_', func = '_'}.
+       domain = '_', class = Class, type = Type, data = Data,
+       cnt = '_', tm = '_', ttl = '_', bm = LcDomain, func = '_'}.
 
-%% RR creation
--compile({inline, [dns_rr_add/5]}).
-%%
-dns_rr_add(Domain, Class, Type, TTL, Data) ->
-    #dns_rr{
-       domain = Domain, class = Class, type = Type,
-       ttl = TTL, data = Data}.
 
+lookup_cache_data(LcDomain, Type) ->
+    [Data
+     || #dns_rr{data = Data}
+            <- match_rr(dns_rr_match(LcDomain, in, Type))].
 
 %% We are simultaneously updating the table from all clients
-%% and the server, so we might get duplicate recource records
+%% and the server, so we might get duplicate resource records
 %% in the table, i.e identical domain, class, type and data.
 %% We embrace that and eliminate duplicates here.
 %%
-%% Look up all matching objects.  The still valid ones
-%% should be returned, and updated with a new cnt time.
-%% All expired ones should be deleted.  We count TTL 0
-%% RRs as valid but immediately expired.
+%% Look up all matching objects.
+%% The still valid ones should be returned and updated
+%% in the ETS table with a new access time (#dns_rr.cnt).
+%% All expired ones should be deleted from the ETS table.
 %%
 match_rr(MatchRR) ->
     CacheDb = inet_cache,
     RRs = ets:match_object(CacheDb, MatchRR),
-    match_rr(CacheDb, RRs, times(), #{}, #{}, []).
+    match_rr(CacheDb, RRs, times(), [], []).
 %%
-match_rr(CacheDb, [], _Time, ResultRRs, InsertRRs, DeleteRRs) ->
-    %% We insert first so an RR always is present,
-    %% which may create duplicates
-    _ = [ets:insert(CacheDb, RR) || RR <- maps:values(InsertRRs)],
-    _ = [ets:delete_object(CacheDb, RR) || RR <- DeleteRRs],
-    maps:values(ResultRRs);
-match_rr(CacheDb, [RR | RRs], Time, ResultRRs, InsertRRs, DeleteRRs) ->
+match_rr(CacheDb, [], Time, KeepRRs, DeleteRRs) ->
     %%
-    #dns_rr{ttl = TTL, tm = TM, cnt = Cnt} = RR,
+    %% Keep the first duplicate RR in KeepRRs (reversed)
+    %% that is; the last in RRs
+    ResultRRs = match_rr_dedup(KeepRRs),
+    %%
+    %% We insert before delete so an RR always is present,
+    %% which may create duplicates
+    _ = [ets:insert(CacheDb, RR#dns_rr{cnt = Time})
+         || RR <- ResultRRs,
+            %%
+            %% Insert only if access time changes
+            RR#dns_rr.cnt < Time],
+    _ = [ets:delete_object(CacheDb, RR) || RR <- DeleteRRs],
+    ResultRRs;
+%%
+%% Updating the access time (#dns_rr.cnt) is done by first inserting
+%% an updated RR and then deleting the old, both done above.
+%%
+%% This does not work if the access time for the inserted record
+%% is the same as for the deleted record because then both records
+%% are identical and we end up with the record being deleted
+%% instead of updated.
+%%
+%% When the access time is unchanged, within the time granularity,
+%% the RR should not be updated so it is not put on the delete list
+%% (below) and not re-inserted (above).  Both parts of this
+%% split operation has to use the same condition; RR#dns_rr.cnt < Time,
+%% for this to work.
+%%
+match_rr(CacheDb, [RR | RRs], Time, KeepRRs, DeleteRRs) ->
+    %%
+    #dns_rr{ttl = TTL, tm = TM} = RR,
     if
-        TTL =:= 0 ->
-            %% Valid, immediately expired; return and delete
-            Key = match_rr_key(RR),
-            match_rr(
-              CacheDb, RRs, Time,
-              ResultRRs#{Key => RR}, InsertRRs, [RR | DeleteRRs]);
         TM + TTL < Time ->
-            %% Expired, delete
-            match_rr(
-              CacheDb, RRs, Time,
-              ResultRRs, InsertRRs, [RR | DeleteRRs]);
-        Time =< Cnt ->
-            %% Valid and just updated, return and do not update
-            Key = match_rr_key(RR),
-            match_rr(
-              CacheDb, RRs, Time,
-              ResultRRs#{Key => RR}, InsertRRs, DeleteRRs);
+            %% Expired
+            match_rr(CacheDb, RRs, Time, KeepRRs, [RR | DeleteRRs]);
+        RR#dns_rr.cnt < Time -> % Delete only if access time changes
+            %% Not expired
+            match_rr(CacheDb, RRs, Time, [RR | KeepRRs], [RR | DeleteRRs]);
+        true -> % Cnt == Time since Time is monotonically increasing
+            %% Not expired
+            match_rr(CacheDb, RRs, Time, [RR | KeepRRs], DeleteRRs)
+    end.
+
+%% Remove all duplicate RRs (according to match_rr_key/1)
+%% - keep the first, return reversed list
+%%
+match_rr_dedup(RRs) ->
+    match_rr_dedup(RRs, #{}, []).
+%%
+match_rr_dedup([], _Seen, Acc) ->
+    Acc;
+match_rr_dedup([RR | RRs], Seen, Acc) ->
+    Key = match_rr_key(RR),
+    case erlang:is_map_key(Key, Seen) of
         true ->
-            %% Valid; return and re-insert with updated cnt time.
-            %% The clause above ensures that the cnt field is changed
-            %% which is essential to not accidentally delete
-            %% a record we also insert.
-            Key = match_rr_key(RR),
-            match_rr(
-              CacheDb, RRs, Time,
-              ResultRRs#{Key => RR},
-              InsertRRs#{Key => RR#dns_rr{cnt = Time}},
-              [RR | DeleteRRs])
+            match_rr_dedup(RRs, Seen, Acc);
+        false ->
+            match_rr_dedup(RRs, Seen#{Key => []}, [RR | Acc])
     end.
 
 -compile({inline, [match_rr_key/1]}).
 match_rr_key(
-  #dns_rr{domain = Domain, class = Class, type = Type, data = Data}) ->
-    {Domain, Class, Type, Data}.
+  #dns_rr{bm = LcDomain, class = Class, type = Type, data = Data}) ->
+    {LcDomain, Class, Type, Data}.
 
-
-%% Lowercase the domain name before storage.
-%%
-lower_rr(#dns_rr{domain=Domain}=RR) when is_list(Domain) ->
-    RR#dns_rr { domain = tolower(Domain) };
-lower_rr(RR) -> RR.
 
 %%
 %% Case fold upper-case to lower-case according to RFC 4343
@@ -1792,32 +1846,74 @@ lower_rr(RR) -> RR.
 %% to much on stdlib. Furthermore string:to_lower/1
 %% does not follow RFC 4343.
 %%
-tolower([]) -> [];
-tolower([C|Cs]) when is_integer(C) ->
-    if  C >= $A, C =< $Z ->
-	    [(C-$A)+$a|tolower(Cs)];
-	true ->
-	    [C|tolower(Cs)]
+tolower(Domain) ->
+    case rfc_4343_lc(Domain) of
+        ok ->
+            %% Optimization for already lowercased domain
+            Domain;
+        LcDomain ->
+            LcDomain
     end.
 
-dn_ip6_int(A,B,C,D,E,F,G,H) ->
-    dnib(H) ++ dnib(G) ++ dnib(F) ++ dnib(E) ++ 
-	dnib(D) ++ dnib(C) ++ dnib(B) ++ dnib(A) ++ "ip6.int".
-
-dn_in_addr_arpa(A,B,C,D) ->
-    integer_to_list(D) ++ "." ++
-	integer_to_list(C) ++ "." ++
-	integer_to_list(B) ++ "." ++
-	integer_to_list(A) ++ ".in-addr.arpa".
-
-dnib(X) ->
-    [hex(X), $., hex(X bsr 4), $., hex(X bsr 8), $., hex(X bsr 12), $.].
-
-hex(X) ->
-    X4 = (X band 16#f),
-    if X4 < 10 -> X4 + $0;
-       true -> (X4-10) + $a
+rfc_4343_lc([]) -> ok; % Optimization for already lowercased domain
+rfc_4343_lc([C | Cs]) when is_integer(C), 0 =< C, C =< 16#10FFFF ->
+    if
+        $A =< C, C =< $Z ->
+            [(C - $A) + $a |
+             case rfc_4343_lc(Cs) of
+                 ok ->
+                     Cs;
+                 LCs ->
+                     LCs
+             end];
+        true ->
+            case rfc_4343_lc(Cs) of
+                ok ->
+                    ok;
+                LCs ->
+                    [C | LCs]
+            end
     end.
+
+
+%% Case insensitive domain name comparison according to RFC 4343
+%% "Domain Name System (DNS) Case Insensitivity Clarification",
+%% i.e regard $a through $z as equal to $A through $Z.
+%%
+eq_domains([A | As], [B | Bs]) ->
+    if
+        is_integer(A), 0 =< A, A =< 16#10FFFF,
+        is_integer(B), 0 =< B, B =< 16#10FFFF ->
+            %% An upper bound of 255 would be right right now,
+            %% but this algorithm works for any integer.  That
+            %% guard just gives the compiler the opportuinity
+            %% to optimize bit operations for machine word size,
+            %% so we might as well use the Unicode upper bound instead.
+            Xor = (A bxor B),
+            if
+                Xor =:= 0 ->
+                    eq_domains(As, Bs);
+                Xor =:= ($A bxor $a) ->
+                    And = (A band B),
+                    if
+                        ($A band $a) =< And, And =< ($Z band $z) ->
+                            eq_domains(As, Bs);
+                        true ->
+                            false
+                    end;
+                true ->
+                    false
+            end
+    end;
+eq_domains([$.], []) ->
+    true;
+eq_domains([], [$.]) ->
+    true;
+eq_domains([], []) ->
+    true;
+eq_domains(As, Bs) when is_list(As), is_list(Bs) ->
+    false.
+
 
 %% Strip trailing dot, do not produce garbage unless necessary.
 %%
@@ -1875,8 +1971,7 @@ delete_expired(CacheDb, TM) ->
 %% Returns: true if space for a new entry otherwise false
 %% (true if we have a cache since we always make room for new).
 %% -------------------------------------------------------------------
-alloc_entry(Db, CacheDb, TM) ->
-    Size = ets:lookup_element(Db, cache_size, 2),
+alloc_entry(CacheDb, TM, Size) ->
     if
 	Size =< 0 ->
 	    false;
@@ -1895,11 +1990,11 @@ alloc_entry(Db, CacheDb, TM) ->
 %% This deletion should always give some room since
 %% it removes a percentage of the oldest entries.
 %%
-%% Fetch all cnt times, sort them, calculate a limit
+%% Fetch all access times (#dns_rr.cnt), sort them, calculate a limit
 %% as the earliest of the time 1/3 from the oldest to now,
 %% and the 1/10 oldest entry,.
 %%
-%% Delete all entries with a cnt time older than that,
+%% Delete all entries with an access time (#dns_rr.cnt) older than that,
 %% and all expired (tm + ttl < now).
 %%
 delete_oldest(CacheDb, TM, N) ->
@@ -1925,7 +2020,7 @@ delete_oldest(CacheDb, TM, N) ->
         %% many duplicate times, which is not unlikely
         %% given the second resolution.  Therefore it is
         %% possible that gb_trees and storing the number
-        %% of occurences for a cnt time might be needed,
+        %% of occurrences for a cnt time might be needed,
         %% so insertion gets more complicated and slower,
         %% and we need our own concept of set size.
         %%
@@ -1998,4 +2093,42 @@ handle_take_socket_type(Db, MRef) ->
 	    {ok, Type};
 	[] -> % Already demonitor'ed
 	    error
+    end.
+
+%%----------------------------------------------------------------------
+%% Random DNS Transaction ID and origin port number
+%%----------------------------------------------------------------------
+
+generate_next_id() ->
+    case ets:lookup_element(inet_db, res_random, 2) of
+        true ->
+            case crypto_rand_range(1 bsl 16) of
+                Id when is_integer(Id), 0 =< Id, Id < 1 bsl 16  -> Id;
+                undefined ->
+                    generate_next_id_legacy()
+            end;
+        false ->
+            generate_next_id_legacy()
+    end.
+
+generate_next_id_legacy() ->
+    ets:update_counter(inet_db, res_id, {2, 1, 16#ffff, 0}).
+
+generate_random_port() ->
+    Min   = 1024,
+    Range = (1 bsl 16) - Min,
+    case crypto_rand_range(Range) of
+        V when is_integer(V), 0 =< V, V < Range                 -> Min + V;
+        undefined                                               -> 0
+    end.
+
+crypto_rand_range(Range) when is_integer(Range), 0 < Range ->
+    %% This is how crypto itself checks if it is loaded
+    case application:get_env(crypto, fips_mode) of
+        undefined                                               -> undefined;
+        {ok, Fips} when is_boolean(Fips) ->
+            try crypto:strong_rand_range(Range) of
+                N when is_integer(N, 0, Range-1)                -> N
+            catch error : low_entropy                           -> undefined
+            end
     end.

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2019-2019. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2019-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,6 +23,7 @@
 %%
 
 -module(dtls_sup).
+-moduledoc false.
 
 -behaviour(supervisor).
 
@@ -35,7 +38,6 @@
 %%%=========================================================================
 
 -spec start_link() -> {ok, pid()} | ignore | {error, term()}.
-			
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
@@ -43,34 +45,31 @@ start_link() ->
 %%%  Supervisor callback
 %%%=========================================================================
 
-init([]) ->    
-    DTLSConnectionManager = dtls_connection_manager_child_spec(),
-    DTLSServers = dtls_server_spec(),
-    
-    {ok, {{one_for_one, 10, 3600}, [DTLSConnectionManager, 
-				    DTLSServers
-				   ]}}.
+init([]) ->
+    SupFlags = #{strategy  => one_for_one,
+                 intensity =>   10,
+                 period    => 3600
+                },
+    Children = [dtls_connection_child_spec(), server_instance_child_spec()],
+    {ok, {SupFlags, Children}}.
 
-    
 %%--------------------------------------------------------------------
 %%% Internal functions
 %%--------------------------------------------------------------------
-dtls_server_spec() ->
-    Name = dtls_servers,
-    StartFunc = {dtls_server_sup, start_link, []},
-    Restart = permanent,
-    Shutdown = 4000,
-    Modules = [dtls_server_sup],
-    Type = supervisor,
-    {Name, StartFunc, Restart, Shutdown, Type, Modules}.
+dtls_connection_child_spec() ->
+    #{id       => dtls_connection_sup,
+      start    => {dtls_connection_sup, start_link, []},
+      restart  => permanent,
+      shutdown => infinity,
+      modules  => [dtls_connection_sup],
+      type     => supervisor
+     }.
 
-dtls_connection_manager_child_spec() ->
-    Name = dtls_connection,
-    StartFunc = {dtls_connection_sup, start_link, []},
-    Restart = permanent,
-
-    Shutdown = 4000,
-    Modules = [dtls_connection_sup],
-    Type = supervisor,
-    {Name, StartFunc, Restart, Shutdown, Type, Modules}.
-
+server_instance_child_spec() ->
+    #{id       => dtls_server_sup,
+      start    => {dtls_server_sup, start_link, []},
+      restart  => permanent,
+      shutdown => infinity,
+      modules  => [dtls_server_sup],
+      type     => supervisor
+     }.

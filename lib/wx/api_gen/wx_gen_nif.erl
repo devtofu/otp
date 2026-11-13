@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -121,13 +123,16 @@ gen_derived_dest_2(C=#class{name=Class, options=Opts}) ->
 		_ -> ok
 	    end,
 	    w("class E~s : public ~s {~n",[Class,Class]),
-	    case Class of
-		"wxGLCanvas" ->  %% Special for cleaning up gl context
-		    w(" public: ~~E~s() {deleteActiveGL(this);"
-		      "((WxeApp *)wxTheApp)->clearPtr(this);};~n", [Class]);
-		_ ->
-		    w(" public: ~~E~s() {((WxeApp *)wxTheApp)->clearPtr(this);};~n", [Class])
-	    end,
+            case Class of
+                "wxGLCanvas" ->  %% Special for cleaning up gl context
+                    w(" public: ~~E~s() {deleteActiveGL(this);"
+                      "((WxeApp *)wxTheApp)->clearPtr(this);};~n", [Class]);
+                "wxGLContext" ->  %% Special for cleaning up glc entries
+                    w(" public: ~~E~s() {deleteActiveGLContext(this);"
+                      "((WxeApp *)wxTheApp)->clearPtr(this);};~n", [Class]);
+                _ ->
+                    w(" public: ~~E~s() {((WxeApp *)wxTheApp)->clearPtr(this);};~n", [Class])
+            end,
 	    gen_constructors(C),
 	    case lists:keysearch(ifdef,1,Opts) of
 		{value, {ifdef, Endif}} ->
@@ -386,6 +391,7 @@ gen_method(CName,  M=#method{name=N,params=Ps0,type=T,method_type=MT,id=MethodId
     Opts = [Opt || Opt = #param{def=Def,in=In,where=Where} <- Ps2,
 		   Def =/= none, In =/= false, Where =/= c],
     decode_options(Opts, Argc),
+
     case gen_util:get_hook(c, M#method.pre_hook) of
 	ignore -> skip;
 	Pre -> w(" ~s;~n", [Pre])
@@ -445,7 +451,10 @@ declare_type(N,false,_,#type{base=Base,single=true,name=Type,by_val=false,mod=Mo
   when Base =:= int; Base =:= long; Base =:= float; Base =:= double ->
     w("  ~s~s ~s;~n", [mods(Mod),Type,N]);
 declare_type(N,false,_,#type{base={enum,_},single=true,name=Type,by_val=false,mod=Mod}) ->
-    w("  ~s~s ~s;~n", [mods(Mod),Type,N]);
+    %% Value-initialise: some wx calls write this out-param only conditionally
+    %% (e.g. wxCalendarCtrl::HitTest writes *wd only on a header hit), yet the
+    %% value is returned unconditionally — an uninitialised enum read is UB.
+    w("  ~s~s ~s = {};~n", [mods(Mod),Type,N]);
 declare_type(N,false,_,#type{name="wxArrayTreeItemIds",ref=reference}) ->
     w("  wxArrayTreeItemIds ~s;~n", [N]);
 declare_type(N,false,_,#type{name="wxDateTime"}) ->
@@ -540,6 +549,24 @@ decode_opt(#param{name=Name,type=Type}) ->
 decode_arguments(Ps0) ->
     lists:mapfoldl(fun decode_arg/2,0,Ps0).
 
+%% Postpone alloc and memcpy until after all Badarg execeptions
+%% so we don't leak memory in case of later badarg
+copy_arguments([#param{where=Where, in=In, def=none, name=N, type=Type}|Rest])
+  when Where =/= erl, Where =/= c, In =/= false ->
+    case Type of
+        #type{base = binary, by_val=copy} ->
+            w("  ~s = (unsigned char *) malloc(~s_bin.size);\n", [N,N]),
+            w("  if(!~s) Badarg(\"~s\");\n", [N,N]),
+            w("  memcpy(~s,~s_bin.data,~s_bin.size);\n", [N,N,N]);
+        _ ->
+            ignore
+    end,
+    copy_arguments(Rest);
+copy_arguments([_|Rest]) ->
+    copy_arguments(Rest);
+copy_arguments([]) ->
+    ok.
+
 store_free(N) ->
     case get(free_args) of
         undefined -> put(free_args, [N]);
@@ -570,7 +597,11 @@ badarg(Arg) ->
 
 decode_arg(N,#type{name=Class,base={class,_},single=true}, Arg,Argc) ->
     wa("  ~s *~s;~n",[Class, N], Arg),
-    w("  ~s = (~s *) memenv->getPtr(env, ~s, \"~s\");~n", [N,Class,Argc,N]);
+    w("  ~s = (~s *) memenv->getPtr(env, ~s, \"~s\");~n", [N,Class,Argc,N]),
+    case N of
+        "This" -> w("  if(!This) throw wxe_badarg(\"This\");~n", []);
+        _ -> ok
+    end;
 decode_arg(N,{merged,[{_, #type{base={class,_},single=true},_}|_]},arg,Argc) ->
     w("  ERL_NIF_TERM ~s_type;~n", [N]),
     w("  void * ~s = memenv->getPtr(env, ~s, \"~s\", &~s_type);~n", [N,Argc,N,N]);
@@ -702,12 +733,19 @@ decode_arg(N,#type{name="wxArrayInt"},_arg,Argc) ->
     w("    ~s.Add(~s_tmp);~n",[N,N]),
     w("  };~n",[]);
 
-decode_arg(N,#type{name=Type,base=binary,mod=Mod0},Arg,Argc) ->
+decode_arg(N,#type{name=Type,base=binary,mod=Mod0,by_val=Copy},Arg,Argc) ->
     Mod = mods(Mod0),
     wa("  ~s~s * ~s;~n",[Mod,Type,N], Arg),
     w("  ErlNifBinary ~s_bin;~n",[N]),
     w("  if(!enif_inspect_binary(env, ~s, &~s_bin)) ~s;~n",[Argc, N, badarg(N)]),
-    w("  ~s = (~s~s*) ~s_bin.data;~n", [N,Mod,Type,N]);
+    case Copy of
+        copy -> %% postpone see copy_arguments
+            %% w("  ~s = (unsigned char *) malloc(~s_bin.size);\n", [N,N]),
+            %% w("  memcpy(~s,~s_bin.data,~s_bin.size);\n", [N,N,N]);
+            ok;
+        _ ->
+            w("  ~s = (~s~s*) ~s_bin.data;~n", [N,Mod,Type,N])
+    end;
 
 decode_arg(N,#type{name=Type,base={term,_},single=Single,mod=Mod0},Arg,Argc) ->
     case Single of
@@ -723,7 +761,7 @@ decode_arg(N,#type{name=Type,base={term,_},single=Single,mod=Mod0},Arg,Argc) ->
             w("  ~sTail = ~s;~n",[N,Argc]),
             w("  while(!enif_is_empty_list(env, ~sTail)) {~n", [N]),
             w("    if(!enif_get_list_cell(env, ~sTail, &~sHead, &~sTail)) ~s;~n",[N,N,N,badarg(N)]),
-            w("    ~s.push_back(new ~s(~s));~n", [N,Type,Argc]),
+            w("    ~s.push_back(new ~s(~sHead));~n", [N,Type,N]),
             w("  };~n",[])
     end;
 
@@ -789,6 +827,8 @@ call_wx(_N,{constructor,_},#type{base={class,RClass}},Ps) ->
 		false -> RClass
 	    end,
 
+    copy_arguments(Ps),
+
     case [P || #param{type={merged,_}}=P <- Ps] of
         [] ->
             w("  ~s * Result = new ~s(~s);~n",
@@ -829,7 +869,7 @@ call_wx(_N,{constructor,_},#type{base={class,RClass}},Ps) ->
     Ps;
 call_wx(N,{member,_},Type,Ps0) ->
     {Beg,End} = return_res(Type),
-    w("  if(!This) throw wxe_badarg(\"This\");~n",[]),
+    copy_arguments(Ps0),
     Ps = filter(Ps0),
     case [P || #param{type={merged,_}}=P <- Ps] of
         [] ->
@@ -850,6 +890,7 @@ call_wx(N,{member,_},Type,Ps0) ->
 call_wx(N,{static,Class},Type,Ps) ->
     {Beg,End} = return_res(Type),
     #class{parent=Parent} = get({class,Class}),
+    copy_arguments(Ps),
     case [P || #param{type={merged,_}}=P <- Ps] of
         [] when Parent =:= "static" ->
 	    w("  ~s::~s(~s)~s;~n",[Beg,N,args(fun call_arg/1, ",",filter(Ps)),End]);
@@ -966,11 +1007,16 @@ return_res1(#type{name=Type,single=true,by_val=true, base={class, _}}) ->
 return_res1(#type{base={enum,_Type},single=true,by_val=true}) ->
     {"int Result = " , ""};
 return_res1(#type{name="wxCharBuffer", base={binary,_},single=true,by_val=true}) ->
-    {"char * Result = ", ".data()"};
+    {"wxCharBuffer Result_cb = ", "; char * Result = Result_cb.data()"};
 return_res1(#type{name=Type,single=array,ref=reference}) ->
     {Type ++ " Result = ", ""};
-return_res1(#type{name=Type,single=true,by_val=true}) ->
-    {Type ++ " Result = ", ""}.
+return_res1(#type{name=Type,single=true,by_val=true, mod=Mods}) ->
+    case lists:member(unsigned, Mods) of
+        true ->
+            {io_lib:format("unsigned ~s Result = ", [Type]), ""};
+        false ->
+            {Type ++ " Result = ", ""}
+    end.
 
 filter(Ps) ->
     lists:filter(fun filter_arg/1, Ps).
@@ -1013,6 +1059,7 @@ call_arg(#param{name=N,in=true, def=Def,type=#type{name=Type, base=Base, single=
             N ++ ".data()"
     end;
 call_arg(#param{name=N,type=#type{by_val=true, single=_False}}) -> N;
+call_arg(#param{name=N,type=#type{by_val=copy, single=_False}}) -> N;
 call_arg(#param{name=N,in=true, def=Def,type=#type{base={comp,_,_},ref={pointer,1},single=true}}) ->
     case Def =:= none of
         true -> "&" ++ N;
@@ -1441,6 +1488,7 @@ gen_macros() ->
     w("#include <wx/listbook.h>~n"),
     w("#include <wx/treebook.h>~n"),
     w("#include <wx/taskbar.h>~n"),
+    w("#include <wx/textctrl.h>~n"),
     w("#include <wx/popupwin.h>~n"),
     w("#include <wx/html/htmlwin.h>~n"),
     w("#include <wx/html/htmlcell.h>~n"),
@@ -1448,16 +1496,26 @@ gen_macros() ->
     w("#include <wx/sysopt.h>~n"),
     w("#include <wx/overlay.h>~n"),
     w("#include <wx/notifmsg.h>~n"),
+    w("#if WXE_WEBVIEW~n"),
     w("#include <wx/webview.h>~n"),
     w("#if wxUSE_WEBVIEW && wxUSE_WEBVIEW_IE~n"),
     w("#include <wx/msw/webview_ie.h>~n"),
     w("#endif~n"),
-
+    w("#endif~n"),
+    w("#if wxUSE_GLCANVAS_EGL && !wxCHECK_VERSION(3,2,3)~n"),
+    w("#include <EGL/egl.h>~n"),
+    w("#endif~n"),
 
     w("~n~n", []),
     w("#ifndef wxICON_DEFAULT_BITMAP_TYPE~n",[]),
     w("  #define wxICON_DEFAULT_BITMAP_TYPE wxBITMAP_TYPE_ICO_RESOURCE~n",[]),
     w("#endif~n", []),
+
+    w("~n~n", []),
+    w("#if defined(wxSTC_DISABLE_MACRO_DEPRECATIONS) && defined(wxSTC_DEPRECATED_MACRO_VALUE)~n",[]),
+    w("#undef wxSTC_DEPRECATED_MACRO_VALUE~n",[]),
+    w("#define wxSTC_DEPRECATED_MACRO_VALUE(value, msg) value~n",[]),
+    w("#endif~n",[]),
 
     %% [w("#define ~s_~s ~p~n", [Class,Name,Id]) ||
     %%     {Class,Name,_,Id} <- wx_gen_erl:get_unique_names()],

@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 1996-2016. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 1996-2026. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -165,8 +167,14 @@
 					/* Bad map */
 #define EXC_BADKEY		((19 << EXC_OFFSET) | EXC_ERROR)
 					/* Bad key in map */
+#define EXC_BADRECORD		((20 << EXC_OFFSET) | EXC_ERROR)
+					/* Bad key in map */
+#define EXC_BADFIELD		((21 << EXC_OFFSET) | EXC_ERROR)
+					/* Bad field in native record */
+#define EXC_NOVALUE		((22 << EXC_OFFSET) | EXC_ERROR)
+					/* Missing value in native record */
 
-#define NUMBER_EXIT_CODES 20	/* The number of exit code indices */
+#define NUMBER_EXIT_CODES 23	/* The number of exit code indices */
 
 /*
  * Internal pseudo-error codes.
@@ -201,12 +209,12 @@
 /*
  * The table translating an exception code to an atom.
  */
-extern Eterm error_atom[NUMBER_EXIT_CODES];
+extern const Eterm error_atom[NUMBER_EXIT_CODES];
 
 /*
  * The exception tag table.
  */
-extern Eterm exception_tag[NUMBER_EXC_TAGS];
+extern const Eterm exception_tag[NUMBER_EXC_TAGS];
 
 /* 
  * The quick-saved stack trace structure
@@ -216,7 +224,8 @@ struct StackTrace {
     Eterm freason; /* original exception reason is saved in the struct */
     ErtsCodePtr pc;
     const ErtsCodeMFA* current;
-    int depth;	/* number of saved pointers in trace[] */
+    int depth;	   /* number of saved pointers in trace[] */
+    int max_depth; /* capacity of trace[] */
     ErtsCodePtr trace[1];  /* varying size - must be last in struct */
 };
 

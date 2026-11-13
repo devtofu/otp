@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2006-2021. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2006-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,6 +21,9 @@
 %%
 
 -module(observer_SUITE).
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
+
 -include_lib("common_test/include/ct.hrl").
 -include_lib("wx/include/wx.hrl").
 -include_lib("observer/src/observer_tv.hrl").
@@ -35,11 +40,12 @@
 %% Test cases
 -export([app_file/1, appup_file/1,
 	 basic/1, process_win/1, table_win/1,
-         port_win_when_tab_not_initiated/1
+         port_win_when_tab_not_initiated/1,
+         blocking_start/1, remote_node/1
 	]).
 
 %% Default timetrap timeout (set in init_per_testcase)
--define(default_timeout, ?t:minutes(2)).
+-define(default_timeout, test_server:minutes(2)).
 
 -define(SECS(__S__), timer:seconds(__S__)).
 
@@ -58,7 +64,9 @@ groups() ->
       [basic,
        process_win,
        table_win,
-       port_win_when_tab_not_initiated
+       port_win_when_tab_not_initiated,
+       blocking_start,
+       remote_node
       ]
      }].
 
@@ -74,17 +82,47 @@ end_per_suite(Config) ->
     ok.
 
 
+%% init_per_testcase(basic = Case, Config) ->
+%%     ?P("init_per_testcase(~w) -> entry with"
+%%        "~n   Config: ~p", [Case, Config]),
+%%     {ok, Host} = inet:gethostname(),
+%%     {ok, IFL}  = inet:getifaddrs(),
+%%     init_per_testcase2(Case, [{host, Host}, {ifl, IFL} | Config]);
 init_per_testcase(Case, Config) ->
     ?P("init_per_testcase(~w) -> entry with"
        "~n   Config: ~p", [Case, Config]),
-    Dog = ?t:timetrap(?default_timeout),
+    init_per_testcase2(Case, Config).
+
+init_per_testcase2(Case, Config) ->
+    ?P("init_per_testcase(~w) -> entry", [Case]),
+    Dog = test_server:timetrap(?default_timeout),
     [{watchdog, Dog} | Config].
 
+%% end_per_testcase(basic = Case, Config) ->
+%%     ?P("end_per_testcase(~w) -> entry with"
+%%        "~n   Config: ~p", [Case, Config]),
+%%     case lists:keysearch(tc_status, 1, Config) of
+%%         {value, {tc_status, ok}} ->
+%%             ?P("end_per_testcase(~w) -> successful", [Case]),
+%%             ok;
+%%         {value, _} ->
+%%             ?P("end_per_testcase(~w) -> try ensure observer stopped", [Case]),
+%%             ensure_observer_stopped();
+%%         _ ->
+%%             ?P("end_per_testcase(~w) -> nop status", [Case]),
+%%             ok
+%%     end,
+%%     end_per_testcase2(Case, Config);
 end_per_testcase(Case, Config) ->
     ?P("end_per_testcase(~w) -> entry with"
        "~n   Config: ~p", [Case, Config]),
+    end_per_testcase2(Case, Config).
+
+end_per_testcase2(Case, Config) ->
+    ?P("end_per_testcase2(~w) -> entry - try cancel watchdog", [Case]),
     Dog = ?config(watchdog, Config),
-    ?t:timetrap_cancel(Dog),
+    test_server:timetrap_cancel(Dog),
+    ?P("end_per_testcase2(~w) -> done", [Case]),
     ok.
 
 
@@ -96,12 +134,19 @@ init_per_group(gui = Group, Config) ->
 	    {unix,darwin} ->
 		?P("init_per_group(~w) -> skip", [Group]),
 		exit("Can not test on MacOSX");
+            {unix,sunos} ->
+                exit("Skip on sunos, for now");
 	    {unix, _} ->
+                Display = os:getenv("DISPLAY"),
 		?P("init_per_group(~w) -> DISPLAY ~s",
-                   [Group, os:getenv("DISPLAY")]),
+                   [Group, Display]),
 		case ct:get_config(xserver, none) of
 		    none -> ignore;
-		    Server -> os:putenv("DISPLAY", Server)
+                    Display -> ok;
+		    Server ->
+                        os:putenv("DISPLAY", Server), %% Might work if new node is spawned
+                        io:format("Config sets other x-server than the DISPLAY\n"
+                                  "the DISPLAY variable must be set when starting erlang")
 		end;
 	    _ -> ignore
 	end,
@@ -132,14 +177,14 @@ app_file(suite) ->
 app_file(doc) ->
     ["Testing .app file"];
 app_file(Config) when is_list(Config) ->
-    ?line ok = ?t:app_test(observer),
+    ok = test_server:app_test(observer),
     ok.
+
 
 %% Testing .appup file
 appup_file(Config) when is_list(Config) ->
-    ok = ?t:appup_test(observer).
+    ok = test_server:appup_test(observer).
 
--define(DBG(Foo), io:format("~p: ~p~n",[?LINE, catch Foo])).
 
 basic(suite) -> [];
 basic(doc) -> [""];
@@ -152,10 +197,19 @@ basic(Config) when is_list(Config) ->
     wx:new(),
     ?P("basic -> try wx destroy"),
     wx:destroy(),
-    timer:send_after(100, "foobar"),
+    timer:start(),
     ?P("basic -> try start distribution"),
     {foo, node@machine} ! dummy_msg,  %% start distribution stuff
     %% Otherwise ever lasting servers gets added to procs
+
+    %% It takes some time for all the procs to start,
+    %% so give it some time.
+    %% Note that this is a problem *only* if this test suite
+    %% is run *on its own*. If all the observer suite(s) are run
+    %% (ex: ts:run(observer, [batch]), then this problem does
+    %% not occcur.
+    timer:sleep(5000),
+
     ?P("basic -> procs before"),
     ProcsBefore = processes(),
     ProcInfoBefore = [{P,process_info(P)} || P <- ProcsBefore],
@@ -172,6 +226,7 @@ basic(Config) when is_list(Config) ->
     ?P("basic -> check selection (=0)"),
     0 = wxNotebook:getSelection(Notebook),
     ?P("basic -> wait some time..."),
+
     timer:sleep(500),
     Check = fun(N, TestMore) ->
 		    TestMore andalso
@@ -191,23 +246,25 @@ basic(Config) when is_list(Config) ->
     ?P("basic -> try verify that we resized"),
     [_|_] = [Check(N, true) || N <- lists:seq(0, Count-1)],
 
-    ?P("basic -> try stop observer (async)"),
+    ?P("basic -> try stop observer"),
     ok = observer:stop(),
     timer:sleep(2000), %% stop is async
     ?P("basic -> try verify observer stopped"),
     ProcsAfter = processes(),
     NumProcsAfter = length(ProcsAfter),
-    if NumProcsAfter =/= NumProcsBefore ->
+    if
+        (NumProcsAfter > NumProcsBefore) ->
             BeforeNotAfter = ProcsBefore -- ProcsAfter,
+            AfterNotBefore = ProcsAfter -- ProcsBefore,
             ?P("basic -> *not* fully stopped:"
                "~n   Number of Procs before: ~p"
                "~n   Number of Procs after:  ~p",
-               [NumProcsAfter, NumProcsBefore]),
+               [NumProcsBefore, NumProcsAfter]),
 	    ct:log("Before but not after:~n~p~n",
 		   [[{P,I} || {P,I} <- ProcInfoBefore,
                               lists:member(P,BeforeNotAfter)]]),
 	    ct:log("After but not before:~n~p~n",
-		   [[{P,process_info(P)} || P <- ProcsAfter -- ProcsBefore]]),
+		   [[{P,process_info(P)} || P <- AfterNotBefore]]),
 	    ensure_observer_stopped(),
 	    ct:fail("leaking processes");
        true ->
@@ -355,7 +412,7 @@ test_page(Title, Window) ->
 process_win(suite) -> [];
 process_win(doc) -> [""];
 process_win(Config) when is_list(Config) ->
-    ?P("process_win -> entry"),
+    ?P("~s -> entry", [?FUNCTION_NAME]),
     % Stop SASL if already started
     SaslStart = case whereis(sasl_sup) of
                   undefined -> false;
@@ -363,13 +420,27 @@ process_win(Config) when is_list(Config) ->
                                true
                 end,
     % Define custom sasl and log_mf_h app vars
+    ?P("~s -> (application) env setup", [?FUNCTION_NAME]),
     Privdir=?config(priv_dir,Config),
     application:set_env(sasl, sasl_error_logger, tty),
     application:set_env(sasl, error_logger_mf_dir, Privdir),
     application:set_env(sasl, error_logger_mf_maxbytes, 1000),
     application:set_env(sasl, error_logger_mf_maxfiles, 5),
     application:start(sasl),
+    ?P("~s -> try start observer when"
+       "~n   whereis(observer): ~p"
+       "~n   observer info: "
+       "~n     ~p",
+       [?FUNCTION_NAME,
+        erlang:whereis(observer),
+        case erlang:whereis(observer) of
+            undefined ->
+                undefined;
+            Pid when is_pid(Pid) ->
+                erlang:process_info(Pid)
+        end]),
     ok = observer:start(),
+    ?P("~s -> whitebox testing setup", [?FUNCTION_NAME]),
     ObserverNB = setup_whitebox_testing(),
     Parent = get_top_level_parent(ObserverNB),
     % Activate log view
@@ -387,15 +458,17 @@ process_win(Config) when is_list(Config) ->
 	    end,
     [_|_] = [Check(N) || N <- lists:seq(1, Count)],
     PIPid ! #wx{event=#wxClose{type=close_window}},
+    ?P("~s -> stop observer", [?FUNCTION_NAME]),
     observer:stop(),
+    ?P("~s -> stop sasl", [?FUNCTION_NAME]),
     application:stop(sasl),
     case SaslStart of
          true  -> application:start(sasl);
          false -> ok
     end,
-    ?P("ensure observer stopped"),
+    ?P("~s -> ensure observer stopped", [?FUNCTION_NAME]),
     ensure_observer_stopped(?SECS(2)),
-    ?P("process_win -> done"),
+    ?P("~s -> done", [?FUNCTION_NAME]),
     ok.
 
 table_win(suite) -> [];
@@ -418,6 +491,40 @@ table_win(Config) when is_list(Config) ->
     ?P("ensure observer stopped"),
     ensure_observer_stopped(?SECS(3)),
     ?P("table_win -> done"),
+    ok.
+
+remote_node(_Config) ->
+    {ok, Peer, Node} = ?CT_PEER(),
+    ok = observer:start(Node),
+    timer:sleep(1000),
+    Node = observer_wx:get_active_node(),
+    observer:stop(),
+    ensure_observer_stopped(?SECS(3)),
+    peer:stop(Peer).
+
+blocking_start(_Config) ->
+    {Pid, SpawnerRef} = spawn_monitor(fun observer:start_and_wait/0),
+    timer:sleep(1000),
+    ObserverRef = monitor(process, observer),
+    receive
+        {'DOWN', ObserverRef, _, _, Reason} ->
+            error({observer_stopped_unexpectedly, Reason});
+        {'DOWN', SpawnerRef, _, _, Reason} ->
+            error({spawner_stopped_unexpectedly, Reason})
+    after
+        500 ->
+            ok
+    end,
+    observer:stop(),
+    ensure_observer_stopped(?SECS(3)),
+    receive
+        {'DOWN', ObserverRef, _, _, _} ->
+            ok
+    after
+        500 ->
+            error(observer_should_have_stopped)
+    end,
+    false = erlang:is_process_alive(Pid),
     ok.
 
 %% Test PR-1296/OTP-14151
@@ -473,11 +580,11 @@ ensure_observer_stopped() ->
 ensure_observer_stopped(T) when is_integer(T) andalso (T > 0) ->
     case erlang:whereis(observer) of
 	undefined ->
-	    ?P("observer *not* running"),
+	    ?P("~s(~w) -> observer *not* running", [?FUNCTION_NAME, ?LINE]),
 	    ok;
 	Pid when is_pid(Pid) ->
-	    ?P("observer process still running: "
-	       "~n   ~p", [erlang:process_info(Pid)]),
+	    ?P("~s(~w) -> observer process still running: "
+	       "~n   ~p", [?FUNCTION_NAME, ?LINE, erlang:process_info(Pid)]),
 	    ct:sleep(?SECS(1)),
 	    ensure_observer_stopped(T - 1000),
 	    ok
@@ -485,12 +592,12 @@ ensure_observer_stopped(T) when is_integer(T) andalso (T > 0) ->
 ensure_observer_stopped(_) ->
     case erlang:whereis(observer) of
 	undefined ->
-	    ?P("observer *not* running"),
+	    ?P("~s(~w) -> observer *not* running", [?FUNCTION_NAME, ?LINE]),
 	    ok;
 	Pid when is_pid(Pid) ->
-	    ?P("observer process still running: kill"
-	       "~n   ~p", [erlang:process_info(Pid)]),
-	    exit(kill, Pid),
+	    ?P("~s(~w) -> observer process still running: kill"
+	       "~n   ~p", [?FUNCTION_NAME, ?LINE, erlang:process_info(Pid)]),
+            erlang:exit_signal(kill, Pid),
 	    ok
     end.
 

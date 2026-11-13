@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2002-2017. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2002-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 
 -module(evil_SUITE).
@@ -31,6 +33,7 @@
          decode_pos_neg_zero/1]).
 
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
 suite() ->
     [{ct_hooks,[ts_install_cth]},
@@ -312,7 +315,7 @@ decode_too_small(Config) when is_list(Config) ->
 
 decode_badarg(Bin) ->
     io:format("Trying ~w\n",[Bin]),
-    {'EXIT',{badarg,_}} = (catch binary_to_term(Bin)).
+    ?assertError(badarg, binary_to_term(Bin)).
 
 enc_dec(_Size, Term) ->
     Bin = term_to_binary(Term),

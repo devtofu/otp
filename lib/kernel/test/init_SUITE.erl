@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2021. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,22 +22,27 @@
 -module(init_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
 -export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1, 
 	 init_per_group/2,end_per_group/2]).
 
 -export([get_arguments/1, get_argument/1, boot_var/1, restart/1,
 	 many_restarts/0, many_restarts/1, restart_with_mode/1,
-	 get_plain_arguments/1,
+	 get_plain_arguments/1, init_group_history_deadlock/1,
 	 reboot/1, stop_status/1, stop/1, get_status/1, script_id/1,
-	 find_system_processes/0]).
+         dot_erlang/1, unknown_module/1, dash_S/1, dash_extra/1,
+         dash_run/1, dash_s/1,
+	 find_system_processes/0,
+         boot_module_load/1,
+         stop_flush/1
+         ]).
 -export([boot1/1, boot2/1]).
+-export([test_dash_S/1, test_dash_s/1, test_dash_extra/0,
+         test_dash_run/0, test_dash_run/1]).
+-export([preload/1, loaded_modules/0]).
 
 -export([init_per_testcase/2, end_per_testcase/2]).
-
--export([init/1, fini/1]).
-
--define(DEFAULT_TIMEOUT_SEC, 100).
 
 %%-----------------------------------------------------------------
 %% Test suite for init. (Most code is run during system start/stop.
@@ -46,11 +53,13 @@ suite() ->
     [{ct_hooks,[ts_install_cth]},
      {timetrap,{minutes,2}}].
 
-all() -> 
+all() ->
     [get_arguments, get_argument, boot_var,
      many_restarts, restart_with_mode,
-     get_plain_arguments, restart, stop_status, get_status, script_id,
-     {group, boot}].
+     get_plain_arguments, init_group_history_deadlock,
+     restart, stop_status, stop_flush, get_status, script_id,
+     dot_erlang, unknown_module, {group, boot},
+     dash_S, dash_extra, dash_run, dash_s, boot_module_load].
 
 groups() -> 
     [{boot, [], [boot1, boot2]}].
@@ -74,27 +83,18 @@ init_per_testcase(_Func, Config) ->
 end_per_testcase(_Func, _Config) ->
     ok.
 
-init(Config) when is_list(Config) ->
-    Config.
-
-fini(Config) when is_list(Config) ->
-    Host = list_to_atom(from($@, atom_to_list(node()))),
-    Node = list_to_atom(lists:concat([init_test, "@", Host])),
-    stop_node(Node),
-    Config.
-
 get_arguments(Config) when is_list(Config) ->
     Args = args(),
-    {ok, Node} = start_node(init_test, Args),
+    {ok, Peer, Node} = ?CT_PEER(Args),
     case rpc:call(Node, init, get_arguments, []) of
 	Arguments when is_list(Arguments) ->
-	    stop_node(Node),
+	    peer:stop(Peer),
 	    check_a(Arguments),
 	    check_b(Arguments),
 	    check_c(Arguments),
 	    check_d(Arguments);
 	_ ->
-	    stop_node(Node),
+            peer:stop(Peer),
 	    ct:fail(get_arguments)
     end,
     ok.
@@ -169,43 +169,43 @@ check_d(Args) ->
 
 get_argument(Config) when is_list(Config) ->
     Args = args(),
-    {ok, Node} = start_node(init_test, Args),
+    {ok, Peer, Node} = ?CT_PEER(Args),
     case rpc:call(Node, init, get_argument, [b]) of
 	{ok, [["hej", "hopp"],["san", "sa"]]} ->
 	    ok;
 	_ ->
-	    stop_node(Node),
+	    peer:stop(Peer),
 	    ct:fail({get_argument, b})
     end,
     case rpc:call(Node, init, get_argument, [a]) of
 	{ok, [["kalle"]]} ->
 	    ok;
 	_ ->
-	    stop_node(Node),
+	    peer:stop(Peer),
 	    ct:fail({get_argument, a})
     end,
     case rpc:call(Node, init, get_argument, [c]) of
 	{ok, [["4", "5", "6"], ["7", "8", "9"]]} ->
 	    ok;
 	_ ->
-	    stop_node(Node),
+	    peer:stop(Peer),
 	    ct:fail({get_argument, c})
     end,
     case rpc:call(Node, init, get_argument, [d]) of
 	{ok, [[]]} ->
 	    ok;
 	_ ->
-	    stop_node(Node),
+	    peer:stop(Peer),
 	    ct:fail({get_argument, d})
     end,
     case rpc:call(Node, init, get_argument, [e]) of
 	error ->
 	    ok;
 	_ ->
-	    stop_node(Node),
+	    peer:stop(Peer),
 	    ct:fail({get_argument, e})
     end,
-    stop_node(Node),
+    peer:stop(Peer),
     ok.
 
 get_plain_arguments(Config) when is_list(Config) ->
@@ -221,18 +221,29 @@ get_plain_arguments(Config) when is_list(Config) ->
 	"fjdkfjdkfjfdaa2fjdkfjdkfjfdaa2fjdkfjdkfjfdaa2",
     true = (length(Longstring) > 255),
     Args = long_args(Longstring),
-    {ok, Node} = start_node(init_test, Args),
+    {ok, Peer, Node} = ?CT_PEER(Args),
     case rpc:call(Node, init, get_plain_arguments, []) of
 	["a", "b", "c", Longstring] ->
 	    ok;
 	As ->
-	    stop_node(Node),
+	    peer:stop(Peer),
 	    ct:fail({get_argument, As})
     end,
-    stop_node(Node),
+    peer:stop(Peer),
 
     ok.
 
+
+init_group_history_deadlock(_Config) ->
+    Output = os:cmd(ct:get_progname() ++ " -noshell -eval \"logger:warning(\\\"testing\\\")\" "
+            "-inets services crashme -eval \"application:start(inets, permanent).\" "),
+
+    io:format("Got output: ~ts~n",[Output]),
+
+    case string:find(Output, "removed_failing_handler") of
+        nomatch -> ok;
+        _ -> ct:fail("Found unexpected printout in log")
+    end.
 
 %% ------------------------------------------------
 %% Use -boot_var flag to set $TEST_VAR in boot script.
@@ -241,18 +252,20 @@ boot_var(Config) when is_list(Config) ->
     {BootScript, TEST_VAR, KernelVsn, StdlibVsn} = create_boot(Config),
 
     %% Should fail as we have not given -boot_var TEST_VAR
-    {error, timeout} =
-	start_node(init_test, "-boot " ++ BootScript),
+    try
+        ?CT_PEER(#{args => ["-boot", BootScript], connection => standard_io}),
+        ct:fail({boot_var, "Should not start without TEST_VAR"})
+    catch
+        exit:{boot_failed,{exit_status,1}} ->
+            ok
+    end,
+
 
     case is_real_system(KernelVsn, StdlibVsn) of
 	true ->
 	    %% Now it should work !!
-	    {ok, Node} =
-		start_node(init_test,
-			   "-boot " ++ BootScript ++
-			       " -boot_var TEST_VAR \"" ++
-			       TEST_VAR ++ "\""),
-	    stop_node(Node),
+	    {ok, Peer, _} = ?CT_PEER(["-boot", BootScript, "-boot_var", "TEST_VAR", TEST_VAR]),
+	    peer:stop(Peer),
 	    Res = ok;
 	_ ->
 	    %% What we need is not so much version numbers on the directories, but
@@ -298,30 +311,30 @@ many_restarts() ->
     [{timetrap,{minutes,16}}].
 
 many_restarts(Config) when is_list(Config) ->
-    {ok, Node} = loose_node:start(init_test, "", ?DEFAULT_TIMEOUT_SEC),
-    loop_restart(50,Node,rpc:call(Node,erlang,whereis,[logger])),
-    loose_node:stop(Node),
+    {ok, Peer, Node} = ?CT_PEER(#{connection => standard_io}),
+    loop_restart(50,Peer,Node,rpc:call(Node,erlang,whereis,[logger])),
+    peer:stop(Peer),
     ok.
 
-loop_restart(0,_,_) ->
+loop_restart(0,_,_,_) ->
     ok;
-loop_restart(N,Node,EHPid) ->
+loop_restart(N,Peer,Node,EHPid) ->
     erlang:monitor_node(Node, true),
     ok = rpc:call(Node, init, restart, []),
     receive
 	{nodedown, Node} ->
 	    ok
     after 10000 ->
-	    loose_node:stop(Node),
+	    peer:stop(Peer),
 	    ct:fail(not_stopping)
     end,
-    ok = wait_for(60, Node, EHPid),
-    loop_restart(N-1,Node,rpc:call(Node,erlang,whereis,[logger])).
+    ok = wait_for(60, Peer, Node, EHPid),
+    loop_restart(N-1,Peer,Node,rpc:call(Node,erlang,whereis,[logger])).
 
-wait_for(0,Node,_) ->
-    loose_node:stop(Node),    
+wait_for(0,Peer,_Node,_) ->
+    peer:stop(Peer),
     error;
-wait_for(N,Node,EHPid) ->
+wait_for(N,Peer,Node,EHPid) ->
     case rpc:call(Node, erlang, whereis, [logger]) of
 	Pid when is_pid(Pid), Pid =/= EHPid ->
 	    %% erlang:display(ok),
@@ -345,7 +358,7 @@ wait_for(N,Node,EHPid) ->
 	    after 100 ->
 		    ok
 	    end,
-	    wait_for(N-1,Node,EHPid)
+	    wait_for(N-1,Peer,Node,EHPid)
     end.
 
 restart_with_mode(Config) when is_list(Config) ->
@@ -377,13 +390,7 @@ restart_with_mode(Config) when is_list(Config) ->
 %% ------------------------------------------------
 restart(Config) when is_list(Config) ->
     Args = args(),
-
-    Pa = " -pa " ++ filename:dirname(code:which(?MODULE)),
-
-    %% Currently test_server:start_node cannot be used. The restarted
-    %% node immediately halts due to the implementation of
-    %% test_server:start_node.
-    {ok, Node} = loose_node:start(init_test, Args ++ Pa, ?DEFAULT_TIMEOUT_SEC),
+    {ok, Peer, Node} = ?CT_PEER(#{args => Args, connection => standard_io}),
     %% Ok, the node is up, now the real test test begins.
     erlang:monitor_node(Node, true),
     SysProcs0 = rpc:call(Node, ?MODULE, find_system_processes, []),
@@ -391,18 +398,19 @@ restart(Config) when is_list(Config) ->
     [InitPid, PurgerPid, LitCollectorPid,
      DirtySigNPid, DirtySigHPid, DirtySigMPid,
      PrimFilePid,
+     TraceCleanerPid,
      ESockRegPid] = SysProcs0,
     InitPid = rpc:call(Node, erlang, whereis, [init]),
     PurgerPid = rpc:call(Node, erlang, whereis, [erts_code_purger]),
     Procs = rpc:call(Node, erlang, processes, []),
-    MsgFlags = lists:sort(rpc:call(Node, socket, supports, [msg_flags])),
+    MsgFlags = fetch_socket_msg_flags(Node),
     MaxPid = lists:last(Procs),
     ok = rpc:call(Node, init, restart, []),
     receive
 	{nodedown, Node} ->
 	    ok
     after 10000 ->
-	    loose_node:stop(Node),
+	    peer:stop(Peer),
 	    ct:fail(not_stopping)
     end,
     ok = wait_restart(30, Node),
@@ -412,6 +420,7 @@ restart(Config) when is_list(Config) ->
     [InitPid1, PurgerPid1, LitCollectorPid1,
      DirtySigNPid1, DirtySigHPid1, DirtySigMPid1,
      PrimFilePid1,
+     TraceCleanerPid1,
      ESockRegPid1] = SysProcs1,
 
     %% Still the same init process!
@@ -442,9 +451,18 @@ restart(Config) when is_list(Config) ->
     PrimFileP = pid_to_list(PrimFilePid),
     PrimFileP = pid_to_list(PrimFilePid1),
 
+    %% and same trace_cleaner process!
+    TraceCleanerP = pid_to_list(TraceCleanerPid),
+    TraceCleanerP = pid_to_list(TraceCleanerPid1),
+
     %% and same socket_registry helper process!
-    ESockRegP = pid_to_list(ESockRegPid),
-    ESockRegP = pid_to_list(ESockRegPid1),
+    if ESockRegPid =:= undefined, ESockRegPid1 =:= undefined ->
+            %% No socket registry on either node
+            ok;
+       true ->
+            ESockRegP = pid_to_list(ESockRegPid),
+            ESockRegP = pid_to_list(ESockRegPid1)
+    end,
 
     NewProcs0 = rpc:call(Node, erlang, processes, []),
     NewProcs = NewProcs0 -- SysProcs1,
@@ -452,22 +470,22 @@ restart(Config) when is_list(Config) ->
 	true ->
 	    ok;
 	_ ->
-	    loose_node:stop(Node),
+	    peer:stop(Peer),
 	    ct:fail(processes_not_greater)
     end,
 
     %% Check that socket tables has been re-initialized; check one
-    MsgFlags = lists:sort(rpc:call(Node, socket, supports, [msg_flags])),
+    MsgFlags = fetch_socket_msg_flags(Node),
 
     %% Test that, for instance, the same argument still exists.
     case rpc:call(Node, init, get_argument, [c]) of
 	{ok, [["4", "5", "6"], ["7", "8", "9"]]} ->
 	    ok;
 	_ ->
-	    loose_node:stop(Node),
+	    peer:stop(Peer),
 	    ct:fail({get_argument, restart_fail})
     end,
-    loose_node:stop(Node),
+    peer:stop(Peer),
     ok.
 
 -record(sys_procs, {init,
@@ -477,6 +495,7 @@ restart(Config) when is_list(Config) ->
 		    dirty_sig_handler_high,
 		    dirty_sig_handler_max,
                     prim_file,
+                    trace_cleaner,
                     socket_registry}).
 
 find_system_processes() ->
@@ -490,6 +509,7 @@ find_system_procs([], SysProcs) ->
      SysProcs#sys_procs.dirty_sig_handler_high,
      SysProcs#sys_procs.dirty_sig_handler_max,
      SysProcs#sys_procs.prim_file,
+     SysProcs#sys_procs.trace_cleaner,
      SysProcs#sys_procs.socket_registry];
 find_system_procs([P|Ps], SysProcs) ->
     case process_info(P, [initial_call, priority]) of
@@ -517,6 +537,9 @@ find_system_procs([P|Ps], SysProcs) ->
         [{initial_call,{prim_file,start,0}},_] ->
 	    undefined = SysProcs#sys_procs.prim_file,
 	    find_system_procs(Ps, SysProcs#sys_procs{prim_file = P});
+        [{initial_call,{erts_trace_cleaner,start,0}}, _] ->
+	    undefined = SysProcs#sys_procs.trace_cleaner,
+	    find_system_procs(Ps, SysProcs#sys_procs{trace_cleaner = P});
         [{initial_call,{socket_registry,start,0}},_] ->
 	    undefined = SysProcs#sys_procs.socket_registry,
 	    find_system_procs(Ps, SysProcs#sys_procs{socket_registry = P});
@@ -553,6 +576,14 @@ apid(Pid) ->
     [N,P,I] = string:tokens(pid_to_list(Pid),"<>."),
     [list_to_integer(N),list_to_integer(P),list_to_integer(I)].
 
+fetch_socket_msg_flags(Node) ->
+    case code:is_loaded(prim_socket) of
+        {file,preloaded} ->
+            lists:sort(rpc:call(Node, socket, supports, [msg_flags]));
+        _ ->
+            ok
+    end.
+
 %% ------------------------------------------------
 %% Just test that the system is halted here.
 %% The reboot facility using heart is tested
@@ -560,14 +591,14 @@ apid(Pid) ->
 %% ------------------------------------------------
 reboot(Config) when is_list(Config) ->
     Args = args(),
-    {ok, Node} = start_node(init_test, Args),
+    {ok, Peer, Node} = ?CT_PEER(Args),
     erlang:monitor_node(Node, true),
     ok = rpc:call(Node, init, reboot, []),
     receive
 	{nodedown, Node} ->
 	    ok
     after 10000 ->
-	    stop_node(Node),
+	    peer:stop(Peer),
 	    ct:fail(not_stopping)
     end,
     ct:sleep(5000),
@@ -575,7 +606,7 @@ reboot(Config) when is_list(Config) ->
 	pang ->
 	    ok;
 	_ ->
-	    stop_node(Node),
+	    peer:stop(Peer),
 	    ct:fail(system_rebooted)
     end,
     ok.
@@ -599,14 +630,14 @@ catch_stop(Status) ->
 %% ------------------------------------------------
 stop(Config) when is_list(Config) ->
     Args = args(),
-    {ok, Node} = start_node(init_test, Args),
+    {ok, Peer, Node} = ?CT_PEER(Args),
     erlang:monitor_node(Node, true),
     ok = rpc:call(Node, init, reboot, []),
     receive
 	{nodedown, Node} ->
 	    ok
     after 10000 ->
-	    stop_node(Node),
+	    peer:stop(Peer),
 	    ct:fail(not_stopping)
     end,
     ct:sleep(5000),
@@ -614,13 +645,240 @@ stop(Config) when is_list(Config) ->
 	pang ->
 	    ok;
 	_ ->
-	    stop_node(Node),
+	    peer:stop(Peer),
 	    ct:fail(system_rebooted)
     end,
     ok.
 
+%% A small helper that prints the difference between two sets, A and B.
+-define(assertEqualSets(A,B),
+        begin
+            ((fun () ->
+                      case sets:is_equal(A,B) of
+                          true -> ok;
+                          false ->
+                              OnlyA = sets:to_list(sets:subtract(A, B)),
+                              OnlyB = sets:to_list(sets:subtract(B, A)),
+                              erlang:error({assertEqualSets,
+                                            [{module, ?MODULE},
+                                             {only_in_A, OnlyA}, {only_in_B, OnlyB},
+                                             {intersection, sets:to_list(sets:intersection(A, B))},
+                                             {'A', (??A)}, {'B', (??B)}]})
+                      end end)())
+        end).
+
+%% This testcase checks that the correct modules are loaded during init and kernel boot.
+boot_module_load(Config) ->
+
+    erlang:system_info(emu_flavor) =:= jit
+        orelse throw({skip, "Test only valid for JIT emulator"}),
+
+    Extension = [".exe" || element(1, os:type()) =:= win32],
+
+    TestCodeDir = filename:dirname(code:which(?MODULE)),
+
+    CommonArguments = shell_env([{"ERL_AFLAGS", ""},
+                                 {"ERL_FLAGS", ""},
+                                 {"ERL_ZFLAGS", ""}]) ++
+        ct:get_progname() ++ " +JPcover function -pa " ++ TestCodeDir ++
+        " -boot no_dot_erlang -noshell",
+
+    PreLoaded = sets:from_list(erlang:pre_loaded() ++ [?MODULE]),
+    MandatoryModules = sets:from_list(systools_make:mandatory_modules()),
+    PreLoadedMandatory = sets:union(PreLoaded, MandatoryModules),
+
+    %% inet_gethost_native and prim_tty_sighandler are executed during boot only
+    %% on some platforms
+    %% (e.g. Linux with a short hostname, where inet_config resolves the
+    %% host's FQDN using native name resolution). It is not part of any
+    %% preload manifest, so exclude it from the comparison.
+    PlatformOptionalBootModules = sets:from_list([inet_gethost_native, prim_tty_sighandler]),
+
+    [BeforeKernelStart, MinimalModules, CodeModules, DefaultModules] =
+        parse(shell_env([{"KERNEL_BOOT_TEST_MODULE", "init_SUITE"}]) ++
+              CommonArguments ++ " -mode test -s init stop"),
+
+    io:format("BeforeKernelStart: ~p~n", [BeforeKernelStart]),
+    io:format("MinimalModules: ~p~n", [MinimalModules]),
+    io:format("CodeModules: ~p~n", [CodeModules]),
+    io:format("DefaultModules: ~p~n", [DefaultModules]),
+
+    BeforeKernelStartSet = sets:union(sets:from_list(BeforeKernelStart), PreLoaded),
+    OptionalBootModules = sets:union(sets:from_list(CodeModules), PlatformOptionalBootModules),
+    MinimalModulesSet = sets:union([sets:from_list(MinimalModules),
+                                    OptionalBootModules,
+                                    PreLoadedMandatory]),
+    DefaultModulesSet = sets:union(sets:from_list(DefaultModules), MinimalModulesSet),
+
+    [MinimalAfterKernelStart] =
+        parse(CommonArguments ++ " -mode minimal -s init_SUITE loaded_modules"),
+
+    [DefaultAfterKernelStart] =
+        parse(CommonArguments ++ " -mode default -s init_SUITE loaded_modules"),
+
+    io:format("MinimalAfterKernelStart: ~p~n", [MinimalAfterKernelStart]),
+    io:format("DefaultAfterKernelStart: ~p~n", [DefaultAfterKernelStart]),
+
+    MinimalAfterKernelStartSet = sets:union([sets:from_list(MinimalAfterKernelStart),
+                                             PreLoaded, OptionalBootModules]),
+    DefaultAfterKernelStartSet = sets:union([sets:from_list(DefaultAfterKernelStart),
+                                             PreLoaded, OptionalBootModules]),
+
+    %% Check that all only the mandatory modules are preloaded when starting
+    ?assertEqualSets(MandatoryModules, sets:subtract(BeforeKernelStartSet, PreLoaded)),
+
+    %% Check that all the minimal modules are loaded when starting with mode minimal
+    ?assertEqualSets(MinimalModulesSet, MinimalAfterKernelStartSet),
+
+    %% Check that all the default modules are loaded when starting with mode default
+    ?assertEqualSets(DefaultModulesSet, DefaultAfterKernelStartSet),
+
+    %% Check that no minimal modules are part of the default modules
+    ?assertEqual([], sets:to_list(sets:intersection(sets:from_list(MinimalModules), sets:from_list(DefaultModules)))),
+
+    %% Check that minimal and default modules are sorted
+    ?assertEqual(MinimalModules, lists:sort(MinimalModules)),
+    ?assertEqual(DefaultModules, lists:sort(DefaultModules)),
+
+    %% Test that escript also loads modules that it should
+    PreloadFile = filename:join(proplists:get_value(priv_dir, Config), "preload.erl"),
+
+    write_escript(PreloadFile, TestCodeDir,
+                       ~"""
+                        -mode(interpret).
+                        main(_) ->
+                          init_SUITE:loaded_modules(),
+                          halt().
+                        """),
+
+    [AfterEscriptInterpStart] = parse("escript" ++ Extension ++ " " ++ PreloadFile),
+    EscriptModulesInterpSet = sets:from_list(AfterEscriptInterpStart),
+
+    io:format("EscriptInterpModules: ~p~n", [AfterEscriptInterpStart]),
+    io:format("OnlyEscriptInterpModules: ~p~n", [sets:to_list(sets:subtract(EscriptModulesInterpSet, MinimalAfterKernelStartSet))]),
+
+    EarlyEscriptModulesSet = sets:from_list([escript, file_io_server, raw_file_io, erl_eval]),
+    EscriptInterpPreLoadSet = sets:union(sets:from_list(escript:preload_parse_modules()), EarlyEscriptModulesSet),
+
+    io:format("EscriptInterpPreLoadSet: ~p~n", [sets:to_list(EscriptInterpPreLoadSet)]),
+
+    %% Check that escript in interpreted mode loads the modules needed
+    ?assertEqualSets(EscriptInterpPreLoadSet, sets:subtract(EscriptModulesInterpSet, DefaultAfterKernelStartSet)),
+
+    write_escript(PreloadFile, TestCodeDir,
+                       ~"""
+                        -module(preload_test).
+                        main(_) ->
+                          init_SUITE:loaded_modules(),
+                          halt().
+                        """),
+
+    [AfterEscriptCompStart] = parse("escript" ++ Extension ++ " " ++ PreloadFile),
+    AfterEscriptCompStartSet = sets:subtract(sets:from_list(AfterEscriptCompStart), DefaultAfterKernelStartSet),
+
+    io:format("EscriptCompModules: ~p~n", [AfterEscriptCompStart]),
+    io:format("OnlyEscriptCompModules: ~p~n", [sets:to_list(sets:subtract(AfterEscriptCompStartSet, MinimalAfterKernelStartSet))]),
+
+    EarlyEscriptCompModulesSet = sets:union(sets:from_list([compile, preload_test]), EarlyEscriptModulesSet),
+    EscriptCompPreLoadSet = sets:union(sets:from_list(escript:preload_parse_modules() ++ compile:pre_load()), EarlyEscriptCompModulesSet),
+
+    io:format("EscriptCompPreLoadSet: ~p~n", [sets:to_list(EscriptCompPreLoadSet)]),
+
+    %% Check that escript in interpreted mode loads the modules needed
+    %% When compiling an escript we allow that the compiler loads some extra modules
+    %% as the same loaded modules are used for compile:file, but escript only uses compile:forms.
+    ?assertEqual([], sets:to_list(sets:subtract(AfterEscriptCompStartSet, EscriptCompPreLoadSet))),
+
+    ok.
+
+write_escript(File, TestCodeDir, Body) ->
+    file:write_file(File,
+                    iolist_to_binary(
+                      ["#! /usr/bin/env escript\n",
+                       "%%! +JPcover function -pa " ++ TestCodeDir ++ "\n",
+                       Body])).
+
+parse(Cmd) ->
+    try
+        Res = os:cmd(Cmd, #{exception_on_failure => true}),
+        try
+            parse_terms(Res)
+        catch _:_ ->
+                io:format("Cmd: ~ts~nFailed to parse output: ~ts~n", [Cmd, Res])
+        end
+    catch _:Reason ->
+            io:format("Cmd: ~ts~nFailed to run command: ~p~n", [Cmd, Reason])
+    end.
+
+shell_env(Env) ->
+    lists:flatten(
+      case os:type() of
+          {win32, _} ->
+              [["set \"", Name, "=", Value, "\" && "] || {Name, Value} <- Env];
+          _ ->
+              [[Name, "='", Value, "' "] || {Name, Value} <- Env]
+      end).
+
+preload(Modules) ->
+    erlang:display(run_modules()),
+    erlang:display_string(".\n"),
+    erlang:display(maps:get(minimal, Modules)),
+    erlang:display_string(".\n"),
+    erlang:display(maps:get(code, Modules)),
+    erlang:display_string(".\n"),
+    erlang:display(maps:get(default, Modules)),
+    erlang:display_string(".\n").
+
+loaded_modules() ->
+    erlang:display(run_modules()),
+    erlang:display_string(".\n"),
+    init:stop().
+
+%% Returns which modules have been run so far.
+run_modules() ->
+    {module, code} = init:ensure_loaded(code),
+    lists:usort([M || M <- erlang:loaded(), {_, true} <- code:get_coverage(function, M)]).
+
+parse_terms(Str) ->
+    {ok, Tokens, _} = erl_scan:string(Str),
+    parse_terms(Tokens, []).
+parse_terms([], []) ->
+    [];
+parse_terms([{dot, _} = Dot|Rest], Acc) ->
+    case erl_parse:parse_term(lists:reverse([Dot|Acc])) of
+        {ok, Term} ->
+            [Term | parse_terms(Rest, [])];
+        {error, ErrorInfo} ->
+            exit({parse_error, ErrorInfo, lists:reverse([Dot|Acc])})
+    end;
+parse_terms([Token|Rest], Acc) ->
+    parse_terms(Rest, [Token|Acc]).
+
 %% ------------------------------------------------
-%% 
+%% Verify that init:stop() does not sleep for a fixed
+%% duration when flushing user_drv output. Shutdown
+%% should complete well under 1 second for an idle node.
+%% ------------------------------------------------
+stop_flush(Config) when is_list(Config) ->
+    {ok, Peer, Node} = ?CT_PEER(#{connection => standard_io}),
+    erlang:monitor_node(Node, true),
+    T0 = erlang:monotonic_time(millisecond),
+    ok = rpc:call(Node, init, stop, []),
+    receive
+        {nodedown, Node} ->
+            Elapsed = erlang:monotonic_time(millisecond) - T0,
+            ct:pal("Shutdown took ~b ms", [Elapsed]),
+            ?assert(Elapsed < 900,
+                    lists:flatten(
+                      io_lib:format("Shutdown took ~b ms, expected < 900 ms",
+                                    [Elapsed])))
+    after 10000 ->
+        peer:stop(Peer),
+        ct:fail(not_stopping)
+    end.
+
+%% ------------------------------------------------
+%%
 %% ------------------------------------------------
 get_status(Config) when is_list(Config) ->
     {Start, _} = init:get_status(),
@@ -649,27 +907,89 @@ script_id(Config) when is_list(Config) ->
     ok.
 
 %% ------------------------------------------------
+%% Test that .erlang file works as it should
+%% ------------------------------------------------
+dot_erlang(Config) ->
+    PrivDir = proplists:get_value(priv_dir, Config),
+
+    TestHome = filename:join(PrivDir, ?FUNCTION_NAME),
+    ok = file:make_dir(TestHome),
+
+    HomeEnv = case os:type() of
+                  {win32, _} ->
+                      [Drive | Path] = filename:split(TestHome),
+                      [{"APPDATA", filename:join(TestHome,"AppData")},
+                       {"HOMEDRIVE", Drive}, {"HOMEPATH", filename:join(Path)}];
+                  _ ->
+                      [{"HOME", TestHome}]
+              end,
+
+    NodeOpts = #{ env => HomeEnv },
+
+    %% Get basedir of peer node
+    {ok, CreatorPeer, CreatorNode} = ?CT_PEER(NodeOpts),
+    UserConfig = erpc:call(CreatorNode, filename, basedir, [user_config,"erlang"]),
+    peer:stop(CreatorPeer),
+
+    XDGErlang = filename:join([UserConfig, ".erlang"]),
+    ok = filelib:ensure_dir(XDGErlang),
+    ok = file:write_file(XDGErlang, "application:set_env(kernel,test,xdg)."),
+
+    {ok, Peer, Node} = ?CT_PEER(NodeOpts),
+
+    ?assertEqual({ok, xdg}, erpc:call(Node, application, get_env, [kernel, test])),
+    peer:stop(Peer),
+
+    HomeErlang = filename:join([TestHome, ".erlang"]),
+    ok = file:write_file(HomeErlang, "application:set_env(kernel,test,home)."),
+    {ok, Peer2, Node2} = ?CT_PEER(NodeOpts),
+
+    ?assertEqual({ok, home}, erpc:call(Node2, application, get_env, [kernel, test])),
+    peer:stop(Peer2),
+
+    ok.
+
+unknown_module(Config) when is_list(Config) ->
+    Port = open_port({spawn, "erl -s unknown_module"},
+                     [exit_status, use_stdio, stderr_to_stdout]),
+    Error = "Error! Failed to load module 'unknown_module' because it cannot be found.",
+    [_ | _] = string:find(collect_until_exit_one(Port), Error),
+    ok.
+
+collect_until_exit_one(Port) ->
+    receive
+        {Port, {data, Msg}} -> Msg ++ collect_until_exit_one(Port);
+        {Port, {exit_status, 1}} -> []
+    after
+        30_000 -> ct:fail(erl_timeout)
+    end.
+
+%% ------------------------------------------------
 %% Start the slave system with -boot flag.
 %% ------------------------------------------------
 
 boot1(Config) when is_list(Config) ->
-    Args = args() ++ " -boot start_sasl",
-    {ok, Node} = start_node(init_test, Args),
-    stop_node(Node),
+    Args = args() ++ ["-boot", "start_sasl"],
+    {ok, Peer, _Node} = ?CT_PEER(Args),
+    peer:stop(Peer),
 
     %% Try to start with non existing boot file.
-    Args1 = args() ++ " -boot dummy_script",
-    {error, timeout} = start_node(init_test, Args1),
-
-    ok.
+    Args1 = args() ++ ["-boot", "dummy_script"],
+    try
+        ?CT_PEER(#{args => Args1, connection => standard_io}),
+        ct:fail({boot1, "started with non existing boot file"})
+    catch
+        exit:{boot_failed, {exit_status, 1}} ->
+            ok
+    end.
 
 boot2(Config) when is_list(Config) ->
     %% Absolute boot file name
     Boot = filename:join([code:root_dir(), "bin", "start_sasl"]),
 
-    Args = args() ++ " -boot \"" ++ Boot++"\"",
-    {ok, Node} = start_node(init_test, Args),
-    stop_node(Node),
+    Args = args() ++ ["-boot", Boot],
+    {ok, Peer, _Node} = ?CT_PEER(Args),
+    peer:stop(Peer),
 
     case os:type() of 
 	{win32, _} ->
@@ -679,35 +999,235 @@ boot2(Config) when is_list(Config) ->
 				     ($/) -> $\\;
 				     (C) -> C
 				end, Boot),
-	    Args2 = args() ++ " -boot \"" ++ Win_boot ++ "\"",
-	    {ok, Node2} = start_node(init_test, Args2),
-	    stop_node(Node2);
+	    Args2 = args() ++ ["-boot", Win_boot],
+	    {ok, Peer2, _Node2} = ?CT_PEER(Args2),
+	    peer:stop(Peer2);
 	_ ->
 	    ok
     end,
 
     ok.
 
+dash_S(_Config) ->
+
+    %% Test that arguments are passed correctly
+    {[],[],[]} = run_dash_S_test([]),
+    {["a"],[],[]} = run_dash_S_test(["a"]),
+    {["-S","--"],[],[]} = run_dash_S_test(["-S","--"]),
+    {["--help"],[],[]} = run_dash_S_test(["--help"]),
+    {["-extra"],[],[]} = run_dash_S_test(["-extra"]),
+    {["-run"],[],[]} = run_dash_S_test(["-run"]),
+    {["-args_file"],[],[]} = run_dash_S_test(["-args_file"]),
+    {["+A","-1"],[],[]} = run_dash_S_test(["+A","-1"]),
+    {["-s","init","stop"],[],[]} = run_dash_S_test(["-s","init","stop"]),
+
+    %% Test that environment variables are handled correctly
+    {["a"],["b","c","d"],[]} =
+        run_dash_S_test([{"ERL_AFLAGS","b"},{"ERL_FLAGS","c"},{"ERL_ZFLAGS","d"}],["a"]),
+    %% test that -S in environment variables are interpreted as flags
+    {["a"],[],[["a"],["b"],["c"]]} =
+        run_dash_S_test([{"ERL_AFLAGS","+S 1 -S a"},{"ERL_FLAGS","-S b"},
+                         {"ERL_ZFLAGS","-S c"}],["a"]),
+
+    %% Test that -s and -run work
+    ?assertMatch(
+       "[a].{[\"a\""++_,
+       run_dash_test(["-s",?MODULE,"test_dash_s","a","-S",?MODULE,"test_dash_S","a"])),
+    ?assertMatch(
+       "[\"a\"].{[\"a\""++_,
+       run_dash_test(["-run",?MODULE,"test_dash_s","a","-S",?MODULE,"test_dash_S","a"])),
+
+    %% Test error conditions
+    ?assertNotEqual(
+       nomatch,
+       string:find(run_dash_test(["-S"]),
+                   "Error! The -S option must be followed by at least a module to start")),
+
+    ?assertNotEqual(
+       nomatch,
+       string:find(run_dash_test(["-S","a"]),
+                   "Error! Failed to load module 'a' because it cannot be found.")),
+
+    ?assertNotEqual(
+       nomatch,
+       string:find(run_dash_test(["-S",?MODULE,"a"]),
+                   "Error! init_SUITE:a/1 is not exported.")),
+
+    ok.
+
+run_dash_S_test(Args) ->
+    run_dash_S_test("", Args).
+run_dash_S_test(Prefix, Args) ->
+    run_dash_test(Prefix, ["-S", ?MODULE, "test_dash_S" | Args]).
+
+test_dash_S(Args) ->
+    AllArgs = {Args, init:get_plain_arguments(),
+               proplists:get_all_values('S',init:get_arguments()),
+               erlang:system_info(emu_args)},
+    io:format("~p.",[AllArgs]),
+    erlang:halt().
+
+test_dash_s(Args) ->
+    io:format("~p.",[Args]).
+
+dash_run(_Config) ->
+
+    {undefined,[]} =
+        run_dash_test(["-run",?MODULE,"test_dash_run","-s","init","stop"]),
+
+    {["a"],["b"]} =
+        run_dash_test(["-run",?MODULE,"test_dash_run","a","--","b","-s","init","stop"]),
+
+    %% Test error conditions
+    ?assertNotEqual(
+       nomatch,
+       string:find(run_dash_test(["-run","a"]),
+                   "Error! Failed to load module 'a' because it cannot be found.")),
+
+    ?assertNotEqual(
+       nomatch,
+       string:find(run_dash_test(["-run",?MODULE]),
+                   "Error! init_SUITE:start/0 is not exported.")),
+
+    ?assertNotEqual(
+       nomatch,
+       string:find(run_dash_test(["-run",?MODULE,"a"]),
+                   "Error! init_SUITE:a/0 is not exported.")),
+
+    ok.
+
+test_dash_run() ->
+    test_dash_run(undefined).
+test_dash_run(Args) ->
+    io:format("~p.",[{Args, init:get_plain_arguments(), erlang:system_info(emu_args)}]),
+    ok.
+
+dash_s(_Config) ->
+
+    {undefined,[]} =
+        run_dash_test(["-s",?MODULE,"test_dash_run","-s","init","stop"]),
+
+    {[a],["b"]} =
+        run_dash_test(["-s",?MODULE,"test_dash_run","a","--","b","-s","init","stop"]),
+
+    %% Test error conditions
+    ?assertNotEqual(
+       nomatch,
+       string:find(run_dash_test(["-s","a"]),
+                   "Error! Failed to load module 'a' because it cannot be found.")),
+
+    ?assertNotEqual(
+       nomatch,
+       string:find(run_dash_test(["-s",?MODULE]),
+                   "Error! init_SUITE:start/0 is not exported.")),
+
+    ?assertNotEqual(
+       nomatch,
+       string:find(run_dash_test(["-s",?MODULE,"a"]),
+                   "Error! init_SUITE:a/0 is not exported.")),
+
+    ok.
+
+dash_extra(Config) ->
+    %% Test that arguments are passed correctly
+    {[]} = run_dash_extra_test([]),
+    {["a"]} = run_dash_extra_test(["a"]),
+    {["--help"]} = run_dash_extra_test(["--help"]),
+    {["-S","--"]} = run_dash_extra_test(["-S","--"]),
+    {["-extra","--"]} = run_dash_extra_test(["-extra","--"]),
+    {["-run"]} = run_dash_extra_test(["-run"]),
+    {["-args_file"]} = run_dash_extra_test(["-args_file"]),
+    {["+A","-1"]} = run_dash_extra_test(["+A","-1"]),
+    {["-s","init","stop"]} = run_dash_extra_test(["-s","init","stop"]),
+
+    %% Test that environment variables are handled correctly
+    {["b","c","d","a"]} =
+        run_dash_extra_test([{"ERL_AFLAGS","b"},{"ERL_FLAGS","c"},{"ERL_ZFLAGS","d"}],
+                            ["a"]),
+    {["c","d","+A","1","--","a"]} =
+        run_dash_extra_test([{"ERL_AFLAGS","-extra +A 1 --"},{"ERL_FLAGS","c"},{"ERL_ZFLAGS","d"}],
+                            ["a"]),
+    {["+A","a","+B","+C"]} =
+        run_dash_extra_test([{"ERL_AFLAGS","-extra +A"},
+                             {"ERL_FLAGS","-extra +B"},
+                             {"ERL_ZFLAGS","-extra +C"}],["a"]),
+
+    %% Test that arguments from -args_file work as they should
+    ArgsFile = filename:join(?config(priv_dir, Config),
+                             atom_to_list(?MODULE) ++ "_args_file.args"),
+    NestedArgsFile = filename:join(?config(priv_dir, Config),
+                             atom_to_list(?MODULE) ++ "_nexted_args_file.args"),
+    file:write_file(NestedArgsFile,"y -extra +Y"),
+
+    file:write_file(ArgsFile,["z -args_file ",NestedArgsFile," -extra +Z"]),
+
+    {["c","z","y","d",
+      %% -extra starts here
+      "a","+Y","+Z","b"]} =
+        run_dash_extra_test([{"ERL_FLAGS",["c -args_file ",ArgsFile," d -extra b"]}],["a"]),
+
+    ok.
+
+run_dash_extra_test(Args) ->
+    run_dash_extra_test([], Args).
+run_dash_extra_test(Prefix, Args) ->
+    run_dash_test(Prefix, ["-run", ?MODULE, "test_dash_extra", "-extra" | Args]).
+
+test_dash_extra() ->
+    AllArgs = {init:get_plain_arguments(), erlang:system_info(emu_args)},
+    io:format("~p.",[AllArgs]),
+    erlang:halt().
+
+
+run_dash_test(Args) ->
+    run_dash_test([],Args).
+run_dash_test(Env, Args) ->
+    [Exec | ExecArgs] = string:split(ct:get_progname()," ", all),
+    PortExec = os:find_executable(Exec),
+    PortArgs = ExecArgs ++ ["-pa",filename:dirname(code:which(?MODULE)),
+                            "-noshell" | Args],
+    PortEnv = [{"ERL_CRASH_DUMP_SECONDS","0"} |
+               [{K,lists:flatten(V)} || {K, V} <- Env]],
+    ct:log("Exec: ~p~nPortArgs: ~p~nPortEnv: ~p~n",[PortExec, PortArgs, PortEnv]),
+    Port =
+        open_port({spawn_executable, PortExec},
+                  [stderr_to_stdout,binary,out,in,hide,exit_status,
+                   {args, PortArgs}, {env, PortEnv}]),
+    receive
+        {Port,{exit_status,N}} ->
+            N
+    after 5000 ->
+            ct:fail({timeout, receive M -> M after 0 -> [] end})
+    end,
+    Res = unicode:characters_to_list(
+            iolist_to_binary(
+              (fun F() ->
+                       receive
+                           {Port,{data,Data}} ->
+                               [Data | F()]
+                       after 0 ->
+                               []
+                       end
+               end)())),
+    ct:log("Res: ~ts~n",[Res]),
+    maybe
+        {ok, Toks, _} ?= erl_scan:string(Res),
+        {ok, Tuple} ?= erl_parse:parse_term(Toks),
+        erlang:delete_element(tuple_size(Tuple), Tuple)
+    else
+        _ ->
+            Res
+    end.
+
 %% Misc. functions    
 
-start_node(Name, Param) ->
-    test_server:start_node(Name, slave, [{args, Param}]).
-
-stop_node(Node) ->
-    test_server:stop_node(Node).
-
-from(H, [H | T]) -> T;
-from(H, [_ | T]) -> from(H, T);
-from(_, []) -> [].
-
 args() ->
-    "-a kalle -- a b -d -b hej hopp -- c d -b san sa -c 4 5 6 -c 7 8 9".
+    ["-a", "kalle", "--", "a", "b", "-d", "-b", "hej", "hopp",
+        "--", "c", "d", "-b", "san", "sa", "-c", "4", "5", "6", "-c", "7", "8", "9"].
 
 long_args(A) ->
-    lists:flatten(
-      io_lib:format("-a kalle -- a b -d -b hej hopp -- c "
-		    "~s -b san sa -c 4 5 6 -c 7 8 9",
-		    [A])).
+    ["-a", "kalle", "--", "a", "b", "-d", "-b", "hej", "hopp", "--", "c", A,
+        "-b", "san", "sa", "-c", "4", "5", "6", "-c", "7", "8", "9"].
 
 create_script(Config) ->
     PrivDir = proplists:get_value(priv_dir,Config),
@@ -724,4 +1244,3 @@ create_script(Config) ->
     file:close(Fd),
     {filename:dirname(Name), filename:basename(Name),
      KernelVer, StdlibVer}.
-

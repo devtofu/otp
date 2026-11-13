@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2018-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2018-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -47,8 +49,7 @@
 -define(domain,#{domain=>[?MODULE]}).
 
 suite() ->
-    [{timetrap,{seconds,30}},
-     {ct_hooks,[logger_test_lib]}].
+    [{timetrap,{seconds,30}}].
 
 init_per_suite(Config) ->
     timer:start(),                              % to avoid progress report
@@ -348,7 +349,7 @@ errors(Config) ->
                                      config,
                                      #{file=>"newfilename"}),
 
-    %% Read-only fields may (accidentially) be included in the change,
+    %% Read-only fields may (accidentally) be included in the change,
     %% but it won't take effect
     {ok,C} = logger:get_handler_config(Name1),
     ok = logger:set_handler_config(Name1,config,#{olp=>dummyvalue}),
@@ -647,25 +648,26 @@ sync(Config) ->
                   {disk_log,sync}]),
 
     logger:notice("second", ?domain),
-    timer:sleep(?IDLE_DETECT_TIME*2),
+    timer:sleep(?IDLE_DETECT_TIME*2), %% wait for automatic disk_log_sync
     logger:notice("third", ?domain),
-    %% wait for automatic disk_log_sync
-    check_tracer(?IDLE_DETECT_TIME*2),
+    timer:sleep(?IDLE_DETECT_TIME*2), %% wait for automatic disk_log_sync
+
+    check_tracer(1000),
 
     try_read_file(Log, {ok,<<"first\nsecond\nthird\n">>}, 1000),
-    
+
     %% switch repeated filesync on and verify that the looping works
     SyncInt = 1000,
     WaitT = 4500,
-    OneSync = {logger_h_common,handle_cast,repeated_filesync},
+    OneSync = {logger_h_common,handle_info,{timeout,repeated_filesync}},
     %% receive 1 repeated_filesync per sec
-    start_tracer([{{logger_h_common,handle_cast,2},
-                   [{[repeated_filesync,'_'],[],[{message,{caller}}]}]}],
+    start_tracer([{{logger_h_common,handle_info,2},
+                   [{[{timeout,'_',repeated_filesync},'_'],[],[{message,{caller}}]}]}],
                  [OneSync || _ <- lists:seq(1, trunc(WaitT/SyncInt))]),
 
     HConfig2 = HConfig#{filesync_repeat_interval => SyncInt},
     ok = logger:update_handler_config(?MODULE, config, HConfig2),
-                      
+
     SyncInt = maps:get(filesync_repeat_interval,
                        maps:get(cb_state,logger_olp:info(h_proc_name()))),
     timer:sleep(WaitT),
@@ -674,7 +676,7 @@ sync(Config) ->
     check_tracer(100),
     ok.
 sync(cleanup,_Config) ->
-    dbg:stop_clear(),
+    dbg:stop(),
     logger:remove_handler(?MODULE).
 
 disk_log_wrap(Config) ->
@@ -720,7 +722,7 @@ disk_log_wrap(Config) ->
 
     %% wait for trace messages
     timer:sleep(1000),
-    dbg:stop_clear(),
+    dbg:stop(),
     Received = lists:flatmap(fun({trace,_M,handle_info,
                                   [_,{disk_log,_Node,_Name,What},_]}) ->
                                      [{trace,What}];
@@ -732,7 +734,7 @@ disk_log_wrap(Config) ->
     ok.
 
 disk_log_wrap(cleanup,_Config) ->
-    dbg:stop_clear(),
+    dbg:stop(),
     logger:remove_handler(?MODULE).
 
 disk_log_full(Config) ->
@@ -766,7 +768,7 @@ disk_log_full(Config) ->
 
     %% wait for trace messages
     timer:sleep(2000),
-    dbg:stop_clear(),
+    dbg:stop(),
     Received = lists:flatmap(fun({trace,_M,handle_info,
                                   [_,{disk_log,_Node,_Name,What},_]}) ->
                                      [{trace,What}];
@@ -782,7 +784,7 @@ disk_log_full(Config) ->
     %%  {trace,{error_status,{error,{full,_}}}}] = Received,
     ok.
 disk_log_full(cleanup, _Config) ->
-    dbg:stop_clear(),
+    dbg:stop(),
     logger:remove_handler(?MODULE).    
 
 disk_log_events(_Config) ->
@@ -816,7 +818,7 @@ disk_log_events(_Config) ->
     [whereis(h_proc_name()) ! E || E <- Events],
     %% wait for trace messages
     timer:sleep(2000),
-    dbg:stop_clear(),
+    dbg:stop(),
     Received = lists:map(fun({trace,_M,handle_info,
                               [_,Got,_]}) -> Got
                          end, test_server:messages_get()),
@@ -828,7 +830,7 @@ disk_log_events(_Config) ->
                   end, Received),
     ok.
 disk_log_events(cleanup, _Config) ->
-    dbg:stop_clear(),
+    dbg:stop(),
     logger:remove_handler(?MODULE).    
 
 write_failure(Config) ->
@@ -1050,7 +1052,7 @@ op_switch_to_flush(Config) ->
                                             flush_qlen => 300,
                                             burst_limit_enable => false}},    
                 ok = logger:update_handler_config(?MODULE, NewHConfig),
-                NumOfReqs = 1500,
+                NumOfReqs = 10000,
                 Procs = 10,
                 Bursts = 10,
                 %% It sometimes happens that the handler either gets
@@ -1170,13 +1172,14 @@ qlen_kill_new(Config) ->
     RestartAfter = ?OVERLOAD_KILL_RESTART_AFTER,
     NewHConfig =
         HConfig#{config =>
-                     DLHConfig#{overload_kill_enable=>true,
+                     DLHConfig#{burst_limit_enable=>false,
+                                overload_kill_enable=>true,
                                 overload_kill_qlen=>10,
                                 overload_kill_mem_size=>Mem0+50000,
                                 overload_kill_restart_after=>RestartAfter}},
     ok = logger:update_handler_config(?MODULE, NewHConfig),
     MRef = erlang:monitor(process, Pid0),
-    NumOfReqs = 100,
+    NumOfReqs = 5000,
     Procs = 4,
     send_burst({n,NumOfReqs}, {spawn,Procs,0}, {chars,79}, notice),
     %% send_burst({n,NumOfReqs}, seq, {chars,79}, notice),
@@ -1213,7 +1216,7 @@ mem_kill_new(Config) ->
                                 overload_kill_restart_after=>RestartAfter}},
     ok = logger:update_handler_config(?MODULE, NewHConfig),
     MRef = erlang:monitor(process, Pid0),
-    NumOfReqs = 100,
+    NumOfReqs = 500,
     Procs = 4,
     send_burst({n,NumOfReqs}, {spawn,Procs,0}, {chars,79}, notice),
     %% send_burst({n,NumOfReqs}, seq, {chars,79}, notice),
@@ -1248,7 +1251,7 @@ restart_after(Config) ->
     ok = logger:update_handler_config(?MODULE, NewHConfig1),
     MRef1 = erlang:monitor(process, whereis(h_proc_name())),
     %% kill handler
-    send_burst({n,100}, {spawn,5,0}, {chars,79}, notice),
+    send_burst({n,5000}, {spawn,5,0}, {chars,79}, notice),
     receive
         {'DOWN', MRef1, _, _, _Reason1} ->
             file_delete(Log),
@@ -1271,7 +1274,7 @@ restart_after(Config) ->
     Pid0 = whereis(h_proc_name()),
     MRef2 = erlang:monitor(process, Pid0),
     %% kill handler
-    send_burst({n,100}, {spawn,5,0}, {chars,79}, notice),
+    send_burst({n,5000}, {spawn,5,0}, {chars,79}, notice),
     receive
         {'DOWN', MRef2, _, _, _Reason2} ->
             file_delete(Log),
@@ -1603,7 +1606,7 @@ tpl([{{M,F,A},MS}|Trace]) ->
         {_,_,1} ->
             ok;
         _ ->
-            dbg:stop_clear(),
+            dbg:stop(),
             throw({skip,"Can't trace "++atom_to_list(M)++":"++
                        atom_to_list(F)++"/"++integer_to_list(A)})
     end,
@@ -1611,12 +1614,15 @@ tpl([{{M,F,A},MS}|Trace]) ->
 tpl([]) ->
     ok.
 
-tracer({trace,_,call,{logger_h_common,handle_cast,[Op|_]},Caller},
+tracer({trace,_,call,{logger_h_common = Mod,handle_cast = Func,[Op|_]},Caller},
        {Pid,[{Mod,Func,Op}|Expected]}) ->
     maybe_tracer_done(Pid,Expected,{Mod,Func,Op},Caller);
 tracer({trace,_,call,{Mod=logger_disk_log_h,Func=disk_log_write,[_,_,Data]},Caller}, {Pid,[{Mod,Func,Data}|Expected]}) ->
     maybe_tracer_done(Pid,Expected,{Mod,Func,Data},Caller);
 tracer({trace,_,call,{Mod,Func,_},Caller}, {Pid,[{Mod,Func}|Expected]}) ->
+    maybe_tracer_done(Pid,Expected,{Mod,Func},Caller);
+tracer({trace,_,call,{logger_h_common = Mod,handle_info = Func,[{timeout,_,Op},_S]},Caller},
+       {Pid,[{Mod,Func,{timeout,Op}}|Expected]}) ->
     maybe_tracer_done(Pid,Expected,{Mod,Func},Caller);
 tracer({trace,_,call,Call,Caller}, {Pid,Expected}) ->
     ct:log("Tracer got unexpected: ~p~nCaller: ~p~nExpected: ~p~n",[Call,Caller,Expected]),
@@ -1633,13 +1639,13 @@ maybe_tracer_done(Pid,Expected,Got,Caller) ->
 check_tracer(T) ->
     receive
         tracer_done ->
-            dbg:stop_clear(),
+            dbg:stop(),
             ok;
         {tracer_got_unexpected,Got,Expected} ->
-            dbg:stop_clear(),
+            dbg:stop(),
             ct:fail({tracer_got_unexpected,Got,Expected})
     after T ->
-            dbg:stop_clear(),
+            dbg:stop(),
             ct:fail({timeout,tracer})
     end.
 

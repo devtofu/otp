@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2010-2017. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2010-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,6 +21,10 @@
 %%
 
 -module(diameter_types).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, binary_to_atom, 1}},
+          {nowarn_possibly_unsafe_function, {erlang, binary_to_atom, 2}}]).
 
 %%
 %% Encode/decode of RFC 3588 Data Formats, Basic (section 4.2) and
@@ -243,12 +249,22 @@
     <<0:48>>;
 
 'Address'(decode, <<A:16, B/binary>>, _)
-  when 1 == A,  4 == size(B);
-       2 == A, 16 == size(B) ->
+  when 1 == A,  4 == byte_size(B);
+       2 == A, 16 == byte_size(B) ->
     list_to_tuple([N || <<N:A/unit:8>> <= B]);
+
+%% Bytes for non-IP address types are left for the user to interpret.
+'Address'(decode, <<A:16, B/binary>>, _)
+  when 2 < A, A < 65535 ->
+    {A, B};
 
 'Address'(decode, B, _) ->
     ?INVALID_LENGTH(B);
+
+%% Allow IP address types as both 2- and 4/8-tuples.
+'Address'(encode, {A, B}, _)
+  when 0 < A, A < 65535 ->
+    <<A:16, B/binary>>;
 
 'Address'(encode, T, _) ->
     Ns = tuple_to_list(diameter_lib:ipaddr(T)),  %% length 4 or 8
@@ -535,7 +551,7 @@ portnr(<<>>, aaa, #{rfc := 6733}) ->
     3868;
 portnr(<<>>, aaas, #{rfc := 6733}) ->
     5868;
-portnr(<<>>, _, #{rfc := 3588}) ->
+portnr(<<>>, _, _) ->
     3868;
 portnr(B, _, _) ->
     binary_to_integer(B).
@@ -544,6 +560,8 @@ transport(<<>>, #{rfc := 6733}) ->
     tcp;
 transport(<<>>, #{rfc := 3588}) ->
     sctp;
+transport(<<>>, _) ->
+    tcp;
 transport(B, _) ->
     to_atom(B).
 

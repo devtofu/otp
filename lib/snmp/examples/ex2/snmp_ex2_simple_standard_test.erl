@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2006-2016. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2006-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 %%----------------------------------------------------------------------
@@ -246,33 +248,31 @@ verify_vbs([Vb|T], NameAndTypes, Acc) ->
     Acc2 = lists:flatten(io_lib:format("~s~n   ~s", [Acc, Val])),
     verify_vbs(T, NameAndTypes, Acc2).
 
-verify_vb(#varbind{oid = Oid, variabletype = Type, value = Val} = Vb, 
-	  NameAndTypes) ->
+verify_vb(#varbind{oid = Oid} = Vb, NameAndTypes) ->
     case lists:reverse(Oid) of
 	[0|RevOid] ->
-	    case snmp_ex2_manager:oid_to_name(lists:reverse(RevOid)) of
-		{ok, Name} ->
-		    case lists:keysearch(Name, 1, NameAndTypes) of
-			{value, {Name, Type}} ->
-			    Val;
-			{value, {Name, WrongType}} ->
-			    error({wrong_type, {WrongType, Vb}});
-			false ->
-			    error({unexpected_name, {Name, Vb}})
-		    end;
-		{error, Reason} ->
-		    error({unexpected_oid, {Reason, Vb}})
-	    end;
+            verify_vb_value(lists:reverse(RevOid), Vb, NameAndTypes);
 	_ ->
-	    case lists:keysearch(Oid, 1, NameAndTypes) of
-		{value, {Oid, Type}} ->
-		    Val;
-		{value, {Oid, WrongType}} ->
-		    error({wrong_type, {WrongType, Vb}});
-		false ->
-		    error({unexpected_oid, Vb})
-	    end
+            verify_vb_value(Oid, Vb, NameAndTypes)
     end.
+
+verify_vb_value(Oid,
+                #varbind{variabletype = Type, value = Val} = Vb,
+                NameAndTypes) ->
+    case snmp_ex2_manager:oid_to_name(Oid) of
+        {ok, Name} ->
+            case lists:keysearch(Name, 1, NameAndTypes) of
+                {value, {Name, Type}} ->
+                    Val;
+                {value, {Name, WrongType}} ->
+                    error({wrong_type, {WrongType, Vb}});
+                false ->
+                    error({unexpected_name, {Name, Vb}})
+            end;
+        {error, Reason} ->
+            error({unexpected_oid, {Reason, Vb}})
+    end.
+    
 
 
 std_mib(MibName) ->

@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2014-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2014-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -40,8 +42,6 @@ void erts_make_magic_ref_in_array(Uint32 ref[ERTS_REF_NUMBERS]);
 void erts_magic_ref_remove_bin(Uint32 refn[ERTS_REF_NUMBERS]);
 void erts_magic_ref_save_bin__(Eterm ref);
 ErtsMagicBinary *erts_magic_ref_lookup_bin__(Uint32 refn[ERTS_REF_NUMBERS]);
-void erts_pid_ref_delete(Eterm ref);
-Eterm erts_pid_ref_lookup__(Uint32 refn[ERTS_REF_NUMBERS]);
 
 
 /* strict monotonic counter */
@@ -79,7 +79,7 @@ Eterm erts_debug_make_unique_integer(Process *c_p,
 				     Eterm etval1);
 
 
-ERTS_GLB_INLINE void erts_set_ref_numbers(Uint32 *ref, Uint32 thr_id, Uint64 value);
+ERTS_GLB_INLINE void erts_set_ref_numbers(Uint32 ref[ERTS_REF_NUMBERS], Uint32 thr_id, Uint64 value);
 ERTS_GLB_INLINE Uint32 erts_get_ref_numbers_thr_id(Uint32 *ref);
 ERTS_GLB_INLINE int erts_is_ref_numbers_magic(Uint32 *ref);
 ERTS_GLB_INLINE int erts_is_pid_ref_numbers(Uint32 *ref);
@@ -91,11 +91,12 @@ ERTS_GLB_INLINE void erts_sched_make_magic_ref_in_array(ErtsSchedulerData *esdp,
 							Uint32 ref[ERTS_REF_NUMBERS]);
 ERTS_GLB_INLINE Eterm erts_sched_make_ref_in_buffer(ErtsSchedulerData *esdp,
 						    Eterm buffer[ERTS_REF_THING_SIZE]);
+ERTS_GLB_INLINE Eterm erts_mk_magic_ref_get_refc(Eterm * *hpp, ErlOffHeap * ohp, Binary*, erts_aint_t*);
 ERTS_GLB_INLINE Eterm erts_mk_magic_ref(Eterm **hpp, ErlOffHeap *ohp, Binary *mbp);
 ERTS_GLB_INLINE Binary *erts_magic_ref2bin(Eterm mref);
 ERTS_GLB_INLINE void erts_magic_ref_save_bin(Eterm ref);
 ERTS_GLB_INLINE ErtsMagicBinary *erts_magic_ref_lookup_bin(Uint32 ref[ERTS_REF_NUMBERS]);
-ERTS_GLB_INLINE Eterm erts_pid_ref_lookup(Uint32 *refn);
+ERTS_GLB_INLINE Eterm erts_pid_ref_lookup(Uint32 *refn, int len);
 ERTS_GLB_INLINE Eterm erts_get_pid_of_ref(Eterm ref);
 
 #define ERTS_REF1_MAGIC_MARKER_BIT_NO__ \
@@ -198,15 +199,24 @@ erts_sched_make_ref_in_buffer(ErtsSchedulerData *esdp,
 }
 
 ERTS_GLB_INLINE Eterm
-erts_mk_magic_ref(Eterm **hpp, ErlOffHeap *ohp, Binary *bp)
+erts_mk_magic_ref_get_refc(Eterm **hpp, ErlOffHeap *ohp, Binary *bp, erts_aint_t* refcp)
 {
     Eterm *hp = *hpp;
     ASSERT(bp->intern.flags & BIN_FLAG_MAGIC);
     write_magic_ref_thing(hp, ohp, (ErtsMagicBinary *) bp);
     *hpp += ERTS_MAGIC_REF_THING_SIZE;
-    erts_refc_inc(&bp->intern.refc, 1);
+    if (refcp)
+        *refcp = erts_refc_inctest(&bp->intern.refc, 1);
+    else
+        erts_refc_inc(&bp->intern.refc, 1);
     OH_OVERHEAD(ohp, bp->orig_size / sizeof(Eterm));
     return make_internal_ref(hp);
+}
+
+ERTS_GLB_INLINE Eterm
+erts_mk_magic_ref(Eterm **hpp, ErlOffHeap *ohp, Binary *bp)
+{
+    return erts_mk_magic_ref_get_refc(hpp, ohp, bp, NULL);
 }
 
 ERTS_GLB_INLINE Binary *
@@ -246,11 +256,24 @@ erts_magic_ref_lookup_bin(Uint32 ref[ERTS_REF_NUMBERS])
  * from the outside world...
  */
 ERTS_GLB_INLINE Eterm
-erts_pid_ref_lookup(Uint32 *refn)
+erts_pid_ref_lookup(Uint32 *refn, int len)
 {
+    Eterm pid;
+    if (len != ERTS_PID_REF_NUMBERS)
+        return am_undefined;
     if (!erts_is_pid_ref_numbers(refn))
-	return THE_NON_VALUE;
-    return erts_pid_ref_lookup__(refn);
+	return am_undefined;
+
+    pid = (((Eterm) refn[3])
+#ifdef ARCH_64
+           | (((Eterm) refn[4]) << 32)
+#endif
+        );
+
+    if (!is_internal_pid(pid))
+        return THE_NON_VALUE; /* We got garbage; we have not created this... */
+
+    return pid;
 }
 
 ERTS_GLB_INLINE Eterm erts_get_pid_of_ref(Eterm ref)

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0
 %% 
-%% Copyright Ericsson AB 2018-2019. All Rights Reserved.
+%% Copyright Ericsson AB 2018-2026. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -26,7 +28,7 @@
          await_finish/1
         ]).
 
-%% Functions used by evaluators to interact with eachother
+%% Functions used by evaluators to interact with each other
 -export([
          %% Announce functions
          %% (Send an announcement from one evaluator to another)
@@ -97,7 +99,10 @@
       Init :: initial_evaluator_state().
                              
 start(Name, Seq, InitState) 
-  when is_list(Name) andalso is_list(Seq) andalso (Seq =/= []) ->
+  when is_list(Name) andalso
+       is_list(Seq)  andalso
+       (Seq =/= [])  andalso
+       is_map(InitState) ->
     %% Make sure 'parent' is not already used
     case maps:find(parent, InitState) of
         {ok, _} ->
@@ -129,16 +134,27 @@ loop(ID, [#{desc := Desc,
             ?SEV_IPRINT("command ~w skip: "
                         "~n   ~p", [ID, Reason]),
             exit({skip, Reason});
+        {error, Reason} when (Reason =:= enetdown) ->
+            %% ENETDOWN:
+            %% The local network interface used to reach the destination is down
+            %% This could be temporary, but no point in waiting, just give up.
+            wprint("command ~w failed: ~w => SKIP", [ID, Reason]),
+            exit({skip, Reason});
         {error, Reason} ->
             ?SEV_EPRINT("command ~w failed: "
                         "~n   ~p", [ID, Reason]),
             exit({command_failed, ID, Reason, State})
     catch
+        error:notsup = Reason:Stack ->
+            ?SEV_IPRINT("command ~w skip: "
+                        "~n   ~p"
+                        "~n   ~p", [ID, Reason, Stack]),
+            exit({skip, Reason});
         C:{skip, command} = E:_ when ((C =:= throw) orelse (C =:= exit)) ->
             %% Secondary skip
             exit(E);
         C:{skip, R} = E:_ when ((C =:= throw) orelse (C =:= exit)) ->
-            ?SEV_IPRINT("command ~w skip catched(~w): "
+            ?SEV_IPRINT("command ~w skip caught(~w): "
                         "~n   Reason: ~p", [ID, C, R]),
             exit(E);
         C:E:S ->
@@ -166,7 +182,17 @@ await_finish([], _OK, Fails) ->
     Fails;
 await_finish(Evs, OK, Fails) ->
     receive
-        %% Successfull termination of evaluator
+        {'EXIT', _Pid, {timetrap_timeout, _Timeout, _Stack}} ->
+            %% The test timeout is up.
+            ?SEV_EPRINT("timetrap timeout when: "
+                        "~n   Num Remaining Evs: ~w"
+                        "~n   OK Evs:            ~p"
+                        "~n   Failed Evs:        ~p",
+                        [length(Evs), OK, Fails]),
+            force_evs_kill(Evs),
+            exit(timetrap_timeout);
+
+        %% Successful termination of evaluator
         {'DOWN', _MRef, process, Pid, normal} ->
             {Evs2, OK2, Fails2} = await_finish_normal(Pid, Evs, OK, Fails),
             await_finish(Evs2, OK2, Fails2);
@@ -176,14 +202,14 @@ await_finish(Evs, OK, Fails) ->
 
         %% The evaluator can skip the test case:
         {'DOWN', _MRef, process, Pid, {skip, Reason}} ->
-            %% ?SEV_IPRINT("await_finish -> skip (down) received: "
-            %%             "~n   Pid:    ~p"
-            %%             "~n   Reason: ~p", [Pid, Reason]),
+            ?SEV_IPRINT("await_finish -> skip (down) received: "
+                        "~n   Pid:    ~p"
+                        "~n   Reason: ~p", [Pid, Reason]),
             await_finish_skip(Pid, Reason, Evs, OK);
         {'EXIT', Pid, {skip, Reason}} ->
-            %% ?SEV_IPRINT("await_finish -> skip (exit) received: "
-            %%             "~n   Pid:    ~p"
-            %%             "~n   Reason: ~p", [Pid, Reason]),
+            ?SEV_IPRINT("await_finish -> skip (exit) received: "
+                        "~n   Pid:    ~p"
+                        "~n   Reason: ~p", [Pid, Reason]),
             await_finish_skip(Pid, Reason, Evs, OK);
 
         %% Evaluator failed
@@ -242,7 +268,9 @@ await_finish_skip(Pid, Reason, Evs, OK) ->
                 end,
                 Evs
         end,
+    ?SEV_IPRINT("ensure (~w) evaluator(s) are terminated", [length(Evs)]),
     await_evs_terminated(Evs2),
+    ?SEV_IPRINT("issue skip"),
     ?LIB:skip(Reason).
 
 await_evs_terminated(Evs) ->
@@ -555,10 +583,10 @@ await_termination(Pid, ExpReason) ->
       Reason       :: term().
 
 await(ExpPid, Name, Announcement, Slogan, OtherPids) 
-  when (is_pid(ExpPid) orelse (ExpPid =:= any)) andalso 
-       is_atom(Name) andalso 
-       is_atom(Announcement) andalso 
-       is_atom(Slogan) andalso 
+  when (is_pid(ExpPid) orelse (ExpPid =:= any)) andalso
+       is_atom(Name) andalso
+       is_atom(Announcement) andalso
+       is_atom(Slogan) andalso
        is_list(OtherPids) ->
     receive
         skip ->
@@ -576,7 +604,14 @@ await(ExpPid, Name, Announcement, Slogan, OtherPids)
         {'DOWN', _, process, Pid, {skip, SkipReason}} when (Pid =:= ExpPid) ->
             iprint("Unexpected SKIP from ~w (~p): "
                    "~n   ~p", [Name, Pid, SkipReason]),
-            ?LIB:skip({Name, SkipReason});
+            ?LIB:skip(SkipReason);
+        {'DOWN', _, process, Pid, Reason}
+          when (Pid =:= ExpPid) andalso
+               (Reason =:= enetdown) ->
+            %% This should really have been caught earlier, but...
+            wprint("Unexpected DOWN (~w) from ~w (~p): SKIP",
+                   [Reason, Name, Pid]),
+            ?LIB:skip(Reason);
         {'DOWN', _, process, Pid, Reason} when (Pid =:= ExpPid) ->
             eprint("Unexpected DOWN from ~w (~p): "
                    "~n   ~p", [Name, Pid, Reason]),
@@ -590,10 +625,16 @@ await(ExpPid, Name, Announcement, Slogan, OtherPids)
                            "~n      OtherPids: "
                            "~n         ~p", [OtherPid, Reason, OtherPids]),
                     await(ExpPid, Name, Announcement, Slogan, OtherPids);
+                {skip, SkipName, SkipReason} ->
+                    iprint("Unexpected other SKIP from ~w (~p): "
+                           "~n      ~p", [SkipName, OtherPid, SkipReason]),
+                    ?LIB:skip(SkipReason);
                 {error, _} = ERROR ->
                     ERROR
             end
-    after infinity -> % For easy debugging, just change to some valid time (5000)
+
+            %% For easy debugging, just change to some valid time (5000)
+    after infinity ->
             iprint("await -> timeout for msg from ~p (~w): "
                    "~n   Announcement: ~p"
                    "~n   Slogan:       ~p"
@@ -611,14 +652,35 @@ pi(Pid, Item) ->
     Info.
 
 check_down(Pid, DownReason, Pids) ->
-    case lists:keymember(Pid, 1, Pids) of
-        {value, {_, Name}} ->
-            eprint("Unexpected DOWN from ~w (~p): "
-                   "~n   ~p", [Name, Pid, DownReason]),
-            {error, {unexpected_exit, Name, DownReason}};
+    case lists:keysearch(Pid, 2, Pids) of
+        {value, {Name, _}} ->
+            case DownReason of
+                {skip, Reason} ->
+                    {skip, Name, Reason};
+                _ ->
+                    eprint("Unexpected DOWN from ~w (~p): "
+                           "~n   ~p", [Name, Pid, DownReason]),
+                    {error, {unexpected_exit, Name, DownReason}}
+            end;
         false ->
             ok
     end.
+
+
+%% ============================================================================
+
+force_evs_kill(Evs) when is_list(Evs) ->
+    force_evs_exit(Evs, kill).
+
+force_evs_exit([], _) ->
+    ok;
+force_evs_exit([#ev{name = Name,
+                    pid  = Pid,
+                    mref = MRef} | Evs], Reason) ->
+    ?SEV_IPRINT("Force terminate evaluator ~p (~p)", [Name, Pid]),
+    try erlang:demonitor(MRef, [flush]) catch _:_ -> ignore end,
+    exit(Pid, Reason),
+    force_evs_exit(Evs, Reason).
 
 
 %% ============================================================================
@@ -629,6 +691,9 @@ f(F, A) ->
 
 iprint(F, A) ->
     print("", F, A).
+
+wprint(F, A) ->
+    print("<WARNING> ", F, A).
 
 eprint(F, A) ->
     print("<ERROR> ", F, A).

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2012-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2012-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -46,6 +48,7 @@
          more_add/1,
          open_ret_val_error/1,
          open_ret_val_success/1,
+         plain_ldap_socket_info/1,
          search_filter_and/1,
          search_filter_and_not/1,
          search_filter_equalityMatch/1,
@@ -59,9 +62,20 @@
          search_non_existant/1,
          search_referral/1,
          search_two_hits/1,
+         search_extensible_match_with_dn/1,
+         search_extensible_match_without_dn/1,
+         search_paged_results/1,
          ssl_connection/1,
+         ssl_conn_socket_info/1,
          start_tls_on_ssl_should_fail/1,
+         start_tls_preserves_disabled_server_name_indication/1,
+         start_tls_preserves_explicit_server_name_indication/1,
+         start_tls_sends_server_name_indication/1,
+         start_tls_strips_trailing_dot_from_sni/1,
          start_tls_twice_should_fail/1,
+         start_tls_verify_peer_checks_hostname/1,
+         start_tls_verify_peer_checks_hostname_for_atom_host/1,
+         start_tls_verify_peer_rejects_hostname_mismatch/1,
          tcp_connection/1,
          tcp_connection_option/1
         ]).
@@ -78,8 +92,8 @@
          suite/0
         ]).
 
-%%-include_lib("common_test/include/ct.hrl").
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 -include_lib("eldap/include/eldap.hrl").
 -include_lib("eldap/ebin/ELDAPv3.hrl").
 
@@ -93,6 +107,13 @@ suite() ->
 all() ->
     [app,
      appup,
+     start_tls_sends_server_name_indication,
+     start_tls_strips_trailing_dot_from_sni,
+     start_tls_preserves_explicit_server_name_indication,
+     start_tls_preserves_disabled_server_name_indication,
+     start_tls_verify_peer_checks_hostname,
+     start_tls_verify_peer_rejects_hostname_mismatch,
+     start_tls_verify_peer_checks_hostname_for_atom_host,
      {group, encode_decode},
      {group, return_values},
      {group, v4_connections},
@@ -129,9 +150,12 @@ groups() ->
 		      search_filter_or,
 		      search_filter_and_not,
 		      search_two_hits,
+		      search_extensible_match_with_dn,
+		      search_extensible_match_without_dn,
 		      search_referral,
                       search_filter_or_sizelimit_ok,
                       search_filter_or_sizelimit_exceeded,
+                      search_paged_results,
 		      modify,
 		      modify_referral,
 		      delete,
@@ -153,29 +177,66 @@ connection_tests() ->
      client_side_bind_timeout,
      client_side_add_timeout,
      client_side_search_timeout,
-     close_after_tcp_error
+     close_after_tcp_error,
+     ssl_conn_socket_info,
+     plain_ldap_socket_info
     ].
 
+
+ldap_servers(_Config) ->
+    ["ulrad",
+     "orome",
+     "ecthelion",
+     "bifur"
+    ].
 
 
 init_per_suite(Config) ->
     SSL_available = init_ssl_certs_et_al(Config),
-    LDAP_server =  find_first_server(false, [{config,eldap_server},
-					     {config,ldap_server}, 
-					     {"localhost",9876},
-					     {"aramis.otp.ericsson.se",9876}]),
+    ServerHosts = ["localhost" | random_sorted(ldap_servers(Config))],
+    LDAP_server =  find_first_server(false,
+                                     [{H,9876} || H <- ServerHosts]),
+
     LDAPS_server =
 	case SSL_available of
 	    true ->
-		find_first_server(true,  [{config,ldaps_server},
-					  {"localhost",9877},
-					  {"aramis.otp.ericsson.se",9877}]);
+		find_first_server(true,
+                                  [{H,9877} || H <- ServerHosts]);
 	    false ->
 		undefined
 	end,
-    [{ssl_available, SSL_available},
-     {ldap_server,   LDAP_server},
-     {ldaps_server,  LDAPS_server} | Config].
+    log_ldap_servers([{ssl_available, SSL_available},
+                      {ldap_server,   LDAP_server},
+                      {ldaps_server,  LDAPS_server} | Config]).
+
+
+log_ldap_servers(Config) ->
+    case true == (catch
+                      lists:member({save_eldap_data,3},
+                                   eldap_collect_labmachine_info_SUITE:module_info(exports)))
+    of
+        true ->
+            HostName = 
+                case inet:gethostname() of
+                    {ok,Name} -> string:to_lower(Name);
+                    _ -> "undefined"
+                end,
+            Entry =
+                     [{hostname,           HostName},
+                      {type,               host},
+                      {date,               date()},
+                      {time,               time()},
+                      {os_type,            os:type()},
+                      {os_version,         os:version()},
+                      {ldap_server,        proplists:get_value(ldap_server, Config)},
+                      {ldaps_server,       proplists:get_value(ldaps_server, Config)}
+                     ],
+            eldap_collect_labmachine_info_SUITE:save_eldap_data(HostName, Entry, Config),
+            Config;
+        false ->
+            Config
+    end.
+
 
 end_per_suite(_Config) ->
     try ssl:stop()
@@ -187,7 +248,7 @@ end_per_suite(_Config) ->
 init_per_group(return_values, Config) ->
     case proplists:get_value(ldap_server,Config) of
 	undefined ->
-	    {skip, "LDAP server not availble"};
+	    {skip, "LDAP server not available"};
 	{Host,Port} ->
 	    ct:comment("ldap://~s:~p",[Host,Port]),
 	    Config
@@ -195,7 +256,7 @@ init_per_group(return_values, Config) ->
 init_per_group(plain_api, Config0) ->
     case proplists:get_value(ldap_server,Config0) of
 	undefined ->
-	    {skip, "LDAP server not availble"};
+	    {skip, "LDAP server not available"};
 	Server = {Host,Port} ->
 	    ct:comment("ldap://~s:~p",[Host,Port]),
 	    initialize_db([{server,Server}, {ssl_flag,false}, {start_tls,false} | Config0])
@@ -203,7 +264,7 @@ init_per_group(plain_api, Config0) ->
 init_per_group(ssl_api, Config0) ->
     case proplists:get_value(ldaps_server,Config0) of
 	undefined ->
-	    {skip, "LDAPS server not availble"};
+	    {skip, "LDAPS server not available"};
 	Server = {Host,Port} ->
 	    ct:comment("ldaps://~s:~p",[Host,Port]),
 	    initialize_db([{server,Server}, {ssl_flag,true}, {start_tls,false} | Config0])
@@ -211,9 +272,9 @@ init_per_group(ssl_api, Config0) ->
 init_per_group(start_tls_api, Config0) ->
     case {proplists:get_value(ldap_server,Config0), proplists:get_value(ssl_available,Config0)} of
 	{undefined,true} ->
-	    {skip, "LDAP server not availble"};
+	    {skip, "LDAP server not available"};
 	{_,false} ->
-	    {skip, "TLS not availble"};
+	    {skip, "TLS not available"};
 	{Server={Host,Port}, true} ->
 	    ct:comment("ldap://~s:~p + start_tls",[Host,Port]),
 	    Config = [{server,Server}, {ssl_flag,false} | Config0],
@@ -247,7 +308,7 @@ end_per_group(start_tls_api, Config) -> clear_db(Config);
 end_per_group(_Group, Config) -> Config.
 
 
-init_per_testcase(ssl_connection, Config) ->
+init_per_testcase(TC, Config) when TC == ssl_connection; TC == ssl_conn_socket_info ->
     case proplists:get_value(ssl_available,Config) of
 	true ->
 	    SSL_Port = 9999,
@@ -280,7 +341,7 @@ init_per_testcase(ssl_connection, Config) ->
 		    ct:log("SSL listening to port ~p (process ~p)",[SSL_Port, Listener]),
 		    [{ssl_listener,Listener},
 		     {ssl_listen_port,SSL_Port},
-		     {ssl_connect_opts,[]}
+		     {ssl_connect_opts,[{verify, verify_none}]}
 		     | Config];
 		{no_ok,SSL_Other,Listener} ->
 		    ct:log("ssl:listen on port ~p failed: ~p",[SSL_Port,SSL_Other]),
@@ -290,6 +351,30 @@ init_per_testcase(ssl_connection, Config) ->
 	    end;
 	false ->
 	    {skip, "ssl not available"}
+    end;
+
+init_per_testcase(TC, Config) when TC == start_tls_sends_server_name_indication;
+                                    TC == start_tls_strips_trailing_dot_from_sni;
+                                    TC == start_tls_preserves_explicit_server_name_indication;
+                                    TC == start_tls_preserves_disabled_server_name_indication;
+                                    TC == start_tls_verify_peer_checks_hostname;
+                                    TC == start_tls_verify_peer_rejects_hostname_mismatch;
+                                    TC == start_tls_verify_peer_checks_hostname_for_atom_host ->
+    case proplists:get_value(ssl_available,Config) of
+        true ->
+            case gen_tcp:listen(0, [{reuseaddr, true}]) of
+                {ok,LSock} ->
+                    {ok,{_,Port}} = inet:sockname(LSock),
+                    [{listen_socket,LSock},
+                     {listen_port,Port},
+                     {listen_host,"localhost"},
+                     {tcp_connect_opts,[]}
+                     | Config];
+                Other ->
+                    {fail, Other}
+            end;
+        false ->
+            {skip, "ssl not available"}
     end;
 
 init_per_testcase(TC, Config) ->
@@ -408,6 +493,35 @@ ssl_connection(Config) ->
 			     {sslopts,SSLOpts}|Opts]) of
 	{ok,_H} -> ok;
 	Other -> ct:fail("eldap:open failed: ~p",[Other])
+    end.
+
+%%%----------------------------------------------------------------
+ssl_conn_socket_info(Config) ->
+    Host = proplists:get_value(listen_host, Config),
+    Port = proplists:get_value(ssl_listen_port, Config),
+    Opts = proplists:get_value(tcp_connect_opts, Config),
+    SSLOpts = proplists:get_value(ssl_connect_opts, Config),
+    case eldap:open([Host], [{port,Port},
+			     {ssl,true},
+			     {timeout,5000},
+			     {sslopts,SSLOpts}|Opts]) of
+	{ok,H} ->
+            #{socket := Socket, socket_type := ssl} = eldap:info(H),
+            ?assertMatch({ok, _Data}, ssl:connection_information(Socket));
+	Other -> ct:fail("eldap:open failed: ~p",[Other])
+    end.
+
+%%%----------------------------------------------------------------
+plain_ldap_socket_info(Config) ->
+    Host = proplists:get_value(listen_host, Config),
+    Port = proplists:get_value(listen_port, Config),
+    Opts = proplists:get_value(tcp_connect_opts, Config),
+    T = 1000,
+    case eldap:open([Host], [{timeout,T},{port,Port}|Opts]) of
+        {ok,H} ->
+            ?assertMatch(#{socket := _, socket_type := tcp},
+                          eldap:info(H));
+        Other -> ct:fail("eldap:open failed: ~p",[Other])
     end.
 
 %%%----------------------------------------------------------------
@@ -722,6 +836,87 @@ search_two_hits(Config) ->
     [ok=eldap:delete(H,DN) || DN <- ExpectedDNs].
 
 %%%----------------------------------------------------------------
+search_extensible_match_with_dn(Config) ->
+    H = proplists:get_value(handle, Config),
+    BasePath = proplists:get_value(eldap_path, Config),
+
+    %% Create intermediate tree
+    OU1 = "o=Designers," ++ BasePath,
+    ok = eldap:add(H, OU1, [{"objectclass", ["top", "organization"]}, {"o", ["Designers"]}]),
+    OU2 = "o=Graphics," ++ BasePath,
+    ok = eldap:add(H, OU2, [{"objectclass", ["top", "organization"]}, {"o", ["Graphics"]}]),
+
+    %% Add objects, they belongs to different trees
+    DN1 = "cn=Bob Noorda,o=Designers," ++ BasePath,
+    DN2 = "cn=Bob Noorda,o=Graphics," ++ BasePath,
+    ok = eldap:add(H, DN1,
+            [{"objectclass", ["person"]},
+            {"cn", ["Bob Noorda"]},
+            {"sn", ["Noorda"]},
+            {"description", ["Amsterdam"]}]),
+    ok = eldap:add(H, DN2,
+            [{"objectclass", ["person"]},
+            {"cn", ["Bob Noorda"]},
+            {"sn", ["Noorda"]},
+            {"description", ["Milan"]}]),
+    
+    %% Search using extensible filter only in Designers tree
+    Filter = eldap:'and'([
+        eldap:extensibleMatch("Designers", [{type, "o"}, {dnAttributes, true}]),
+        eldap:equalityMatch("sn", "Noorda")
+    ]),
+    {ok, #eldap_search_result{entries=Es}} = 
+    eldap:search(H, #eldap_search{base = BasePath,
+        filter = Filter,
+        scope=eldap:wholeSubtree()}),
+
+    %% Check
+    [DN1] = [D || #eldap_entry{object_name=D} <- Es],
+
+    %% Restore the database
+    [ok=eldap:delete(H,DN) || DN <- [DN1, DN2, OU1, OU2]].
+
+%%%----------------------------------------------------------------
+search_extensible_match_without_dn(Config) ->
+    H = proplists:get_value(handle, Config),
+    BasePath = proplists:get_value(eldap_path, Config),
+
+    %% Create intermediate tree
+    OU1 = "o=Teachers," ++ BasePath,
+    ok = eldap:add(H, OU1, [{"objectclass", ["top", "organization"]}, {"o", ["Teachers"]}]),
+    OU2 = "o=Designers," ++ BasePath,
+    ok = eldap:add(H, OU2, [{"objectclass", ["top", "organization"]}, {"o", ["Designers"]}]),
+
+    %% Add objects, they belongs to different trees
+    DN1 = "cn=Max Huber,o=Teachers," ++ BasePath,
+    DN2 = "cn=Max Huber,o=Designers," ++ BasePath,
+    ok = eldap:add(H, DN1,
+            [{"objectclass", ["person"]},
+            {"cn", ["Max Huber"]},
+            {"sn", ["Huber"]},
+            {"description", ["Baar"]}]),
+    ok = eldap:add(H, DN2,
+            [{"objectclass", ["person"]},
+            {"cn", ["Max Huber"]},
+            {"sn", ["Huber"]},
+            {"description", ["Milan"]}]),
+    
+    %% Search using extensible filter without dn attribute
+    Filter = eldap:extensibleMatch("Huber", [{type, "sn"}]),
+    {ok, #eldap_search_result{entries=Es}} =
+	eldap:search(H, #eldap_search{base = BasePath,
+        filter = Filter,
+        scope = eldap:wholeSubtree()
+    }),
+
+    %% And check that they are the expected ones:
+    ExpectedDNs = lists:sort([DN1, DN2]),
+    ExpectedDNs = lists:sort([D || #eldap_entry{object_name=D} <- Es]),
+
+    %% Restore the database:
+    [ok=eldap:delete(H,DN) || DN <- [DN1, DN2, OU1, OU2]].
+
+%%%----------------------------------------------------------------
 search_referral(Config) ->
     H = proplists:get_value(handle, Config),
     BasePath = proplists:get_value(eldap_path, Config),
@@ -730,6 +925,61 @@ search_referral(Config) ->
 	eldap:search(H, #eldap_search{base = DN,
 				      filter = eldap:present("description"),
 				      scope=eldap:singleLevel()}).
+
+%%%----------------------------------------------------------------
+search_paged_results(Config) ->
+    H = proplists:get_value(handle, Config),
+    BasePath = proplists:get_value(eldap_path, Config),
+    %% Add a lot of objects:
+    Desc = "Frogs",
+    Names = ["Frog" ++ integer_to_list(N) || N <- lists:seq(1, 20)],
+    DNs = [{"cn=Jeremy " ++ N ++ "," ++ BasePath, [{"objectclass", ["person"]},
+                                                 {"cn", ["Jeremy " ++ N]},
+                                                 {"sn", [N]},
+                                                 {"description", [Desc]}]} || N <- Names],
+    [ok = eldap:add(H, Entry, Attrs) || {Entry, Attrs} <- DNs],
+
+    PageSize = 10,
+
+    Control1 = eldap:paged_result_control(PageSize),
+
+    {ok, SearchResult1} =
+        eldap:search(H,
+                     #eldap_search{base = BasePath,
+                                   filter = eldap:equalityMatch("description", Desc),
+                                   scope=eldap:singleLevel()},
+                     [Control1]),
+
+
+    #eldap_search_result{entries=Es1} = Res = SearchResult1,
+
+    PageSize = length(Es1),
+
+    {ok, Cookie1} = eldap:paged_result_cookie(SearchResult1),
+
+    Control2 = eldap:paged_result_control(PageSize, Cookie1),
+
+    {ok, SearchResult2} =
+        eldap:search(H,
+                     #eldap_search{base = BasePath,
+                                   filter = eldap:equalityMatch("description", Desc),
+                                   scope=eldap:singleLevel()},
+                     [Control2]),
+
+    #eldap_search_result{entries=Es2} = SearchResult2,
+
+    PageSize = length(Es2),
+
+    %% all results have been returned so cookie should be empty
+    {ok, []} = eldap:paged_result_cookie(SearchResult2),
+
+    ExpectedDNs = lists:sort([DN || {DN, _} <- DNs]),
+    ResultDNs = lists:sort([DN || #eldap_entry{object_name=DN} <- Es1 ++ Es2]),
+
+    ExpectedDNs = ResultDNs,
+
+    %% Restore the database:
+    [ok=eldap:delete(H,DN) || {DN, _} <- DNs].
 
 %%%----------------------------------------------------------------
 modify(Config) ->
@@ -761,7 +1011,7 @@ modify(Config) ->
 		     #eldap_search{base = BasePath,
 				   filter = eldap:equalityMatch("telephoneNumber", "555-12345"),
 				   scope=eldap:singleLevel()}),
-    %% restore the orignal version:
+    %% restore the original version:
     restore_original_object(H, DN, OriginalAttrs).
 
 %%%----------------------------------------------------------------
@@ -894,6 +1144,160 @@ start_tls_on_ssl_should_fail(Config) ->
     {ok,H} = open_bind(Config),
     {error,tls_already_started} = eldap:start_tls(H, []),
     eldap:close(H).
+
+%%%----------------------------------------------------------------
+%%% Test that start_tls offers the connected host as SNI, so that the
+%%% peer certificate's hostname check (performed by verify_peer) runs
+%%% against the intended DNS name. Without it, ssl:connect/3 (the
+%%% socket-upgrade form start_tls uses) has no Host to derive
+%%% server_name_indication from, so the check runs against the raw
+%%% peer IP address instead (see start_tls_verify_peer_checks_hostname
+%%% for the end-to-end consequence of that).
+start_tls_sends_server_name_indication(Config) ->
+    Host = proplists:get_value(listen_host, Config),
+    assert_start_tls_sni(Config, Host, [], Host).
+
+%%%----------------------------------------------------------------
+%%% SNI must not contain a trailing dot, same as the host-based
+%%% ssl:connect/3,4 path used for LDAPS (ssl_config:
+%%% server_name_indication_default/1 strips it); otherwise a legal
+%%% absolute hostname makes TLS servers reject the ClientHello outright.
+start_tls_strips_trailing_dot_from_sni(Config) ->
+    Host = proplists:get_value(listen_host, Config),
+    assert_start_tls_sni(Config, Host ++ ".", [], Host).
+
+%%%----------------------------------------------------------------
+%%% A caller-supplied server_name_indication (e.g. because the caller
+%%% knows better than the connected host, such as a load balancer VIP)
+%%% must not be overridden by the new default.
+start_tls_preserves_explicit_server_name_indication(Config) ->
+    Host = proplists:get_value(listen_host, Config),
+    assert_start_tls_sni(Config, Host, [{server_name_indication, "other.example"}], "other.example").
+
+%%%----------------------------------------------------------------
+%%% A caller explicitly disabling SNI (server_name_indication=disable)
+%%% must not have it re-enabled by the new default.
+start_tls_preserves_disabled_server_name_indication(Config) ->
+    Host = proplists:get_value(listen_host, Config),
+    assert_start_tls_sni(Config, Host, [{server_name_indication, disable}], undefined).
+
+assert_start_tls_sni(Config, ConnectHost, ExtraTlsOpts, ExpectedSNI) ->
+    Port = proplists:get_value(listen_port, Config),
+    Opts = proplists:get_value(tcp_connect_opts, Config),
+    CertFile = filename:join(proplists:get_value(data_dir,Config), "certs/server/cert.pem"),
+    KeyFile = filename:join(proplists:get_value(data_dir,Config), "certs/server/key.pem"),
+    Sl = proplists:get_value(listen_socket, Config),
+    Parent = self(),
+    %% The socket must be upgraded to TLS by the process that owns it,
+    %% so accept and handshake happen in the same process here rather
+    %% than being handed off from the test process.
+    _Server = spawn_link(
+                fun() ->
+                        {ok, S} = gen_tcp:accept(Sl, 1000),
+                        ok = inet:setopts(S, [{packet, asn1}, {active, false}]),
+                        {ok, TLSSocket} =
+                            respond_to_start_tls(S, [{certfile,CertFile},{keyfile,KeyFile}]),
+                        {ok, Info} = ssl:connection_information(TLSSocket, [sni_hostname]),
+                        Parent ! {sni, proplists:get_value(sni_hostname, Info)}
+                end),
+    {ok, H} = eldap:open([ConnectHost], [{port,Port}|Opts]),
+    ok = eldap:start_tls(H, [{verify, verify_none} | ExtraTlsOpts], 5000),
+    receive
+        {sni, ExpectedSNI} -> ok;
+        {sni, Other} -> ct:fail({unexpected_sni, Other})
+    after 5000 ->
+            ct:fail("server side of the StartTLS upgrade did not complete")
+    end,
+    eldap:close(H).
+
+%%%----------------------------------------------------------------
+%%% End-to-end proof of the security property this fix restores:
+%%% with verify_peer and a leaf certificate whose SAN covers the
+%%% connected host, the StartTLS handshake now succeeds. Before this
+%%% fix, the hostname check ran against the raw peer IP address
+%%% instead (tls_socket:upgrade/4's inet:peername/1 fallback, used
+%%% whenever server_name_indication is left unset), which fails
+%%% against an ordinary DNS-named certificate like this one.
+start_tls_verify_peer_checks_hostname(Config) ->
+    assert_start_tls_verify_peer(Config, net_adm:localhost(), accepted).
+
+%%%----------------------------------------------------------------
+%%% The flip side of start_tls_verify_peer_checks_hostname: verify_peer
+%%% must still reject a certificate whose SAN does not cover the
+%%% connected host, proving the check is enforced and not a no-op
+%%% that would have let anything through.
+start_tls_verify_peer_rejects_hostname_mismatch(Config) ->
+    assert_start_tls_verify_peer(Config, "127.0.0.1", rejected).
+
+%%%----------------------------------------------------------------
+%%% An atom is a spec-legal eldap Host (inet:hostname() :: atom() |
+%%% string()), and add_server_name_indication/2 must recover the real
+%%% hostname from it the same way it does for a string, instead of
+%%% silently falling through to no SNI and reverting to the pre-fix
+%%% peer-IP fallback for this one input shape.
+start_tls_verify_peer_checks_hostname_for_atom_host(Config) ->
+    assert_start_tls_verify_peer(Config, list_to_atom(net_adm:localhost()), accepted).
+
+%%% Relies on pkix_test_data/1's default server peer SAN, which is
+%%% net_adm:localhost(), so ConnectHost must match that for `accepted`.
+assert_start_tls_verify_peer(Config, ConnectHost, ExpectedOutcome) ->
+    Port = proplists:get_value(listen_port, Config),
+    Opts = proplists:get_value(tcp_connect_opts, Config),
+    Sl = proplists:get_value(listen_socket, Config),
+    RsaKey = {rsa, 2048, 65537},
+    #{server_config := ServerConf} =
+        public_key:pkix_test_data(
+          #{server_chain => #{root => [{key, RsaKey}],
+                               peer => [{key, RsaKey}]},
+            client_chain => #{root => [{key, RsaKey}],
+                               peer => [{key, RsaKey}]}}),
+    CaCerts = proplists:get_value(cacerts, ServerConf),
+    Parent = self(),
+    _Server = spawn_link(
+                fun() ->
+                        {ok, S} = gen_tcp:accept(Sl, 1000),
+                        ok = inet:setopts(S, [{packet, asn1}, {active, false}]),
+                        Parent ! {result, respond_to_start_tls(S, ServerConf)}
+                end),
+    {ok, H} = eldap:open([ConnectHost], [{port,Port}|Opts]),
+    Result = eldap:start_tls(H, [{verify, verify_peer}, {cacerts, CaCerts}], 5000),
+    case ExpectedOutcome of
+        accepted ->
+            ok = Result,
+            receive
+                {result, {ok, _TLSSocket}} -> ok;
+                {result, Other} -> ct:fail({server_side_handshake_failed, Other})
+            after 5000 ->
+                    ct:fail("server side of the StartTLS upgrade did not complete")
+            end;
+        rejected ->
+            {error, {tls_alert, _}} = Result,
+            receive
+                {result, _} -> ok
+            after 5000 ->
+                    ct:fail("server side of the StartTLS upgrade did not complete")
+            end
+    end,
+    eldap:close(H).
+
+%%% Plays the server side of the StartTLS extended operation on an
+%%% already-accepted, plain-text LDAP socket, then upgrades it to TLS
+%%% using the given ssl server options.
+respond_to_start_tls(S, TlsServerOpts) ->
+    {ok, ReqBytes} = gen_tcp:recv(S, 0, 1000),
+    {ok, #'LDAPMessage'{messageID = Id, protocolOp = {extendedReq, _}}} =
+        'ELDAPv3':decode('LDAPMessage', ReqBytes),
+    {ok, RespBytes} =
+        'ELDAPv3':encode(
+          'LDAPMessage',
+          #'LDAPMessage'{messageID = Id,
+                         protocolOp =
+                             {extendedResp,
+                              #'ExtendedResponse'{resultCode = success,
+                                                   matchedDN = "",
+                                                   diagnosticMessage = ""}}}),
+    ok = gen_tcp:send(S, RespBytes),
+    ssl:handshake(S, TlsServerOpts).
 
 %%%----------------------------------------------------------------
 encode(_Config) ->
@@ -1148,3 +1552,13 @@ init_ssl_certs_et_al(Config) ->
 	    ct:log("init_per_suite failed to start ssl Error=~p Reason=~p", [Error, Reason]),
 	    false
     end.
+
+%%%----------------------------------------------------------------
+random_sorted(L) when is_list(L) ->
+    random_sorted(L, length(L), []).
+
+random_sorted([], 0, Acc) -> Acc;
+random_sorted(L, N, Acc) ->
+    R = rand:uniform(N),
+    E = lists:nth(R, L),
+    random_sorted(L -- [E], N-1, [E|Acc]).

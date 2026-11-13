@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2002-2018. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2002-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -55,10 +57,11 @@
 #define ERTS_MSEG_VSN_STR "0.9"
 
 typedef struct {
-    Uint amcbf;
+    size_t amcbf;
     Uint rmcbf;
     Uint mcs;
     Uint nos;
+    Uint ndai;
     ErtsMMapInit dflt_mmap;
     ErtsMMapInit literal_mmap;
 } ErtsMsegInit_t;
@@ -68,7 +71,8 @@ typedef struct {
     4*1024*1024,	/* amcbf: Absolute max cache bad fit	*/	\
     20,			/* rmcbf: Relative max cache bad fit	*/	\
     10,			/* mcs:   Max cache size		*/	\
-    1000,		/* cci:   Cache check interval		*/	\
+    0,                  /* nos:   Number of schedulers		*/	\
+    0,                  /* ndai:  Number of dirty alloc instances*/	\
     ERTS_MMAP_INIT_DEFAULT_INITER,					\
     ERTS_MMAP_INIT_LITERAL_INITER,                                      \
 }
@@ -83,12 +87,12 @@ typedef struct {
 
 extern const ErtsMsegOpt_t erts_mseg_default_opt;
 
-void *erts_mseg_alloc(ErtsAlcType_t, UWord *, Uint);
-void *erts_mseg_alloc_opt(ErtsAlcType_t, UWord *, Uint, const ErtsMsegOpt_t *);
-void  erts_mseg_dealloc(ErtsAlcType_t, void *, UWord, Uint);
-void  erts_mseg_dealloc_opt(ErtsAlcType_t, void *, UWord, Uint, const ErtsMsegOpt_t *);
-void *erts_mseg_realloc(ErtsAlcType_t, void *, UWord, UWord *, Uint);
-void *erts_mseg_realloc_opt(ErtsAlcType_t, void *, UWord, UWord *, Uint, const ErtsMsegOpt_t *);
+void *erts_mseg_alloc(ErtsAlcType_t, size_t*, Uint);
+void *erts_mseg_alloc_opt(ErtsAlcType_t, size_t*, Uint, const ErtsMsegOpt_t *);
+void  erts_mseg_dealloc(ErtsAlcType_t, void *, size_t, Uint);
+void  erts_mseg_dealloc_opt(ErtsAlcType_t, void *, size_t, Uint, const ErtsMsegOpt_t *);
+void *erts_mseg_realloc(ErtsAlcType_t, void *, size_t, size_t*, Uint);
+void *erts_mseg_realloc_opt(ErtsAlcType_t, void *, size_t, size_t*, Uint, const ErtsMsegOpt_t *);
 void  erts_mseg_clear_cache(void);
 void  erts_mseg_cache_check(void);
 Uint  erts_mseg_no( const ErtsMsegOpt_t *);

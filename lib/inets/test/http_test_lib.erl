@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2015-2018. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2015-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -27,6 +29,8 @@
 
 %% Note: This directive should only be used in test suites.
 -compile(export_all).
+-compile(nowarn_export_all).
+-define(SOCKET_BACKLOG, 100).
 
 dummy_server(SocketType, Inet, Extra) ->
     dummy_server(self(), SocketType, Inet, Extra).
@@ -41,7 +45,8 @@ dummy_server(Caller, SocketType, Inet, Extra) ->
 
 dummy_server_init(Caller, ip_comm, Inet, Extra) ->
     ContentCb = proplists:get_value(content_cb, Extra),
-    BaseOpts = [binary, {packet, 0}, {reuseaddr,true}, {active, false}, {nodelay, true}], 
+    BaseOpts = [binary, {packet, 0}, {reuseaddr,true},
+                {active, false}, {nodelay, true}, {backlog, ?SOCKET_BACKLOG}],
     Conf = proplists:get_value(conf, Extra),
     {ok, ListenSocket} = gen_tcp:listen(0, [Inet | BaseOpts]),
     {ok, Port} = inet:port(ListenSocket),
@@ -59,8 +64,8 @@ dummy_server_init(Caller, unix_socket, Inet, Extra) ->
     ContentCb = proplists:get_value(content_cb, Extra),
     UnixSocket = proplists:get_value(unix_socket, Extra),
     SocketAddr = {local, UnixSocket},
-    BaseOpts = [binary, {packet, 0}, {reuseaddr,true}, {active, false}, {nodelay, true},
-               {ifaddr, SocketAddr}],
+    BaseOpts = [binary, {packet, 0}, {reuseaddr,true}, {active, false},
+                {nodelay, true}, {ifaddr, SocketAddr}, {backlog, ?SOCKET_BACKLOG}],
     Conf = proplists:get_value(conf, Extra),
     {ok, ListenSocket} = gen_tcp:listen(0, [Inet | BaseOpts]),
     {ok, Port} = inet:port(ListenSocket),
@@ -78,7 +83,8 @@ dummy_server_init(Caller, ssl, Inet, Extra) ->
     ContentCb = proplists:get_value(content_cb, Extra),
     SSLOptions = proplists:get_value(ssl, Extra),
     Conf = proplists:get_value(conf, Extra),
-    BaseOpts = [binary, {active, false}, {nodelay, true} | SSLOptions], 
+    BaseOpts = [binary, {active, false}, {nodelay, true},
+                {backlog, ?SOCKET_BACKLOG} | SSLOptions],
     dummy_ssl_server_init(Caller, BaseOpts, Inet, ContentCb, Conf).
 
 dummy_ssl_server_init(Caller, BaseOpts, Inet, ContentCb, Conf) ->
@@ -147,7 +153,8 @@ dummy_request_handler_init(MFA, Socket0, ContentCb, Conf) ->
 dummy_request_handler_loop({Module, Function, Args}, SockType, Socket, ContentCb, Conf) ->
     receive 
 	{Proto, _, Data} when (Proto =:= tcp) orelse (Proto =:= ssl) ->
-	    case handle_request(Module, Function, [Data | Args], Socket, ContentCb, Conf) of
+	    case handle_request(Module, Function, [Data | Args], SockType,
+				Socket, ContentCb, Conf) of
 		stop when Proto =:= tcp ->
 		    gen_tcp:close(Socket);
 		stop when Proto =:= ssl ->
@@ -161,7 +168,7 @@ dummy_request_handler_loop({Module, Function, Args}, SockType, Socket, ContentCb
 	    ssl:close(Socket)
     end.
 
-handle_request(Module, Function, Args, Socket, ContentCb, Conf) ->
+handle_request(Module, Function, Args, SockType, Socket, ContentCb, Conf) ->
     case Module:Function(Args) of
 	{ok, Result} ->
 	    case ContentCb:handle_http_msg(Result, Socket, Conf) of
@@ -183,11 +190,47 @@ handle_request(Module, Function, Args, Socket, ContentCb, Conf) ->
 					   {max_method, ?HTTP_MAX_METHOD_STRING},
 					   {max_content_length, ?HTTP_MAX_CONTENT_LENGTH},
 					   {customize, httpd_custom}
-					  ]], Socket, ContentCb, Conf)
+					  ]], SockType, Socket, ContentCb, Conf)
 	    end;
+
+	%% The request was rejected by the parser. Mirror what
+	%% httpd_request_handler does and send a status response, then
+	%% close. Without this the error tuple is indistinguishable from
+	%% an {M, F, A} continuation, so the handler would silently wait
+	%% for more data and the client would hang until its timetrap
+	%% expires instead of failing on the unexpected response.
+	{error, {size_error, _MaxSize, StatusCode, Description}, Version} ->
+	    send_status(SockType, Socket, Version, StatusCode, Description),
+	    stop;
+	{error, {version_error, StatusCode, Description}, Version} ->
+	    send_status(SockType, Socket, Version, StatusCode, Description),
+	    stop;
+	{error, {bad_request, StatusCode, Description}, Version}
+	  when is_integer(StatusCode) ->
+	    send_status(SockType, Socket, Version, StatusCode, Description),
+	    stop;
+	{error, Reason, Version} ->
+	    ct:log("Dummy server rejected request: ~p", [Reason]),
+	    send_status(SockType, Socket, Version, 400, "Bad Request"),
+	    stop;
+	{error, Reason} ->
+	    ct:log("Dummy server rejected request: ~p", [Reason]),
+	    send_status(SockType, Socket, "HTTP/1.1", 400, "Bad Request"),
+	    stop;
+
 	NewMFA ->
 	    NewMFA
     end.
+
+send_status(SockType, Socket, Version, StatusCode, Description) ->
+    Phrase = httpd_util:reason_phrase(StatusCode),
+    Body = "<HTML><BODY><H1>" ++ integer_to_list(StatusCode) ++ " " ++ Phrase
+	++ "</H1>" ++ Description ++ "</BODY></HTML>",
+    Response = Version ++ " " ++ integer_to_list(StatusCode) ++ " " ++ Phrase
+	++ "\r\nContent-Type: text/html"
+	++ "\r\nContent-Length: " ++ integer_to_list(length(Body))
+	++ "\r\nConnection: close\r\n\r\n" ++ Body,
+    inets_test_lib:send(SockType, Socket, Response).
 
 %% Perform a synchronous stop
 dummy_server_stop(Pid) ->
@@ -196,3 +239,65 @@ dummy_server_stop(Pid) ->
 	{stopped, Pid} ->
 	    ok
     end.
+
+open_big_data_socket(gen_tcp, Pid, _Config) ->
+    {ok, LSock} = gen_tcp:listen(0, [binary, {packet, 0},
+                                        {active, false}]),
+    {ok, Port} = inet:port(LSock),
+    Pid ! {started_listen, Port},
+    (fun F() ->
+        receive
+            {stop_listen, CleanupPid} ->
+                gen_tcp:close(LSock),
+                CleanupPid ! stopped_listen
+        after 0 ->
+            accept_and_send_data(gen_tcp, LSock),
+            F()
+        end
+    end)();
+
+open_big_data_socket(ssl, Pid, Config) ->
+    SSLOptions =  Config ++ [{verify, verify_none}, {reuseaddr, true}, binary, {packet, 0}, {active, false}],
+    {ok, LSock} = ssl:listen(0, SSLOptions),
+    {ok, {_, Port}} = ssl:sockname(LSock),
+    Pid ! {started_listen, Port},
+    (fun F() ->
+        receive
+            {stop_listen, CleanupPid} ->
+                ssl:close(LSock),
+                CleanupPid ! stopped_listen
+        after 0 ->
+            accept_and_send_data(ssl, LSock),
+            F()
+        end
+    end)().
+
+accept_and_send_data(gen_tcp, Sock) ->
+    {ok, Sock1} = gen_tcp:accept(Sock),
+    F = fun() ->
+        receive start -> ok end,
+        gen_tcp:recv(Sock1, 0),
+        gen_tcp:send(Sock1, ["HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n"]),
+        ChunkSize = 1024*64*8, % 64KB
+        << begin gen_tcp:send(Sock1, <<Chunk:ChunkSize>>), <<>> end || <<Chunk:ChunkSize>> <= ?DATA_20MB>>,
+        receive after 10000 -> ok end,
+        gen_tcp:close(Sock1)
+    end,
+    HandlerPid = spawn(F),
+    gen_tcp:controlling_process(Sock1, HandlerPid),
+    HandlerPid ! start;
+accept_and_send_data(ssl, LSock) ->
+    {ok, Sock1} = ssl:transport_accept(LSock),
+    F = fun() ->
+        receive start -> ok end,
+        {ok, Sock} = ssl:handshake(Sock1),
+        ssl:recv(Sock, 0),
+        ssl:send(Sock, ["HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n"]),
+        ChunkSize = 1024*64*8, % 64KB
+        << begin ssl:send(Sock, <<Chunk:ChunkSize>>), <<>> end || <<Chunk:ChunkSize>> <= ?DATA_20MB>>,
+        receive after 5000 -> ok end,
+        ssl:close(Sock)
+     end,
+    HandlerPid = spawn(F),
+    ssl:controlling_process(Sock1, HandlerPid),
+    HandlerPid ! start.

@@ -1,8 +1,10 @@
 %% 
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2021-2021. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2021-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %% 
 
@@ -22,7 +24,7 @@
 
 -export([start/0, stop/0,
          reset_events/0,
-         events/0,
+         events/0, events/1,
          log/1]).
 -export([timestamp/0, format_timestamp/1]).
 -export([init/1]).
@@ -37,7 +39,12 @@
 
 start() ->
     Parent = self(),
-    proc_lib:start(?MODULE, init, [Parent]).
+    %% The only "real" reason this would fail to start is if
+    %% global has issues.
+    %% So, to catch any problems, we add a timeout of 15 seconds.
+    %% This should be long enough. If it has not started then,
+    %% we just give up...
+    proc_lib:start(?MODULE, init, [Parent], ?SECS(15)).
 
 stop() ->
     cast(stop).
@@ -48,7 +55,11 @@ reset_events() ->
     call(reset_events, ?TIMEOUT).
 
 events() ->
-    call(events, ?TIMEOUT).
+    events(infinity).
+
+events(Timeout) when (Timeout =:= infinity) orelse
+                     (is_integer(Timeout) andalso (Timeout > 0)) ->
+    call(events, Timeout).
 
 log(Event) ->
     cast({node(), Event}).
@@ -115,7 +126,7 @@ loop(State) ->
 
         {nodedown = Event, Node} ->
             State2 = process_event(State, Node, Event),
-            loop(State2);            
+            loop(State2);
 
         _ ->
             loop(State)
@@ -138,6 +149,11 @@ process_event(State, Node, {TS, starting}) ->
     end,
     State;
 
+process_event(State, Node, {TS, started}) ->
+    FTS = format_timestamp(TS),
+    info_msg("System Monitor started on node ~p at ~s", [Node, FTS]),
+    State;
+
 process_event(State, Node, {TS, stopping}) ->
     FTS = format_timestamp(TS),
     info_msg("System Monitor stopping on node ~p at ~s", [Node, FTS]),
@@ -147,6 +163,11 @@ process_event(State, Node, {TS, stopping}) ->
         true ->
             ok
     end,
+    State;
+
+process_event(State, Node, {TS, ping}) ->
+    FTS = format_timestamp(TS),
+    info_msg("System Monitor on node ~p was pinged at ~s", [Node, FTS]),
     State;
 
 process_event(State, Node, {TS, already_started}) ->
@@ -212,7 +233,7 @@ cast(Msg) ->
             ok
     catch
         C:E:_ ->
-            {error, {catched, C, E}}
+            {error, {caught, C, E}}
     end.
 
 
@@ -225,10 +246,10 @@ call(Req, Timeout) when is_integer(Timeout) andalso (Timeout > 1000) ->
 call(Req, Timeout) when is_integer(Timeout) ->
     call(Req, Timeout, Timeout div 2).
 
-%% This peace of wierdness is because on some machines this call has
+%% This peace of weirdness is because on some machines this call has
 %% hung (in a call during end_per_testcase, which had a 1 min timeout,
 %% or if that was the total time for the test case).
-%% But because it hung there, we don't really know what where it git stuck.
+%% But because it hung there, we don't really know where it got stuck.
 %% So, by making the call in a tmp process, that we supervise, we can
 %% keep control. Also, we change the default timeout from infinity to an
 %% actual time (16 seconds).
@@ -239,13 +260,13 @@ call(Req, Timeout1, Timeout2) ->
                     NamePid when is_pid(NamePid) ->
                         receive
                             {?MODULE, Ref, Rep} ->
-                                Rep
+                                exit(Rep)
                         after Timeout2 ->
-                                {error, timeout}
+                                exit({error, timeout})
                         end
                 catch
-                    C:E:_ ->
-                        {error, {catched, C, E}}
+                    C:E:S ->
+                        exit({error, {caught, C, E, S}})
                 end
         end,
     {Pid, Mon} = spawn_monitor(F),

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1998-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1998-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -22,6 +24,12 @@
 %%% Purpose: Test server support functions.
 %%%-------------------------------------------------------------------
 -module(test_server_sup).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}},
+          {nowarn_possibly_unsafe_function, {file, consult, 1}},
+          {nowarn_deprecated_function, [{erlang,exit,2}]}]).
+
 -export([timetrap/2, timetrap/3, timetrap/4,
 	 timetrap_cancel/1, capture_get/1, messages_get/1,
 	 timecall/3, call_crash/5, app_test/2, check_new_crash_dumps/0,
@@ -181,7 +189,7 @@ app_test(Application, Mode) ->
 	{ok, AppFile} ->
 	    do_app_tests(AppFile, Application, Mode);
 	Error ->
-	    test_server:fail(Error)
+	    ct:fail(Error)
     end.
 
 is_app(Application) ->
@@ -241,8 +249,8 @@ do_app_tests(AppFile, AppName, Mode) ->
     case A+B+C+D+E of
 	5 ->
 	    ok;
-	_ ->
-	    test_server:fail()
+	NotFive ->
+	    ct:fail(NotFive)
     end.
 
 app_check_export_all([]) ->
@@ -286,10 +294,10 @@ appup_test(Application) ->
                     Modules = proplists:get_value(modules, AppFile),
                     do_appup_tests(StartMod, Application, Up, Down, Modules);
                 Error ->
-                    test_server:fail(Error)
+                    ct:fail(Error)
             end;
         Error ->
-            test_server:fail(Error)
+            ct:fail(Error)
     end.
 
 is_appup(Application, Version) ->
@@ -336,11 +344,11 @@ do_appup_tests(_, _Application, Up, Down, Modules) ->
                     test_server:format(minor, "OK~n");
                 Error ->
                     test_server:format(minor, "ERROR ~tp~n", [Error]),
-                    test_server:fail(Error)
+                    ct:fail(Error)
             end;
         Error ->
             test_server:format(minor, "ERROR ~tp~n", [Error]),
-            test_server:fail(Error)
+            ct:fail(Error)
     end.
     
 check_appup_clauses_plausible([], _Direction, _Modules) ->
@@ -510,8 +518,8 @@ check_change({advanced, _}) -> ok;
 check_change(Change)        -> throw({error, {bad_change, Change}}).
 
 %% Given two sorted lists, L1 and L2, returns {NotInL2, NotInL1},
-%% NotInL2 is the elements of L1 which don't occurr in L2,
-%% NotInL1 is the elements of L2 which don't ocurr in L1.
+%% NotInL2 is the elements of L1 which don't occur in L2,
+%% NotInL1 is the elements of L2 which don't occur in L1.
 
 common(L1, L2) ->
     common(L1, L2, [], []).

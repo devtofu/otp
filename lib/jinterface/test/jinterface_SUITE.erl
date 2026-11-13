@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2004-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2004-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,7 +25,7 @@
 	 init_per_suite/1, end_per_suite/1,
 	 init_per_testcase/2, end_per_testcase/2]).
 
--export([transport_factory/1,
+-export([generic_transport_factory/1, transport_factory/1,
 	 nodename/1, register_and_whereis/1, get_names/1, boolean_atom/1,
 	 node_ping/1, mbox_ping/1,
 	 java_erlang_send_receive/1,
@@ -114,14 +116,15 @@ end_per_group(_GroupName, Config) ->
 
 fundamental() ->
     [
-     transport_factory,    % TransportFactoryTest.java
-     nodename,             % Nodename.java
-     register_and_whereis, % RegisterAndWhereis.java
-     get_names,            % GetNames.java
-     boolean_atom,         % BooleanAtom.java
-     maps,                 % Maps.java
-     fun_equals,           % FunEquals.java
-     core_match_bind       % CoreMatchBind.java
+     generic_transport_factory, % GenericTransportFactoryTest.java
+     transport_factory,         % TransportFactoryTest.java
+     nodename,                  % Nodename.java
+     register_and_whereis,      % RegisterAndWhereis.java
+     get_names,                 % GetNames.java
+     boolean_atom,              % BooleanAtom.java
+     maps,                      % Maps.java
+     fun_equals,                % FunEquals.java
+     core_match_bind            % CoreMatchBind.java
     ].
 
 ping() ->
@@ -185,6 +188,18 @@ status_handler() ->
 
 
 init_per_suite(Config) when is_list(Config) ->
+    %% Trigger usage of large pids and ports in 64-bit case...
+    case erlang:system_info(wordsize) of
+        4 ->
+            ok;
+        8 ->
+            erts_debug:set_internal_state(available_internal_state,true),
+            erts_debug:set_internal_state(next_pid, 1 bsl 32),
+            erts_debug:set_internal_state(next_port, 1 bsl 32),
+            erts_debug:set_internal_state(available_internal_state,false),
+            ok
+    end,
+
     case case code:priv_dir(jinterface) of
 	     {error,bad_name} -> false;
 	     P -> filelib:is_dir(P) end of
@@ -220,7 +235,7 @@ init_per_testcase(Case, _Config)
        Case =:= kill_mbox_from_erlang ->
     {skip, "Not yet implemented"};
 init_per_testcase(_Case,Config) ->
-    Dog = ?t:timetrap({seconds,30}),
+    Dog = test_server:timetrap({seconds,30}),
     [{watch_dog,Dog}|Config].
 
 end_per_testcase(_Case,Config) ->
@@ -229,12 +244,23 @@ end_per_testcase(_Case,Config) ->
 	Pid -> exit(Pid,kill)
     end,
     jitu:kill_all_jnodes(),
-    ?t:timetrap_cancel(?config(watch_dog,Config)),
+    test_server:timetrap_cancel(?config(watch_dog,Config)),
     ok.
 
 
 %%%-----------------------------------------------------------------
 %%% TEST CASES
+%%%-----------------------------------------------------------------
+generic_transport_factory(doc) ->
+    ["GenericTransportFactoryTest.java: "
+     "Test custom OTP Generic Transport Factory"];
+generic_transport_factory(suite) ->
+    [];
+generic_transport_factory(Config) when is_list(Config) ->
+    ok = jitu:java(?config(java, Config),
+		   ?config(data_dir, Config),
+		   "GenericTransportFactoryTest").
+
 %%%-----------------------------------------------------------------
 transport_factory(doc) ->
     ["TransportFactoryTest.java: Test custom OTP Transport Factory"];

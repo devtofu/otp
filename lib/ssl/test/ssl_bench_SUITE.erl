@@ -1,7 +1,9 @@
 %%%-------------------------------------------------------------------
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2014-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2014-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -60,39 +62,84 @@
          test/2
         ]).
 
+
+-define(COUNT, 400).
+-define(REDUCE, 40). % (?COUNT rem ?REDUCE) should be 0
+%% (?COUNT div ?REDUCE) is the count used for a non-benchmark run
+
 %%--------------------------------------------------------------------
 %% Common Test interface functions -----------------------------------
 %%--------------------------------------------------------------------
 suite() -> [{ct_hooks,[{ts_install_cth,[{nodenames,2}]}]}].
 
-all() -> [{group, setup}, {group, payload}].
+all() ->
+    %% {repeat,_} here overrides {repeat,_} in groups()
+    [{group, setup, [{repeat,1}]},
+     {group, payload, [{repeat,1}]}].
 
 groups() ->
-    [{setup, [{repeat, 3}], [setup_sequential, setup_sequential_noreuse, setup_sequential_13,
-                             setup_concurrent, setup_concurrent_noreuse, setup_concurrent_13]},
-     {payload, [{repeat, 3}], [payload, payload_13]}
+    [{benchmark, [{group, G} || {group, G, _} <- all()]},
+     %%
+     {setup, [{repeat,3}],
+      [setup_sequential, setup_sequential_noreuse, setup_sequential_13,
+       setup_concurrent, setup_concurrent_noreuse, setup_concurrent_13]},
+     {payload, [{repeat,3}],
+      [payload, payload_13]}
     ].
 
+%%-------
+
+init_per_suite(Config) ->
+    ct:timetrap({minutes, 1}),
+    Skipped = make_ref(),
+    try
+        node() =/= nonode@nohost
+            orelse throw({Skipped, "Node not distributed"}),
+        %%
+        ssl_test_lib:clean_start(),
+        [{server_node, ssl_bench_test_lib:setup(perf_server)}|Config]
+    catch
+        throw : {Skipped, Reason} ->
+            {skipped, Reason};
+        Class : Reason : Stacktrace ->
+            {failed, {Class, Reason, Stacktrace}}
+    end.
+
+end_per_suite(_Config) ->
+    ok.
+
+%%-------
+
+init_per_group(benchmark, Config) ->
+    [{effort,?REDUCE} | Config];
 init_per_group(_GroupName, Config) ->
     Config.
 
 end_per_group(_GroupName, _Config) ->
     ok.
 
-init_per_suite(Config) ->
-    ct:timetrap({minutes, 1}),
-    case node() of
-        nonode@nohost ->
-            {skipped, "Node not distributed"};
-        _ ->
-            ssl_test_lib:clean_start(),
-            [{server_node, ssl_bench_test_lib:setup(perf_server)}|Config]
-    end.
+%%-------
 
-end_per_suite(_Config) ->
-    ok.
-
+init_per_testcase(Func, Conf)
+  when Func =:= setup_sequential_13;
+       Func =:= setup_concurrent_13;
+       Func =:= payload_13 ->
+    try
+        ct:timetrap({minutes, 1}),
+        TLSVersion = 'tlsv1.3',
+        {supported, SSLVersions} =
+            lists:keyfind(supported, 1, ssl:versions()),
+        case lists:member(TLSVersion, SSLVersions) of
+            true ->
+                Conf;
+            false ->
+                {skipped, {not_supported,TLSVersion,SSLVersions}}
+        end
+    catch Class : Reason : Stacktrace ->
+            {failed, {Class,Reason,Stacktrace}}
+    end;
 init_per_testcase(_Func, Conf) ->
+    ct:timetrap({minutes, 1}),
     Conf.
 
 end_per_testcase(_Func, _Conf) ->
@@ -103,13 +150,17 @@ end_per_testcase(_Func, _Conf) ->
 %%--------------------------------------------------------------------
 
 
--define(COUNT, 400).
--define(TC(Cmd), tc(fun() -> Cmd end, ?MODULE, ?LINE)).
+%%-define(TC(Cmd), tc(fun() -> Cmd end, ?MODULE, ?LINE)).
+count(Config) ->
+    (proplists:get_value(effort, Config, 1) * ?COUNT) div ?REDUCE.
 
 -define(FPROF_CLIENT, false).
 -define(FPROF_SERVER, false).
 -define(EPROF_CLIENT, false).
 -define(EPROF_SERVER, false).
+
+-define(TPROF_CLIENT, false).
+-define(TPROF_SERVER, false). %% untested
 
 %% Current numbers gives roughly a testcase per minute on todays hardware..
 
@@ -117,7 +168,8 @@ setup_sequential(Config) ->
     Server = proplists:get_value(server_node, Config),
     Server =/= undefined orelse error(no_server),
     Cfg = [{version, 'tlsv1.2'}],
-    {ok, Result} = do_test(ssl, {setup_connection,Cfg}, ?COUNT * 20, 1, Server),
+    {ok, Result} =
+        do_test(ssl, {setup_connection,Cfg}, 20*count(Config), 1, Server),
     ct_event:notify(#event{name = benchmark_data,
 			   data=[{value, Result},
 				 {suite, "ssl"}, {name, "Sequential setup"}]}),
@@ -127,7 +179,8 @@ setup_sequential_noreuse(Config) ->
     Server = proplists:get_value(server_node, Config),
     Server =/= undefined orelse error(no_server),
     Cfg = [{version, 'tlsv1.2'}, no_reuse],
-    {ok, Result} = do_test(ssl, {setup_connection,Cfg}, ?COUNT * 20, 1, Server),
+    {ok, Result} =
+        do_test(ssl, {setup_connection,Cfg}, 20*count(Config), 1, Server),
     ct_event:notify(#event{name = benchmark_data,
 			   data=[{value, Result},
 				 {suite, "ssl"}, {name, "Seq setup 1.2 no session"}]}),
@@ -137,7 +190,8 @@ setup_sequential_13(Config) ->
     Server = proplists:get_value(server_node, Config),
     Server =/= undefined orelse error(no_server),
     Cfg = [{version, 'tlsv1.3'}],
-    {ok, Result} = do_test(ssl, {setup_connection,Cfg}, ?COUNT * 20, 1, Server),
+    {ok, Result} =
+        do_test(ssl, {setup_connection,Cfg}, 20*count(Config), 1, Server),
     ct_event:notify(#event{name = benchmark_data,
 			   data=[{value, Result},
 				 {suite, "ssl"}, {name, "Seq setup 1.3"}]}),
@@ -147,7 +201,8 @@ setup_concurrent(Config) ->
     Server = proplists:get_value(server_node, Config),
     Server =/= undefined orelse error(no_server),
     Cfg = [{version, 'tlsv1.2'}],
-    {ok, Result} = do_test(ssl, {setup_connection,Cfg}, ?COUNT, 100, Server),
+    {ok, Result} =
+        do_test(ssl, {setup_connection,Cfg}, count(Config), 100, Server),
     ct_event:notify(#event{name = benchmark_data,
 			   data=[{value, Result},
 				 {suite, "ssl"}, {name, "Concurrent setup"}]}),
@@ -157,7 +212,8 @@ setup_concurrent_noreuse(Config) ->
     Server = proplists:get_value(server_node, Config),
     Server =/= undefined orelse error(no_server),
     Cfg = [{version, 'tlsv1.2'}, no_reuse],
-    {ok, Result} = do_test(ssl, {setup_connection,Cfg}, ?COUNT, 100, Server),
+    {ok, Result} =
+        do_test(ssl, {setup_connection,Cfg}, count(Config), 100, Server),
     ct_event:notify(#event{name = benchmark_data,
 			   data=[{value, Result},
 				 {suite, "ssl"}, {name, "Conc setup 1.2 no session"}]}),
@@ -167,7 +223,8 @@ setup_concurrent_13(Config) ->
     Server = proplists:get_value(server_node, Config),
     Server =/= undefined orelse error(no_server),
     Cfg = [{version, 'tlsv1.3'}],
-    {ok, Result} = do_test(ssl, {setup_connection,Cfg}, ?COUNT, 100, Server),
+    {ok, Result} =
+        do_test(ssl, {setup_connection,Cfg}, count(Config), 100, Server),
     ct_event:notify(#event{name = benchmark_data,
 			   data=[{value, Result},
 				 {suite, "ssl"}, {name, "Conc setup 1.3"}]}),
@@ -177,7 +234,8 @@ payload(Config) ->
     Server = proplists:get_value(server_node, Config),
     Server =/= undefined orelse error(no_server),
     Cfg = [{version, 'tlsv1.2'}],
-    {ok, Result} = do_test(ssl, {payload, Cfg}, ?COUNT*300, 10, Server),
+    {ok, Result} =
+        do_test(ssl, {payload, Cfg}, 300*count(Config), 10, Server),
     ct_event:notify(#event{name = benchmark_data,
 			   data=[{value, Result},
 				 {suite, "ssl"}, {name, "Payload simple"}]}),
@@ -187,7 +245,8 @@ payload_13(Config) ->
     Server = proplists:get_value(server_node, Config),
     Server =/= undefined orelse error(no_server),
     Cfg = [{version, 'tlsv1.3'}],
-    {ok, Result} = do_test(ssl, {payload, Cfg}, ?COUNT*300, 10, Server),
+    {ok, Result} =
+        do_test(ssl, {payload, Cfg}, 300*count(Config), 10, Server),
     ct_event:notify(#event{name = benchmark_data,
 			   data=[{value, Result},
 				 {suite, "ssl"}, {name, "Payload 1.3"}]}),
@@ -224,11 +283,15 @@ do_test(Type, {Func, _}=TC, Loop, ParallellConnections, Server) ->
 			       start_profile(fprof, [self(),new]),
 			   ?EPROF_CLIENT andalso Id =:= 1 andalso
 			       start_profile(eprof, [ssl_connection_sup, ssl_manager]),
+                           ?TPROF_CLIENT andalso Id =:= 1 andalso
+                               start_profile(tprof, []),
 			   ok = ?MODULE:Func(Loop, Type, CData),
 			   ?FPROF_CLIENT andalso Id =:= 1 andalso
 			       stop_profile(fprof, "test_connection_client_res.fprof"),
 			   ?EPROF_CLIENT andalso Id =:= 1 andalso
 			       stop_profile(eprof, "test_connection_client_res.eprof"),
+			   ?TPROF_CLIENT andalso Id =:= 1 andalso
+			       stop_profile(tprof, "test_connection_client_res.tprof"),
 			   Me ! self()
 		   end
 	   end,
@@ -261,6 +324,7 @@ server_init(ssl, {setup_connection, Opts}, _, _, Server, Certs) ->
     ?FPROF_SERVER andalso start_profile(fprof, [whereis(ssl_manager), new]),
     %%?EPROF_SERVER andalso start_profile(eprof, [ssl_connection_sup, ssl_manager]),
     ?EPROF_SERVER andalso start_profile(eprof, [ssl_manager]),
+    ?TPROF_SERVER andalso start_profile(tprof, [ssl_manager]),
     Server ! {self(), {init, Host, Port}},
     Test = fun(TSocket) ->
 		   {ok, Socket} = ssl:handshake(TSocket),
@@ -300,6 +364,7 @@ setup_server_connection(LSocket, Test) ->
     receive quit ->
 	    ?FPROF_SERVER andalso stop_profile(fprof, "test_server_res.fprof"),
 	    ?EPROF_SERVER andalso stop_profile(eprof, "test_server_res.eprof"),
+            ?TPROF_SERVER andalso stop_profile(tprof, "test_server_res.tprof"),
 	    ok
     after 0 ->
 	    case ssl:transport_accept(LSocket, 2000) of
@@ -328,11 +393,21 @@ setup_connection(_, _, _) ->
     ok.
 
 payload(Loop, ssl, D = {Socket, Size}) when Loop > 0 ->
+    ssl:setopts(Socket, [{active, once}]),
     ok = ssl:send(Socket, msg()),
-    {ok, _} = ssl:recv(Socket, Size),
+    fetch_data(Socket, Size),
     payload(Loop-1, ssl, D);
 payload(_, _, {Socket, _}) ->
     ssl:close(Socket).
+
+fetch_data(Socket, Size) ->
+    receive
+        {ssl, Socket, Bin} ->
+            case Size - size(Bin) of
+                0 -> ok;
+                N -> fetch_data(Socket, N)
+            end
+    end.
 
 msg() ->
     <<"Hello", 
@@ -365,6 +440,7 @@ setup_server_init(Type, Tc, Loop, PC, Certs) ->
     unlink(Pid),
     Res.
 
+-ifdef(TC).
 tc(Fun, Mod, Line) ->
     case timer:tc(Fun) of
 	{_,{'EXIT',Reason}} ->
@@ -377,13 +453,19 @@ tc(Fun, Mod, Line) ->
 	    io:format("~p:~p: Time: ~p\n", [Mod, Line, T]),
 	    R
     end.
+-endif.
 
 start_profile(eprof, Procs) ->
     profiling = eprof:start_profiling(Procs),
     io:format("(E)Profiling ...",[]);
 start_profile(fprof, Procs) ->
     fprof:trace([start, {procs, Procs}]),
-    io:format("(F)Profiling ...",[]).
+    io:format("(F)Profiling ...",[]);
+start_profile(tprof, _) ->
+    tprof:start(#{type => call_memory}),
+    tprof:enable_trace({all_children, ssl_sup}),
+    io:format("(T)Profiling ...",[]),
+    tprof:set_pattern('_', '_' , '_').
 
 stop_profile(eprof, File) ->
     profiling_stopped = eprof:stop_profiling(),
@@ -398,7 +480,11 @@ stop_profile(fprof, File) ->
     fprof:analyse([{dest, File},{totals, true}]),
     io:format(".analysed => ~s ~n",[File]),
     fprof:stop(),
-    ok.
+    ok;
+stop_profile(tprof, _File) ->
+    Sample = tprof:collect(),
+    tprof:stop(),
+    tprof:format(tprof:inspect(Sample)).
 
 ssl_opts(listen, Opts, Certs) ->
     [{backlog, 500} | ssl_opts(server_config, Opts, Certs)];

@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2004-2017. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2004-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -95,14 +97,25 @@
 #endif
 
 ETHR_PROTO_NORETURN__
-ethr_assert_failed(const char *file, int line, const char *func, char *a);
+ethr_assert_failed(const char *file, int line, const char *func, const char *a);
 #ifdef ETHR_DEBUG
-#define ETHR_ASSERT(A) \
-  ((void) ((A) ? 1 : ethr_assert_failed(__FILE__, __LINE__, __func__, #A)))
+#define ETHR_ASSERT(A)                                                        \
+  ((void) ((A) ?                                                              \
+           ((void) 1) :                                                       \
+           ethr_assert_failed(__FILE__, __LINE__, __func__, #A)))
 #else
 #define ETHR_ASSERT(A) ((void) 1)
 #endif
 
+/* Taken from https://best.openssf.org/Compiler-Hardening-Guides/Compiler-Options-Hardening-Guide-for-C-and-C++.html#warn-about-implicit-fallthrough-in-switch-statements */
+#ifdef __has_attribute
+#  if __has_attribute(__fallthrough__)
+#    define ETHR_FALLTHROUGH()                    __attribute__((__fallthrough__))
+#  endif
+#endif
+#ifndef ETHR_FALLTHROUGH
+# define ETHR_FALLTHROUGH()                    do {} while (0)  /* fallthrough */
+#endif
 
 #if defined(ETHR_PTHREADS)
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *\
@@ -312,6 +325,10 @@ ETHR_PROTO_NORETURN__ ethr_fatal_error__(const char *file,
     ETHR_X86_RUNTIME_CONF_HAVE_META(nonstop_tsc_s3)
 #  define ETHR_X86_RUNTIME_CONF_HAVE_NO_NONSTOP_TSC_S3__        \
     ETHR_X86_RUNTIME_CONF_HAVE_NO_META(nonstop_tsc_s3)
+#  define ETHR_X86_RUNTIME_CONF_HAVE_CPUID__     \
+    ETHR_X86_RUNTIME_CONF_HAVE_META(cpuid)
+#  define ETHR_X86_RUNTIME_CONF_HAVE_NO_CPUID__        \
+    ETHR_X86_RUNTIME_CONF_HAVE_NO_META(cpuid)
 
 #endif
 
@@ -336,6 +353,7 @@ typedef struct {
     int have_tsc_reliable;
     int have_nonstop_tsc;
     int have_nonstop_tsc_s3;
+    int have_cpuid;
 #endif
 #if defined(ETHR_PPC_RUNTIME_CONF__)
     int have_lwsync;
@@ -490,10 +508,11 @@ typedef struct {
 typedef struct {
     int detached;			/* boolean (default false) */
     int suggested_stack_size;		/* kilo words (default sys dependent) */
-    char *name;                         /* max 14 char long (default no-name) */
+    char *name;                         /* max 15 char long (default no-name) */
 } ethr_thr_opts;
 
 #define ETHR_THR_OPTS_DEFAULT_INITER {0, -1, NULL}
+#define ETHR_THR_NAME_MAX 15
 
 #if !defined(ETHR_TRY_INLINE_FUNCS) || defined(ETHR_AUX_IMPL__)
 #  define ETHR_NEED_SPINLOCK_PROTOTYPES__

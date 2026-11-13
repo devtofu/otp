@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 1996-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 1996-2026. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -42,6 +44,7 @@
 #include "dtrace-wrapper.h"
 #include "erl_proc_sig_queue.h"
 #include "beam_common.h"
+#include "erl_record.h"
 
 /* #define HARDDEBUG 1 */
 
@@ -84,14 +87,20 @@
 #define ADD_BYTE_OFFSET(ptr, offset) \
    ((Eterm *) (((unsigned char *)ptr) + (offset)))
 
+#if defined(__clang__)
+#  define BROKEN_VALID_INSTR_CHECK
+#endif
+
 /* We don't check the range if an ordinary switch is used */
 #ifdef NO_JUMP_TABLE
 #  define VALID_INSTR(IP) (BeamCodeAddr(IP) < (NUMBER_OF_OPCODES*2+10))
+#elif defined(BROKEN_VALID_INSTR_CHECK)
+#  define VALID_INSTR(IP) (true)
 #else
 #  define VALID_INSTR(IP) \
     ((BeamInstr)LabelAddr(emulator_loop) <= BeamCodeAddr(IP) && \
      BeamCodeAddr(IP) < (BeamInstr)LabelAddr(end_emulator_loop))
-#endif /* NO_JUMP_TABLE */
+#endif
 
 #define SET_I(ip) \
    ASSERT(VALID_INSTR(* (Eterm *)(ip))); \
@@ -119,10 +128,15 @@ ErtsCodePtr beam_exit;
 static BeamInstr beam_continue_exit_[1];
 ErtsCodePtr beam_continue_exit;
 
+static BeamInstr beam_i_line_breakpoint_cleanup_[1];
+ErtsCodePtr beam_i_line_breakpoint_cleanup;
+
+static BeamInstr beam_finish_create_record_[1];
+ErtsCodePtr beam_finish_create_record;
 
 /* NOTE These should be the only variables containing trace instructions.
 **      Sometimes tests are for the instruction value, and sometimes
-**      for the referring variable (one of these), and rouge references
+**      for the referring variable (one of these), and rogue references
 **      will most likely cause chaos.
 */
 
@@ -138,9 +152,9 @@ ErtsCodePtr beam_return_trace;
 static BeamInstr beam_exception_trace_[1];
 ErtsCodePtr beam_exception_trace;
 
-/* OpCode(i_return_time_trace) */
-static BeamInstr beam_return_time_trace_[1];
-ErtsCodePtr beam_return_time_trace;
+/* OpCode(i_call_trace_return) */
+static BeamInstr beam_call_trace_return_[1];
+ErtsCodePtr beam_call_trace_return;
 
 /* The address field of every fun that has no loaded code will point to
  * beam_unloaded_fun[]. The -1 in beam_unloaded_fun[0] will be interpreted
@@ -266,10 +280,10 @@ void process_main(ErtsSchedulerData *esdp)
     ERTS_DECLARE_DUMMY(Eterm pid);
 #endif
 
-    /* Pointer to X registers: x(1)..x(N); reg[0] is used when doing GC,
-     * in all other cases x0 is used.
+    /*
+     * Pointer to X registers: x(0)..x(N).
      */
-    register Eterm* reg = NULL;
+    register Eterm* reg REG_xregs = NULL;
 
     /*
      * Top of heap (next free location); grows upwards.
@@ -313,12 +327,12 @@ void process_main(ErtsSchedulerData *esdp)
 #endif
 #endif
 
+    Uint bitdata = 0;
+
     Uint64 start_time = 0;          /* Monitor long schedule */
     ErtsCodePtr start_time_i = NULL;
 
     ERTS_MSACC_DECLARE_CACHE_X() /* a cached value of the tsd pointer for msacc */
-
-    ERL_BITS_DECLARE_STATEP; /* Has to be last declaration */
 
     /*
      * Note: In this function, we attempt to place rarely executed code towards
@@ -377,7 +391,6 @@ void process_main(ErtsSchedulerData *esdp)
 	start_time_i = c_p->i;
     }
 
-    ERL_BITS_RELOAD_STATEP(c_p);
     {
 	int reds;
 	BeamInstr next;
@@ -420,7 +433,7 @@ void process_main(ErtsSchedulerData *esdp)
             if (ERTS_PROC_IS_EXITING(c_p)) {
                 sys_strcpy(fun_buf, "<exiting>");
             } else {
-                ErtsCodeMFA *cmfa = erts_find_function_from_pc(c_p->i);
+                const ErtsCodeMFA *cmfa = erts_find_function_from_pc(c_p->i);
                 if (cmfa) {
                     dtrace_fun_decode(c_p, cmfa,
                                       NULL, fun_buf);
@@ -436,7 +449,7 @@ void process_main(ErtsSchedulerData *esdp)
 	Goto(next);
     }
 
-#if defined(DEBUG) || defined(NO_JUMP_TABLE)
+#if defined(NO_JUMP_TABLE) || (defined(DEBUG) && !defined(BROKEN_VALID_INSTR_CHECK))
  emulator_loop:
 #endif
 
@@ -453,16 +466,12 @@ void process_main(ErtsSchedulerData *esdp)
      * can get the module, function, and arity for the function being
      * called from I[-3], I[-2], and I[-1] respectively.
      */
- context_switch_fun:
-    /* Add one for the environment of the fun */
-    c_p->arity = erts_code_to_codemfa(I)->arity + 1;
-    goto context_switch2;
-
  context_switch:
-    c_p->arity = erts_code_to_codemfa(I)->arity;
-
- context_switch2: 		/* Entry for fun calls. */
-    c_p->current = erts_code_to_codemfa(I);
+    {
+        const ErtsCodeMFA *mfa = erts_code_to_codemfa(I);
+        c_p->arity = mfa->arity;
+        c_p->current = mfa;
+    }
 
  context_switch3:
 
@@ -533,19 +542,25 @@ void process_main(ErtsSchedulerData *esdp)
          * code[3]: &&call_error_handler
          * code[4]: Not used
          */
-        Export *error_handler;
+        const Export *error_handler;
+        const ErtsCodeMFA *mfa;
 
         HEAVY_SWAPOUT;
-        error_handler = call_error_handler(c_p, erts_code_to_codemfa(I),
-                                           reg, am_undefined_function);
+        mfa = erts_code_to_codemfa(I);
+        error_handler = call_error_handler(c_p,
+                                           mfa,
+                                           reg,
+                                           am_undefined_function);
         HEAVY_SWAPIN;
 
         if (error_handler) {
-            I = error_handler->addresses[erts_active_code_ix()];
+            I = error_handler->dispatch.addresses[erts_active_code_ix()];
             Goto(*I);
         }
+
+        I = handle_error(c_p, cp_val(*E), reg, mfa);
+        goto post_error_handling;
     }
- /* Fall through */
  OpCase(error_action_code): {
     handle_error:
      SWAPOUT;
@@ -554,7 +569,7 @@ void process_main(ErtsSchedulerData *esdp)
      if (I == 0) {
 	 goto do_schedule;
      } else {
-	 ASSERT(!is_value(r(0)));
+	 ASSERT(!is_value(x(0)));
 	 SWAPIN;
 	 Goto(*I);
      }
@@ -573,16 +588,15 @@ void process_main(ErtsSchedulerData *esdp)
     DEFINE_COUNTING_LABELS;
 #endif
 
-#ifndef NO_JUMP_TABLE
-#ifdef DEBUG
+#if defined(DEBUG) && !defined(BROKEN_VALID_INSTR_CHECK)
  end_emulator_loop:
-#endif
 #endif
 
  OpCase(int_code_end):
  OpCase(label_L):
  OpCase(on_load):
  OpCase(line_I):
+ OpCase(i_debug_line_IIt):
  OpCase(i_nif_padding):
     erts_exit(ERTS_ERROR_EXIT, "meta op\n");
 
@@ -633,9 +647,11 @@ static void install_bifs(void) {
 
         entry = &bif_table[i];
 
+        ERTS_ASSERT(entry->arity <= MAX_BIF_ARITY);
+
         ep = erts_export_put(entry->module, entry->name, entry->arity);
 
-        ep->info.op = BeamOpCodeAddr(op_i_func_info_IaaI);
+        ep->info.u.op = BeamOpCodeAddr(op_i_func_info_IaaI);
         ep->info.mfa.module = entry->module;
         ep->info.mfa.function = entry->name;
         ep->info.mfa.arity = entry->arity;
@@ -663,20 +679,6 @@ static void install_bifs(void) {
 static void
 init_emulator_finish(void)
 {
-#if defined(ARCH_64) && defined(CODE_MODEL_SMALL)
-    int i;
-
-    for (i = 0; i < NUMBER_OF_OPCODES; i++) {
-        BeamInstr instr = BeamOpCodeAddr(i);
-        if (instr >= (1ull << 32)) {
-            erts_exit(ERTS_ERROR_EXIT,
-                      "This run-time was supposed be compiled with all code below 2Gb,\n"
-                      "but the instruction '%s' is located at %016lx.\n",
-                      opc[i].name, instr);
-        }
-    }
-#endif
-
     beam_run_process_[0]       = BeamOpCodeAddr(op_i_apply_only);
     beam_run_process = (ErtsCodePtr)&beam_run_process_[0];
 
@@ -689,6 +691,12 @@ init_emulator_finish(void)
     beam_continue_exit_[0]     = BeamOpCodeAddr(op_continue_exit);
     beam_continue_exit = (ErtsCodePtr)&beam_continue_exit_[0];
 
+    beam_finish_create_record_[0] = BeamOpCodeAddr(op_finish_create_record);
+    beam_finish_create_record = (ErtsCodePtr)&beam_finish_create_record_[0];
+
+    beam_i_line_breakpoint_cleanup_[0] = BeamOpCodeAddr(op_i_line_breakpoint_cleanup);
+    beam_i_line_breakpoint_cleanup = (ErtsCodePtr)&beam_i_line_breakpoint_cleanup_[0];
+
     beam_return_to_trace_[0]   = BeamOpCodeAddr(op_i_return_to_trace);
     beam_return_to_trace = (ErtsCodePtr)&beam_return_to_trace_[0];
 
@@ -698,8 +706,8 @@ init_emulator_finish(void)
     beam_exception_trace_[0]   = BeamOpCodeAddr(op_return_trace); /* UGLY */
     beam_exception_trace = (ErtsCodePtr)&beam_exception_trace_[0];
 
-    beam_return_time_trace_[0] = BeamOpCodeAddr(op_i_return_time_trace);
-    beam_return_time_trace = (ErtsCodePtr)&beam_return_time_trace_[0];
+    beam_call_trace_return_[0] = BeamOpCodeAddr(op_i_call_trace_return);
+    beam_call_trace_return = (ErtsCodePtr)&beam_call_trace_return_[0];
 
     install_bifs();
 }
@@ -712,4 +720,59 @@ erts_beam_jump_table(void)
 #else
     return 1;
 #endif
+}
+
+void
+erts_prepare_bs_construct_fail_info(Process* c_p, const BeamInstr* p, Eterm reason, Eterm Info, Eterm value)
+{
+    Eterm* hp;
+    Eterm cause_tuple;
+    Eterm op;
+    Eterm error_info;
+    Uint segment;
+
+    segment = p[2] >> 3;
+
+    switch (p[0]) {
+    case BSC_APPEND:
+    case BSC_PRIVATE_APPEND:
+    case BSC_BINARY:
+    case BSC_BINARY_FIXED_SIZE:
+    case BSC_BINARY_ALL:
+        op = am_binary;
+        break;
+    case BSC_FLOAT:
+    case BSC_FLOAT_FIXED_SIZE:
+        op = am_float;
+        break;
+    case BSC_INTEGER:
+    case BSC_INTEGER_FIXED_SIZE:
+        op = am_integer;
+        break;
+    case BSC_STRING:
+        op = am_string;
+        break;
+    case BSC_UTF8:
+        op = am_utf8;
+        break;
+    case BSC_UTF16:
+        op = am_utf16;
+        break;
+    case BSC_UTF32:
+        op = am_utf32;
+        break;
+    default:
+        op = am_none;
+        break;
+    }
+
+    hp = HeapFragOnlyAlloc(c_p, MAP3_SZ+4+1);
+    cause_tuple = TUPLE4(hp, make_small(segment), op, Info, value);
+    hp += 5;
+    error_info = MAP3(hp,
+                      am_cause, cause_tuple,
+                      am_function, am_format_bs_fail,
+                      am_module, am_erl_erts_errors);
+    c_p->fvalue = error_info;
+    c_p->freason = reason | EXF_HAS_EXT_INFO;
 }

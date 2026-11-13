@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2005-2017. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2005-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -25,6 +27,10 @@
 -export([all/0,groups/0,init_per_group/2,end_per_group/2,
          init_per_suite/1,end_per_suite/1,
          appup/1,fields/1,modules/1,export_all/1,app_depend/1]).
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}},
+          {nowarn_possibly_unsafe_function, {file, consult, 1}},
+          nowarn_deprecated_catch]).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -133,7 +139,8 @@ check_asn1ct_modules(Extra) ->
 		  asn1ct_gen_ber_bin_v2,asn1ct_value,
 		  asn1ct_tok,asn1ct_parser2,asn1ct_table,
 		  asn1ct_imm,asn1ct_func,asn1ct_rtt,
-		  asn1ct_eval_ext,asn1ct_gen_jer],
+		  asn1ct_eval_ext,asn1ct_gen_jer,
+                  asn1ct_partial_decode],
     case Extra -- ASN1CTMods of
 	[] ->
 	    ok;

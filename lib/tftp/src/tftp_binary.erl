@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2005-2018. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2005-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 %%
@@ -28,6 +30,7 @@
 %%%-------------------------------------------------------------------
 
 -module(tftp_binary).
+-moduledoc false.
 
 %%%-------------------------------------------------------------------
 %%% Interface
@@ -47,26 +50,26 @@
 prepare(_Peer, Access, Filename, Mode, SuggestedOptions, Initial) when is_list(Initial) ->
     %% Client side
     IsNativeAscii = is_native_ascii(Initial),
-    case catch handle_options(Access, Filename, Mode, SuggestedOptions, IsNativeAscii) of
-	{ok, IsNetworkAscii, AcceptedOptions} when Access =:= read, is_binary(Filename) ->
-	    State = #read_state{options  	 = AcceptedOptions,
-				blksize  	 = lookup_blksize(AcceptedOptions),
-				bin      	 = Filename,
-				is_network_ascii = IsNetworkAscii,
-			        count            = size(Filename),
-				is_native_ascii  = IsNativeAscii},
-	    {ok, AcceptedOptions, State};
-	{ok, IsNetworkAscii, AcceptedOptions} when Access =:= write, Filename =:= binary ->
-	    State = #write_state{options  	  = AcceptedOptions,
-				 blksize  	  = lookup_blksize(AcceptedOptions),
-				 list     	  = [],
-				 is_network_ascii = IsNetworkAscii,
-				 is_native_ascii  = IsNativeAscii},
-	    {ok, AcceptedOptions, State};
-	{ok, _, _} ->
-	    {error, {undef, "Illegal callback usage. Mode and filename is incompatible."}};
-	{error, {Code, Text}} ->
-	    {error, {Code, Text}}
+    try handle_options(Access, Filename, Mode, SuggestedOptions, IsNativeAscii) of
+        {IsNetworkAscii, AcceptedOptions} when Access =:= read, is_binary(Filename) ->
+            State = #read_state{options          = AcceptedOptions,
+                                blksize          = lookup_blksize(AcceptedOptions),
+                                bin              = Filename,
+                                is_network_ascii = IsNetworkAscii,
+                                count            = byte_size(Filename),
+                                is_native_ascii  = IsNativeAscii},
+            {ok, AcceptedOptions, State};
+        {IsNetworkAscii, AcceptedOptions} when Access =:= write, Filename =:= binary ->
+            State = #write_state{options          = AcceptedOptions,
+                                 blksize          = lookup_blksize(AcceptedOptions),
+                                 list             = [],
+                                 is_network_ascii = IsNetworkAscii,
+                                 is_native_ascii  = IsNativeAscii},
+            {ok, AcceptedOptions, State};
+        {_, _} ->
+            {error, {undef, "Illegal callback usage. Mode and filename is incompatible."}}
+    catch throw : Reason ->
+            {error, Reason}
     end;
 prepare(_Peer, _Access, _Bin, _Mode, _SuggestedOptions, _Initial) ->
     {error, {undef, "Illegal callback options."}}.
@@ -78,32 +81,38 @@ prepare(_Peer, _Access, _Bin, _Mode, _SuggestedOptions, _Initial) ->
 open(Peer, Access, Filename, Mode, SuggestedOptions, Initial) when is_list(Initial) ->
     %% Server side
     case prepare(Peer, Access, Filename, Mode, SuggestedOptions, Initial) of
-	{ok, AcceptedOptions, State} ->
-	    open(Peer, Access, Filename, Mode, AcceptedOptions, State);
-	{error, {Code, Text}} ->
-	    {error, {Code, Text}}
+        {ok, AcceptedOptions, State} ->
+            open(Peer, Access, Filename, Mode, AcceptedOptions, State);
+        {error, {Code, Text}} ->
+            {error, {Code, Text}}
     end;
-open(_Peer, Access, Filename, Mode, NegotiatedOptions, State) when is_record(State, read_state) ->
+open(_Peer, Access, Filename, Mode, NegotiatedOptions, #read_state{} = State) ->
     %% Both sides
-    case catch handle_options(Access, Filename, Mode, NegotiatedOptions, State#read_state.is_native_ascii) of
-	{ok, IsNetworkAscii, Options}
-	when Options =:= NegotiatedOptions,
-	     IsNetworkAscii =:= State#read_state.is_network_ascii ->
-	    {ok, NegotiatedOptions, State};
-	{error, {Code, Text}} ->
-	    {error, {Code, Text}}
+    try handle_options(Access, Filename, Mode, NegotiatedOptions, State#read_state.is_native_ascii) of
+        {IsNetworkAscii, Options}
+        when Options =:= NegotiatedOptions,
+             IsNetworkAscii =:= State#read_state.is_network_ascii ->
+            {ok, NegotiatedOptions,
+             State#read_state{
+               options = NegotiatedOptions,
+               blksize = lookup_blksize(NegotiatedOptions) }}
+    catch throw : Reason ->
+            {error, Reason}
     end;
-open(_Peer, Access, Filename, Mode, NegotiatedOptions, State) when is_record(State, write_state) ->
+open(_Peer, Access, Filename, Mode, NegotiatedOptions, #write_state{} = State) ->
     %% Both sides
-    case catch handle_options(Access, Filename, Mode, NegotiatedOptions, State#write_state.is_native_ascii) of
-	{ok, IsNetworkAscii, Options}
-	when Options =:= NegotiatedOptions,
-	     IsNetworkAscii =:= State#write_state.is_network_ascii ->
-	    {ok, NegotiatedOptions, State};
-	{error, {Code, Text}} ->
-	    {error, {Code, Text}}
+    try handle_options(Access, Filename, Mode, NegotiatedOptions, State#write_state.is_native_ascii) of
+        {IsNetworkAscii, Options}
+        when Options =:= NegotiatedOptions,
+             IsNetworkAscii =:= State#write_state.is_network_ascii ->
+            {ok, NegotiatedOptions,
+             State#write_state{
+               options = NegotiatedOptions,
+               blksize = lookup_blksize(NegotiatedOptions) }}
+    catch throw : Reason ->
+            {error, Reason}
     end;
-open(Peer, Access, Filename, Mode, NegotiatedOptions, State) -> 
+open(Peer, Access, Filename, Mode, NegotiatedOptions, State) ->
     %% Handle upgrade from old releases. Please, remove this clause in next release.
     State2 = upgrade_state(State),
     open(Peer, Access, Filename, Mode, NegotiatedOptions, State2).
@@ -115,11 +124,11 @@ open(Peer, Access, Filename, Mode, NegotiatedOptions, State) ->
 read(#read_state{bin = Bin} = State) when is_binary(Bin) ->
     BlkSize = State#read_state.blksize,
     if
-	size(Bin) >= BlkSize ->
+	byte_size(Bin) >= BlkSize ->
 	    <<Block:BlkSize/binary, Bin2/binary>> = Bin,
 	    State2 = State#read_state{bin = Bin2},
 	    {more, Block, State2};
-	size(Bin) < BlkSize ->
+	byte_size(Bin) < BlkSize ->
 	    {last, Bin, State#read_state.count}
     end;
 read(State) ->
@@ -132,7 +141,7 @@ read(State) ->
 %%-------------------------------------------------------------------
 
 write(Bin, #write_state{list = List} = State) when is_binary(Bin), is_list(List) ->
-    Size = size(Bin),
+    Size = byte_size(Bin),
     BlkSize = State#write_state.blksize,
     if
 	Size =:= BlkSize ->
@@ -168,13 +177,13 @@ abort(Code, Text, State) ->
 handle_options(Access, Bin, Mode, Options, IsNativeAscii) ->
     IsNetworkAscii = handle_mode(Mode, IsNativeAscii),
     Options2 = do_handle_options(Access, Bin, Options),
-    {ok, IsNetworkAscii, Options2}.
+    {IsNetworkAscii, Options2}.
 
 handle_mode(Mode, IsNativeAscii) ->
     case Mode of
-	"netascii" when IsNativeAscii =:= true -> true;
-	"octet" -> false;
-	_ -> throw({error, {badop, "Illegal mode " ++ Mode}})
+        "netascii" when IsNativeAscii =:= true -> true;
+        "octet" -> false;
+        _ -> throw({badop, "Illegal mode " ++ Mode})
     end.
 
 do_handle_options(Access, Bin, [{Key, Val} | T]) ->
@@ -182,7 +191,7 @@ do_handle_options(Access, Bin, [{Key, Val} | T]) ->
 	"tsize" ->
 	    case Access of
 		read when Val =:= "0", is_binary(Bin) ->
-		    Tsize = integer_to_list(size(Bin)),
+		    Tsize = integer_to_list(byte_size(Bin)),
 		    [{Key, Tsize} | do_handle_options(Access, Bin, T)];
 		_ ->
 		    handle_integer(Access, Bin, Key, Val, T, 0, infinity)
@@ -199,15 +208,15 @@ do_handle_options(_Access, _Bin, []) ->
 
 
 handle_integer(Access, Bin, Key, Val, Options, Min, Max) ->
-    case catch list_to_integer(Val) of
-	{'EXIT', _} ->
-	    do_handle_options(Access, Bin, Options);
-	Int when Int >= Min, Int =< Max ->
-	    [{Key, Val} | do_handle_options(Access, Bin, Options)];
-	Int when Int >= Min, Max =:= infinity ->
-	    [{Key, Val} | do_handle_options(Access, Bin, Options)];
-	_Int ->
-	    throw({error, {badopt, "Illegal " ++ Key ++ " value " ++ Val}})
+    try list_to_integer(Val) of
+        Int when Int >= Min, Int =< Max ->
+            [{Key, Val} | do_handle_options(Access, Bin, Options)];
+        Int when Int >= Min, Max =:= infinity ->
+            [{Key, Val} | do_handle_options(Access, Bin, Options)];
+        _Int ->
+            throw({badopt, "Illegal " ++ Key ++ " value " ++ Val})
+    catch error : _ ->
+            do_handle_options(Access, Bin, Options)
     end.
 
 lookup_blksize(Options) ->
@@ -231,7 +240,7 @@ is_native_ascii() ->
 	{win32, _} -> true;
 	_          -> false
     end.
-    
+
 %% Handle upgrade from old releases. Please, remove this function in next release.
 upgrade_state({read_state,  Options, Blksize, Bin, IsNetworkAscii, Count}) ->
     {read_state,  Options, Blksize, Bin, false, IsNetworkAscii, Count};

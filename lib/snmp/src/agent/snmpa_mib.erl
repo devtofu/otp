@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,6 +20,7 @@
 %% %CopyrightEnd%
 %%
 -module(snmpa_mib).
+-moduledoc false.
 
 
 %%%-----------------------------------------------------------------
@@ -46,11 +49,6 @@
 %% Internal exports
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
 	 code_change/3]).
-
-%% <BACKWARD-COMPAT>
--export([load_mibs/2, unload_mibs/2]).
-%% </BACKWARD-COMPAT>
-
 
 -include_lib("kernel/include/file.hrl").
 -include("snmpa_internal.hrl").
@@ -204,11 +202,6 @@ next(MibServer, Oid, MibView) ->
 %% Returns: ok | {error, Reason}
 %%----------------------------------------------------------------------
 
-%% <BACKWARD-COMPAT>
-load_mibs(MibServer, Mibs) ->
-    load_mibs(MibServer, Mibs, false).
-%% </BACKWARD-COMPAT>
-
 load_mibs(MibServer, Mibs, Force) ->
     call(MibServer, {load_mibs, Mibs, Force}).
 
@@ -219,10 +212,6 @@ load_mibs(MibServer, Mibs, Force) ->
 %%       Force is a boolean
 %% Returns: ok | {error, Reason}
 %%----------------------------------------------------------------------
-%% <BACKWARD-COMPAT>
-unload_mibs(MibServer, Mibs) ->
-    unload_mibs(MibServer, Mibs, false).
-%% </BACKWARD-COMPAT>
 
 unload_mibs(MibServer, Mibs, Force) ->
     call(MibServer, {unload_mibs, Mibs, Force}).
@@ -514,11 +503,6 @@ handle_call({next, Oid, MibView}, _From,
     ?vdebug("next -> Reply: ~p", [Reply]), 
     {reply, Reply, NewState};
 
-%% <BACKWARD-COMPAT>
-handle_call({load_mibs, Mibs}, From, State) ->
-    handle_call({load_mibs, Mibs, false}, From, State);
-%% </BACKWARD-COMPAT>
-
 handle_call({load_mibs, Mibs, Force}, _From, 
 	    #state{data         = Data, 
 		   teo          = TeOverride, 
@@ -539,11 +523,6 @@ handle_call({load_mibs, Mibs, Force}, _From,
 	end,
     Mod:sync(NData),
     {reply, Reply, State#state{data = NData, cache = NewCache}};
-
-%% <BACKWARD-COMPAT>
-handle_call({unload_mibs, Mibs}, From, State) ->
-    handle_call({unload_mibs, Mibs, false}, From, State);
-%% </BACKWARD-COMPAT>
 
 handle_call({unload_mibs, Mibs, Force}, _From, 
 	    #state{data         = Data, 
@@ -969,6 +948,7 @@ do_gc_cache(Cache, [Key|Keys]) ->
     ets:delete(Cache, Key),
     do_gc_cache(Cache, Keys).
 
+-dialyzer({no_opaque_union, [maybe_invalidate_cache/1]}).
 maybe_invalidate_cache(?NO_CACHE) ->
     ?NO_CACHE;
 maybe_invalidate_cache(Cache) ->

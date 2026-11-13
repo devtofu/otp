@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2018-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2018-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -53,6 +55,7 @@
 %%%
 
 -module(beam_ssa_bsm).
+-moduledoc false.
 
 -export([module/2, format_error/1]).
 
@@ -124,19 +127,24 @@ analyze_module(#b_module{body=Fs}) ->
           end, #{}, Fs).
 
 has_bsm_ops(#b_function{bs=Blocks}) ->
-    hbo_blocks(maps:to_list(Blocks)).
+    hbo_blocks(maps:to_list(Blocks), false).
 
-hbo_blocks([{_,#b_blk{is=Is}} | Blocks]) ->
+hbo_blocks([{_,#b_blk{is=Is}} | Blocks], Acc) ->
     case hbo_is(Is) of
-        false -> hbo_blocks(Blocks);
-        true -> true
+        no -> hbo_blocks(Blocks, Acc);
+        yes -> hbo_blocks(Blocks, true);
+        nif_start ->
+            %% Disable optimizations for declared -nifs()
+            %% to avoid leaking match contexts as NIF arguments.
+            false
     end;
-hbo_blocks([]) ->
-    false.
+hbo_blocks([], Acc) ->
+    Acc.
 
-hbo_is([#b_set{op=bs_start_match} | _]) -> true;
+hbo_is([#b_set{op=bs_start_match} | _]) -> yes;
+hbo_is([#b_set{op=nif_start} | _]) -> nif_start;
 hbo_is([_I | Is]) -> hbo_is(Is);
-hbo_is([]) -> false.
+hbo_is([]) -> no.
 
 %% Checks whether it's legal to make a call with the given argument as a match
 %% context, returning the param_info() of the relevant parameter.
@@ -297,10 +305,10 @@ get_fa(#b_function{ anno = Anno }) ->
              Variable :: #b_var{} } =>
                Instruction :: #b_set{} }.
 
--record(amb, { dominators :: beam_ssa:dominator_map(),
-               match_aliases :: match_alias_map(),
-               cnt :: non_neg_integer(),
-               promotions = #{} :: promotion_map() }).
+-record #amb{ dominators :: beam_ssa:dominator_map(),
+              match_aliases :: match_alias_map(),
+              cnt :: non_neg_integer(),
+              promotions = #{} :: promotion_map() }.
 
 alias_matched_binaries(Blocks0, Counter, AliasMap) when AliasMap =/= #{} ->
     RPO = beam_ssa:rpo(Blocks0),
@@ -309,7 +317,7 @@ alias_matched_binaries(Blocks0, Counter, AliasMap) when AliasMap =/= #{} ->
                    match_aliases = AliasMap,
                    cnt = Counter },
     {Blocks, State} = beam_ssa:mapfold_blocks(fun amb_1/3, RPO, State0,
-                                                  Blocks0),
+                                              Blocks0),
     {amb_insert_promotions(Blocks, State), State#amb.cnt};
 alias_matched_binaries(Blocks, Counter, _AliasMap) ->
     {Blocks, Counter}.
@@ -388,7 +396,7 @@ amb_create_alias(#b_var{}=Arg0, Context, Lbl, State0) ->
             %% promotion will be inserted later by amb_insert_promotions/2.
 
             Counter = State0#amb.cnt,
-            Alias = #b_var{name={'@ssa_bsm_alias', Counter}},
+            Alias = #b_var{name=Counter},
             Promotion = #b_set{op=bs_get_tail,dst=Alias,args=[Context]},
 
             Promotions = maps:put({Lbl, Arg0}, Promotion, Promotions0),
@@ -422,7 +430,7 @@ is_var_in_args(_Var, []) -> false.
 %%% Subpasses
 %%%
 
-%% Removes superflous chained bs_start_match instructions in the same
+%% Removes superfluous chained bs_start_match instructions in the same
 %% function. When matching on an extracted tail binary, or on a binary we've
 %% already matched on, we reuse the original match context.
 %%
@@ -436,12 +444,12 @@ is_var_in_args(_Var, []) -> false.
                         ValidAfter :: beam_ssa:label(),
                         Context :: #b_var{} }] }.
 
--record(cm, { definitions :: beam_ssa:definition_map(),
-              dominators :: beam_ssa:dominator_map(),
-              blocks :: beam_ssa:block_map(),
-              match_aliases = #{} :: match_alias_map(),
-              prior_matches = #{} :: prior_match_map(),
-              renames = #{} :: beam_ssa:rename_map() }).
+-record #cm{ definitions :: beam_ssa:definition_map(),
+             dominators :: beam_ssa:dominator_map(),
+             blocks :: beam_ssa:block_map(),
+             match_aliases = #{} :: match_alias_map(),
+             prior_matches = #{} :: prior_match_map(),
+             renames = #{} :: beam_ssa:rename_map() }.
 
 combine_matches({Fs0, ModInfo}) ->
     Fs = [combine_matches(F, ModInfo) || F <- Fs0],
@@ -468,10 +476,27 @@ combine_matches(#b_function{bs=Blocks0,cnt=Counter0}=F, ModInfo) ->
             %% so we can reuse the RPO computed for Blocks0.
             Blocks2 = beam_ssa:rename_vars(State#cm.renames, RPO, Blocks1),
 
-            {Blocks, Counter} = alias_matched_binaries(Blocks2, Counter0,
-                                                       State#cm.match_aliases),
+            %% Replacing variables with the atom `true` can cause
+            %% branches to phi nodes to be omitted, with the phi nodes
+            %% still referencing the unreachable blocks. Therefore,
+            %% trim now to update the phi nodes.
+            Blocks3 = beam_ssa:trim_unreachable(Blocks2),
 
-            F#b_function{ bs=beam_ssa:trim_unreachable(Blocks),
+            Aliases = State#cm.match_aliases,
+            {Blocks4, Counter} = alias_matched_binaries(Blocks3, Counter0,
+                                                        Aliases),
+            Blocks = if
+                         map_size(Aliases) =:= 0 ->
+                             %% No need to trim because there were no aliases.
+                             Blocks4;
+                         true ->
+                             %% Play it safe. It is unclear whether
+                             %% the call to alias_matched_binaries/3
+                             %% could ever make any blocks
+                             %% unreachable.
+                             beam_ssa:trim_unreachable(Blocks4)
+                     end,
+            F#b_function{ bs=Blocks,
                           cnt=Counter };
         false ->
             F
@@ -502,7 +527,7 @@ cm_handle_priors(Src, DstCtx, Bool, Acc, MatchSeq, Lbl, State0) ->
                         %% we can only consider the ones whose success path
                         %% dominate us.
                         Dominators = maps:get(Lbl, State0#cm.dominators, []),
-                        [Ctx || {ValidAfter, Ctx} <- Priors,
+                        [Ctx || {ValidAfter, Ctx} <:- Priors,
                                 member(ValidAfter, Dominators)];
                     error ->
                         []
@@ -557,10 +582,10 @@ cm_combine_tail_1(Bool, DstCtx, SrcCtx, Renames0) ->
 %% unused before the bs_start_match instruction, and it must be matched in the
 %% first block.
 
--record(aca, { unused_parameters :: ordsets:ordset(#b_var{}),
-               counter :: non_neg_integer(),
-               parameter_info = #{} :: #{ #b_var{} => param_info() },
-               match_aliases = #{} :: match_alias_map() }).
+-record #aca{ unused_parameters :: ordsets:ordset(#b_var{}),
+              counter :: non_neg_integer(),
+              parameter_info = #{} :: #{ #b_var{} => param_info() },
+              match_aliases = #{} :: match_alias_map() }.
 
 accept_context_args({Fs, ModInfo}) ->
     mapfoldl(fun accept_context_args/2, ModInfo, Fs).
@@ -745,7 +770,7 @@ aca_cs_is([#b_set{op=Op,
                _ -> aca_cs_args(Args0, VRs0)
            end,
     Counter = Counter0 + 1,
-    Dst = #b_var{name={'@ssa_bsm_aca',Counter}},
+    Dst = #b_var{name=Counter0},
     I = I0#b_set{dst=Dst,args=Args},
     VRs = maps:put(Dst0, Dst, VRs0),
     aca_cs_is(Is, Counter, VRs, BRs, [I | Acc]);
@@ -753,7 +778,7 @@ aca_cs_is([], Counter, VRs, _BRs, Acc) ->
     {VRs, reverse(Acc), Counter}.
 
 aca_cs_last(#b_switch{arg=Arg0,list=Switch0,fail=Fail0}=Sw, VRs, BRs) ->
-    Switch = [{Literal, maps:get(Lbl, BRs)} || {Literal, Lbl} <- Switch0],
+    Switch = [{Literal, maps:get(Lbl, BRs)} || {Literal, Lbl} <:- Switch0],
     Sw#b_switch{arg=aca_cs_arg(Arg0, VRs),
                 fail=maps:get(Fail0, BRs),
                 list=Switch};
@@ -798,7 +823,7 @@ aca_cs_arg(Arg, VRs) ->
 %% contexts to us.
 
 allow_context_passthrough({Fs, ModInfo0}) ->
-    FsUses = [{F, beam_ssa:uses(beam_ssa:rpo(Bs), Bs)} || #b_function{bs=Bs}=F <- Fs],
+    FsUses = [{F, beam_ssa:uses(beam_ssa:rpo(Bs), Bs)} || #b_function{bs=Bs}=F <:- Fs],
     ModInfo = acp_forward_params(FsUses, ModInfo0),
     {Fs, ModInfo}.
 
@@ -843,9 +868,9 @@ acp_1(_Param, _Uses, _ModInfo, ParamInfo) ->
 %% negligible (`bs_test_unit + bs_get_tail` vs `bs_get_binary`) so we're
 %% applying it unconditionally to keep things simple.
 
--record(sote, { definitions :: beam_ssa:definition_map(),
-                mod_info :: module_info(),
-                match_aliases = #{} :: match_alias_map() }).
+-record #sote{ definitions :: beam_ssa:definition_map(),
+               mod_info :: module_info(),
+               match_aliases = #{} :: match_alias_map() }.
 
 skip_outgoing_tail_extraction({Fs0, ModInfo}) ->
     Fs = [skip_outgoing_tail_extraction(F, ModInfo) || F <- Fs0],
@@ -872,6 +897,16 @@ skip_outgoing_tail_extraction(#b_function{bs=Blocks0}=F, ModInfo) ->
 
 sote_rewrite_calls(#b_set{op=call,args=Args}=Call, State) ->
     sote_rewrite_call(Call, Args, [], State);
+sote_rewrite_calls(#b_set{op={bif,Safe},args=[Arg]}=Call0, State0)
+  when Safe =:= bit_size;
+       Safe =:= byte_size ->
+    case is_tail_binary(Arg, State0#sote.definitions) of
+        true ->
+            {Ctx, Call, State} = sote_reuse(Arg, Call0, State0),
+            {Call#b_set{args=[Ctx]}, State};
+        false ->
+            {Call0, State0}
+    end;
 sote_rewrite_calls(I, State) ->
     {I, State}.
 
@@ -883,13 +918,7 @@ sote_rewrite_call(Call0, [Arg | ArgsIn], ArgsOut, State0) ->
             CtxChain = context_chain_of(Arg, State0#sote.definitions),
             case check_context_call(Call0, Arg, CtxChain, State0#sote.mod_info) of
                 suitable_for_reuse ->
-                    Ctx = match_context_of(Arg, State0#sote.definitions),
-
-                    MatchAliases0 = State0#sote.match_aliases,
-                    MatchAliases = maps:put(Arg, {0, Ctx}, MatchAliases0),
-                    State = State0#sote{ match_aliases = MatchAliases },
-
-                    Call = beam_ssa:add_anno(bsm_info, context_reused, Call0),
+                    {Ctx, Call, State} = sote_reuse(Arg, Call0, State0),
                     sote_rewrite_call(Call, ArgsIn, [Ctx | ArgsOut], State);
                 Other ->
                     Call = beam_ssa:add_anno(bsm_info, Other, Call0),
@@ -898,6 +927,16 @@ sote_rewrite_call(Call0, [Arg | ArgsIn], ArgsOut, State0) ->
         false ->
             sote_rewrite_call(Call0, ArgsIn, [Arg | ArgsOut], State0)
     end.
+
+sote_reuse(Arg, I0, State0) ->
+    Ctx = match_context_of(Arg, State0#sote.definitions),
+
+    MatchAliases0 = State0#sote.match_aliases,
+    MatchAliases = maps:put(Arg, {0, Ctx}, MatchAliases0),
+    State = State0#sote{ match_aliases = MatchAliases },
+
+    I = beam_ssa:add_anno(bsm_info, context_reused, I0),
+    {Ctx, I, State}.
 
 %% Adds parameter annotations to help the validator determine whether our
 %% optimizations were safe.
@@ -991,13 +1030,7 @@ add_unopt_binary_info(#b_set{op=Follow,dst=Dst}, Nested, Where, UseMap, Acc0)
     foldl(fun(Use, Acc) ->
                   add_unopt_binary_info(Use, Nested, Where, UseMap, Acc)
           end, Acc0, Uses);
-add_unopt_binary_info(#b_set{op=call,
-                             args=[#b_remote{mod=#b_literal{val=erlang},
-                                             name=#b_literal{val=error}} |
-                                   _Ignored]},
-                      _Nested, _Where, _UseMap, Acc) ->
-    %% There's no nice way to tell compiler-generated exceptions apart from
-    %% user ones so we ignore them all. I doubt anyone cares.
+add_unopt_binary_info(#b_set{op=match_fail}, _Nested, _Where, _UseMap, Acc) ->
     Acc;
 add_unopt_binary_info(#b_switch{anno=Anno}=I, Nested, Where, _UseMap, Acc) ->
     [make_promotion_warning(I, Nested, Anno, Where) | Acc];
@@ -1012,7 +1045,11 @@ make_promotion_warning(I, Nested, Anno, Where) ->
     make_warning({binary_created, I, Nested}, Anno, Where).
 
 make_warning(Term, Anno, Where) ->
-    {File, Line} = maps:get(location, Anno, Where),
+    {File, Line} =
+        case maps:get(location, Anno, Where) of
+            {_, _} = Location -> Location;
+            _ -> {"no_file", none}
+        end,
     {File,[{Line,?MODULE,Term}]}.
 
 format_opt_info(context_reused) ->

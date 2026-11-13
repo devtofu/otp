@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2001-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2001-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -77,15 +79,9 @@ enum dist_entry_state {
 
 #define ERTS_DE_QFLG_BUSY			(((erts_aint32_t) 1) <<  0)
 #define ERTS_DE_QFLG_EXIT			(((erts_aint32_t) 1) <<  1)
-#define ERTS_DE_QFLG_REQ_INFO			(((erts_aint32_t) 1) <<  2)
-#define ERTS_DE_QFLG_PORT_CTRL                  (((erts_aint32_t) 1) <<  3)
-#define ERTS_DE_QFLG_PROC_CTRL                  (((erts_aint32_t) 1) <<  4)
 
 #define ERTS_DE_QFLGS_ALL			(ERTS_DE_QFLG_BUSY \
-						 | ERTS_DE_QFLG_EXIT \
-                                                 | ERTS_DE_QFLG_REQ_INFO \
-                                                 | ERTS_DE_QFLG_PORT_CTRL \
-                                                 | ERTS_DE_QFLG_PROC_CTRL)
+						 | ERTS_DE_QFLG_EXIT)
 
 #if defined(ARCH_64)
 #define ERTS_DIST_OUTPUT_BUF_DBG_PATTERN ((Uint) 0xf713f713f713f713UL)
@@ -105,6 +101,7 @@ struct ErtsDistOutputBuf_ {
      * iov[2 ... vsize-1] data
      */
     ErlIOVec *eiov;
+    int ignore_busy;
 };
 
 struct ErtsDistOutputBufsContainer_ {
@@ -153,7 +150,9 @@ struct dist_entry_ {
 
     erts_mtx_t qlock;           /* Protects qflgs and out_queue */
     erts_atomic32_t qflgs;
-    erts_atomic_t qsize;
+    erts_atomic32_t notify;     /* User wants queue notification? */
+    erts_atomic_t qsize;        /* Size of data in queue respecting busy dist */
+    erts_atomic_t total_qsize;  /* Total size of data in queue */
     erts_atomic64_t in;
     erts_atomic64_t out;
     ErtsDistOutputQueue out_queue;
@@ -199,8 +198,8 @@ Vs = [begin [Val, _, _, _, What] = All = string:lexemes(Ln, " "),{Val,What,All} 
 Accs = lists:foldl(fun({V,<<"ERL_NODE_INC">>,_},M) -> Val = maps:get(V,M,0), M#{ V => Val + 1 }; ({V,<<"ERL_NODE_DEC">>,_},M) -> Val = maps:get(V,M,0), M#{ V => Val - 1 } end, #{}, Vs).
 lists:usort(lists:filter(fun({V,N}) -> N /= 0 end, maps:to_list(Accs))).
 
- * There are bound to be bugs in the the instrumentation code, but
- * atleast this is a place to start when hunting refc bugs.
+ * There are bound to be bugs in the instrumentation code, but
+ * at least this is a place to start when hunting refc bugs.
  *
  */
 #ifdef ERL_NODE_BOOKKEEP
@@ -258,6 +257,7 @@ void erts_set_dist_entry_not_connected(DistEntry *);
 void erts_set_dist_entry_pending(DistEntry *);
 void erts_set_dist_entry_connected(DistEntry *, Eterm, Uint64);
 ErlNode *erts_find_or_insert_node(Eterm, Uint32, Eterm);
+ErlNode *erts_find_node(Eterm, Uint32);
 void erts_schedule_delete_node(ErlNode *);
 void erts_set_this_node(Eterm, Uint32);
 Uint erts_node_table_size(void);
@@ -285,6 +285,7 @@ ERTS_GLB_INLINE void erts_deref_node_entry__(ErlNode *np, Eterm term, char *file
 ERTS_GLB_INLINE erts_aint_t erts_ref_node_entry(ErlNode *np, int min_val, Eterm term);
 ERTS_GLB_INLINE void erts_deref_node_entry(ErlNode *np, Eterm term);
 #endif
+ERTS_GLB_INLINE erts_aint_t erts_node_refc(ErlNode *np);
 ERTS_GLB_INLINE void erts_de_rlock(DistEntry *dep);
 ERTS_GLB_INLINE void erts_de_runlock(DistEntry *dep);
 ERTS_GLB_INLINE void erts_de_rwlock(DistEntry *dep);
@@ -333,6 +334,12 @@ erts_deref_node_entry(ErlNode *np, Eterm term)
 {
     if (erts_refc_dectest(&np->refc, 0) == 0)
 	erts_schedule_delete_node(np);
+}
+
+ERTS_GLB_INLINE erts_aint_t
+erts_node_refc(ErlNode *np)
+{
+    return erts_refc_read(&np->refc, 0);
 }
 
 #endif

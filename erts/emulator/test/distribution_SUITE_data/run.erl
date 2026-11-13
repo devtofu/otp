@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1998-2016. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1998-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -54,7 +56,7 @@ start() ->
 
 do_it() ->
     {ok, _} = net_kernel:start([fideridum,shortnames]),
-    {ok, Node} = slave:start(host(), heppel),
+    {ok, _Peer, Node} = peer:start(#{name => peer:random_name(heppel)}),
     P = spawn(Node, net_kernel, stop, []),
     B1 = term_to_binary(P),
     N1 = node(P),

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2002-2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2002-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -531,7 +533,7 @@ duplicate_key(Config) when is_list(Config) ->
 %%-------------------------------------------------------------------------
 not_connection_owner() ->
     [{doc, "Test what happens if a process that did not start the connection"
-	   " tries to acess it."}].
+	   " tries to access it."}].
 not_connection_owner(Config) when is_list(Config) ->
     Ref = proplists:get_value(connection_ref, Config),   
     Table = proplists:get_value(tableName, Config),
@@ -1073,8 +1075,8 @@ param_insert_float(Config) when is_list(Config) ->
 
     ["FIELD"] = odbc_test_lib:to_upper(Fileds),
 
-    case (odbc_test_lib:match_float(Float1, 1.3, 0.000001) and 
-	  odbc_test_lib:match_float(Float2, 1.2, 0.000001)) of
+    case odbc_test_lib:match_float(Float1, 1.3, 0.000001) andalso
+        odbc_test_lib:match_float(Float2, 1.2, 0.000001) of
 	true ->
 	    ok;
 	false ->
@@ -1112,8 +1114,8 @@ param_insert_real(Config) when is_list(Config) ->
 
     ["FIELD"] = odbc_test_lib:to_upper(Fileds),
 
-    case (odbc_test_lib:match_float(Real1, 1.3, 0.000001) and 
-	  odbc_test_lib:match_float(Real2, 1.2, 0.000001)) of
+    case odbc_test_lib:match_float(Real1, 1.3, 0.000001) andalso
+        odbc_test_lib:match_float(Real2, 1.2, 0.000001) of
 	true ->
 	    ok;
 	false ->
@@ -1149,8 +1151,8 @@ param_insert_double(Config) when is_list(Config) ->
 
     ["FIELD"] = odbc_test_lib:to_upper(Fileds),
 
-    case (odbc_test_lib:match_float(Double1, 1.3, 0.000001) and 
-	  odbc_test_lib:match_float(Double2, 1.2, 0.000001)) of
+    case odbc_test_lib:match_float(Double1, 1.3, 0.000001) andalso
+        odbc_test_lib:match_float(Double2, 1.2, 0.000001) of
 	true ->
 	    ok;
 	false ->
@@ -1409,7 +1411,7 @@ describe_string(Config) when is_list(Config) ->
 
 %%-------------------------------------------------------------------------
 describe_floating() ->
-    [{doc,"Test describe_table/[2,3] for floting columns."}].
+    [{doc,"Test describe_table/[2,3] for floating columns."}].
 describe_floating(Config) when is_list(Config) ->
     Ref = proplists:get_value(connection_ref, Config),   
     Table = proplists:get_value(tableName, Config),

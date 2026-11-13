@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,6 +22,10 @@
 -module(ts_install).
 
 -export([install/2, platform_id/1]).
+
+-compile([{nowarn_possibly_unsafe_function, {file, consult, 1}},
+          {nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}},
+          {nowarn_unsafe_function, {os, cmd, 1}}]).
 
 -include("ts.hrl").
 -include_lib("kernel/include/file.hrl").
@@ -118,14 +124,17 @@ unix_autoconf(XConf) ->
     Env = proplists:get_value(crossenv,XConf,[]),
     Host = get_xcomp_flag("host", Flags),
     Build = get_xcomp_flag("build", Flags),
+    ConfigFlags = string:trim(proplists:get_value("configure_flags", Flags, ""),both,"\"")
+        ++ " " ++ os:getenv("CONFIG_FLAGS", ""),
     Threads = [" --enable-shlib-thread-safety" ||
 		  erlang:system_info(threads) /= false],
     Debug = [" --enable-debug-mode" ||
 		string:find(erlang:system_info(system_version),"debug") =/= nomatch],
-    MXX_Build = [Y || Y <- string:lexemes(os:getenv("CONFIG_FLAGS", ""), " \t\n"),
+    MXX_Build = [[$\s | Y] || Y <- string:lexemes(ConfigFlags, " \t\n"),
 		      Y == "--enable-m64-build"
-			  orelse Y == "--enable-m32-build"],
-    Args = Host ++ Build ++ Threads ++ Debug ++ " " ++ MXX_Build,
+			  orelse Y == "--enable-m32-build"
+                          orelse Y == "--disable-year2038"],
+    Args = Host ++ Build ++ Threads ++ Debug ++ MXX_Build,
     case filelib:is_file(Configure) of
 	true ->
 	    OSXEnv = macosx_cflags(),
@@ -183,7 +192,7 @@ get_xcomp_flag(Flag, Flags) ->
 get_xcomp_flag(Flag, Tag, Flags) ->
     case proplists:get_value(Flag,Flags) of
 	undefined -> "";
-	"guess" -> [" --",Tag,"=",os:cmd("$ERL_TOP/erts/autoconf/config.guess")];
+	"guess" -> [" --",Tag,"=",string:trim(os:cmd("$ERL_TOP/make/autoconf/config.guess"))];
 	HostVal -> [" --",Tag,"=",HostVal]
     end.
 
@@ -339,8 +348,8 @@ to_upper(String) ->
 word_size() ->
     case {erlang:system_info({wordsize,external}),
 	  erlang:system_info({wordsize,internal})} of
-	{4,4} -> "";
-	{8,8} -> "/64";
+	{4,4} -> "/32-bit";
+	{8,8} -> "/64-bit";
 	{8,4} -> "/Halfword"
     end.
 

@@ -1,3 +1,25 @@
+<!--
+> %CopyrightBegin%
+>
+> SPDX-License-Identifier: Apache-2.0
+>
+> Copyright Ericsson AB 1997-2025. All Rights Reserved.
+>
+> Licensed under the Apache License, Version 2.0 (the "License");
+> you may not use this file except in compliance with the License.
+> You may obtain a copy of the License at
+>
+>     http://www.apache.org/licenses/LICENSE-2.0
+>
+> Unless required by applicable law or agreed to in writing, software
+> distributed under the License is distributed on an "AS IS" BASIS,
+> WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+> See the License for the specific language governing permissions and
+> limitations under the License.
+>
+> %CopyrightEnd%
+-->
+
 <HTML>
 <HEAD>
   <TITLE>Asn1 Release Notes</TITLE>
@@ -52,7 +74,7 @@
 
   <li>An error due to unchecked referenced imported type resulted
   in missing tag in some table constraint cases. This error is
-  now corrected. Error occured during decode in 
+  now corrected. Error occurred during decode in 
   <c>ber_bin optimized</c> version.
   (Own Id: OTP-5022)<p>
   </li>
@@ -103,7 +125,7 @@
   </li>
 
   <li>
-  Object Identifier values with two components and teh first was a
+  Object Identifier values with two components and the first was a
   value reference failed due to parsing conflicts. Now it is
   corrected.
   (Own Id: OTP-4895)<p>
@@ -195,12 +217,12 @@
 <ul>
 
   <li>
-  The <c>{internal_error,...,{ unrecognized_type,...}}</c> error occuring for a SET type when compiling with options <c>[ber_bin,optimize,der]</c> is now corrected.
+  The <c>{internal_error,...,{ unrecognized_type,...}}</c> error occurring for a SET type when compiling with options <c>[ber_bin,optimize,der]</c> is now corrected.
   (Own Id: OTP-4866)<p>
   </li>
 
   <li>
-  False encode of BIT STRING in PER (per_bin,optimize) is fixed. The error occured when there was a type like BIT STRING (SIZE(C)) and C > 16.
+  False encode of BIT STRING in PER (per_bin,optimize) is fixed. The error occurred when there was a type like BIT STRING (SIZE(C)) and C > 16.
   (Own Id: OTP-4869)<p>
   </li>
 
@@ -222,7 +244,7 @@
   </li>
 
   <li>
-  Bug causing duplicated fuction definitions using exclusive decode is removed.<br>
+  Bug causing duplicated function definitions using exclusive decode is removed.<br>
   (Own Id: OTP-4833)<p>
   </li>
 

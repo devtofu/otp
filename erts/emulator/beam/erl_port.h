@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2012-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2012-2026. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -334,7 +336,7 @@ Eterm erts_request_io_bytes(Process *c_p);
 #define ERTS_PORT_SFLG_INVALID		((Uint32) (1 << 11))
 /* Last port to terminate halts the emulator */
 #define ERTS_PORT_SFLG_HALT		((Uint32) (1 << 12))
-/* Check if the event in ready_input should be cleaned */
+/* Check if the event in ready_input should be cleaned. */
 #define ERTS_PORT_SFLG_CHECK_FD_CLEANUP ((Uint32) (1 << 13))
 #ifdef DEBUG
 /* Only debug: make sure all flags aren't cleared unintentionally */
@@ -871,6 +873,7 @@ enum {
 #define ERTS_P2P_SIG_DATA_FLG_BROKEN_LINK	ERTS_P2P_SIG_DATA_FLG(5)
 #define ERTS_P2P_SIG_DATA_FLG_SCHED		ERTS_P2P_SIG_DATA_FLG(6)
 #define ERTS_P2P_SIG_DATA_FLG_ASYNC		ERTS_P2P_SIG_DATA_FLG(7)
+#define ERTS_P2P_SIG_DATA_FLG_ASYNC_NOSUSPEND	ERTS_P2P_SIG_DATA_FLG(8)
 
 struct ErtsProc2PortSigData_ {
     int flags;
@@ -1012,7 +1015,7 @@ ErtsPortOpResult erts_port_connect(Process *, int, Port *, Eterm, Eterm, Eterm *
 ErtsPortOpResult erts_port_link(Process *, Port *, ErtsLink *, Eterm *);
 ErtsPortOpResult erts_port_unlink(Process *, Port *, ErtsSigUnlinkOp *, Eterm *);
 ErtsPortOpResult erts_port_unlink_ack(Process *, Port *, ErtsSigUnlinkOp *);
-ErtsPortOpResult erts_port_control(Process *, Port *, unsigned int, Eterm, Eterm *);
+ErtsPortOpResult erts_port_control(Process *, Port *, Uint32, Eterm, Eterm *);
 ErtsPortOpResult erts_port_call(Process *, Port *, unsigned int, Eterm, Eterm *);
 ErtsPortOpResult erts_port_info(Process *, Port *, Eterm, Eterm *);
 ErtsPortOpResult erts_port_monitor(Process *, Port *, ErtsMonitor *);

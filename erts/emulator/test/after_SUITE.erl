@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1997-2017. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -23,6 +25,7 @@
 %% Tests receive after.
 
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
 -export([all/0, suite/0,
 	 t_after/1, receive_after/1, receive_after_big/1,
@@ -117,8 +120,8 @@ receive_after_big2() ->
 	 end.
 
 -define(TryAfter(Timeout), 
-	{'EXIT',{timeout_value,_}} = (catch receive mission -> exit(impossible) after Timeout -> ok end),
-	{'EXIT',{timeout_value,_}} = (catch receive after Timeout -> ok end),
+        ?assertError(timeout_value, receive mission -> exit(impossible) after Timeout -> ok end),
+        ?assertError(timeout_value, receive after Timeout -> ok end),
 	try_after(Timeout)).
 
 %% Test error cases for 'receive after'.
@@ -136,7 +139,7 @@ receive_after_errors(Config) when is_list(Config) ->
     ok.
 
 try_after(Timeout) ->
-    {'EXIT',{timeout_value,_}} = (catch receive after Timeout -> ok end).
+    ?assertError(timeout_value, receive after Timeout -> ok end).
 
 %% Test 'after Z', when Z == 0.
 receive_var_zero(Config) when is_list(Config) ->

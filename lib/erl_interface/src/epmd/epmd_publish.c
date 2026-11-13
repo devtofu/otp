@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 1998-2020. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 1998-2025. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,7 +16,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * %CopyrightEnd%
  */
 
@@ -76,8 +78,8 @@ static int ei_epmd_r4_publish (int port, const char *alive, unsigned ms)
   put16be(s,port); /* port number */
   put8(s,'h');            /* h = r4 hidden node */
   put8(s, EI_MYPROTO);      /* protocol 0 ?? */
-  put16be(s,EI_DIST_HIGH);   /* highest understood version: 1 = R4 */
-  put16be(s,EI_DIST_LOW);    /* lowest:  0 = R3 */
+  put16be(s,EI_DIST_HIGH);   /* highest understood version */
+  put16be(s,EI_DIST_LOW);    /* lowest */
   put16be(s,nlen);        /* length of alivename */
   strcpy(s, alive);
   s += nlen;
@@ -97,7 +99,7 @@ static int ei_epmd_r4_publish (int port, const char *alive, unsigned ms)
   }
 
   EI_TRACE_CONN6("ei_epmd_r4_publish",
-		 "-> ALIVE2_REQ alive=%s port=%d ntype=%d "
+		 "-> EPMD_ALIVE2_REQ alive=%s port=%d ntype=%d "
 		 "proto=%d dist-high=%d dist-low=%d",
 		 alive,port,'H',EI_MYPROTO,EI_DIST_HIGH,EI_DIST_LOW);
 
@@ -125,7 +127,7 @@ static int ei_epmd_r4_publish (int port, const char *alive, unsigned ms)
     return -1;
   }
 
-  EI_TRACE_CONN0("ei_epmd_r4_publish","<- ALIVE2_RESP");
+  EI_TRACE_CONN0("ei_epmd_r4_publish","<- EPMD_ALIVE2_RESP");
 
   if (((res=get8(s)) != 0)) {           /* 0 == success */
       EI_TRACE_ERR1("ei_epmd_r4_publish"," result=%d (fail)",res);

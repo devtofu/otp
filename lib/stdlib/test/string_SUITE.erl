@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2004-2019. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2004-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 %%%----------------------------------------------------------------
@@ -22,6 +24,7 @@
 %%%-----------------------------------------------------------------
 -module(string_SUITE).
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
 %% Test server specific exports
 -export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1, 
@@ -36,7 +39,10 @@
          uppercase/1, lowercase/1, titlecase/1, casefold/1,
          to_integer/1,to_float/1,
          prefix/1, split/1, replace/1, find/1,
-         lexemes/1, nth_lexeme/1, cd_gc/1, meas/1
+         lexemes/1, nth_lexeme/1, cd_gc/1,
+         jaro_similarity/1,
+         meas/1,
+         doctests/1
         ]).
 
 -export([len/1,old_equal/1,old_concat/1,chr_rchr/1,str_rstr/1]).
@@ -55,7 +61,7 @@ suite() ->
      {timetrap,{minutes,1}}].
 
 all() ->
-    [{group, chardata}, {group, list_string}].
+    [{group, chardata}, {group, list_string}, doctests].
 
 groups() ->
     [{chardata,
@@ -66,6 +72,7 @@ groups() ->
        to_integer, to_float,
        uppercase, lowercase, titlecase, casefold,
        prefix, find, split, replace, cd_gc,
+       jaro_similarity,
        meas]},
      {list_string,
       [len, old_equal, old_concat, chr_rchr, str_rstr, span_cspan,
@@ -103,16 +110,6 @@ debug() ->
         test(?LINE,?FUNCTION_NAME,B,C,D, false),
         test(?LINE,?FUNCTION_NAME,hd(C),[B|tl(C)],D, false)).
 
--define(TRY(Exp),
-        fun() ->
-                try Exp
-                catch _E:Reason:_ST ->
-                        %% io:format("~p:~w: ~p: ~.0p ~p~n",
-                        %%           [?FUNCTION_NAME, ?LINE,_E,Reason, hd(_ST)]),
-                        {'EXIT', Reason}
-                end
-        end()).
-
 is_empty(_) ->
     ?TEST("", [], true),
     ?TEST([""|<<>>], [], true),
@@ -123,8 +120,8 @@ is_empty(_) ->
 
 length(_) ->
     %% invalid arg type
-    {'EXIT',_} = (catch string:length({})),
-    {'EXIT',_} = (catch string:length(foo)),
+    ?assertError(_, string:length({})),
+    ?assertError(_, string:length(foo)),
     %% Valid signs
     ?TEST("", [], 0),
     ?TEST([""|<<>>], [], 0),
@@ -137,15 +134,24 @@ length(_) ->
     ?TEST([<<97/utf8, 778/utf8, 98/utf8>>, [776,111,776]], [], 3), %% åäö in nfd
 
     InvalidUTF8 = <<192,192>>,
-    {'EXIT', {badarg, _}} = ?TRY(string:length(InvalidUTF8)),
-    {'EXIT', {badarg, _}} = ?TRY(string:length(<<$a, InvalidUTF8/binary, $z>>)),
+    ?assertError({badarg, _}, string:length(InvalidUTF8)),
+    ?assertError({badarg, _}, string:length(<<$a, InvalidUTF8/binary, $z>>)),
+    %% SWAR fast path: long ASCII; controls other than $\r; $\r forces slow path but length is correct
+    LongAscii = list_to_binary(lists:duplicate(200, $a)),
+    200 = string:length(LongAscii),
+    9 = string:length(<<"\t\n\v\f\n", $a, $b, $\r, $c>>),
+    12 = string:length(<<"abcdefg", $\r, "1234">>),
+    %% $\r in the 7-byte SWAR window (inside the 56-bit word after the first byte of an 8-byte step)
+    17 = string:length(<<"1234567", $\r, "123456789">>),
+    %% Non-ASCII after a SWAR-sized ASCII run (8 ASCII bytes then UTF-8 for ß)
+    9 = string:length(<<$a, $b, $c, $d, $e, $f, $g, $h, 195, 159>>),
     ok.
 
 equal(_) ->
     %% invalid arg type
-    {'EXIT',_} = (catch string:equal(1, 2)),
-    {'EXIT',_} = (catch string:equal(1, 2, foo)),
-    {'EXIT',_} = (catch string:equal(1, 2, true, foo)),
+    ?assertError(_, string:equal(1, 2)),
+    ?assertError(_, string:equal(1, 2, foo)),
+    ?assertError(_, string:equal(1, 2, true, foo)),
 
     ?TEST("", [<<"">>], true),
     ?TEST("Hello", ["Hello"], true),
@@ -229,7 +235,7 @@ equal(_) ->
 
 to_graphemes(_) ->
     %% More tests are in unicode_util_SUITE.erl
-    {'EXIT', _} = (catch unicode:characters_to_nfd_binary(["asdåäö", an_atom])),
+    ?assertError(_, unicode:characters_to_nfd_binary(["asdåäö", an_atom])),
     String = ["abc..åäö", $e, 788, <<"Ωµe`è"/utf8>>, "œŒþæÆħ§ß"],
     NFD = unicode:characters_to_nfd_list(String),
     [] = string:to_graphemes([]),
@@ -240,11 +246,11 @@ to_graphemes(_) ->
     true = erlang:length(GCs) =:=
         erlang:length(string:to_graphemes(unicode:characters_to_nfc_list(String))),
 
-    {'EXIT', {badarg, _}} = ?TRY(string:to_graphemes(<<$a,192,192,$z>>)),
+    ?assertError({badarg, _}, string:to_graphemes(<<$a,192,192,$z>>)),
     ok.
 
 reverse(_) ->
-    {'EXIT',_} = (catch string:reverse(2)),
+    ?assertError(_, string:reverse(2)),
     Str1 = "Hello ",
     Str2 = "Ω ßð",
     Str3 = "åäö",
@@ -255,15 +261,15 @@ reverse(_) ->
     true = string:reverse(Str3) =:= lists:reverse(string:to_graphemes(Str3)),
 
     InvalidUTF8 = <<192,192>>,
-    {'EXIT', {badarg, _}} = ?TRY(string:reverse(InvalidUTF8)),
-    {'EXIT', {badarg, _}} = ?TRY(string:reverse(<<$a, InvalidUTF8/binary, $z>>)),
+    ?assertError({badarg, _}, string:reverse(InvalidUTF8)),
+    ?assertError({badarg, _}, string:reverse(<<$a, InvalidUTF8/binary, $z>>)),
 
     ok.
 
 slice(_) ->
-    {'EXIT',_} = (catch string:slice(2, 2, 2)),
-    {'EXIT',_} = (catch string:slice("asd", foo, 2)),
-    {'EXIT',_} = (catch string:slice("asd", 2, -1)),
+    ?assertError(_, string:slice(2, 2, 2)),
+    ?assertError(_, string:slice("asd", foo, 2)),
+    ?assertError(_, string:slice("asd", 2, -1)),
     ?TEST("", [3], ""),
     ?TEST("aåä", [1, 0], ""),
     ?TEST("aåä", [3], ""),
@@ -278,14 +284,28 @@ slice(_) ->
     ?TEST([<<"aå"/utf8>>,"äöbcd"], [3,3], "öbc"),
     ?TEST([<<"aåä"/utf8>>,"öbcd"], [3,10], "öbcd"),
 
+    %% Ensure binary slice fast/slow paths are exercised:
+    %% - SWAR fast path in slice_lb/slice_bin (long ASCII, N/Length > 8)
+    ?TEST(<<"abcdefghijklmnopqrstuv">>, [9], "jklmnopqrstuv"),
+    ?TEST(<<"abcdefghijklmnopqrstuv">>, [2, 12], "cdefghijklmn"),
+    %% - ASCII fallback path in slice_lb/slice_bin (small N/Length <= 8)
+    ?TEST(<<"abcdefghijkl">>, [3], "defghijkl"),
+    ?TEST(<<"abcdefghijkl">>, [3, 5], "defgh"),
+    %% - SWAR guard rejection by CR (forces fallback path)
+    ?TEST(<<"abc\rdefghijklmnop">>, [2], "c\rdefghijklmnop"),
+    ?TEST(<<"abc\rdefghijklmnop">>, [2, 8], "c\rdefghi"),
+    %% - Non-ASCII fallback path
+    ?TEST(<<"abcdefghßijkl"/utf8>>, [8], [$ß,$i,$j,$k,$l]),
+    ?TEST(<<"abcdefghßijkl"/utf8>>, [7, 3], [$h,$ß,$i]),
+
     InvalidUTF8 = <<192,192>>,
     [$b, $c|InvalidUTF8] = string:slice(["abc", InvalidUTF8], 1),
     InvalidUTF8 = string:slice(["abc", InvalidUTF8], 3),
-    {'EXIT', {badarg, _}} = ?TRY(string:slice(["abc", InvalidUTF8], 1, 5)),
+    ?assertError({badarg, _}, string:slice(["abc", InvalidUTF8], 1, 5)),
     BadUtf8 = <<$a, InvalidUTF8/binary, "teststring">>,
-    {'EXIT', {badarg, _}} = ?TRY(string:slice(BadUtf8, 2)),
-    {'EXIT', {badarg, _}} = ?TRY(string:slice(BadUtf8, 1, 5)),
-    {'EXIT', {badarg, _}} = ?TRY(string:slice(BadUtf8, 0, 5)),
+    ?assertError({badarg, _}, string:slice(BadUtf8, 2)),
+    ?assertError({badarg, _}, string:slice(BadUtf8, 1, 5)),
+    ?assertError({badarg, _}, string:slice(BadUtf8, 0, 5)),
     ok.
 
 pad(_) ->
@@ -300,8 +320,8 @@ pad(_) ->
     ?TEST(Str++[" flåwer"], [10, trailing, $.], "Hallå flåwer"),
 
     InvalidUTF8 = <<192,192>>,
-    {'EXIT', {badarg, _}} = ?TRY(string:pad(InvalidUTF8, 10, both, $.)),
-    {'EXIT', {badarg, _}} = ?TRY(string:pad(<<$a, InvalidUTF8/binary, $z>>, 10, both, $.)),
+    ?assertError({badarg, _}, string:pad(InvalidUTF8, 10, both, $.)),
+    ?assertError({badarg, _}, string:pad(<<$a, InvalidUTF8/binary, $z>>, 10, both, $.)),
     ok.
 
 trim(_) ->
@@ -324,6 +344,7 @@ trim(_) ->
     ?TEST(["..h", ".e", <<"j..">>], [both, ". "], "h.ej"),
     ?TEST(["..h", <<".ejsa"/utf8>>, "n.."], [both, ". "], "h.ejsan"),
     %% Test that it behaves with graphemes (i.e. nfd tests are the hard part)
+    ?TEST([<<"\r \r">>, []], [trailing, [$\r, [$\r, $\n]]], "\r "),
     ?TEST([1013,101,778,101,101], [trailing, [101]], [1013,101,778]),
     ?TEST("aaåaa", [both, "a"], "å"),
     ?TEST(["aaa",778,"äöoo"], [both, "ao"], "åäö"),
@@ -334,9 +355,9 @@ trim(_) ->
     ?TEST([<<"vv">>|<<204,128,118,204,128>>], [trailing, [[118,768]]], "v"),
 
     InvalidUTF8 = <<192,192>>,
-    {'EXIT', {badarg, _}} = ?TRY(string:trim(InvalidUTF8, both, "az")),
+    ?assertError({badarg, _}, string:trim(InvalidUTF8, both, "az")),
     %% Not checked  (using binary search)
-    %% {'EXIT', {badarg, _}} = ?TRY(string:trim(<<$a, $b, InvalidUTF8/binary, $z>>, both, "az")),
+    %% ?assertError({badarg, _}, string:trim(<<$a, $b, InvalidUTF8/binary, $z>>, both, "az")),
     ok.
 
 chomp(_) ->
@@ -438,11 +459,11 @@ take(_) ->
           {[$e,778]++"åäöe"++[778], [$e,779]}),
 
     InvalidUTF8 = <<192,192>>,
-    {'EXIT', {badarg, _}} = ?TRY(string:take(InvalidUTF8, [$.], false, leading)),
+    ?assertError({badarg, _}, string:take(InvalidUTF8, [$.], false, leading)),
     %% Not checked  (using binary search)
-    %% {'EXIT', {badarg, _}} = ?TRY(string:take(InvalidUTF8, [$.], true, leading)),
-    %% {'EXIT', {badarg, _}} = ?TRY(string:take(InvalidUTF8, [$.], false, trailing)),
-    {'EXIT', {badarg, _}} = ?TRY(string:take(InvalidUTF8, [$.], true, trailing)),
+    %% ?assertError({badarg, _}, string:take(InvalidUTF8, [$.], true, leading)),
+    %% ?assertError({badarg, _}, string:take(InvalidUTF8, [$.], false, trailing)),
+    ?assertError({badarg, _}, string:take(InvalidUTF8, [$.], true, trailing)),
 
     ok.
 
@@ -462,8 +483,8 @@ uppercase(_) ->
     ?TEST("ß sharp s", [], "SS SHARP S"),
 
     InvalidUTF8 = <<192,192>>,
-    {'EXIT', {badarg, _}} = ?TRY(string:uppercase(InvalidUTF8)),
-    {'EXIT', {badarg, _}} = ?TRY(string:uppercase(<<$a, InvalidUTF8/binary, $z>>)),
+    ?assertError({badarg, _}, string:uppercase(InvalidUTF8)),
+    ?assertError({badarg, _}, string:uppercase(<<$a, InvalidUTF8/binary, $z>>)),
 
     ok.
 
@@ -480,8 +501,8 @@ lowercase(_) ->
     ?TEST("İ I WITH DOT ABOVE", [], "i̇ i with dot above"),
 
     InvalidUTF8 = <<192,192>>,
-    {'EXIT', {badarg, _}} = ?TRY(string:lowercase(InvalidUTF8)),
-    {'EXIT', {badarg, _}} = ?TRY(string:lowercase(<<$a, InvalidUTF8/binary, $z>>)),
+    ?assertError({badarg, _}, string:lowercase(InvalidUTF8)),
+    ?assertError({badarg, _}, string:lowercase(<<$a, InvalidUTF8/binary, $z>>)),
     ok.
 
 titlecase(_) ->
@@ -497,8 +518,8 @@ titlecase(_) ->
     ?TEST("ß sharp s", [], "Ss sharp s"),
 
     InvalidUTF8 = <<192,192>>,
-    {'EXIT', {badarg, _}} = ?TRY(string:titlecase(InvalidUTF8)),
-    <<$A, _/binary>> = ?TRY(string:titlecase(<<$a, InvalidUTF8/binary, $z>>)),
+    ?assertError({badarg, _}, string:titlecase(InvalidUTF8)),
+    <<$A, _/binary>> = string:titlecase(<<$a, InvalidUTF8/binary, $z>>),
     ok.
 
 casefold(_) ->
@@ -515,8 +536,8 @@ casefold(_) ->
     ?TEST("İ I WITH DOT ABOVE", [], "i̇ i with dot above"),
 
     InvalidUTF8 = <<192,192>>,
-    {'EXIT', {badarg, _}} = ?TRY(string:casefold(InvalidUTF8)),
-    {'EXIT', {badarg, _}} = ?TRY(string:casefold(<<$a, InvalidUTF8/binary, $z>>)),
+    ?assertError({badarg, _}, string:casefold(InvalidUTF8)),
+    ?assertError({badarg, _}, string:casefold(<<$a, InvalidUTF8/binary, $z>>)),
     ok.
 
 
@@ -643,21 +664,33 @@ cd_gc(_) ->
     [] = string:next_codepoint(""),
     [] = string:next_codepoint(<<>>),
     [] = string:next_codepoint([<<>>]),
+    [$a|""] = string:next_codepoint("a"),
+    [$a|<<>>] = string:next_codepoint(<<"a">>),
+    [$a|[<<>>,$b]] = string:next_codepoint([<<"a">>,$b]),
     "abcd" = string:next_codepoint("abcd"),
-    [$e,778] = string:next_codepoint([$e,778]),
+    [$e|[778]] = string:next_codepoint([$e,778]),
     [$e|<<204,138>>] = string:next_codepoint(<<$e,778/utf8>>),
-    [778|_] = string:next_codepoint(tl(string:next_codepoint(<<$e,778/utf8>>))),
+    [778|<<>>] = string:next_codepoint(tl(string:next_codepoint(<<$e,778/utf8>>))),
     [0|<<128,1>>] = string:next_codepoint(<<0,128,1>>),
     {error,<<128,1>>} = string:next_codepoint(<<128,1>>),
+    [128021|<<>>] = string:next_codepoint(<<128021/utf8>>), %% Dog
+    [128021|<<8205/utf8>>] = string:next_codepoint(<<128021/utf8,8205/utf8>>), %% Dog + ZWJ
+    [128021|<<8205/utf8,129466/utf8>>] = string:next_codepoint(<<128021/utf8,8205/utf8,129466/utf8>>), %% Dog + ZWJ + Service vest == Service dog
 
     [] = string:next_grapheme(""),
     [] = string:next_grapheme(<<>>),
     [] = string:next_grapheme([<<>>]),
+    [$a|""] = string:next_grapheme("a"),
+    [$a|<<>>] = string:next_grapheme(<<"a">>),
+    [$a|[<<>>,$b]] = string:next_grapheme([<<"a">>,$b]),
     "abcd" = string:next_grapheme("abcd"),
-    [[$e,778]] = string:next_grapheme([$e,778]),
-    [[$e,778]] = string:next_grapheme(<<$e,778/utf8>>),
+    [[$e,778]|""] = string:next_grapheme([$e,778]),
+    [[$e,778]|<<>>] = string:next_grapheme(<<$e,778/utf8>>),
     [0|<<128,1>>] = string:next_grapheme(<<0,128,1>>),
     {error,<<128,1>>} = string:next_grapheme(<<128,1>>),
+    [128021|<<>>] = string:next_grapheme(<<128021/utf8>>), %% Dog
+    [[128021,8205]|<<>>] = string:next_grapheme(<<128021/utf8,8205/utf8>>), %% Dog + ZWJ
+    [[128021,8205,129466]|<<>>] = string:next_grapheme(<<128021/utf8,8205/utf8,129466/utf8>>), %% Dog + ZWJ + Service vest == Service dog
 
     ok.
 
@@ -738,8 +771,8 @@ lexemes(_) ->
     ok.
 
 nth_lexeme(_) ->
-    {'EXIT', _} = (catch string:nth_lexeme("test test", 0, [])),
-    {'EXIT', _} = (catch string:nth_lexeme(<<"test test">>, 0, [])),
+    ?assertError(_, string:nth_lexeme("test test", 0, [])),
+    ?assertError(_, string:nth_lexeme(<<"test test">>, 0, [])),
     ?TEST( "", [1, " ,."],  []),
     ?TEST( "Hej san", [1, ""],  "Hej san"),
     ?TEST( "  ,., ", [1, " ,."],  []),
@@ -774,6 +807,68 @@ nth_lexeme(_) ->
     ?TEST([<<"aae">>,778,"äöoo"], [2,[[$e,778]]], "äöoo"),
     ?TEST([<<"aae">>,778,"äöo21"], [2,[[$e,778],$o]], "äö"),
     ?TEST([<<"aae">>,778,"öeeåäö"], [2,"e"], "åäö"),
+
+    %% Prepend and Hangul are not handled (see module doc), but
+    %% nth_lexeme/3 must be consistent with lexemes/2
+    Prepend = 16#11A84, HangulL = 16#1100, HangulV = 16#1161,
+    ?TEST([$,,Prepend,$,,$\r], [2, ","], [$\r]),
+    ?TEST([$x,$,,Prepend,$,,$y], [2, ","], [Prepend]),
+    %% Not normalized, NFC composes L+V
+    test(?LINE, ?FUNCTION_NAME, [HangulL,HangulV,$b,HangulV,$c], [2, [HangulV]], "b", false),
+    [nth_lexeme_consistent(Str, Seps) ||
+        {Str, Seps} <- [{[$,,Prepend,$,,$\r], ","},
+                        {[$a,Prepend,$,,$b,$,,$c], ","},
+                        {[HangulL,HangulV,$b,HangulV,$c], [HangulV]},
+                        {[$,,[Prepend],[[$,,$\r]]], ","}]],
+    ok.
+
+nth_lexeme_consistent(Str, Seps) ->
+    [begin
+         Lexemes = [unicode:characters_to_list(L) || L <- string:lexemes(S, Seps)],
+         Nth = [unicode:characters_to_list(string:nth_lexeme(S, N, Seps)) ||
+                   N <- lists:seq(1, erlang:length(Lexemes))],
+         ?assertEqual(Lexemes, Nth)
+     end || S <- [Str, unicode:characters_to_binary(Str)]],
+    ok.
+
+jaro_similarity(_Config) ->
+    ?TEST("", [""], 1.0),
+    ?TEST("", [["", <<"">>]], 1.0),
+    %% From https://en.wikipedia.org/wiki/Jaro%E2%80%93Winkler_distance#Jaro_similarity
+    ?TEST("faremviel", ["farmville"], 0.8842592592592592),
+    ?TEST("michelle", ["michael"], 0.8690476190476191),
+    ?TEST("michelle", [<<"michael">>], 0.8690476190476191),
+    ?TEST(<<"Édouard"/utf8>>, ["Claude"], 0.5317460317460317),
+
+
+    ?TEST("farmville", ["farmville"], 1.0),
+    ?TEST("farmville", ["zxzxzx"], +0.0),
+
+    ?TEST("Saturday", ["Sunday"], 0.71944444),
+    ?TEST("Sunday", ["Saturday"], 0.71944444),
+
+    %% Short strings (no translations counted)
+    ?TEST("a", ["a"], 1.0),
+    ?TEST("c", ["a"], 0.0),
+    ?TEST("ca", ["ac"], 0.0),
+    ?TEST("ca", ["abc"], 0.0),
+    ?TEST("ca", ["cb"],  ((1/2+1/2+1)/3)),
+    ?TEST("ca", ["cab"], ((2/2+2/3+1)/3)),
+    ?TEST("caa", ["cab"], ((2/3+2/3+1)/3)),
+    %% With one translation
+    ?TEST("caabx", ["caba"], ((4/5+4/4+((4-2/2)/4))/3)),
+
+    %% Repeated graphemes (exercises index-map re-use and window trimming)
+    ?TEST("aaabbb", ["ababab"], 0.9444444444444445),
+    ?TEST("aaaa", ["aaaaaa"], 0.8888888888888888),
+    ?TEST("xxxaaa", ["aaa"], 0.6666666666666666),
+    ?TEST("xxxxxxxxaa", ["aaaaaa"], 0.5111111111111111),
+    ?TEST(lists:duplicate(20, $a), [lists:duplicate(10, $a)], 0.8333333333333334),
+
+    InvalidUTF8 = <<192,192>>,
+    ?assertError({badarg, _}, string:jaro_similarity("foo", InvalidUTF8)),
+    ?assertError({badarg, _}, string:jaro_similarity("foo", <<$a, InvalidUTF8/binary, $z>>)),
+
     ok.
 
 
@@ -944,7 +1039,7 @@ test_1(Line, Func, Str, Args, Exp) ->
         check_types(Line, Func, Args, Res),
         case res(Res, Exp) of
             true -> ok;
-            {Res1,Exp1} when is_tuple(Exp1) ->
+            {Res1,Exp1} when is_tuple(Exp1); is_float(Exp1) ->
                 io:format("~p~n",[Args]),
                 io:format("~p:~p: ~ts~w =>~n  :~w:~w~n",
                           [Func,Line, Str,Str,Res1,Exp1]),
@@ -987,6 +1082,8 @@ res({S1,S2}=S, {Exp1,Exp2}=E) -> %% For take
         {true, true} -> true;
         _ -> {S, E}
     end;
+res(Float, Exp) when is_float(Exp) ->
+    abs(Float - Exp) < 0.0000001 orelse {Float, Exp};
 res(Int, Exp) ->
     Int == Exp orelse {Int, Exp}.
 
@@ -995,8 +1092,10 @@ check_types(_Line, _Func, _Str, Res)
   when is_integer(Res); is_boolean(Res); Res =:= nomatch ->
     %% length or equal
     ok;
-check_types(Line, Func, [S1,S2], Res)
-  when Func =:= concat ->
+check_types(_Line, jaro_similarity, _Str, Res)
+  when is_float(Res) ->
+    ok;
+check_types(Line, concat = Func, [S1,S2], Res) ->
     case check_types_1(type(S1),type(S2)) of
         ok ->
             case check_types_1(type(S1),type(Res)) of
@@ -1175,7 +1274,7 @@ len(Config) when is_list(Config) ->
     L = tuple_size(list_to_tuple(atom_to_list(?MODULE))),
     L = string:len(atom_to_list(?MODULE)),
     %% invalid arg type
-    {'EXIT',_} = (catch string:len({})),
+    ?assertError(_, string:len({})),
     ok.
 
 old_equal(Config) when is_list(Config) ->
@@ -1191,7 +1290,7 @@ old_concat(Config) when is_list(Config) ->
     "x" = string:concat("x", ""),
     "y" = string:concat("", "y"),
     %% invalid arg type
-    {'EXIT',_} = (catch string:concat(hello, please)),
+    ?assertError(_, string:concat(hello, please)),
     ok.
 
 chr_rchr(Config) when is_list(Config) ->
@@ -1205,13 +1304,13 @@ chr_rchr(Config) when is_list(Config) ->
     3 = string:chr("xyzyx", $z),
     3 = string:rchr("xyzyx", $z),
     %% invalid arg type
-    {'EXIT',_} = (catch string:chr(hello, $h)),
+    ?assertError(_, string:chr(hello, $h)),
     %% invalid arg type
-    {'EXIT',_} = (catch string:chr("hello", h)),
+    ?assertError(_, string:chr("hello", h)),
     %% invalid arg type
-    {'EXIT',_} = (catch string:rchr(hello, $h)),
+    ?assertError(_, string:rchr(hello, $h)),
     %% invalid arg type
-    {'EXIT',_} = (catch string:rchr("hello", h)),
+    ?assertError(_, string:rchr("hello", h)),
     ok.
 
 str_rstr(Config) when is_list(Config) ->
@@ -1228,13 +1327,13 @@ str_rstr(Config) when is_list(Config) ->
     3 = string:rstr("xy z yx", " z"),
     3 = string:str("aaab", "ab"),
     %% invalid arg type
-    {'EXIT',_} = (catch string:str(hello, "he")),
+    ?assertError(_, string:str(hello, "he")),
     %% invalid arg type
-    {'EXIT',_} = (catch string:str("hello", he)),
+    ?assertError(_, string:str("hello", he)),
     %% invalid arg type
-    {'EXIT',_} = (catch string:rstr(hello, "he")),
+    ?assertError(_, string:rstr(hello, "he")),
     %% invalid arg type
-    {'EXIT',_} = (catch string:rstr("hello", he)),
+    ?assertError(_, string:rstr("hello", he)),
     ok.
 
 span_cspan(Config) when is_list(Config) ->
@@ -1249,25 +1348,25 @@ span_cspan(Config) when is_list(Config) ->
     1 = string:cspan("3 ", "12 "),
     6 = string:cspan("1231234", "4"),
     %% invalid arg type
-    {'EXIT',_} = (catch string:span(1234, "1")),
+    ?assertError(_, string:span(1234, "1")),
     %% invalid arg type
-    {'EXIT',_} = (catch string:span(1234, "1")),
+    ?assertError(_, string:span(1234, "1")),
     %% invalid arg type
-    {'EXIT',_} = (catch string:cspan("1234", 1)),
+    ?assertError(_, string:cspan("1234", 1)),
     %% invalid arg type
-    {'EXIT',_} = (catch string:cspan("1234", 4)),
+    ?assertError(_, string:cspan("1234", 4)),
     ok.
 
 
 substr(Config) when is_list(Config) ->
-    {'EXIT',_} = (catch string:substr("", 0)),
+    ?assertError(_, string:substr("", 0)),
     [] = string:substr("", 1),
-    {'EXIT',_} = (catch string:substr("", 2)),
+    ?assertError(_, string:substr("", 2)),
     [] = string:substr("1", 2),
-    {'EXIT',_} = (catch  string:substr("", 0, 1)),
+    ?assertError(_,  string:substr("", 0, 1)),
     [] = string:substr("", 1, 1),
     [] = string:substr("", 1, 2),
-    {'EXIT',_} = (catch string:substr("", 2, 2)),
+    ?assertError(_, string:substr("", 2, 2)),
     "1234" = string:substr("1234", 1),
     "1234" = string:substr("1234", 1, 4),
     "1234" = string:substr("1234", 1, 5),
@@ -1276,9 +1375,9 @@ substr(Config) when is_list(Config) ->
     "" = string:substr("1234", 4, 0),
     "4" = string:substr("1234", 4, 1),
     %% invalid arg type
-    {'EXIT',_} = (catch string:substr(1234, 1)),
+    ?assertError(_, string:substr(1234, 1)),
     %% invalid arg type
-    {'EXIT',_} = (catch string:substr("1234", "1")),
+    ?assertError(_, string:substr("1234", "1")),
     ok.
 
 old_tokens(Config) when is_list(Config) ->
@@ -1288,8 +1387,8 @@ old_tokens(Config) when is_list(Config) ->
     ["1","2 34","45","5","6","7"] = do_tokens("1,2 34,45;5,;6;,7", ";,"),
 
     %% invalid arg type
-    {'EXIT',_} = (catch string:tokens('x,y', ",")),
-    {'EXIT',_} = (catch string:tokens("x,y", ',')),
+    ?assertError(_, string:tokens('x,y', ",")),
+    ?assertError(_, string:tokens("x,y", ',')),
     ok.
 
 do_tokens(S0, Sep0) ->
@@ -1321,7 +1420,7 @@ chars(Config) when is_list(Config) ->
     10 = erlang:length(string:chars(32, 10, [])),
     "aaargh" = string:chars($a, 3, "rgh"),
     %% invalid arg type
-    {'EXIT',_} = (catch string:chars($x, [])),
+    ?assertError(_, string:chars($x, [])),
     ok.
 
 copies(Config) when is_list(Config) ->
@@ -1330,8 +1429,8 @@ copies(Config) when is_list(Config) ->
     "." = string:copies(".", 1),
     30 = erlang:length(string:copies("123", 10)),
     %% invalid arg type
-    {'EXIT',_} = (catch string:copies("hej", -1)),
-    {'EXIT',_} = (catch string:copies("hej", 2.0)),
+    ?assertError(_, string:copies("hej", -1)),
+    ?assertError(_, string:copies("hej", 2.0)),
     ok.
 
 words(Config) when is_list(Config) ->
@@ -1343,9 +1442,9 @@ words(Config) when is_list(Config) ->
     2 = string:words("2.35", $.),
     100 = string:words(string:copies(". ", 100)),
     %% invalid arg type
-    {'EXIT',_} = (catch string:chars(hej, 1)),
+    ?assertError(_, string:chars(hej, 1)),
     %% invalid arg type
-    {'EXIT',_} = (catch string:chars("hej", 1, " ")),
+    ?assertError(_, string:chars("hej", 1, " ")),
     ok.
 
 
@@ -1359,23 +1458,23 @@ strip(Config) when is_list(Config) ->
     "  hej  " = string:strip("  hej  ", right, $.),
     "hej  hopp" = string:strip("  hej  hopp  ", both),
     %% invalid arg type
-    {'EXIT',_} = (catch string:strip(hej)),
+    ?assertError(_, string:strip(hej)),
     %% invalid arg type
-    {'EXIT',_} = (catch string:strip(" hej", up)),
+    ?assertError(_, string:strip(" hej", up)),
     %% invalid arg type
-    {'EXIT',_} = (catch string:strip(" hej", left, " ")),	% not good
+    ?assertError(_, string:strip(" hej", left, " ")),	% not good
     ok.
 
 sub_word(Config) when is_list(Config) ->
     "" = string:sub_word("", 1),
     "" = string:sub_word("", 1, $,),
-    {'EXIT',_} = (catch string:sub_word("1 2 3", 0)),
+    ?assertError(_, string:sub_word("1 2 3", 0)),
     "" = string:sub_word("1 2 3", 4),
     "llo th" = string:sub_word("but hello there", 2, $e),
     %% invalid arg type
-    {'EXIT',_} = (catch string:sub_word('hello there', 1)),
+    ?assertError(_, string:sub_word('hello there', 1)),
     %% invalid arg type
-    {'EXIT',_} = (catch string:sub_word("hello there", 1, "e")),
+    ?assertError(_, string:sub_word("hello there", 1, "e")),
     ok.
 
 left_right(Config) when is_list(Config) ->
@@ -1392,24 +1491,24 @@ left_right(Config) when is_list(Config) ->
     "1" = string:left("123", 1, $.),
     "3" = string:right("123", 1, $.),
     %% invalid arg type
-    {'EXIT',_} = (catch string:left(hello, 5)),
+    ?assertError(_, string:left(hello, 5)),
     %% invalid arg type
-    {'EXIT',_} = (catch string:right(hello, 5)),
+    ?assertError(_, string:right(hello, 5)),
     %% invalid arg type
-    {'EXIT',_} = (catch string:left("hello", 5, ".")),
+    ?assertError(_, string:left("hello", 5, ".")),
     %% invalid arg type
-    {'EXIT',_} = (catch string:right("hello", 5, ".")),
+    ?assertError(_, string:right("hello", 5, ".")),
     ok.
 
 sub_string(Config) when is_list(Config) ->
-    {'EXIT',_} = (catch string:sub_string("", 0)),
+    ?assertError(_, string:sub_string("", 0)),
     [] = string:sub_string("", 1),
-    {'EXIT',_} = (catch string:sub_string("", 2)),
+    ?assertError(_, string:sub_string("", 2)),
     [] = string:sub_string("1", 2),
-    {'EXIT',_} = (catch string:sub_string("", 0, 1)),
+    ?assertError(_, string:sub_string("", 0, 1)),
     [] = string:sub_string("", 1, 1),
     [] = string:sub_string("", 1, 2),
-    {'EXIT',_} = (catch string:sub_string("", 2, 2)),
+    ?assertError(_, string:sub_string("", 2, 2)),
     "1234" = string:sub_string("1234", 1),
     "1234" = string:sub_string("1234", 1, 4),
     "1234" = string:sub_string("1234", 1, 5),
@@ -1418,9 +1517,9 @@ sub_string(Config) when is_list(Config) ->
     "4" = string:sub_string("1234", 4, 4),
     "4" = string:sub_string("1234", 4, 5),
     %% invalid arg type
-    {'EXIT',_} = (catch string:sub_string(1234, 1)),
+    ?assertError(_, string:sub_string(1234, 1)),
     %% invalid arg type
-    {'EXIT',_} = (catch string:sub_string("1234", "1")),
+    ?assertError(_, string:sub_string("1234", "1")),
     ok.
 
 centre(Config) when is_list(Config) ->
@@ -1435,12 +1534,15 @@ centre(Config) when is_list(Config) ->
     "--agda--" = string:centre("agda", 8, $-),
     "agda" = string:centre("agda", 4),
     %% invalid arg type
-    {'EXIT',_} = (catch string:centre(hello, 10)),
+    ?assertError(_, string:centre(hello, 10)),
     ok.
 
 old_to_integer(Config) when is_list(Config) ->
+    {0,""} = test_to_integer("0"),
+    {0,""} = test_to_integer(lists:duplicate(200, $0)),
     {1,""} = test_to_integer("1"),
     {1,""} = test_to_integer("+1"),
+    {1,""} = test_to_integer("0001"),
     {-1,""} = test_to_integer("-1"),
     {1,"="} = test_to_integer("1="),
     {7,"F"} = test_to_integer("7F"),
@@ -1448,6 +1550,16 @@ old_to_integer(Config) when is_list(Config) ->
     {709,"*2"} = test_to_integer("709*2"),
     {0,"xAB"} = test_to_integer("0xAB"),
     {16,"#FF"} = test_to_integer("16#FF"),
+
+    %% Test a bignum.
+    Big = 12385792987438978973984398348974398593,
+    NegBig = -Big,
+    BigString = integer_to_list(Big),
+    {Big,"tail"} = string:to_integer(BigString ++ "tail"),
+    {Big,"tail"} = string:to_integer("+" ++ BigString ++ "tail"),
+    {NegBig,"tail"} = string:to_integer("-" ++ BigString ++ "tail"),
+
+    %% Test errors.
     {error,no_integer} = test_to_integer(""),
     {error,no_integer} = test_to_integer("!1"),
     {error,no_integer} = test_to_integer("F1"),
@@ -1455,13 +1567,19 @@ old_to_integer(Config) when is_list(Config) ->
     %% {3,[[]]} = test_to_integer([$3,[]]),
     %% {3,[hello]} = test_to_integer([$3,hello]),
     {error,badarg} = test_to_integer([$3,hello]),
+
+    %% Test the internal string:list_to_integer/1 BIF directly.
+    {error,not_a_list} = string:list_to_integer(abc),
+    {error,no_integer} = string:list_to_integer(""),
+    {error,no_integer} = string:list_to_integer("+"),
+
     ok.
 
 test_to_integer(Str) ->
     %% io:format("Checking ~p~n", [Str]),
     case string:to_integer(Str) of
 	{error,_Reason} = Bad ->
-	    {'EXIT',_} = (catch list_to_integer(Str)),
+            ?assertError(_, list_to_integer(Str)),
 	    Bad;
 	{F,_Rest} = Res ->
 	    _ = integer_to_list(F),
@@ -1506,7 +1624,7 @@ test_to_float(Str) ->
     %% io:format("Checking ~p~n", [Str]),
     case string:to_float(Str) of
 	{error,_Reason} = Bad ->
-	    {'EXIT',_} = (catch list_to_float(Str)),
+            ?assertError(_, list_to_float(Str)),
 	    Bad;
 	{F,_Rest} = Res ->
 	    _ = float_to_list(F),
@@ -1570,5 +1688,13 @@ join(Config) when is_list(Config) ->
     "1234" = string:join(["1", "2", "3", "4"], ""),
     [] = string:join([], ""), % OTP-7231
     %% invalid arg type
-    {'EXIT',_} = (catch string:join([apa], "")),
+    ?assertError(_, string:join([apa], "")),
     ok.
+
+-include_lib("kernel/include/eep48.hrl").
+
+doctests(_Config) ->
+    {ok, #docs_v1{ docs = Docs }} = code:get_doc(string),
+    ObsoleteFunctions = [{F,A} || {{function,F,A},_,_,#{},#{group := ~"Obsolete API functions"}} <- Docs],
+    ok = ct_doctest:module(string, [{skipped_blocks, 1},
+                                        {missing_tests, [{trim, 2}] ++ ObsoleteFunctions}]).

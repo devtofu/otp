@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2010-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2010-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,6 +26,8 @@ ERL_NIF_TERM atom_true;
 ERL_NIF_TERM atom_false;
 ERL_NIF_TERM atom_sha;
 ERL_NIF_TERM atom_error;
+ERL_NIF_TERM atom_encrypt;
+ERL_NIF_TERM atom_padding;
 ERL_NIF_TERM atom_pkcs_padding;
 ERL_NIF_TERM atom_zero;
 ERL_NIF_TERM atom_random;
@@ -36,18 +40,18 @@ ERL_NIF_TERM atom_undefined;
 ERL_NIF_TERM atom_hmac;
 ERL_NIF_TERM atom_cmac;
 ERL_NIF_TERM atom_poly1305;
+ERL_NIF_TERM atom_siphash;
+ERL_NIF_TERM atom_c_rounds;
+ERL_NIF_TERM atom_d_rounds;
 
 ERL_NIF_TERM atom_ok;
 ERL_NIF_TERM atom_none;
 ERL_NIF_TERM atom_notsup;
 ERL_NIF_TERM atom_badarg;
 ERL_NIF_TERM atom_digest;
-#ifdef FIPS_SUPPORT
 ERL_NIF_TERM atom_enabled;
 ERL_NIF_TERM atom_not_enabled;
-#else
 ERL_NIF_TERM atom_not_supported;
-#endif
 
 ERL_NIF_TERM atom_type;
 ERL_NIF_TERM atom_size;
@@ -95,18 +99,23 @@ ERL_NIF_TERM atom_rsa;
 ERL_NIF_TERM atom_dss;
 ERL_NIF_TERM atom_ecdsa;
 
-#ifdef HAVE_EDDH
+#ifdef HAVE_X25519
 ERL_NIF_TERM atom_x25519;
-ERL_NIF_TERM atom_x448;
+#endif
+
+#ifdef HAVE_ED25519
 ERL_NIF_TERM atom_ed25519;
+#endif
+
+#ifdef HAVE_X448
+ERL_NIF_TERM atom_x448;
+#endif
+
+#ifdef HAVE_ED448
 ERL_NIF_TERM atom_ed448;
 #endif
 
 ERL_NIF_TERM atom_eddsa;
-#ifdef HAVE_EDDSA
-ERL_NIF_TERM atom_ed25519;
-ERL_NIF_TERM atom_ed448;
-#endif
 
 ERL_NIF_TERM atom_rsa_mgf1_md;
 ERL_NIF_TERM atom_rsa_oaep_label;
@@ -145,26 +154,46 @@ ERL_NIF_TERM atom_key_id;
 ERL_NIF_TERM atom_password;
 #endif
 
-int init_atoms(ErlNifEnv *env, const ERL_NIF_TERM fips_mode, const ERL_NIF_TERM load_info) {
+ERL_NIF_TERM atom_seed;
+ERL_NIF_TERM atom_expandedkey;
+
+#ifdef HAVE_ML_KEM
+ERL_NIF_TERM atom_mlkem512;
+ERL_NIF_TERM atom_mlkem768;
+ERL_NIF_TERM atom_mlkem1024;
+#endif
+
+#ifdef HAVE_KDF
+ERL_NIF_TERM atom_salt;
+ERL_NIF_TERM atom_info;
+ERL_NIF_TERM atom_iterations;
+ERL_NIF_TERM atom_n;
+ERL_NIF_TERM atom_r;
+ERL_NIF_TERM atom_p;
+ERL_NIF_TERM atom_maxmem;
+ERL_NIF_TERM atom_mac;
+ERL_NIF_TERM atom_extract_and_expand;
+ERL_NIF_TERM atom_extract_only;
+ERL_NIF_TERM atom_expand_only;
+#endif
+
+#ifdef HAVE_ARGON2
+ERL_NIF_TERM atom_memory;
+ERL_NIF_TERM atom_parallelism;
+ERL_NIF_TERM atom_secret;
+ERL_NIF_TERM atom_ad;
+#endif
+
+ERL_NIF_TERM atom_context_string;
+
+int init_atoms(ErlNifEnv *env) {
     atom_true  = enif_make_atom(env,"true");
     atom_false = enif_make_atom(env,"false");
-    /* Enter FIPS mode */
-    if (fips_mode == atom_true) {
-#ifdef FIPS_SUPPORT
-        if (!FIPS_mode_set(1)) {
-#else
-        {
-#endif
-            PRINTF_ERR0("CRYPTO: Could not setup FIPS mode");
-            return 0;
-        }
-    } else if (fips_mode != atom_false) {
-        PRINTF_ERR1("CRYPTO: Invalid load_info '%T'", load_info);
-        return 0;
-    }
 
     atom_sha = enif_make_atom(env,"sha");
     atom_error = enif_make_atom(env,"error");
+    atom_encrypt = enif_make_atom(env,"encrypt");
+    atom_padding = enif_make_atom(env,"padding");
     atom_pkcs_padding = enif_make_atom(env,"pkcs_padding");
     atom_zero = enif_make_atom(env,"zero");
     atom_random = enif_make_atom(env,"random");
@@ -177,6 +206,9 @@ int init_atoms(ErlNifEnv *env, const ERL_NIF_TERM fips_mode, const ERL_NIF_TERM 
     atom_hmac = enif_make_atom(env,"hmac");
     atom_cmac = enif_make_atom(env,"cmac");
     atom_poly1305 = enif_make_atom(env,"poly1305");
+    atom_siphash = enif_make_atom(env,"siphash");
+    atom_c_rounds = enif_make_atom(env,"c_rounds");
+    atom_d_rounds = enif_make_atom(env,"d_rounds");
 
     atom_ok = enif_make_atom(env,"ok");
     atom_none = enif_make_atom(env,"none");
@@ -226,27 +258,28 @@ int init_atoms(ErlNifEnv *env, const ERL_NIF_TERM fips_mode, const ERL_NIF_TERM 
     atom_aes_ccm = enif_make_atom(env, "aes_ccm");
 #endif
 
-#ifdef FIPS_SUPPORT
     atom_enabled = enif_make_atom(env,"enabled");
     atom_not_enabled = enif_make_atom(env,"not_enabled");
-#else
     atom_not_supported = enif_make_atom(env,"not_supported");
-#endif
+
     atom_rsa = enif_make_atom(env,"rsa");
     atom_dss = enif_make_atom(env,"dss");
     atom_ecdsa = enif_make_atom(env,"ecdsa");
 
-#ifdef HAVE_EDDH
+#ifdef HAVE_X25519
     atom_x25519 = enif_make_atom(env,"x25519");
-    atom_x448 = enif_make_atom(env,"x448");
+#endif
+#ifdef HAVE_ED25519
     atom_ed25519 = enif_make_atom(env,"ed25519");
+#endif
+#ifdef HAVE_X448
+    atom_x448= enif_make_atom(env,"x448");
+#endif
+#ifdef HAVE_ED448
     atom_ed448 = enif_make_atom(env,"ed448");
 #endif
+
     atom_eddsa = enif_make_atom(env,"eddsa");
-#ifdef HAVE_EDDSA
-    atom_ed25519 = enif_make_atom(env,"ed25519");
-    atom_ed448 = enif_make_atom(env,"ed448");
-#endif
     atom_rsa_mgf1_md = enif_make_atom(env,"rsa_mgf1_md");
     atom_rsa_oaep_label = enif_make_atom(env,"rsa_oaep_label");
     atom_rsa_oaep_md = enif_make_atom(env,"rsa_oaep_md");
@@ -279,5 +312,35 @@ int init_atoms(ErlNifEnv *env, const ERL_NIF_TERM fips_mode, const ERL_NIF_TERM 
     atom_password = enif_make_atom(env,"password");
 #endif
 
+    atom_seed = enif_make_atom(env,"seed");
+    atom_expandedkey = enif_make_atom(env,"expandedkey");
+#ifdef HAVE_ML_KEM
+    atom_mlkem512  = enif_make_atom(env,"mlkem512");
+    atom_mlkem768  = enif_make_atom(env,"mlkem768");
+    atom_mlkem1024 = enif_make_atom(env,"mlkem1024");
+#endif
+
+#ifdef HAVE_KDF
+    atom_salt = enif_make_atom(env,"salt");
+    atom_info = enif_make_atom(env,"info");
+    atom_iterations = enif_make_atom(env,"iterations");
+    atom_n = enif_make_atom(env,"n");
+    atom_r = enif_make_atom(env,"r");
+    atom_p = enif_make_atom(env,"p");
+    atom_maxmem = enif_make_atom(env,"maxmem");
+    atom_mac = enif_make_atom(env,"mac");
+    atom_extract_and_expand = enif_make_atom(env,"extract_and_expand");
+    atom_extract_only = enif_make_atom(env,"extract_only");
+    atom_expand_only = enif_make_atom(env,"expand_only");
+#endif
+
+#ifdef HAVE_ARGON2
+    atom_memory = enif_make_atom(env,"memory");
+    atom_parallelism = enif_make_atom(env,"parallelism");
+    atom_secret = enif_make_atom(env,"secret");
+    atom_ad = enif_make_atom(env,"ad");
+#endif
+
+    atom_context_string = enif_make_atom(env,"context_string");
     return 1;
 }

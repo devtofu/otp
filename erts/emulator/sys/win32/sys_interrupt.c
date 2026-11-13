@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
+ *
+ * SPDX-License-Identifier: Apache-2.0
  * 
- * Copyright Ericsson AB 1997-2018. All Rights Reserved.
+ * Copyright Ericsson AB 1997-2025. All Rights Reserved.
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,11 +25,13 @@
 #ifdef HAVE_CONFIG_H
 #  include "config.h"
 #endif
+
+#define ERTS_WANT_BREAK_HANDLING
+
 #include "sys.h"
 #include "erl_alloc.h"
 #include "erl_thr_progress.h"
 #include "erl_driver.h"
-#include "../../drivers/win32/win_con.h"
 
 #if defined(__GNUC__)
 #  define WIN_SYS_INLINE __inline__
@@ -82,7 +86,6 @@ BOOL WINAPI ctrl_handler_ignore_break(DWORD dwCtrlType)
 }
 
 void erts_set_ignore_break(void) {
-    ConSetCtrlHandler(ctrl_handler_ignore_break);
     SetConsoleCtrlHandler(ctrl_handler_ignore_break, TRUE);
 }
 
@@ -92,6 +95,9 @@ BOOL WINAPI ctrl_handler_replace_intr(DWORD dwCtrlType)
     case CTRL_C_EVENT:
 	return FALSE;
     case CTRL_BREAK_EVENT:
+        if (ERTS_BREAK_REQUESTED) {
+            erts_exit(ERTS_INTR_EXIT, "");
+        }
 	SetEvent(erts_sys_break_event);
 	break;
     case CTRL_LOGOFF_EVENT:
@@ -107,10 +113,14 @@ BOOL WINAPI ctrl_handler_replace_intr(DWORD dwCtrlType)
 }
 
 
-/* Don't use ctrl-c for break handler but let it be 
+/* Don't use Ctrl+C for break handler but let it be
    used by the shell instead (see user_drv.erl) */
 void erts_replace_intr(void) {
-    ConSetCtrlHandler(ctrl_handler_replace_intr);
+    HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD dwOriginalInMode = 0;
+    if (GetConsoleMode(hIn, &dwOriginalInMode)) {
+	SetConsoleMode(hIn, dwOriginalInMode & ~ENABLE_PROCESSED_INPUT);
+    }
     SetConsoleCtrlHandler(ctrl_handler_replace_intr, TRUE);
 }
 
@@ -119,6 +129,9 @@ BOOL WINAPI ctrl_handler(DWORD dwCtrlType)
     switch (dwCtrlType) {
     case CTRL_C_EVENT:
     case CTRL_BREAK_EVENT:
+        if (ERTS_BREAK_REQUESTED) {
+            erts_exit(ERTS_INTR_EXIT, "");
+        }
 	SetEvent(erts_sys_break_event);
 	break;
     case CTRL_LOGOFF_EVENT:
@@ -135,7 +148,6 @@ BOOL WINAPI ctrl_handler(DWORD dwCtrlType)
 
 void init_break_handler()
 {
-    ConSetCtrlHandler(ctrl_handler);
     SetConsoleCtrlHandler(ctrl_handler, TRUE);
 }
 

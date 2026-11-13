@@ -1,7 +1,9 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 2008-2020. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 2008-2026. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -33,7 +35,10 @@ MODULES= \
 	public_key_SUITE \
 	pbe_SUITE \
 	pkits_SUITE \
-	pubkey_ssh_SUITE
+	pubkey_cert_SUITE \
+	pubkey_policy_tree_SUITE \
+	pubkey_ocsp_SUITE \
+	pubkey_eqc_SUITE
 
 ERL_FILES= $(MODULES:%=%.erl)
 
@@ -55,7 +60,8 @@ RELSYSDIR = $(RELEASE_PATH)/public_key_test
 # ----------------------------------------------------
 # FLAGS
 # ----------------------------------------------------
-ERL_COMPILE_FLAGS += $(INCLUDES)
+ERL_COMPILE_FLAGS += $(INCLUDES) +nowarn_missing_spec_documented
+ERL_COMPILE_FLAGS := $(filter-out +deterministic,$(ERL_COMPILE_FLAGS))
 
 EBIN = .
 
@@ -63,7 +69,7 @@ EBIN = .
 # Targets
 # ----------------------------------------------------
 
-tests debug opt: $(TARGET_FILES)
+tests $(TYPES): $(TARGET_FILES)
 
 
 clean:
@@ -84,7 +90,7 @@ release_tests_spec: opt
 	$(INSTALL_DATA) $(SPEC_FILES) $(ERL_FILES) $(COVER_FILE) $(HRL_FILES) "$(RELSYSDIR)"
 	$(INSTALL_DATA) $(TARGET_FILES) "$(RELSYSDIR)"
 	chmod -R u+w "$(RELSYSDIR)"
-	@tar cf - *_SUITE_data | (cd "$(RELSYSDIR)"; tar xf -)
+	@tar cf - *_SUITE_data  property_test | (cd "$(RELSYSDIR)"; tar xf -)
 release_docs_spec:
 
 

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,6 +21,9 @@
 %%
 %%
 -module(asn1ct_tok).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
 
 %% Tokenize ASN.1 code (input to parser generated with yecc)   
 
@@ -171,7 +176,7 @@ collect_string([], _, _) ->
     throw({error,missing_quote_at_eof}).
            
 %% <name> is letters digits hyphens.
-%% Hypen is not the last character. Hypen hyphen is NOT allowed.
+%% Hyphen is not the last character. Hyphen hyphen is NOT allowed.
 %%
 %% <identifier> ::= <lowercase> <name>
 

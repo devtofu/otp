@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1996-2016. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -22,6 +24,9 @@
 %% Supervisor for the entire Mnesia application
 
 -module(mnesia_sup).
+-moduledoc false.
+
+-compile([{nowarn_deprecated_function, [{erlang,exit,2}]}]).
 
 -behaviour(supervisor).
 
@@ -88,13 +93,25 @@ add_event_handler() ->
 
 kill() ->
     Mnesia = [mnesia_fallback | mnesia:ms()],
-    Kill = fun(Name) -> try exit(whereis(Name), kill) catch _:_ -> ok end end,
+    Kill = fun
+               (mnesia_sup) ->
+                   try  %% Avoid crash reports
+                       Sup = whereis(mnesia_sup),
+                       {_,Dict} = process_info(Sup, dictionary),
+                       [App] = proplists:get_value('$ancestors', Dict),
+                       unlink(App),
+                       exit(Sup, kill),
+                       App ! {'EXIT', Sup, normal}
+                   catch _:_ -> ok end;
+               (Name) ->
+                   try exit(whereis(Name), kill) catch _:_ -> ok end
+           end,
     lists:foreach(Kill, Mnesia),
     lists:foreach(fun ensure_dead/1, Mnesia),
     timer:sleep(10),
     case lists:keymember(mnesia, 1, application:which_applications()) of
-	true -> kill();
-	false -> ok
+        true -> kill();
+        false -> ok
     end.
 
 ensure_dead(Name) ->

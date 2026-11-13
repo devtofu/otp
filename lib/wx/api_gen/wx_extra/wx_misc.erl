@@ -21,3 +21,6 @@ mSWSetEmulationLevel(Level, Executable) ->
   ok = win32reg:set_value(Reg, Executable, Level),
   ok = win32reg:close(Reg),
   true.
+
+
+

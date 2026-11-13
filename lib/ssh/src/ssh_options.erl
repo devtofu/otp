@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2004-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2004-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,6 +23,12 @@
 %%
 
 -module(ssh_options).
+-moduledoc false.
+
+%% file:consult/1 can create atoms from file content. This is acceptable
+%% here because the file path comes from the daemon operator's dh_gex_groups
+%% configuration — not from wire data.
+-compile([{nowarn_possibly_unsafe_function, {file, consult, 1}}]).
 
 -include("ssh.hrl").
 -include_lib("kernel/include/file.hrl").
@@ -34,8 +42,8 @@
          keep_set_options/2,
          no_sensitive/2,
          initial_default_algorithms/2,
-         check_preferred_algorithms/1
-        ]).
+         check_preferred_algorithms/1,
+         merge_options/3]).
 
 -export_type([private_options/0
              ]).
@@ -153,6 +161,14 @@ delete_key(internal_options, Key, Opts, _CallerMod, _CallerLine) when is_map(Opt
 
 %%%================================================================
 %%%
+%%% Replace 0 or more options in an options map
+%%%
+merge_options(Role, NewPropList, Opts0) when is_list(NewPropList),
+                                             is_map(Opts0) ->
+    check_and_save(NewPropList, default(Role), Opts0).
+
+%%%================================================================
+%%%
 %%% Initialize the options
 %%%
 
@@ -167,8 +183,7 @@ handle_options(Role, PropList0) ->
 handle_options(Role, OptsList0, Opts0) when is_map(Opts0),
                          is_list(OptsList0) ->
     OptsList1 = proplists:unfold(
-                  lists:foldr(fun(T,Acc) when is_tuple(T),
-                                              size(T) =/= 2-> [{special_trpt_args,T} | Acc];
+                  lists:foldr(fun(T,Acc) when tuple_size(T) =/= 2 -> [{special_trpt_args,T} | Acc];
                                  (X,Acc) -> [X|Acc]
                               end,
                               [], OptsList0)),
@@ -188,9 +203,15 @@ handle_options(Role, OptsList0, Opts0) when is_map(Opts0),
                               %% A value set in config or options. Replace the current.
                               {M#{K => V1,
                                   key_cb_options => [{K,V1} | maps:get(key_cb_options,M)]},
-                               [{K,V1} | PL]
-                              };
-
+                               case lists:keymember(K, 1, PL) of
+                                   true ->
+                                       %% Given in the option list: checked
+                                       %% once, at its own position, in save/3
+                                       PL;
+                                   false ->
+                                       %% From config or application env
+                                       [{K,V1} | PL]
+                               end};
                           {append,V1} ->
                               %% A value set in config or options, but should be
                               %% appended to the existing value
@@ -198,31 +219,19 @@ handle_options(Role, OptsList0, Opts0) when is_map(Opts0),
                               {M#{K => NewVal,
                                   key_cb_options => [{K,NewVal} |
                                                      lists:keydelete(K,1,maps:get(key_cb_options,M))]},
-                               [{K,NewVal} | lists:keydelete(K,1,PL)]
-                              };
-                              
+                               [{K,NewVal} | lists:keydelete(K,1,PL)]};
                           undefined ->
                               %% Use the default value
                               {M#{K => Vd}, PL}
                       end
-                 %%          ;
-                 %% (_,_,Acc) ->
-                 %%      Acc
               end,
               {Opts0#{key_cb_options => maps:get(key_cb_options,Opts0)},
-               [{K,V} || {K,V} <- OptsList1,
-                         not maps:is_key(K,Opts0) % Keep socket opts
-               ]
-              },
+               [{K,V} || {K,V} <- OptsList1, not maps:is_key(K,Opts0)]}, % Keep socket opts
               OptionDefinitions),
-
-
         %% Enter the user's values into the map; unknown keys are
         %% treated as socket options
-        final_preferred_algorithms(
-          lists:foldl(fun(KV, Vals) ->
-                              save(KV, OptionDefinitions, Vals)
-                      end, InitialMap, OptsList2))
+        maybe_add_fake_passwd_checker(Role,
+                                      check_and_save(OptsList2, OptionDefinitions, InitialMap))
     catch
         error:{EO, KV, Reason} when EO == eoptions ; EO == eerl_env ->
             if
@@ -234,6 +243,22 @@ handle_options(Role, OptsList0, Opts0) when is_map(Opts0),
                     {error, {EO,{KV,Reason}}}
             end
     end.
+
+check_and_save(OptsList, OptionDefinitions, InitialMap) ->
+    final_preferred_algorithms(
+      lists:foldl(fun(KV, Vals) ->
+                          save(KV, OptionDefinitions, Vals)
+                  end, InitialMap, OptsList)).
+
+maybe_add_fake_passwd_checker(server, Options) ->
+    case ?GET_OPT(pwdfun, Options) of
+        undefined ->
+            ?PUT_INTERNAL_OPT({fake_passwd_checker, make_fake_passwd_fun()}, Options);
+        _ ->
+            Options
+    end;
+maybe_add_fake_passwd_checker(_Client, Options) ->
+    Options.
 
 cnf_key(server) -> server_options;
 cnf_key(client) -> client_options.
@@ -250,7 +275,6 @@ config_val(modify_algorithms=Key, RoleCnfs, Opts) ->
         [] -> undefined;
         _ -> {append,V}
     end;
-
 config_val(Key, RoleCnfs, Opts) ->
     case lists:keysearch(Key, 1, Opts) of
         {value, {_,V}} ->
@@ -264,14 +288,13 @@ config_val(Key, RoleCnfs, Opts) ->
             end
     end.
 
-
 check_fun(Key, Defs) ->
     case ssh_connection_handler:prohibited_sock_option(Key) of
         false ->
             #{chk := Fun} = maps:get(Key, Defs),
             Fun;
         true ->
-            fun(_,_) -> forbidden end
+            fun(_) -> forbidden end
     end.
 
 %%%================================================================
@@ -295,7 +318,7 @@ save({Inet,false}, _Defs, OptMap) when Inet==inet ; Inet==inet6 -> OptMap;
 save({special_trpt_args,T}, _Defs, OptMap) when is_map(OptMap) ->
     OptMap#{socket_options := [T | maps:get(socket_options,OptMap)]};
 
-%% and finaly the 'real stuff':
+%% and finally the 'real stuff':
 save({Key,Value}, Defs, OptMap) when is_map(OptMap) ->
     try (check_fun(Key,Defs))(Value)
     of
@@ -390,13 +413,14 @@ default(server) ->
     (default(common))
         #{
       subsystems =>
-          #{default => [ssh_sftpd:subsystem_spec([])],
+          #{default => [],
             chk => fun(L) ->
                            is_list(L) andalso
-                               lists:all(fun({Name,{CB,Args}}) ->
+                               lists:all(fun(SubSystem = {Name,{CB,Args}}) ->
                                                  check_string(Name) andalso
                                                      is_atom(CB) andalso
-                                                     is_list(Args);
+                                                     is_list(Args) andalso
+                                                     check_subsystem(SubSystem);
                                             (_) ->
                                                  false
                                          end, L)
@@ -405,7 +429,7 @@ default(server) ->
            },
 
       shell =>
-          #{default => ?DEFAULT_SHELL,
+          #{default => disabled,
             chk => fun({M,F,A}) -> is_atom(M) andalso is_atom(F) andalso is_list(A);
                       (disabled) -> true;
                       (V) -> check_function1(V) orelse
@@ -415,9 +439,10 @@ default(server) ->
            },
 
       exec =>
-          #{default => undefined,
+          #{default => disabled,
             chk => fun({direct, V}) ->  check_function1(V) orelse check_function2(V) orelse check_function3(V);
                       (disabled) -> true;
+                      (erlang_eval) -> true; % Enable Erlang term evaluation
                       %% Compatibility (undocumented):
                       ({M,F,A}) -> is_atom(M) andalso is_atom(F) andalso is_list(A);
                       (V) -> check_function1(V) orelse check_function2(V) orelse check_function3(V)
@@ -441,7 +466,7 @@ default(server) ->
 
       tcpip_tunnel_in =>
            #{default => false,
-             chk => fun(V) -> erlang:is_boolean(V) end,
+             chk => fun(V) -> check_function2(V) orelse erlang:is_boolean(V) end,
              class => user_option
             },
 
@@ -468,12 +493,35 @@ default(server) ->
       user_passwords =>
           #{default => [],
             chk => fun(V) ->
-                           is_list(V) andalso
-                               lists:all(fun({S1,S2}) ->
-                                                 check_string(S1) andalso 
-                                                     check_string(S2)   
-                                         end, V)
+                       is_list(V) andalso
+                       lists:foldr(
+                           fun
+                               (_, false) ->
+                                   false;
+                               ({User, Passwd}, {true, Acc}) ->
+                                   case
+                                       check_string(User) andalso
+                                       check_string(Passwd) andalso
+                                       make_passwd_fun(Passwd)
+                                   of
+                                       Fun when is_function(Fun, 1) ->
+                                           {true, [{User, Fun} | Acc]};
+                                       _ ->
+                                           false
+                                   end;
+                               (_, _) ->
+                                   false
+                           end,
+                           {true, []},
+                           V
+                       )
                    end,
+            class => user_option
+           },
+
+      no_auth_needed =>
+          #{default => false,
+            chk => fun(V) -> erlang:is_boolean(V) end,
             class => user_option
            },
 
@@ -485,7 +533,17 @@ default(server) ->
 
       password =>
           #{default => undefined,
-            chk => fun(V) -> check_string(V) end,
+            chk => fun(V) ->
+                       case
+                           check_string(V) andalso
+                           make_passwd_fun(V)
+                       of
+                           Fun when is_function(Fun, 1) ->
+                               {true, Fun};
+                           _ ->
+                               false
+                       end
+                   end,
             class => user_option
            },
 
@@ -496,7 +554,7 @@ default(server) ->
            },
 
       dh_gex_limits =>
-          #{default => {0, infinity},
+          #{default => {2047, infinity},
             chk => fun({I1,I2}) ->
                            check_pos_integer(I1) andalso
                                check_pos_integer(I2) andalso
@@ -513,6 +571,12 @@ default(server) ->
             class => user_option
            },
 
+      max_initial_idle_time =>
+          #{default => infinity, %% To not break compatibility
+            chk => fun(V) -> check_timeout(V) end,
+            class => user_option
+           },
+
       negotiation_timeout =>
           #{default => 2*60*1000,
             chk => fun(V) -> check_timeout(V) end,
@@ -526,14 +590,14 @@ default(server) ->
            },
 
       max_sessions =>
-          #{default => infinity,
-            chk => fun(V) -> check_pos_integer(V) end,
+          #{default => 1024,
+            chk => fun(V) -> check_max_sessions(V) end,
             class => user_option
            },
 
       max_channels =>
-          #{default => infinity,
-            chk => fun(V) -> check_pos_integer(V) end,
+          #{default => 256,
+            chk => fun(V) -> check_max_channels(V) end,
             class => user_option
            },
 
@@ -560,6 +624,26 @@ default(server) ->
       connectfun =>
           #{default => fun(_,_,_) -> void end,
             chk => fun(V) -> check_function3(V) end,
+            class => user_option
+           },
+
+      bannerfun =>
+          #{default => fun(_) -> <<>> end,
+            chk => fun(V) -> check_function1(V) end,
+            class => user_option
+           },
+
+      max_auth_request_size =>
+          #{default => ?SSH_MAX_PACKET_SIZE,
+            chk => fun(V) -> check_pos_integer(V) end,
+            class => user_option
+           },
+
+      max_auth_tries =>
+          #{default => 6,
+            chk => fun(V) ->
+                           check_pos_integer(V) orelse V =:= infinity
+                   end,
             class => user_option
            },
 
@@ -625,7 +709,7 @@ default(client) ->
            },
 
       dh_gex_limits =>
-          #{default => {1024, 6144, 8192},      % FIXME: Is this true nowadays?
+          #{default => {2047, 6144, 8192},
             chk => fun({Min,I,Max}) ->
                            lists:all(fun check_pos_integer/1,
                                      [Min,I,Max]);
@@ -771,6 +855,14 @@ default(common) ->
              class => user_option
             },
 
+       max_log_item_len =>
+           #{default => 500,
+             chk => fun(infinity) -> true;
+                       (I) -> check_non_neg_integer(I)
+                    end,
+             class => user_option
+            },
+
       rekey_limit =>
           #{default => {3600000, 1024000000}, % {1 hour, 1 GB}
             chk => fun({infinity, infinity}) ->
@@ -819,6 +911,15 @@ default(common) ->
              class => user_option
             },
 
+      alive =>
+          #{default => #{count_max => 3, interval => infinity},
+            chk => fun(#{count_max := Count, interval := Interval}) ->
+                           check_pos_integer(Count) andalso
+                               check_timeout(Interval)
+                   end,
+            class => user_option
+           },
+
 %%%%% Undocumented
        transport =>
            #{default => ?DEFAULT_TRANSPORT,
@@ -852,9 +953,52 @@ default(common) ->
            #{default => ?MAX_RND_PADDING_LEN,
              chk => fun(V) -> check_non_neg_integer(V) end,
              class => undoc_user_option
+            },
+
+       channel_close_timeout =>
+           #{default => 5 * 1000,
+             chk => fun(V) -> check_non_neg_integer(V) end,
+             class => undoc_user_option
             }
      }.
 
+%% Fake checker for unknown users (GHSA-3w6p-vwhf-wvp4): runs one PBKDF2
+%% per check so the timing matches a real checker, but needs no
+%% precomputed hash at daemon start (ERIERL-1375).
+make_fake_passwd_fun() ->
+    make_passwd_fun(false, ignored).
+
+make_passwd_fun(PlainPwd) ->
+    make_passwd_fun(true, PlainPwd).
+
+make_passwd_fun(Real, PlainPwd) ->
+    Salt = crypto:strong_rand_bytes(?SSH_PKBDF2_KEYLENGTH),
+    HashedPwd =
+        case Real of
+            true ->
+                PlainPwdBin = unicode:characters_to_binary(PlainPwd),
+                crypto:pbkdf2_hmac(?SSH_PKBDF2_DIGEST,
+                                   PlainPwdBin, Salt,
+                                   ?SSH_PKBDF2_ITERATIONS,
+                                   ?SSH_PKBDF2_KEYLENGTH);
+            false ->
+                undefined
+        end,
+    fun
+        Chk(PlainCheckPwd) when is_binary(PlainCheckPwd) ->
+            HashedCheckPwd = crypto:pbkdf2_hmac(?SSH_PKBDF2_DIGEST,
+                                                PlainCheckPwd, Salt,
+                                                ?SSH_PKBDF2_ITERATIONS,
+                                                ?SSH_PKBDF2_KEYLENGTH),
+            case Real of
+                true -> crypto:hash_equals(HashedPwd, HashedCheckPwd);
+                false -> false
+            end;
+        Chk(PlainCheckPwd) when is_list(PlainCheckPwd) ->
+            Chk(unicode:characters_to_binary(PlainCheckPwd));
+        Chk(_) ->
+            false
+    end.
 
 %%%================================================================
 %%%================================================================
@@ -873,6 +1017,14 @@ error_in_check(BadValue, Extra) -> error({check,{BadValue,Extra}}).
 %%%----------------------------------------------------------------
 check_timeout(infinity) -> true;
 check_timeout(I) -> check_pos_integer(I).
+
+%%%----------------------------------------------------------------
+check_max_sessions(infinity) -> true;
+check_max_sessions(I) -> check_pos_integer(I).
+
+%%%----------------------------------------------------------------
+check_max_channels(infinity) -> true;
+check_max_channels(I) -> check_pos_integer(I).
 
 %%%----------------------------------------------------------------
 check_pos_integer(I) -> is_integer(I) andalso I>0.
@@ -1045,7 +1197,7 @@ check_modify_algorithms(M) when is_list(M) ->
     [error_in_check(Op_KVs, "Bad modify_algorithms")
      || Op_KVs <- M,
         not is_tuple(Op_KVs)
-            orelse (size(Op_KVs) =/= 2)
+            orelse (tuple_size(Op_KVs) =/= 2)
             orelse (not lists:member(element(1,Op_KVs), [append,prepend,rm]))],
     {true, [{Op,normalize_mod_algs(KVs,false)} || {Op,KVs} <- M]};
 check_modify_algorithms(_) ->
@@ -1070,11 +1222,11 @@ normalize_mod_algs([K|Ks], KVs0, Acc, UseDefaultAlgs) ->
     normalize_mod_algs(Ks, KVs, [{K,Vs} | Acc], UseDefaultAlgs);
 normalize_mod_algs([], [], Acc, _) ->
     %% No values left in the key-value list after removing the expected entries
-    %% (thats good)
+    %% (that's good)
     lists:reverse(Acc);
 normalize_mod_algs([], [{K,_}|_], _, _) ->
     %% Some values left in the key-value list after removing the expected entries
-    %% (thats bad)
+    %% (that's bad)
     case ssh_transport:algo_class(K) of
         true -> error_in_check(K, "Duplicate key");
         false -> error_in_check(K, "Unknown key")
@@ -1157,7 +1309,7 @@ check_input_ok(Algs) ->
     [error_in_check(KVs, "Bad preferred_algorithms")
      || KVs <- Algs,
         not is_tuple(KVs)
-            orelse (size(KVs) =/= 2)].
+            orelse (tuple_size(KVs) =/= 2)].
 
 %%%----------------------------------------------------------------
 final_preferred_algorithms(Options0) ->
@@ -1231,4 +1383,15 @@ error_if_empty([_|T]) ->
 error_if_empty([]) ->
     ok.
 
-%%%----------------------------------------------------------------
+check_subsystem({"sftp", {ssh_sftpd, Args}}) ->
+    Root = proplists:get_value(root, Args, ""),
+    case Root =:= "" orelse filename:pathtype(Root) =:= absolute of
+        true ->
+            true;
+        false ->
+            error_in_check(
+              {"sftp", {ssh_sftpd, Args}},
+              io_lib:format("SFTP root option must be an absolute path, got: ~p", [Root]))
+    end;
+check_subsystem(_) ->
+    true.

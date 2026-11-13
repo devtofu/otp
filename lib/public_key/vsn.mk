@@ -1,1 +1,9 @@
-PUBLIC_KEY_VSN = 1.11
+PUBLIC_KEY_VSN = 1.21.8
+
+# %CopyrightBegin%
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 1996-2025. All Rights Reserved.
+#
+# %CopyrightEnd%

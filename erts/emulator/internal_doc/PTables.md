@@ -1,3 +1,25 @@
+<!--
+%% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2013-2025. All Rights Reserved.
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%
+%% %CopyrightEnd%
+-->
+
 Process and Port Tables
 =======================
 
@@ -113,7 +135,7 @@ the "thread progress" functionality in order to determine when it is
 safe to deallocate the process structure. We'll get back to this when
 describing deletion in the table.
 
-Using this new lookup approach we wont modify any memory at all which
+Using this new lookup approach we won't modify any memory at all which
 is important. A lookup conceptually only read memory, now this is true
 in the implementation also which is important from a scalability
 perspective. The previous implementation modified the cache line
@@ -238,7 +260,7 @@ When we insert a new element in the table we do the following:
     be done before we publish the structure in the table. This, for
     example, includes storing the identifier in the process structure. 
 
-6.  Now we can publish the structure in the table by writing the the
+6.  Now we can publish the structure in the table by writing the
     pointer to the process structure in the slot previously reserved
     in 3.
 
@@ -262,7 +284,7 @@ references to the process structure.
 
 ### BIF Iterating Over the Table ###
 
-The `erlang:processes/1` and `erlang:port/1` BIFs iterate over the
+The `erlang:processes/0` and `erlang:ports/0` BIFs iterate over the
 tables and return corresponding identifiers. These BIF should return a
 consistent snapshot of the table content during some time when the BIF
 is executing. In order to implement this we use locking in a strange
@@ -282,7 +304,7 @@ single cache line containing the state of the rwlock even in the case
 we are only read locking. Instead of using such an rwlock, we have our
 own implementation of reader optimized rwlocks which keeps track of
 reader threads in separate thread specific cache lines. This in order
-to avoid contention on a singe cache line. As long as we only do read
+to avoid contention on a single cache line. As long as we only do read
 lock operations, threads only need to read a global cache line and
 modify its own cache line, and by this minimize communication between
 involved processors. The iterating BIFs are normally very infrequently
@@ -299,7 +321,7 @@ threads modify the table at the same time as we are trying to find the
 slot. The easy fix is to abort the operation if an empty slot could
 not be found in a finite number operation, and then restart the
 operation under a write lock. This will be implemented in next
-release, but furter work should be made trying to find a better
+release, but further work should be made trying to find a better
 solution.
 
 This and also previous implementation do not work well when the table
@@ -320,7 +342,7 @@ not require exclusive access to the table while reading a sequence of
 slots. In principle this should be rather easy, the code can handle
 sequences of variable sizes, so shrinking the sequence size of slots
 to one would solv the problem. This will, however, need some tweeks
-and modifications of not trival code, but is something that should be
+and modifications of not trivial code, but is something that should be
 looked at in the future.
 
 By increasing the size of identifiers, at least on 64-bit machines

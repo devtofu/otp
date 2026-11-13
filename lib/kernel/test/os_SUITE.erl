@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -28,9 +30,12 @@
 	 find_executable/1, unix_comment_in_command/1, deep_list_command/1,
          large_output_command/1, background_command/0, background_command/1,
          message_leak/1, close_stdin/0, close_stdin/1, max_size_command/1,
-         perf_counter_api/1, error_info/1]).
+         cmd_exception/1, os_cmd_shell/1, os_cmd_shell_peer/1,
+         perf_counter_api/1, error_info/1,
+         os_version/1]).
 
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
 suite() ->
     [{ct_hooks,[ts_install_cth]},
@@ -43,7 +48,9 @@ all() ->
      find_executable, unix_comment_in_command, deep_list_command,
      large_output_command, background_command, message_leak,
      close_stdin, max_size_command, perf_counter_api,
-     error_info].
+     error_info, os_cmd_shell, os_cmd_shell_peer,
+     cmd_exception,
+     os_version].
 
 groups() ->
     [].
@@ -193,16 +200,45 @@ space_in_name(Config) when is_list(Config) ->
     [] = receive_all(),
     ok.
 
-%% Check that a bad command doesn't crasch the server or the emulator (it used to).
+%% Check that a bad command doesn't crash the server or the emulator (it used to).
 bad_command(Config) when is_list(Config) ->
-    catch os:cmd([a|b]),
-    catch os:cmd({bad, thing}),
+    ok = ?assertError(badarg, os:cmd([a|b])),
+    ok = ?assertError(badarg, os:cmd({bad, thing})),
 
     %% This should at least not crash (on Unix it typically returns
     %% a message from the shell).
     os:cmd("xxxxx"),
 
     ok.
+
+cmd_exception(Config) when is_list(Config) ->
+
+    {Osfamily, Ostype} = os:type(),
+
+    %% command failed
+    {Res, 3} = cmd_exception_test("echo abc && exit 3"),
+    Osfamily =:= unix andalso ?assertEqual("abc\n", Res),
+    Osfamily =:= win32 andalso ?assertEqual("abc \r\n", Res),
+
+    %% Syntax error
+    {_, ExitCode} = cmd_exception_test("{)"),
+    Osfamily =:= unix andalso Ostype =/= sunos andalso ?assertEqual(2, ExitCode),
+    Osfamily =:= unix andalso Ostype =:= sunos andalso ?assertEqual(3, ExitCode),
+    Osfamily =:= win32 andalso ?assertEqual(1, ExitCode),
+
+    ok.
+
+cmd_exception_test(Cmd) ->
+    Out = os:cmd(Cmd), %% Check that no exception is generated when the option is not given
+    try
+        os:cmd(Cmd, #{ exception_on_failure => true}),
+        ct:fail("Should not succeed")
+    catch error:{command_failed, ErrorOut, Reason} ->
+            %% Check that the output is the same
+            ?assertEqual(Out, ErrorOut),
+            {ErrorOut, Reason}
+    end.
+
 
 find_executable(Config) when is_list(Config) ->
     case os:type() of
@@ -337,7 +373,7 @@ close_stdin(Config) ->
     DataDir = proplists:get_value(data_dir, Config),
     Fds = filename:join(DataDir, "my_fds"),
 
-    "-1" = os:cmd(Fds).
+    "0" = os:cmd(Fds).
 
 max_size_command(_Config) ->
     WSL = case os:getenv("WSLENV") of
@@ -396,10 +432,48 @@ do_perf_counter_test(CntArgs, Conv, Upper, Lower, Iters) ->
             do_perf_counter_test(CntArgs, Conv, Upper, Lower, Iters-1)
     end.
 
-error_info(_Config) ->
-    L = [{cmd, [{no,string}]},
+error_info(Config) ->
+
+
+    ExhaustFDs =
+        fun(M,F,A) ->
+                case no_limit_for_opened_files() of
+                    false ->
+                        {ok, Peer, Node} = ?CT_PEER(),
+                        FN = filename:join(
+                               proplists:get_value(priv_dir, Config),
+                               "error_info"),
+                        try
+                            erpc:call(
+                              Node,
+                              fun() ->
+                                      io:format("Starting to open files..."),
+                                      (fun FDs(N) ->
+                                               case file:open(FN, [write]) of
+                                                   {ok, _ } -> FDs(N+1);
+                                                   {error, _} ->
+                                                       io:format("Opened ~p files",[N])
+                                               end
+                                       end)(0),
+                                      apply(M,F,A)
+                              end)
+                        catch error:{exception, ErrorReason, StackTrace} ->
+                                erlang:raise(error, ErrorReason, StackTrace)
+                        after
+                            peer:stop(Peer)
+                        end;
+                    true ->
+                        apply(M,F,A)
+                end
+        end,
+
+    L = [{cmd, [{no, string}]},
+         {cmd, [["echo 1",0,0,0,1]]},
          {cmd, [{no, string}, #{}]},
          {cmd, [{no, string}, no_map]},
+         {cmd, ["echo 1"], [{general, "too many open files \\(emfile\\)"},
+                            {wrapper, ExhaustFDs}] ++
+              [no_fail || no_limit_for_opened_files()]},
 
          {find_executable, 1},                  %Not a BIF.
          {find_executable, 2},                  %Not a BIF.
@@ -416,7 +490,7 @@ error_info(_Config) ->
 
          {perf_counter,[bad_time_unit]},
 
-         {putenv, [<<"bad_key">>, <<"bad_value">>]},
+         {putenv, [<<"bad_key">>, <<"bad_value">>],[{1,".*"},{2,".*"}]},
          {putenv, ["key", <<"bad_value">>]},
          {putenv, [<<"bad_key">>, "value"]},
          {putenv, ["abc=", "xyz"]},
@@ -424,12 +498,49 @@ error_info(_Config) ->
          {set_signal, [{bad,signal}, ignore]},
          {set_signal, [{bad,signal}, ignore]},
          {set_signal, [bad_signal, bad_handling]},
-         {set_signal, [{bad,signal}, bad_handling]},
+         {set_signal, [{bad,signal}, bad_handling],[{1,".*"},{2,".*"}]},
 
          {system_time, [bad_time_unit]},
          {unsetenv, [{bad,key}]}
         ],
     error_info_lib:test_error_info(os, L).
+
+%% Check that is *not* possible to change shell after startup
+os_cmd_shell(_Config) ->
+
+    application:set_env(kernel, os_cmd_shell, "broken shell"),
+
+    %% os:cmd should continue to work as normal
+    comp("hello", os:cmd("echo hello")).
+
+%% When started with os_cmd_shell set, we make sure that it is used.
+os_cmd_shell_peer(Config) ->
+    DataDir = proplists:get_value(data_dir, Config),
+    SysShell = "\"" ++ filename:join(DataDir, "sys_shell") ++ "\"",
+    {ok, Peer, Node} = ?CT_PEER(["-kernel","os_cmd_shell", SysShell]),
+    try erpc:call(Node, os, cmd, ["ls"], rtnode:timeout(normal)) of
+        "sys_shell" -> ok;
+        Other -> ct:fail({unexpected, Other})
+    catch
+        C:R:Stk ->
+            io:format("~p\n~p\n~p\n", [C,R,Stk]),
+            ct:fail(failed)
+    after
+        peer:stop(Peer)
+    end.
+
+no_limit_for_opened_files() ->
+    case os:type() of
+        {unix, freebsd} ->
+            %% At least some FreeBSD systems support about one million open
+            %% files, which means that we run out of Erlang processes before we
+            %% reach the open file limit.
+            true;
+        {unix, _} ->
+            false;
+        _ ->
+            true
+    end.
 
 %% Util functions
 
@@ -454,4 +565,38 @@ receive_all() ->
     receive
 	X -> [X|receive_all()]
     after 0 -> []
+    end.
+
+
+get_windows_version_from_cmd() ->
+    VerOutput = os:cmd("ver"),
+    %% Expected format: "Microsoft Windows [Version 10.0.19045.1234]" or similar
+    case re:run(VerOutput, "(\\d+)\\.(\\d+)\\.(\\d+)",
+        [{capture, all_but_first, list}]) of
+        {match, [Major, Minor, Build]} ->
+            {list_to_integer(Major), list_to_integer(Minor), list_to_integer(Build)};
+        nomatch ->
+            {0, 0, 0}
+    end.
+
+%% On Windows, make sure that appropriate Windows version is returned
+%% Example versions:
+%%   {5,0,_}=Windows 2000, {6,0,_}=Vista, {6,1,_}=Windows 7, {6,2,_}=Windows 8 and Server 2012,
+%%   {10,0,_}=Windows 10 and 11, Server 2016, 2019, 2022
+os_version_win32() ->
+    V = os:version(),
+    CmdV = get_windows_version_from_cmd(),
+
+    %% Verify that command line version matches os:version()
+    ct:log("os:version() returned: ~p~n", [V]),
+    ct:log("Command line version: ~p~n", [CmdV]),
+
+    %% This test will fail if Windows manifest.xml does not include the Windows OS where the test is run.
+    %% If a new version has been released, please update erts/etc/win32/manifest.xml
+    ?assertEqual(V, CmdV, "Windows versions from os:version and from 'ver' command are expected to match").
+
+os_version(_Config) ->
+    case os:type() of
+        {win32, nt} -> os_version_win32();
+        _ -> ok
     end.

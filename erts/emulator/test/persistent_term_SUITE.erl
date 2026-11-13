@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2017-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2017-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,6 +22,7 @@
 
 -module(persistent_term_SUITE).
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
 -export([all/0,suite/0,init_per_suite/1,end_per_suite/1,
 	 init_per_testcase/2, end_per_testcase/2,
@@ -30,17 +33,17 @@
          off_heap_values/1,keys/1,collisions/1,
          init_restart/1, put_erase_trapping/1,
          killed_while_trapping_put/1,
+         killed_while_trapping_put_new/1,
          killed_while_trapping_erase/1,
          error_info/1,
 	 whole_message/1,
-	 non_message_signal/1]).
+         shared_magic_ref/1,
+	 non_message_signal/1,
+         get_put_colliding_bucket/1,
+         gc_binary_orig/1]).
 
 %%
 -export([test_init_restart_cmd/1]).
-
-%% Test writing helper
--export([find_colliding_keys/0]).
-
 
 suite() ->
     [{ct_hooks,[ts_install_cth]},
@@ -55,7 +58,10 @@ all() ->
      killed_while_trapping_erase,
      error_info,
      whole_message,
-     non_message_signal].
+     shared_magic_ref,
+     non_message_signal,
+     get_put_colliding_bucket,
+     gc_binary_orig].
 
 init_per_suite(Config) ->
     erts_debug:set_internal_state(available_internal_state, true),
@@ -72,10 +78,10 @@ end_per_suite(Config) ->
 init_per_testcase(_, Config) ->
     Config.
 
-end_per_testcase(_, _Config) ->
-    ok;
 end_per_testcase(get_all_race, _Config) ->
     get_all_race_cleanup(),
+    ok;
+end_per_testcase(_, _Config) ->
     ok.
 
 basic(_Config) ->
@@ -87,10 +93,18 @@ basic(_Config) ->
     seq(3, Seq, Chk),                                %Same values.
     _ = [begin
              Key = {?MODULE,{key,I}},
+
              true = persistent_term:erase(Key),
              false = persistent_term:erase(Key),
-             {'EXIT',{badarg,_}} = (catch persistent_term:get(Key)),
-             {not_present,Key} = persistent_term:get(Key, {not_present,Key})
+
+             ?assertError(badarg, persistent_term:get(Key)),
+             {not_present,Key} = persistent_term:get(Key, {not_present,Key}),
+
+             ok = persistent_term:put_new(Key, {value, I}),
+             ok = persistent_term:put_new(Key, {value, I}),
+             ?assertError(badarg, persistent_term:put_new(Key, {new_value, I})),
+             {value, I} = persistent_term:get(Key),
+             true = persistent_term:erase(Key)
          end || I <- Seq],
     [] = [P || {{?MODULE,_},_}=P <- pget(Chk)],
     chk(Chk).
@@ -177,7 +191,7 @@ purging_tester(Parent, Key) ->
     Parent ! {self(),gotten},
     receive
         {Parent,erased} ->
-            {'EXIT',{badarg,_}} = (catch persistent_term:get(Key)),
+            ?assertError(badarg, persistent_term:get(Key)),
             purging_tester_1(Term, 1);
         {Parent,replaced} ->
             {?MODULE,new} = persistent_term:get(Key),
@@ -599,101 +613,155 @@ collisions_delete([], _) ->
     ok.
 
 colliding_keys() ->
-    %% Collisions found by find_colliding_keys() below
-    L = [[77674392,148027],
-	 [103370644,950908],
-	 [106444046,870178],
-	 [22217246,735880],
-	 [18088843,694607],
-	 [63426007,612179],
-	 [117354942,906431],
-	 [121434305,94282311,816072],
-	 [118441466,93873772,783366],
-	 [124338174,1414801,123089],
-	 [20240282,17113486,923647],
-	 [126495528,61463488,164994],
-	 [125341723,5729072,445539],
-	 [127450932,80442669,348245],
-	 [123354692,85724182,14241288,180793],
-	 [99159367,65959274,61680971,289939],
-	 [107637580,104512101,62639807,181644],
-	 [139547511,51654420,2062545,151944],
-	 [88078274,73031465,53388204,428872],
-	 [141314238,75761379,55699508,861797],
-	 [88045216,59272943,21030492,180903]],
+    Mask = 16#FFFFFFFF,
 
-    %% Verify that the keys still collide (this will fail if the
-    %% internal hash function has been changed).
-    case erlang:system_info(wordsize) of
-        8 ->
-            verify_colliding_keys(L);
-        4 ->
-            %% Not guaranteed to collide on a 32-bit system.
-            ok
-    end,
+    %% Collisions found by find_colliding_keys(Mask) in `map_SUITE`.
+    ByMethod = #{
+        %% 64-bit internal hash of `0`
+        15677855740172624429 =>
+            [[-4294967296,-3502771103,1628104549],
+             [-2750312253,-2208396507,-2147483648,1926198452,3660971145],
+             [-2542330914,-1089175976,-1073741824,290495829],
+             [-2155350068,0],
+             [1073741824,2807978463,3625918826],
+             [-1032333168,-705082324,1541401419,1594347321,2147483648,
+              2266580263,2823045213],
+             [-2465550512,3221225472],
+             [2854075383,651030299,-1581781966,-3419595364,-4294967295],
+             [3351133532,968011333,-2217176682,-4294967294],
+             [598547769,-1379599129,-4294967293],
+             [-649195724,-4294967292],
+             [2943767758,-645518858,-875893937,-1294474094,-4294967291],
+             [3255309205,-2208705073,-4294967290],
+             [2162086262,-3745041100,-4294967288],
+             [-36087602,-1146855151,-1687820340,-3221225471],
+             [4177844763,3846951687,3485974116,3175597814,590007752,
+              -3221225470],
+             [3264460518,1553643847,1183174568,-3221225469],
+             [-577423597,-3221225468,-3522984153],
+             [3855876603,3019389034,-1323003840,-2576022240,-3221225467],
+             [-471176452,-3221225466],
+             [-1122194611,-3221225465,-4210494386],
+             [3603262778,994932591,-1788155141,-1921175318,-3221225464],
+             [3836440544,-1003007187,-2147483647],
+             [-2051344765,-2147483646],
+             [3650711544,-2147483645,-2799381711,-3556915274],
+             [3489936963,1240642555,-2147483644,-3957745840],
+             [1085161678,-2052366093,-2147483643,-3483479006],
+             [1939744936,-2147483642,-3856508363],
+             [-566163246,-2060332302,-2147483641,-4230104575],
+             [1203359280,237551462,-1073741823],
+             [1727228961,-813544803,-1073741822,-1309725727,-1666872574,
+              -2203000992],
+             [3698637395,3362609925,876970478,-714241238,-1073741821],
+             [1765842640,-354951691,-566902540,-1073741820],
+             [3963091352,2371749084,591553116,-1073741819],
+             [-1073741817,-2715118400],
+             [-1073741816,-3224015310],
+             [2762405117,1,-2123671186],
+             [2470477117,2,-331878960,-2322233731],
+             [3815926349,2088957086,3],
+             [1968999576,870968367,4,-1268233288,-3048698020],
+             [979559827,5],
+             [946684365,753214037,6,-2648059890],
+             [3790852688,2964822264,2830450758,7,-3580232887],
+             [1073741825,-3356417243,-3706053980],
+             [1073741827,-2621798828],
+             [1073741828,-2347690873],
+             [2090309310,1073741830,-1375115411,-2016799213,-4267952630],
+             [1073741831,672032559],
+             [1073741832,-2577014530,-3065907606],
+             [3796535022,2351766515,2147483649,-2136894649],
+             [2280176922,2147483650],
+             [4198987324,3244673818,2147483651,270823276,-2880202587],
+             [3880317786,3256588678,2670024934,2147483652,-2327563310,
+              -3284218582,-3844717086],
+             [2178108296,2147483653,-3361345880],
+             [2954325696,2147483654,-1059451308,-1331847237],
+             [3189358149,2147483655,-1477948284,-1669797549,-3362853705,
+              -3928750615],
+             [2147483656,471953932,-355892383],
+             [3221225473,-3995083753,-4092880912],
+             [3221225474,-2207482759,-3373076062],
+             [3221225475,2400978919,2246389041,1052806668,-781893221,
+              -1811850779],
+             [3221225476,-245369539,-1842612521],
+             [3221225477,688232807],
+             [3221225478,209327542,-2793530395],
+             [3221225479,-2303080520,-4225327222],
+             [4216539003,3221225480]],
 
-    L.
+        %% 32-bit internal hash of `0`
+        416211501 =>
+            [[-55973163,-134217697],[43918753,-134217684],
+             [107875525,-134217667],[-30291033,-134217663],
+             [-40285269,-111848095],[35020004,-111848056],
+             [-44437601,-111848046],[103325476,-69901823,-111848030],
+             [126809757,-111848012],[-92672406,-111848005],
+             [-64199103,-111847990],[102238942,-111847982],
+             [62106519,-89478468],[-89478462,-128994853],
+             [-67899866,-89478412],[-45432484,-89478397],
+             [120764819,-89478387],[9085208,-89478382],
+             [10859155,-89478369],[45834467,-67108863],
+             [-67108857,-124327693],[104597114,-67108847],
+             [11918558,-67108783],[50986187,-67108760],
+             [113683827,64978564,-67108752],
+             [111972669,-67108751],[27085194,-44739227],
+             [46760231,-44739221],[101248827,-44739220],
+             [30692154,-44739176],[33768394,-44739117],
+             [-12083942,-44739116],[-22369572,-112420685],
+             [-22369568,-98812798],[-22369550,-78759395],
+             [47792095,-22369543],[9899495,-22369540],
+             [99744593,-22369511],[76325343,52],
+             [122425143,68],[21651445,74],
+             [129537216,119],[125,-110161190],
+             [80229747,22369626],[22369629,-55742042],
+             [128416574,22369631],[105267606,22369643],
+             [22369693,-2286278],[126622985,22369698],
+             [22369701,-13725583],[22369728,-22765683],
+             [22369731,-54786216],[22369740,-65637968],
+             [44739246,12048008],[44739259,-26636781],
+             [126966693,44739272],[44739274,-130215175],
+             [44739277,15051453],[44739292,17890441],
+             [44739301,-72627814],[106949249,44739322],
+             [44739323,-56882381],[67108879,-111259055],
+             [67108888,37627968],[67108894,-53291767],
+             [67108896,-127782577],[67108908,-1014167],
+             [82796148,67108959],[67108962,-71355523],
+             [67108984,-62077338,-77539719],[126106374,89478485],
+             [89478488,85703113],[132215738,89478495],
+             [89478515,-122049151],[89478518,-22611374],
+             [94050181,89478530],[89478547,42736340],
+             [89478553,86641584],[129419863,111848199],
+             [111848217,-32493354],[112586988,111848229]]
+    },
 
-verify_colliding_keys([[K|Ks]|Gs]) ->
-    Hash = internal_hash(K),
-    [Hash] = lists:usort([internal_hash(Key) || Key <- Ks]),
-    verify_colliding_keys(Gs);
-verify_colliding_keys([]) ->
-    ok.
+    HashKey = internal_hash(0),
+    #{ HashKey := Keys } = ByMethod,
+
+    verify_colliding_keys(Keys, Mask).
+
+verify_colliding_keys([[K | Ks]=Group | Gs], Mask) ->
+    Hash = internal_hash(K) band Mask,
+    [Hash] = lists:usort([(internal_hash(Key) band Mask) || Key <- Ks]),
+    [Group | verify_colliding_keys(Gs, Mask)];
+verify_colliding_keys([], _Mask) ->
+    [].
 
 internal_hash(Term) ->
     erts_debug:get_internal_state({internal_hash,Term}).
 
-%% Use this function to (re)generate the list in colliding_keys/0
-find_colliding_keys() ->
-    MaxCollSz = 4,
-    OfEachSz = 7,
-    erts_debug:set_internal_state(available_internal_state, true),
-    MaxInserts = 1 bsl 20,
-    T = ets:new(x, [set, private]),
-    ok = fck_loop_1(T, 1, MaxInserts, MaxCollSz, OfEachSz),
-    fck_collect(T, MaxCollSz, OfEachSz, []).
+%% OTP-17700 Bug skipped refc++ of shared magic reference
+shared_magic_ref(_Config) ->
+    Ref = atomics:new(10, []),
+    persistent_term:put(shared_magic_ref, {Ref, Ref}),
+    shared_magic_ref_cont().
 
-fck_collect(_T, 1, _OfEachSz, Acc) ->
-    Acc;
-fck_collect(T, CollSz, OfEachSz, Acc) ->
-    {List, _} = ets:select(T,
-			   [{{'$1','$2'}, [{'==',{length,'$2'},CollSz}], ['$2']}],
-			   OfEachSz),
-    fck_collect(T, CollSz-1, OfEachSz, List ++ Acc).
-
-
-fck_loop_1(T, Key, 0, MaxCollSz, MaxSzLeft) ->
-    fck_loop_2(T, Key, MaxCollSz, MaxSzLeft);
-fck_loop_1(T, Key, Inserts, MaxCollSz, MaxSzLeft) ->
-    Hash = internal_hash(Key),
-    case ets:insert_new(T, {Hash, [Key]}) of
-	true ->
-	    fck_loop_1(T, Key+1, Inserts-1, MaxCollSz, MaxSzLeft);
-	false ->
-	    [{Hash, KeyList}] = ets:lookup(T, Hash),
-	    true = ets:insert(T, {Hash, [Key | KeyList]}),
-	    fck_loop_1(T, Key+1, Inserts, MaxCollSz, MaxSzLeft)
-    end.
-
-fck_loop_2(_T, _Key, _MaxCollSz, 0) ->
-    ok;
-fck_loop_2(T, Key, MaxCollSz, MaxSzLeft0) ->
-    Hash = internal_hash(Key),
-    case ets:lookup(T, Hash) of
-	[] ->
-	    fck_loop_2(T, Key+1, MaxCollSz, MaxSzLeft0);
-	[{Hash, KeyList}] ->
-	    true = ets:insert(T, {Hash, [Key | KeyList]}),
-	    MaxSzLeft1 = case length(KeyList)+1 of
-			     MaxCollSz ->
-				 MaxSzLeft0 - 1;
-			     _ ->
-				 MaxSzLeft0
-			 end,
-	    fck_loop_2(T, Key+1, MaxCollSz, MaxSzLeft1)
-    end.
-
+shared_magic_ref_cont() ->
+    erlang:garbage_collect(),
+    {Ref, Ref} = persistent_term:get(shared_magic_ref),
+    0 = atomics:get(Ref, 1),  %% would definitely fail on debug vm
+    ok.
 
 
 %% Test that all persistent terms are erased by init:restart/0.
@@ -747,7 +815,7 @@ do_test_init_restart_cmd(File) ->
             ok = file:delete(File),
             _ = [begin
                      Key = {?MODULE,I},
-                     {'EXIT',{badarg,_}} = (catch persistent_term:get(Key))
+                     ?assertError(badarg, persistent_term:get(Key))
                  end || I <- Seq],
             io:put_chars("ok"),
             init:stop()
@@ -879,6 +947,21 @@ killed_while_trapping_put(_Config) ->
       10),
     ok.
 
+killed_while_trapping_put_new(_Config) ->
+    repeat(
+      fun() ->
+              NrOfPutsInChild = 10000,
+              Pid =
+                  spawn(fun() ->
+                                do_put_news(NrOfPutsInChild, my_value)
+                        end),
+              timer:sleep(1),
+              erlang:exit(Pid, kill),
+              do_erases(NrOfPutsInChild)
+      end,
+      10),
+    ok.
+
 killed_while_trapping_erase(_Config) ->
     repeat(
       fun() ->
@@ -902,14 +985,20 @@ put_erase_trapping(_Config) ->
     do_erases(NrOfItems),
     ok.
 
-do_puts(0, _) -> ok;
 do_puts(NrOfPuts, ValuePrefix) ->
+    do_puts_iter(NrOfPuts, ValuePrefix, put).
+
+do_put_news(NrOfPuts, ValuePrefix) ->
+    do_puts_iter(NrOfPuts, ValuePrefix, put_new).
+
+do_puts_iter(0, _, _) -> ok;
+do_puts_iter(NrOfPuts, ValuePrefix, PutFun) ->
     Key = {?MODULE, NrOfPuts},
     Value = {ValuePrefix, NrOfPuts},
     erts_debug:set_internal_state(reds_left, rand:uniform(250)),
-    persistent_term:put(Key, Value),
+    erlang:apply(persistent_term, PutFun, [Key, Value]),
     Value = persistent_term:get(Key),
-    do_puts(NrOfPuts - 1, ValuePrefix).
+    do_puts_iter(NrOfPuts - 1, ValuePrefix, PutFun).
 
 do_erases(0) -> ok;
 do_erases(NrOfErases) ->
@@ -929,7 +1018,8 @@ error_info(_Config) ->
     L = [{erase, [{?MODULE,my_key}], [no_fail]},
          {get, [{?MODULE,certainly_not_existing}]},
          {get, [{?MODULE,certainly_not_existing}, default], [no_fail]},
-         {put, 2}                               %Can't fail.
+         {put, 2},                               %Can't fail.
+         {put_new, [{?MODULE,new_key}, default], [no_fail]}
         ],
     do_error_info(L).
 
@@ -1037,6 +1127,31 @@ gar_setter(Key) ->
     persistent_term:put(Key, {complex, term}),
     gar_setter(Key).
 
+%% https://github.com/erlang/otp/issues/9222
+gc_binary_orig(_Config) ->
+
+    Key = ?FUNCTION_NAME,
+    Data = iolist_to_binary(lists:duplicate(100, $a)),
+
+    persistent_term:put(Key,Data),
+
+    LiteralData = persistent_term:get(Key),
+
+    %% We create a sub binary to a literal persistent term
+    %% This means that the SUB_BITS now is a non-literal but
+    %% orig is a literal
+    <<SubData:70/binary, _/binary>> = LiteralData,
+
+    %% This used to GC LiteralData->orig when it should not.
+    erlang:garbage_collect(),
+
+    %% Just a dummy compare in order to access the data. This would
+    %% segfault on Windows.
+    false = LiteralData =:= SubData,
+
+    persistent_term:erase(Key).
+
+
 %% Test that literals in non-message signals are copied
 %% when removed...
 %%
@@ -1118,3 +1233,37 @@ recv_msg(Msg, N) ->
 
 tok_loop() ->
     tok_loop().
+
+%% GH-5908: `persistent_term:get/1,2` could race with `persistent_term:put/2`
+%% and return an unexpected value if `get/1,2` happened to _abort_ its lookup
+%% in the same bucket that `put/2` was writing to.
+get_put_colliding_bucket(_Config) ->
+    [[Key, CollidesWith | _] | _] = colliding_keys(),
+    false = persistent_term:erase(Key),
+
+    {Pid, MRef} =
+        spawn_monitor(fun() ->
+                              Schedulers = erlang:system_info(schedulers),
+                              [spawn_link(fun() -> gpcb_reader(Key) end)
+                               || _ <- lists:seq(1, Schedulers - 1)],
+                              gpcb_updater(CollidesWith)
+                      end),
+
+    %% The race usually gets detected within a second or two, so we'll consider
+    %% the test passed if we can't reproduce it in 10 seconds.
+    receive
+        {'DOWN', MRef, process, Pid, Reason} ->
+            ct:fail(Reason)
+    after 10000 ->
+            exit(Pid, kill),
+            ok
+    end.
+
+gpcb_reader(Key) ->
+    expected = persistent_term:get(Key, expected),
+    gpcb_reader(Key).
+
+gpcb_updater(CollidesWith) ->
+    persistent_term:erase(CollidesWith),
+    persistent_term:put(CollidesWith, unexpected),
+    gpcb_updater(CollidesWith).

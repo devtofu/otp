@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2004-2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2004-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -39,6 +41,7 @@
 %% (catch httpc:request("http://www.expedia.com")).
 
 -module(httpc_cookie).
+-moduledoc false.
 
 -include("httpc_internal.hrl").
 
@@ -375,7 +378,7 @@ parse_set_cookie(CookieHeader, {DefaultPath, DefaultDomain}) ->
 				   value = string:strip(Value)},
     Attributes      = parse_set_cookie_attributes(Attrs),
     TmpCookie       = cookie_attributes(Attributes, Cookie),
-    %% Add runtime defult values if necessary
+    %% Add runtime default values if necessary
     NewCookie       = domain_default(path_default(TmpCookie, DefaultPath), 
 				     DefaultDomain),
     NewCookie.

@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 1999-2018. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 1999-2026. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -36,7 +38,7 @@
 #include "erl_driver.h"
 #include "erl_nif.h"
 #include "erl_proc_sig_queue.h"
- 
+
 static erts_mtx_t erts_get_time_mtx;
 
  /* used by erts_runtime_elapsed_both */
@@ -82,7 +84,7 @@ static void
 schedule_send_time_offset_changed_notifications(ErtsMonotonicTime new_offset);
 
 struct time_sup_read_only__ {
-    ErtsMonotonicTime (*get_time)(void);
+    ErtsMonotonicTime (*get_time)(ErtsSchedulerData *esdp);
     int correction;
     ErtsTimeWarpMode warp_mode;
 #ifdef ERTS_HAVE_OS_MONOTONIC_TIME_SUPPORT
@@ -93,6 +95,7 @@ struct time_sup_read_only__ {
     char *os_monotonic_time_clock_id;
     int os_monotonic_time_locked;
     Uint64 os_monotonic_time_resolution;
+    Uint64 os_monotonic_time_used_resolution;
     Uint64 os_monotonic_time_extended;
 #endif
     char *os_system_time_func;
@@ -173,6 +176,10 @@ struct time_sup_infrequently_changed__ {
 
 struct time_sup_frequently_changed__ {
     ErtsMonotonicTime last_not_corrected_time;
+#ifdef ERTS_ENSURE_OS_MONOTONIC_TIME
+    erts_mtx_t mtime_mtx;
+    ErtsMonotonicTime last_delivered_mtime;
+#endif
 };
 
 static struct {
@@ -210,16 +217,87 @@ get_time_offset(void)
     return (ErtsMonotonicTime) erts_atomic64_read_acqb(&time_sup.inf.c.offset);
 }
 
+#if !defined(ERTS_ENSURE_OS_MONOTONIC_TIME)
+
+static ERTS_INLINE ErtsMonotonicTime
+os_monotonic_time(void)
+{
+    return erts_os_monotonic_time();
+}
+
+static ERTS_INLINE void
+os_times(ErtsMonotonicTime *mtimep, ErtsSystemTime *stimep)
+{
+    erts_os_times(mtimep, stimep);
+}
+
+#else /* defined(ERTS_ENSURE_OS_MONOTONIC_TIME) */
+
+static ERTS_INLINE ErtsMonotonicTime
+verify_os_monotonic_time(ErtsMonotonicTime mtime)
+{
+    erts_mtx_lock(&time_sup.f.c.mtime_mtx);
+    if (mtime < time_sup.f.c.last_delivered_mtime)
+        mtime = time_sup.f.c.last_delivered_mtime;
+    else
+        time_sup.f.c.last_delivered_mtime = mtime;
+    erts_mtx_unlock(&time_sup.f.c.mtime_mtx);
+    return mtime;
+}
+
+static ERTS_INLINE ErtsMonotonicTime
+os_monotonic_time(void)
+{
+    return verify_os_monotonic_time(erts_os_monotonic_time());
+}
+
+static ERTS_INLINE void
+os_times(ErtsMonotonicTime *mtimep, ErtsSystemTime *stimep)
+{
+    erts_os_times(mtimep, stimep);
+    *mtimep = verify_os_monotonic_time(*mtimep);
+}
+
+#endif
+
 static ERTS_INLINE void
 update_last_mtime(ErtsSchedulerData *esdp, ErtsMonotonicTime mtime)
 {
-    if (!esdp)
-	esdp = erts_get_scheduler_data();
     if (esdp) {
+#ifdef ERTS_CHECK_MONOTONIC_TIME
+        if (esdp->last_monotonic_time > mtime) {
+            ERTS_ASSERT(esdp == erts_get_scheduler_data());
+            erts_exit(ERTS_ABORT_EXIT,
+                      "Erlang monotonic time stepped backwards!\n"
+                      "Previous time: %b64d\n"
+                      "Current time:  %b64d\n",
+                      esdp->last_monotonic_time,
+                      mtime);
+        }
+#endif
 	ASSERT(mtime >= esdp->last_monotonic_time);
 	esdp->last_monotonic_time = mtime;
 	esdp->check_time_reds = 0;
     }
+}
+
+static ERTS_INLINE void
+check_os_monotonic_time(ErtsSchedulerData *esdp, ErtsMonotonicTime mtime)
+{
+#ifdef ERTS_CHECK_MONOTONIC_TIME
+    if (esdp) {
+        if (esdp->last_os_monotonic_time > mtime) {
+            ERTS_ASSERT(esdp == erts_get_scheduler_data());
+            erts_exit(ERTS_ABORT_EXIT,
+                      "OS monotonic time stepped backwards!\n"
+                      "Previous time: %b64d\n"
+                      "Current time:  %b64d\n",
+                      esdp->last_os_monotonic_time,
+                      mtime);
+        }
+        esdp->last_os_monotonic_time = mtime;
+    }
+#endif
 }
 
 #ifdef ERTS_HAVE_OS_MONOTONIC_TIME_SUPPORT
@@ -276,21 +354,22 @@ calc_corrected_erl_mtime(ErtsMonotonicTime os_mtime,
 	diff += (cip->correction.drift*diff)/ERTS_MONOTONIC_TIME_UNIT;
     erl_mtime = cip->erl_mtime;
     erl_mtime += diff;
-    erl_mtime += cip->correction.error*(diff/ERTS_TCORR_ERR_UNIT);
+    erl_mtime += (cip->correction.error*diff)/ERTS_TCORR_ERR_UNIT;
+
     if (os_mdiff_p)
 	*os_mdiff_p = diff;
     return erl_mtime;
 }
 
 static ERTS_INLINE ErtsMonotonicTime
-read_corrected_time(int os_drift_corrected)
+read_corrected_time(int os_drift_corrected, ErtsSchedulerData *esdp)
 {
     ErtsMonotonicTime os_mtime;
     ErtsMonotonicCorrectionInstance ci;
 
     erts_rwmtx_rlock(&time_sup.inf.c.parmon.rwmtx);
 
-    os_mtime = erts_os_monotonic_time();
+    os_mtime = os_monotonic_time();
 
     if (os_mtime >= time_sup.inf.c.parmon.cdata.insts.curr.os_mtime)
 	ci = time_sup.inf.c.parmon.cdata.insts.curr;
@@ -303,18 +382,20 @@ read_corrected_time(int os_drift_corrected)
 
     erts_rwmtx_runlock(&time_sup.inf.c.parmon.rwmtx);
 
+    check_os_monotonic_time(esdp, os_mtime);
+
     return calc_corrected_erl_mtime(os_mtime, &ci, NULL,
 				    os_drift_corrected);
 }
 
-static ErtsMonotonicTime get_os_drift_corrected_time(void)
+static ErtsMonotonicTime get_os_drift_corrected_time(ErtsSchedulerData *esdp)
 {
-    return read_corrected_time(!0);
+    return read_corrected_time(!0, esdp);
 }
 
-static ErtsMonotonicTime get_corrected_time(void)
+static ErtsMonotonicTime get_corrected_time(ErtsSchedulerData *esdp)
 {
-    return read_corrected_time(0);
+    return read_corrected_time(0, esdp);
 }
 
 #ifdef ERTS_TIME_CORRECTION_PRINT
@@ -379,13 +460,18 @@ check_time_correction(void *vesdp)
     int os_drift_corrected = time_sup.r.o.os_corrected_monotonic_time;
     int set_new_correction = 0, begin_short_intervals = 0;
 
+    if (!esdp)
+	esdp = erts_get_scheduler_data();
+
     erts_rwmtx_rlock(&time_sup.inf.c.parmon.rwmtx);
 
-    erts_os_times(&os_mtime, &os_stime);
+    os_times(&os_mtime, &os_stime);
 
     ci = time_sup.inf.c.parmon.cdata.insts.curr;
 
     erts_rwmtx_runlock(&time_sup.inf.c.parmon.rwmtx);
+
+    check_os_monotonic_time(esdp, os_mtime);
 
     if (os_mtime < ci.os_mtime)
 	erts_exit(ERTS_ABORT_EXIT,
@@ -648,9 +734,11 @@ check_time_correction(void *vesdp)
 #endif
 
     if (set_new_correction) {
+        ErtsMonotonicTime cstart_os_mtime;
+
 	erts_rwmtx_rwlock(&time_sup.inf.c.parmon.rwmtx);
 
-	os_mtime = erts_os_monotonic_time();
+	os_mtime = os_monotonic_time();
 
 	/* Save previous correction instance */
 	time_sup.inf.c.parmon.cdata.insts.prev = ci;
@@ -659,28 +747,27 @@ check_time_correction(void *vesdp)
 	 * Current correction instance begin when
 	 * OS monotonic time has increased two units.
 	 */
-	os_mtime += 2;
+	cstart_os_mtime = os_mtime + 2;
 
 	/*
 	 * Erlang monotonic time corresponding to
 	 * next OS monotonic time using previous
 	 * correction.
 	 */
-	erl_mtime = calc_corrected_erl_mtime(os_mtime, &ci, NULL,
+	erl_mtime = calc_corrected_erl_mtime(cstart_os_mtime, &ci, NULL,
 					     os_drift_corrected);
 
 	/*
 	 * Save new current correction instance.
 	 */
 	time_sup.inf.c.parmon.cdata.insts.curr.erl_mtime = erl_mtime;
-	time_sup.inf.c.parmon.cdata.insts.curr.os_mtime = os_mtime;
+	time_sup.inf.c.parmon.cdata.insts.curr.os_mtime = cstart_os_mtime;
 	time_sup.inf.c.parmon.cdata.insts.curr.correction = new_correction;
 
 	erts_rwmtx_rwunlock(&time_sup.inf.c.parmon.rwmtx);
-    }
 
-    if (!esdp)
-	esdp = erts_get_scheduler_data();
+        check_os_monotonic_time(esdp, os_mtime);
+    }
 
     erts_twheel_set_timer(esdp->timer_wheel,
 			  &time_sup.inf.c.parmon.timer,
@@ -689,10 +776,13 @@ check_time_correction(void *vesdp)
 			  timeout_pos);
 }
 
-static ErtsMonotonicTime get_os_corrected_time(void)
+static ErtsMonotonicTime get_os_corrected_time(ErtsSchedulerData *esdp)
 {
+    ErtsMonotonicTime os_mtime;
     ASSERT(time_sup.r.o.warp_mode == ERTS_MULTI_TIME_WARP_MODE);
-    return erts_os_monotonic_time() + time_sup.r.o.moffset;
+    os_mtime = os_monotonic_time();
+    check_os_monotonic_time(esdp, os_mtime);
+    return os_mtime + time_sup.r.o.moffset;
 }
 
 static void
@@ -704,7 +794,9 @@ check_time_offset(void *vesdp)
 
     ASSERT(time_sup.r.o.warp_mode == ERTS_MULTI_TIME_WARP_MODE);
 
-    erts_os_times(&os_mtime, &os_stime);
+    os_times(&os_mtime, &os_stime);
+
+    check_os_monotonic_time(esdp, os_mtime);
 
     erl_mtime =  os_mtime + time_sup.r.o.moffset;
     time_offset = get_time_offset();
@@ -752,7 +844,12 @@ init_check_time_correction(void *vesdp)
     old_mtime = ddp->intervals[0].time.mon;
     old_stime = ddp->intervals[0].time.sys;
 
-    erts_os_times(&mtime, &stime);
+    os_times(&mtime, &stime);
+
+    check_os_monotonic_time((!vesdp
+                             ? erts_get_scheduler_data()
+                             : (ErtsSchedulerData *) vesdp),
+                            mtime);
 
     mtime_diff = mtime - old_mtime;
     stime_diff = stime - old_stime;
@@ -796,11 +893,13 @@ finalize_corrected_time_offset(ErtsSystemTime *stimep)
 
     erts_rwmtx_rlock(&time_sup.inf.c.parmon.rwmtx);
 
-    erts_os_times(&os_mtime, stimep);
+    os_times(&os_mtime, stimep);
 
     ci = time_sup.inf.c.parmon.cdata.insts.curr;
 
     erts_rwmtx_runlock(&time_sup.inf.c.parmon.rwmtx);
+
+    check_os_monotonic_time(erts_get_scheduler_data(), os_mtime);
 
     if (os_mtime < ci.os_mtime)
 	erts_exit(ERTS_ABORT_EXIT,
@@ -849,7 +948,7 @@ late_init_time_correction(ErtsSchedulerData *esdp)
 
 #endif /* ERTS_HAVE_OS_MONOTONIC_TIME_SUPPORT */
 
-static ErtsMonotonicTime get_not_corrected_time(void)
+static ErtsMonotonicTime get_not_corrected_time(ErtsSchedulerData *esdp)
 {
     ErtsMonotonicTime stime, mtime;
 
@@ -934,6 +1033,10 @@ void erts_init_sys_time_sup(void)
 	= sys_init_time_res.os_monotonic_time_info.locked_use;
     time_sup.r.o.os_monotonic_time_resolution
 	= sys_init_time_res.os_monotonic_time_info.resolution;
+    time_sup.r.o.os_monotonic_time_used_resolution
+	= (!sys_init_time_res.os_monotonic_time_info.used_resolution
+           ? sys_init_time_res.os_monotonic_time_info.resolution
+           : sys_init_time_res.os_monotonic_time_info.used_resolution);
     time_sup.r.o.os_monotonic_time_extended
 	= sys_init_time_res.os_monotonic_time_info.extended;
 #endif
@@ -968,6 +1071,17 @@ erts_init_time_sup(int time_correction, ErtsTimeWarpMode time_warp_mode)
     runtime_prev.data.user = 0;
     runtime_prev.data.sys = 0;
 
+#ifdef ERTS_ENSURE_OS_MONOTONIC_TIME
+    if (!time_sup.r.o.os_monotonic_time_disable) {
+        time_sup.r.o.os_corrected_monotonic_time = 0; /* we don't trust it... */
+        time_sup.r.o.os_monotonic_time_locked = !0;
+        erts_mtx_init(&time_sup.f.c.mtime_mtx, "ensure_os_monotonic_time",
+                      NIL, (ERTS_LOCK_FLAGS_PROPERTY_STATIC
+                            | ERTS_LOCK_FLAGS_CATEGORY_GENERIC));
+        time_sup.f.c.last_delivered_mtime = erts_os_monotonic_time();
+    }
+#endif
+
     time_sup.r.o.correction = time_correction;
     time_sup.r.o.warp_mode = time_warp_mode;
  
@@ -992,17 +1106,24 @@ erts_init_time_sup(int time_correction, ErtsTimeWarpMode time_warp_mode)
     native_offset = erts_time_sup__.r.o.start - ERTS_MONOTONIC_BEGIN;
     abs_native_offset = native_offset;
 #else /* ARCH_64 */
-    if (ERTS_MONOTONIC_TIME_UNIT <= 10*1000*1000) {
-	erts_time_sup__.r.o.start = 0;
-	native_offset = -ERTS_MONOTONIC_BEGIN;
-	abs_native_offset = ERTS_MONOTONIC_BEGIN;
-    }
-    else {
-	erts_time_sup__.r.o.start = ((ErtsMonotonicTime) MIN_SMALL);
-	erts_time_sup__.r.o.start /= ERTS_MONOTONIC_TIME_UNIT;
-	erts_time_sup__.r.o.start *= ERTS_MONOTONIC_TIME_UNIT;
-	native_offset = erts_time_sup__.r.o.start - ERTS_MONOTONIC_BEGIN;
-	abs_native_offset = -1*native_offset;
+    {
+        /* To keep monotonic times as smalls as long as possible, we want to
+         * have a start offset as close to MIN_SMALL as possible without it
+         * overflowing a small when converted to nanoseconds. */
+        static const Uint64 nano = (1000 * 1000 * 1000);
+
+        if (ERTS_MONOTONIC_TIME_UNIT < nano) {
+            erts_time_sup__.r.o.start =
+                -(ErtsMonotonicTime)((MAX_SMALL / nano) *
+                                     ERTS_MONOTONIC_TIME_UNIT);
+        } else {
+            erts_time_sup__.r.o.start = (ErtsMonotonicTime)MIN_SMALL;
+            erts_time_sup__.r.o.start /= ERTS_MONOTONIC_TIME_UNIT;
+            erts_time_sup__.r.o.start *= ERTS_MONOTONIC_TIME_UNIT;
+        }
+
+        native_offset = erts_time_sup__.r.o.start - ERTS_MONOTONIC_BEGIN;
+        abs_native_offset = -native_offset;
     }
 #endif
 
@@ -1120,8 +1241,7 @@ erts_init_time_sup(int time_correction, ErtsTimeWarpMode time_warp_mode)
 	ErtsMonotonicCorrectionData *cdatap;
 	erts_rwmtx_opt_t rwmtx_opts = ERTS_RWMTX_OPT_DEFAULT_INITER;
 	ErtsMonotonicTime offset;
-	erts_os_times(&time_sup.inf.c.minit,
-		      &time_sup.inf.c.sinit);
+        os_times(&time_sup.inf.c.minit, &time_sup.inf.c.sinit);
 	time_sup.r.o.moffset = -1*time_sup.inf.c.minit;
 	time_sup.r.o.moffset += ERTS_MONOTONIC_BEGIN;
 	offset = time_sup.inf.c.sinit;
@@ -1371,9 +1491,10 @@ void
 erts_wall_clock_elapsed_both(ErtsMonotonicTime *ms_total, ErtsMonotonicTime *ms_diff)
 {
     ErtsMonotonicTime now, elapsed;
+    ErtsSchedulerData *esdp = erts_get_scheduler_data();
 
-    now = time_sup.r.o.get_time();
-    update_last_mtime(NULL, now);
+    now = time_sup.r.o.get_time(esdp);
+    update_last_mtime(esdp, now);
 
     elapsed = ERTS_MONOTONIC_TO_MSEC(now);
     elapsed -= ERTS_MONOTONIC_TO_MSEC(ERTS_MONOTONIC_BEGIN);
@@ -1396,17 +1517,10 @@ void
 get_time(int *hour, int *minute, int *second)
 {
     time_t the_clock;
-    struct tm *tm;
-#ifdef HAVE_LOCALTIME_R
-    struct tm tmbuf;
-#endif
-    
+    struct tm *tm, tmbuf;
+
     the_clock = time((time_t *)0);
-#ifdef HAVE_LOCALTIME_R
-    tm = localtime_r(&the_clock, &tmbuf);
-#else
-    tm = localtime(&the_clock);
-#endif
+    tm = sys_localtime_r(&the_clock, &tmbuf);
     *hour = tm->tm_hour;
     *minute = tm->tm_min;
     *second = tm->tm_sec;
@@ -1417,18 +1531,11 @@ void
 get_date(int *year, int *month, int *day)
 {
     time_t the_clock;
-    struct tm *tm;
-#ifdef HAVE_LOCALTIME_R
-    struct tm tmbuf;
-#endif
+    struct tm *tm, tmbuf;
 
 
     the_clock = time((time_t *)0);
-#ifdef HAVE_LOCALTIME_R
-    tm = localtime_r(&the_clock, &tmbuf);
-#else
-    tm = localtime(&the_clock);
-#endif
+    tm = sys_localtime_r(&the_clock, &tmbuf);
     *year = tm->tm_year + 1900;
     *month = tm->tm_mon +1;
     *day = tm->tm_mday;
@@ -1440,17 +1547,10 @@ get_localtime(int *year, int *month, int *day,
 	      int *hour, int *minute, int *second)
 {
     time_t the_clock;
-    struct tm *tm;
-#ifdef HAVE_LOCALTIME_R
-    struct tm tmbuf;
-#endif
+    struct tm *tm, tmbuf;
 
     the_clock = time((time_t *)0);
-#ifdef HAVE_LOCALTIME_R
-    localtime_r(&the_clock, (tm = &tmbuf));
-#else
-    tm = localtime(&the_clock);
-#endif
+    tm = sys_localtime_r(&the_clock, &tmbuf);
     *year = tm->tm_year + 1900;
     *month = tm->tm_mon +1;
     *day = tm->tm_mday;
@@ -1661,24 +1761,16 @@ local_to_univ(Sint *year, Sint *month, Sint *day,
     t.tm_sec = *second;
     t.tm_isdst = isdst;
 
-    /* the nature of mktime makes this a bit interesting,
-     * up to four mktime calls could happen here
-     */
+    if (!sys_daylight) {
+        /* If this is a timezone without DST and the OS (correctly)
+	   refuses to give us a DST time, we simulate the Linux/Solaris
+	   behaviour of giving the same data as if is_dst was not set. */
+        t.tm_isdst = 0;
+    }
 
     if (erl_mktime(&the_clock, &t) < 0) {
-	if (isdst) {
-	    /* If this is a timezone without DST and the OS (correctly)
-	       refuses to give us a DST time, we simulate the Linux/Solaris
-	       behaviour of giving the same data as if is_dst was not set. */
-	    t.tm_isdst = 0;
-	    if (erl_mktime(&the_clock, &t) < 0) {
-		/* Failed anyway, something else is bad - will be a badarg */
-		return 0;
-	    }
-	} else {
-	    /* Something else is the matter, badarg. */
-	    return 0;
-	}
+        /* Something is the matter, badarg. */
+        return 0;
     }
 
 #ifdef HAVE_TIME2POSIX
@@ -1711,11 +1803,8 @@ univ_to_local(Sint *year, Sint *month, Sint *day,
 	      Sint *hour, Sint *minute, Sint *second)
 {
     time_t the_clock;
-    struct tm *tm;
-#ifdef HAVE_LOCALTIME_R
-    struct tm tmbuf;
-#endif
-    
+    struct tm *tm, tmbuf;
+
     if (!(IN_RANGE(BASEYEAR, *year, INT_MAX - 1) &&
           IN_RANGE(1, *month, 12) &&
           IN_RANGE(1, *day, (mdays[*month] + 
@@ -1727,7 +1816,7 @@ univ_to_local(Sint *year, Sint *month, Sint *day,
           IN_RANGE(0, *second, 59))) {
       return 0;
     }
-    
+
     the_clock = *second + 60 * (*minute + 60 * (*hour + 24 *
                                             gregday(*year, *month, *day)));
 #ifdef HAVE_POSIX2TIME
@@ -1745,11 +1834,8 @@ univ_to_local(Sint *year, Sint *month, Sint *day,
     the_clock = posix2time(the_clock);
 #endif
 
-#ifdef HAVE_LOCALTIME_R
-    tm = localtime_r(&the_clock, &tmbuf);
-#else
-    tm = localtime(&the_clock);
-#endif
+    tm = sys_localtime_r(&the_clock, &tmbuf);
+
     if (tm) {
 	*year   = tm->tm_year + 1900;
 	*month  = tm->tm_mon +1;
@@ -1767,10 +1853,11 @@ void
 get_now(Uint* megasec, Uint* sec, Uint* microsec)
 {
     ErtsMonotonicTime now_megasec, now_sec, now, prev, mtime, time_offset;
-    
-    mtime = time_sup.r.o.get_time();
+    ErtsSchedulerData *esdp = erts_get_scheduler_data();
+
+    mtime = time_sup.r.o.get_time(esdp);
     time_offset = get_time_offset();
-    update_last_mtime(NULL, mtime);
+    update_last_mtime(esdp, mtime);
     now = ERTS_MONOTONIC_TO_USEC(mtime + time_offset);
 
     /* Make sure now time is later than last time */
@@ -1802,7 +1889,10 @@ get_now(Uint* megasec, Uint* sec, Uint* microsec)
 ErtsMonotonicTime
 erts_get_monotonic_time(ErtsSchedulerData *esdp)
 {
-    ErtsMonotonicTime mtime = time_sup.r.o.get_time();
+    ErtsMonotonicTime mtime;
+    if (!esdp)
+        esdp = erts_get_scheduler_data();
+    mtime = time_sup.r.o.get_time(esdp);
     update_last_mtime(esdp, mtime);
     return mtime;
 }
@@ -1884,7 +1974,7 @@ erts_demonitor_time_offset(ErtsMonitor *mon)
 {
     ErtsMonitorData *mdp = erts_monitor_to_data(mon);
     ASSERT(erts_monitor_is_origin(mon));
-    ASSERT(mon->type == ERTS_MON_TYPE_TIME_OFFSET);
+    ASSERT(ERTS_ML_GET_TYPE(mon) == ERTS_MON_TYPE_TIME_OFFSET);
 
     erts_mtx_lock(&erts_get_time_mtx);
 
@@ -1903,7 +1993,7 @@ erts_demonitor_time_offset(ErtsMonitor *mon)
 typedef struct {
     Eterm pid;
     Eterm ref;
-    Eterm heap[ERTS_REF_THING_SIZE];
+    Eterm heap[ERTS_PID_REF_THING_SIZE];
 } ErtsTimeOffsetMonitorInfo;
 
 typedef struct {
@@ -1917,7 +2007,7 @@ save_time_offset_monitor(ErtsMonitor *mon, void *vcntxt, Sint reds)
     ErtsTimeOffsetMonitorContext *cntxt;
     ErtsMonitorData *mdp = erts_monitor_to_data(mon);
     Eterm *from_hp, *to_hp;
-    Uint mix;
+    Uint mix, sz;
     int hix;
 
     cntxt = (ErtsTimeOffsetMonitorContext *) vcntxt;
@@ -1926,11 +2016,13 @@ save_time_offset_monitor(ErtsMonitor *mon, void *vcntxt, Sint reds)
     cntxt->to_mon_info[mix].pid = mon->other.item;
     to_hp = &cntxt->to_mon_info[mix].heap[0];
 
-    ASSERT(is_internal_ordinary_ref(mdp->ref));
+    ASSERT(is_internal_ordinary_ref(mdp->ref)
+           || is_internal_pid_ref(mdp->ref));
     from_hp = internal_ref_val(mdp->ref);
-    ASSERT(thing_arityval(*from_hp) + 1 == ERTS_REF_THING_SIZE);
+    sz = thing_arityval(*from_hp) + 1;
+    ASSERT(sz <= ERTS_PID_REF_THING_SIZE);
 
-    for (hix = 0; hix < ERTS_REF_THING_SIZE; hix++)
+    for (hix = 0; hix < sz; hix++)
 	to_hp[hix] = from_hp[hix];
 
     cntxt->to_mon_info[mix].ref
@@ -1983,15 +2075,14 @@ send_time_offset_changed_notifications(void *new_offsetp)
 
     if (no_monitors) {
 	Eterm *hp, *patch_refp, new_offset_term, message_template;
-	Uint mix, hsz;
+        Uint mix, same_hsz;
 
 	/* Make message template */
 
 	hp = (Eterm *) (tmp + no_monitors*sizeof(ErtsTimeOffsetMonitorInfo));
 
-	hsz = 6; /* 5-tuple */
-	hsz += ERTS_REF_THING_SIZE;
-	hsz += ERTS_SINT64_HEAP_SIZE(new_offset);
+        same_hsz = 6; /* 5-tuple */
+        same_hsz += ERTS_SINT64_HEAP_SIZE(new_offset);
 
 	if (IS_SSMALL(new_offset))
 	    new_offset_term = make_small(new_offset);
@@ -2008,13 +2099,15 @@ send_time_offset_changed_notifications(void *new_offsetp)
 	ASSERT(*patch_refp == THE_NON_VALUE);
 
 	for (mix = 0; mix < no_monitors; mix++) {
+            Uint hsz = same_hsz;
+            Eterm *ref_hp = internal_ref_val(to_mon_info[mix].ref);
+            hsz += thing_arityval(*ref_hp) + 1;
+
             *patch_refp = to_mon_info[mix].ref;
-            erts_proc_sig_send_persistent_monitor_msg(ERTS_MON_TYPE_TIME_OFFSET,
-                                                      *patch_refp,
-                                                      am_clock_service,
-                                                      to_mon_info[mix].pid,
-                                                      message_template,
-                                                      hsz);
+            erts_proc_sig_send_monitor_time_offset_msg(*patch_refp,
+                                                       to_mon_info[mix].pid,
+                                                       message_template,
+                                                       hsz);
         }
 
 	erts_free(ERTS_ALC_T_TMP, tmp);
@@ -2071,8 +2164,8 @@ bld_monotonic_time_source(Uint **hpp, Uint *szp, Sint64 os_mtime)
     return NIL;
 #else
     int i = 0;
-    Eterm k[6];
-    Eterm v[6];
+    Eterm k[7];
+    Eterm v[7];
 
     if (time_sup.r.o.os_monotonic_time_disable)
 	return NIL;
@@ -2090,6 +2183,10 @@ bld_monotonic_time_source(Uint **hpp, Uint *szp, Sint64 os_mtime)
     k[i] = erts_bld_atom(hpp, szp, "resolution");
     v[i++] = erts_bld_uint64(hpp, szp,
 			     time_sup.r.o.os_monotonic_time_resolution);
+
+    k[i] = erts_bld_atom(hpp, szp, "used_resolution");
+    v[i++] = erts_bld_uint64(hpp, szp,
+                             time_sup.r.o.os_monotonic_time_used_resolution);
 
     k[i] = erts_bld_atom(hpp, szp, "extended");
     v[i++] = time_sup.r.o.os_monotonic_time_extended ? am_yes : am_no;
@@ -2112,7 +2209,7 @@ erts_monotonic_time_source(struct process *c_p)
     Sint64 os_mtime = 0;
 #ifdef ERTS_HAVE_OS_MONOTONIC_TIME_SUPPORT
     if (!time_sup.r.o.os_monotonic_time_disable)
-	os_mtime = (Sint64) erts_os_monotonic_time();
+	os_mtime = (Sint64) os_monotonic_time();
 #endif
 
     bld_monotonic_time_source(NULL, &hsz, os_mtime);
@@ -2178,6 +2275,10 @@ time_unit_conversion(Process *c_p, Eterm term, ErtsMonotonicTime val, ErtsMonoto
 
     /* Convert to common user specified time units */
     switch (term) {
+    case am_native:
+        result = val + muloff*ERTS_MONOTONIC_OFFSET_NATIVE;
+	ERTS_BIF_PREP_RET(ret, make_time_val(c_p, result));
+        break;
     case am_second:
     case am_seconds:
     case make_small(1):
@@ -2294,7 +2395,7 @@ erts_napi_monotonic_time(int time_unit)
     if (!esdp)
 	return ERTS_NAPI_TIME_ERROR;
 
-    mtime = time_sup.r.o.get_time();
+    mtime = time_sup.r.o.get_time(esdp);
     update_last_mtime(esdp, mtime);
 
     switch (time_unit) {
@@ -2361,7 +2462,7 @@ erts_napi_convert_time_unit(ErtsMonotonicTime val, int from, int to)
 {
     ErtsMonotonicTime ffreq, tfreq, denom;
     /*
-     * Convertion between time units using floor function.
+     * Conversion between time units using floor function.
      *
      * Note that this needs to work also for negative
      * values. Ordinary integer division on a negative
@@ -2398,7 +2499,8 @@ erts_napi_convert_time_unit(ErtsMonotonicTime val, int from, int to)
 
 BIF_RETTYPE monotonic_time_0(BIF_ALIST_0)
 {
-    ErtsMonotonicTime mtime = time_sup.r.o.get_time();
+    ErtsSchedulerData *esdp = erts_proc_sched_data(BIF_P);
+    ErtsMonotonicTime mtime = time_sup.r.o.get_time(esdp);
     update_last_mtime(erts_proc_sched_data(BIF_P), mtime);
     mtime += ERTS_MONOTONIC_OFFSET_NATIVE;
     BIF_RET(make_time_val(BIF_P, mtime));
@@ -2406,26 +2508,29 @@ BIF_RETTYPE monotonic_time_0(BIF_ALIST_0)
 
 BIF_RETTYPE monotonic_time_1(BIF_ALIST_1)
 {
-    ErtsMonotonicTime mtime = time_sup.r.o.get_time();
-    update_last_mtime(erts_proc_sched_data(BIF_P), mtime);
+    ErtsSchedulerData *esdp = erts_proc_sched_data(BIF_P);
+    ErtsMonotonicTime mtime = time_sup.r.o.get_time(esdp);
+    update_last_mtime(esdp, mtime);
     BIF_RET(time_unit_conversion(BIF_P, BIF_ARG_1, mtime, 1));
 }
 
 BIF_RETTYPE system_time_0(BIF_ALIST_0)
 {
     ErtsMonotonicTime mtime, offset;
-    mtime = time_sup.r.o.get_time();
+    ErtsSchedulerData *esdp = erts_proc_sched_data(BIF_P);
+    mtime = time_sup.r.o.get_time(esdp);
     offset = get_time_offset();
-    update_last_mtime(erts_proc_sched_data(BIF_P), mtime);
+    update_last_mtime(esdp, mtime);
     BIF_RET(make_time_val(BIF_P, mtime + offset));
 }
 
 BIF_RETTYPE system_time_1(BIF_ALIST_0)
 {
     ErtsMonotonicTime mtime, offset;
-    mtime = time_sup.r.o.get_time();
+    ErtsSchedulerData *esdp = erts_proc_sched_data(BIF_P);
+    mtime = time_sup.r.o.get_time(esdp);
     offset = get_time_offset();
-    update_last_mtime(erts_proc_sched_data(BIF_P), mtime);
+    update_last_mtime(esdp, mtime);
     BIF_RET(time_unit_conversion(BIF_P, BIF_ARG_1, mtime + offset, 0));
 }
 
@@ -2452,16 +2557,17 @@ BIF_RETTYPE timestamp_0(BIF_ALIST_0)
     Eterm *hp, res;
     ErtsMonotonicTime mtime, offset;
     Uint mega_sec, sec, micro_sec;
+    ErtsSchedulerData *esdp = erts_proc_sched_data(BIF_P);
 
-    mtime = time_sup.r.o.get_time();
+    mtime = time_sup.r.o.get_time(esdp);
     offset = get_time_offset();
-    update_last_mtime(erts_proc_sched_data(BIF_P), mtime);
+    update_last_mtime(esdp, mtime);
 
     make_timestamp_value(&mega_sec, &sec, &micro_sec, mtime, offset);
 
     /*
      * Mega seconds is the only value that potentially
-     * ever could be a bignum. However, that wont happen
+     * ever could be a bignum. However, that won't happen
      * during at least the next 4 million years...
      *
      * (System time will also have wrapped in the

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2019. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2019-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,6 +21,7 @@
 %%
 
 -module(erl_compile_server).
+-moduledoc false.
 -behaviour(gen_server).
 -export([start_link/0, compile/1]).
 
@@ -51,8 +54,7 @@ start_link() ->
 init([]) ->
     %% We don't want the current directory in the code path.
     %% Remove it.
-    Path = [D || D <- code:get_path(), D =/= "."],
-    true = code:set_path(Path),
+    _ = code:del_path("."),
     Config = init_config(),
     {ok, #st{config=Config}, ?IDLE_TIMEOUT}.
 
@@ -68,7 +70,7 @@ handle_call({compile, Parameters}, From, #st{jobs=Jobs}=St0) ->
     case verify_context(PathArgs, Parameters, St0) of
         {ok, St1} ->
             #{cwd := Cwd, encoding := Enc} = Parameters,
-            PidRef = spawn_monitor(fun() -> exit(do_compile(ErlcArgs, Cwd, Enc)) end),
+            PidRef = spawn_monitor(fun() -> exit(do_compile(ErlcArgs, unicode:characters_to_list(Cwd, Enc), Enc)) end),
             St = St1#st{jobs=Jobs#{PidRef => From}},
             {noreply, St#st{timeout=?IDLE_TIMEOUT}};
         wrong_config ->
@@ -136,17 +138,25 @@ do_compile(ErlcArgs, Cwd, Enc) ->
     GL = create_gl(),
     group_leader(GL, self()),
     Result = erl_compile:compile(ErlcArgs, Cwd),
-    StdOutput = ensure_enc(gl_get_output(GL), Enc),
-    case Result of
-        ok ->
-            {ok, StdOutput};
-        {error, StdErrorOutput0} ->
+    {OutputChannel,Output0} = gl_get_output(GL),
+    Output = ensure_enc(Output0, Enc),
+    case {Result,OutputChannel} of
+        {ok, standard_error} ->
+            {ok, ~"", Output};
+        {ok, standard_io} ->
+            {ok, Output, ~""};
+        {{error,StdErrorOutput0}, standard_error} ->
+            StdErrorOutput1 = ensure_enc(StdErrorOutput0, Enc),
+            StdErrorOutput = <<StdErrorOutput1/binary,Output>>,
+            {error, ~"", StdErrorOutput};
+        {{error,StdErrorOutput0}, standard_io} ->
             StdErrorOutput = ensure_enc(StdErrorOutput0, Enc),
-            {error, StdOutput, StdErrorOutput}
+            {error, Output, StdErrorOutput}
     end.
 
-parse_command_line(#{command_line := CmdLine, cwd := Cwd}) ->
-    parse_command_line_1(CmdLine, Cwd, [], []).
+parse_command_line(#{command_line := CmdLine0, cwd := Cwd, encoding := Enc}) ->
+    CmdLine = lists:map(fun(A) -> unicode:characters_to_list(A, Enc) end, CmdLine0),
+    parse_command_line_1(CmdLine, unicode:characters_to_list(Cwd, Enc), [], []).
 
 parse_command_line_1(["-pa", Pa|T], Cwd, PaAcc, PzAcc) ->
     parse_command_line_1(T, Cwd, [Pa|PaAcc], PzAcc);
@@ -194,15 +204,19 @@ clean_path_args(PathArgs, Cwd) ->
     [filename:absname(P, Cwd) || P <- PathArgs].
 
 make_config(PathArgs, Env0) ->
+    {ok,Files} = file:list_dir(code:lib_dir()),
+    LibDirSize = length(Files),
     Env = lists:sort(Env0),
-    PathArgs ++ [iolist_to_binary([[Name,$=,Val,$\n] || {Name,Val} <- Env])].
+    PathArgs ++ [LibDirSize] ++
+        [iolist_to_binary([[Name,$=,Val,$\n] || {Name,Val} <- Env])].
+
 
 %%%
 %%% A group leader that will capture all output to the group leader.
 %%%
 
 create_gl() ->
-    spawn_link(fun() -> gl_loop([]) end).
+    spawn_link(fun() -> gl_loop([], standard_error) end).
 
 gl_get_output(GL) ->
     GL ! {self(), get_output},
@@ -210,18 +224,20 @@ gl_get_output(GL) ->
         {GL, Output} -> Output
     end.
 
-gl_loop(State0) ->
+gl_loop(State0, OutputChannel) ->
     receive
 	{io_request, From, ReplyAs, Request} ->
             {_Tag, Reply, State} = gl_request(Request, State0),
             gl_reply(From, ReplyAs, Reply),
-            gl_loop(State);
+            gl_loop(State, OutputChannel);
 	{From, get_output} ->
             Output = iolist_to_binary(State0),
-	    From ! {self(), Output},
-	    gl_loop(State0);
+	    From ! {self(), {OutputChannel, Output}},
+	    gl_loop(State0, OutputChannel);
+        {erl_compile_server, standard_io} ->
+            gl_loop(State0, standard_io);
 	_Unknown ->
-	    gl_loop(State0)
+	    gl_loop(State0, OutputChannel)
     end.
 
 gl_reply(From, ReplyAs, Reply) ->

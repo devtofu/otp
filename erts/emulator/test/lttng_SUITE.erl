@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1999-2020. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1999-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -71,10 +73,10 @@ init_per_testcase(Case, Config) ->
     ok = ensure_lttng_started(Name, Config),
     [{session, Name}|Config].
 
-end_per_testcase(Case, _Config) ->
+end_per_testcase(Case, Config) ->
     Name = atom_to_list(Case),
     ok = ensure_lttng_stopped(Name),
-    ok.
+    erts_test_utils:ept_check_leaked_nodes(Config).
 
 %% Not tested yet
 %%   org_erlang_otp:driver_process_exit
@@ -298,14 +300,14 @@ chk_caller(Port, Callback, ExpectedCaller) ->
             ExpectedCaller = Caller
     end.
 
-ets_load(Config) ->
+ets_load(Config) when is_list(Config) ->
 
     %% Have to do on a fresh node to guarantee that carriers are created
-    {ok,Node} = start_node(Config),
+    {ok, Peer, Node} = ?CT_PEER(),
 
     Res = rpc:call(Node, ?MODULE, ets_load, []),
 
-    stop_node(Node),
+    peer:stop(Peer),
 
     Res.
 
@@ -447,19 +449,3 @@ cmd(Cmd) ->
     io:format(">> ~ts~n", [Res]),
     {ok,Res}.
 
-start_node(Config) ->
-    start_node(Config, "").
-
-start_node(Config, Args) when is_list(Config) ->
-    Pa = filename:dirname(code:which(?MODULE)),
-    Name = list_to_atom(atom_to_list(?MODULE)
-			++ "-"
-			++ atom_to_list(proplists:get_value(testcase, Config))
-			++ "-"
-			++ integer_to_list(erlang:system_time(second))
-			++ "-"
-			++ integer_to_list(erlang:unique_integer([positive]))),
-    test_server:start_node(Name, slave, [{args, "-pa "++Pa++" "++Args}]).
-
-stop_node(Node) ->
-    test_server:stop_node(Node).

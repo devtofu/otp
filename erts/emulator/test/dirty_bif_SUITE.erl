@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2010-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2010-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -39,7 +41,8 @@
 	 dirty_process_register/1,
 	 dirty_process_trace/1,
 	 code_purge/1,
-         otp_15688/1]).
+         otp_15688/1,
+         suspend_process/1]).
 
 suite() -> [{ct_hooks,[ts_install_cth]}].
 
@@ -66,7 +69,8 @@ all() ->
      dirty_process_register,
      dirty_process_trace,
      code_purge,
-     otp_15688].
+     otp_15688,
+     suspend_process].
 
 init_per_suite(Config) ->
     case erlang:system_info(dirty_cpu_schedulers) of
@@ -82,8 +86,8 @@ end_per_suite(_Config) ->
 init_per_testcase(Case, Config) ->
     [{testcase, Case} | Config].
 
-end_per_testcase(_Case, _Config) ->
-    ok.
+end_per_testcase(_Case, Config) ->
+    erts_test_utils:ept_check_leaked_nodes(Config).
 
 dirty_bif(Config) when is_list(Config) ->
     dirty_cpu = erts_debug:dirty_cpu(scheduler,type),
@@ -216,7 +220,7 @@ dirty_bif_multischedule_exception(Config) when is_list(Config) ->
     end.
 
 dirty_scheduler_exit(Config) when is_list(Config) ->
-    {ok, Node} = start_node(Config, "+SDio 1"),
+    {ok, Peer, Node} = ?CT_PEER(["+SDio", "1"]),
     [ok] = mcall(Node,
                  [fun() ->
                           %% Perform a dry run to ensure that all required code
@@ -230,7 +234,7 @@ dirty_scheduler_exit(Config) when is_list(Config) ->
 			  io:format("Time=~p ms~n", [End-Start]),
 			  ok
                   end]),
-    stop_node(Node),
+    peer:stop(Peer),
     ok.
 
 test_dirty_scheduler_exit() ->
@@ -289,7 +293,7 @@ dirty_call_while_terminated(Config) when is_list(Config) ->
     undefined = process_info(Dirty, status),
     false = erlang:is_process_alive(Dirty),
     false = lists:member(Dirty, processes()),
-    %% Binary still refered by Dirty process not yet cleaned up
+    %% Binary still referred by Dirty process not yet cleaned up
     %% since the dirty bif has not yet returned...
     {value, {BinAddr, 4711, 2}} = lists:keysearch(4711, 2,
 						  element(2,
@@ -315,7 +319,7 @@ dirty_call_while_terminated(Config) when is_list(Config) ->
     end.
 
 dirty_heap_access(Config) when is_list(Config) ->
-    {ok, Node} = start_node(Config),
+    {ok, Peer, Node} = ?CT_PEER(),
     Me = self(),
     RGL = rpc:call(Node,erlang,whereis,[init]),
     Ref = rpc:call(Node,erlang,make_ref,[]),
@@ -333,7 +337,7 @@ dirty_heap_access(Config) when is_list(Config) ->
     end,
     unlink(Dirty),
     exit(Dirty, kill),
-    stop_node(Node),
+    peer:stop(Peer),
     {comment, integer_to_list(N) ++ " GL change loops; "
      ++ integer_to_list(R) ++ " while running dirty"}.
 
@@ -369,7 +373,7 @@ access_dirty_heap(Dirty, RGL, N, R) ->
 %% the dirty process is still alive immediately after accessing it.
 dirty_process_info(Config) when is_list(Config) ->
     access_dirty_process(
-      Config,
+      ?FUNCTION_NAME,
       fun() -> ok end,
       fun(BifPid) ->
 	      PI = process_info(BifPid),
@@ -381,7 +385,7 @@ dirty_process_info(Config) when is_list(Config) ->
 
 dirty_process_register(Config) when is_list(Config) ->
     access_dirty_process(
-      Config,
+      ?FUNCTION_NAME,
       fun() -> ok end,
       fun(BifPid) ->
 	      register(test_dirty_process_register, BifPid),
@@ -395,7 +399,7 @@ dirty_process_register(Config) when is_list(Config) ->
 
 dirty_process_trace(Config) when is_list(Config) ->
     access_dirty_process(
-      Config,
+      ?FUNCTION_NAME,
       fun() ->
 	      %% BIFs can only be traced when their modules are loaded.
 	      code:ensure_loaded(erts_debug),
@@ -539,7 +543,92 @@ otp_15688(Config) when is_list(Config) ->
             exit(See, kill),
             ct:fail({suspendee_stuck, PI})
     end.
-    
+
+suspend_process(Config) when is_list(Config) ->
+    Go = make_ref(),
+    AS = make_ref(),
+    Tester = self(),
+    P = spawn_link(fun () ->
+                           receive {Go, 1} -> ok end,
+                           Tester ! {Go, 2},
+                           erts_debug:dirty_io(wait, 500),
+                           receive {Go, 3}-> ok end,
+                           Tester ! {Go, 4},
+                           erts_debug:dirty_io(wait, 500),
+                           receive {Go, 5} -> ok end,
+                           Tester ! {Go, 6},
+                           erts_debug:dirty_cpu(wait, 500),
+                           receive {Go, 7} -> ok end,
+                           Tester ! {Go, 8},
+                           erts_debug:dirty_cpu(wait, 500)
+                   end),
+
+    %% Sync DIO
+    {status, Status1} = erlang:process_info(P, status),
+    false = Status1 == suspended,
+
+    P ! {Go, 1},
+    receive {Go, 2} -> ok end,
+    erlang:yield(),
+    true = erlang:suspend_process(P),
+
+    {status, Status2} = erlang:process_info(P, status),
+    true = Status2 == suspended,
+
+    true = erlang:resume_process(P),
+
+    %% Async DIO
+    {status, Status3} = erlang:process_info(P, status),
+    false = Status3 == suspended,
+
+    P ! {Go, 3},
+    receive {Go, 4} -> ok end,
+    erlang:yield(),
+
+    true = erlang:suspend_process(P, [{asynchronous, AS}]),
+    receive {AS, What1} -> suspended = What1 end,
+
+    {status, Status4} = erlang:process_info(P, status),
+    true = Status4 == suspended,
+
+    true = erlang:resume_process(P),
+
+    %% Sync DCPU
+    {status, Status5} = erlang:process_info(P, status),
+    false = Status5 == suspended,
+
+    P ! {Go, 5},
+    receive {Go, 6} -> ok end,
+    erlang:yield(),
+
+    true = erlang:suspend_process(P),
+
+    {status, Status6} = erlang:process_info(P, status),
+    true = Status6 == suspended,
+
+    true = erlang:resume_process(P),
+
+    %% Async DCPU
+    {status, Status7} = erlang:process_info(P, status),
+    false = Status7 == suspended,
+
+    P ! {Go, 7},
+    receive {Go, 8} -> ok end,
+    erlang:yield(),
+
+    true = erlang:suspend_process(P, [{asynchronous, AS}]),
+    receive {AS, What2} -> suspended = What2 end,
+
+    {status, Status8} = erlang:process_info(P, status),
+    true = Status8 == suspended,
+
+    true = erlang:resume_process(P),
+
+    unlink(P),
+    exit(P, kill),
+    false = is_process_alive(P),
+
+    ok.
 
 %%
 %% Internal...
@@ -554,13 +643,13 @@ wait_until(Fun) ->
             wait_until(Fun)
     end.
 
-access_dirty_process(Config, Start, Test, Finish) ->
-    {ok, Node} = start_node(Config, ""),
+access_dirty_process(TestCase, Start, Test, Finish) ->
+    {ok, Peer, Node} = ?CT_PEER(#{name => ?CT_PEER_NAME(TestCase)}),
     [ok] = mcall(Node,
 		 [fun() ->
 			  ok = test_dirty_process_access(Start, Test, Finish)
 		  end]),
-    stop_node(Node),
+    peer:stop(Peer),
     ok.
 
 test_dirty_process_access(Start, Test, Finish) ->
@@ -585,23 +674,6 @@ test_dirty_process_access(Start, Test, Finish) ->
 		 error(timeout)
 	 end,
     ok = Finish(BifPid).
-
-start_node(Config) ->
-    start_node(Config, "").
-
-start_node(Config, Args) when is_list(Config) ->
-    Pa = filename:dirname(code:which(?MODULE)),
-    Name = list_to_atom(atom_to_list(?MODULE)
-			++ "-"
-			++ atom_to_list(proplists:get_value(testcase, Config))
-			++ "-"
-			++ integer_to_list(erlang:system_time(second))
-			++ "-"
-			++ integer_to_list(erlang:unique_integer([positive]))),
-    test_server:start_node(Name, slave, [{args, "-pa "++Pa++" "++Args}]).
-
-stop_node(Node) ->
-    test_server:stop_node(Node).
 
 mcall(Node, Funs) ->
     Parent = self(),

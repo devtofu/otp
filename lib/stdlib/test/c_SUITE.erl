@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1998-2018. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1998-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(c_SUITE).
@@ -180,7 +182,7 @@ ls(Config) when is_list(Config) ->
     ok = c:ls(File),
     ok = c:ls([[[[File]]]]),
     ok = c:ls("no_such_file"),
-    ok = c:ls(list_to_atom(code:which(c))),
+    ok = c:ls(code:where_is_file("c.beam")),
     ok.
 
 %% Check that c:memory/[0,1] returns consistent results.

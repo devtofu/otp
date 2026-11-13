@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1997-2021. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,13 +16,14 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(inet6_udp).
+-moduledoc false.
 
 -export([open/1, open/2, close/1]).
--export([send/2, send/4, recv/2, recv/3, connect/3]).
+-export([send/2, send/4, recv/2, recv/3, connect/2, connect/3]).
 -export([controlling_process/2]).
 -export([fdopen/2]).
 
@@ -29,9 +32,11 @@
 -include("inet_int.hrl").
 
 -define(FAMILY, inet6).
--define(PROTO, udp).
--define(TYPE, dgram).
+-define(PROTO,  udp).
+-define(TYPE,   dgram).
 
+
+%% -define(DBG(T), erlang:display({{self(), ?MODULE, ?LINE, ?FUNCTION_NAME}, T})).
 
 %% inet_udp port lookup
 getserv(Port) when is_integer(Port) -> {ok, Port};
@@ -49,18 +54,26 @@ open(Port) -> open(Port, []).
 
 -spec open(_, _) -> {ok, port()} | {error, atom()}.
 open(Port, Opts) ->
+    %% ?DBG(['entry', {port, Port}, {opts, Opts}]),
     case inet:udp_options(
 	   [{port,Port} | Opts],
 	   ?MODULE) of
 	{error, Reason} -> exit(Reason);
 	{ok,
 	 #udp_opts{
-	    fd = Fd,
+	    fd     = Fd,
 	    ifaddr = BAddr,
-	    port = BPort,
-	    opts = SockOpts}}
-          when ?ip6(BAddr), ?port(BPort);
-               BAddr =:= undefined ->
+	    port   = BPort,
+	    opts   = SockOpts}}
+          when is_map(BAddr); % sockaddr_in()
+               BPort =:= -1, ?ip6(BAddr);
+               BPort =:= -1, BAddr =:= undefined;
+               ?port(BPort), ?ip6(BAddr);
+               ?port(BPort), BAddr =:= undefined ->
+            %% ?DBG(['udp-options',
+            %%       {fd, Fd},
+            %%       {baddr, BAddr}, {bport, BPort},
+            %%       {sock_opts, SockOpts}]),
 	    inet:open_bind(
 	      Fd, BAddr, BPort, SockOpts, ?PROTO, ?FAMILY, ?TYPE, ?MODULE);
 	{ok, _} -> exit(badarg)
@@ -69,6 +82,9 @@ open(Port, Opts) ->
 send(S, {A,B,C,D,E,F,G,H} = IP, Port, Data)
   when ?ip6(A,B,C,D,E,F,G,H), ?port(Port) ->
     prim_inet:sendto(S, {IP, Port}, [], Data);
+send(S, #{addr := {A,B,C,D,E,F,G,H}, port := Port} = SockAddr, AncData, Data)
+  when ?ip6(A,B,C,D,E,F,G,H), ?port(Port), is_list(AncData) ->
+    prim_inet:sendto(S, SockAddr, AncData, Data);
 send(S, {{A,B,C,D,E,F,G,H}, Port} = Addr, AncData, Data)
   when ?ip6(A,B,C,D,E,F,G,H), ?port(Port), is_list(AncData) ->
     prim_inet:sendto(S, Addr, AncData, Data);
@@ -82,6 +98,9 @@ send(S, {?FAMILY, {loopback, Port}} = Address, AncData, Data)
 send(S, Data) ->
     prim_inet:sendto(S, {any, 0}, [], Data).
     
+connect(S, #{family := ?FAMILY} = SockAddr) ->
+    prim_inet:connect(S, SockAddr, infinity).
+
 connect(S, Addr = {A,B,C,D,E,F,G,H}, Port) 
   when ?ip6(A,B,C,D,E,F,G,H), ?port(Port) ->
     prim_inet:connect(S, Addr, Port).

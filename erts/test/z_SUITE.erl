@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -26,7 +28,8 @@
 
 -include_lib("kernel/include/file.hrl").
 	    
--record(core_search_conf, {search_dir,
+-record(core_search_conf, {db_top_dir,
+                           search_dir,
 			   extra_search_dir,
 			   cerl,
 			   file,
@@ -113,7 +116,8 @@ core_search_conf(RunByTS, DBTop, XDir) ->
 			     _ -> XDir
 			 end
 		 end,
-    #core_search_conf{search_dir = SearchDir,
+    #core_search_conf{db_top_dir = DBTop,
+                      search_dir = SearchDir,
 		      extra_search_dir = XSearchDir,
 		      cerl = find_cerl(DBTop),
 		      file = os:find_executable("file"),
@@ -205,14 +209,38 @@ format_core(Conf, Core) ->
     %% Try print (log dir) name of offending application
     CoreDir = filename:dirname(Core),
     lists:foreach(fun(TestDir) ->
-			  case filelib:is_dir(filename:join(CoreDir,TestDir)) of
+                          FullTestDir = filename:join(CoreDir,TestDir),
+			  case filelib:is_dir(FullTestDir) of
 			      true ->
-				  io:format("  from ~s~n", [TestDir]);
+				  io:format("  from ~s\n", [TestDir]),
+                                  print_last_testcase(FullTestDir);
 			      false ->
 				  no
 			  end
 		  end,
 		  filelib:wildcard("*.logs", CoreDir)).
+
+print_last_testcase(FullTestDir) ->
+    lists:foreach(fun(RunDir) ->
+                          SuiteLog = filename:join([FullTestDir,RunDir,"suite.log"]),
+                          try last_testcase(SuiteLog) of
+                              TestCase ->
+                                  io:format("       ~s\n", [TestCase])
+                          catch
+                              error:Reason ->
+                                  io:format("  could not find last test case: ~p\n", [Reason])
+                          end
+		  end,
+		  filelib:wildcard("run.*", FullTestDir)).
+
+last_testcase(SuiteLog) ->
+    {ok, Bin} = file:read_file(SuiteLog),
+    case string:find(Bin, "\n=case", trailing) of
+        TailBin when is_binary(TailBin) ->
+            {match, [TestCase]} = re:run(TailBin, "=case\\s+(.+)",
+                                         [{capture,all_but_first,binary}]),
+            TestCase
+    end.
 
 format_core(#core_search_conf{file = false}, Core, Ignore) ->
     io:format("  ~s~s " ++ time_fstr() ++ "~s~n",
@@ -326,10 +354,58 @@ core_file_search(#core_search_conf{search_dir = Base,
 	    case {RunByTS, ICores, FCores} of
 		{true, [], []} -> ok;
 		{true, _, []} -> {comment, Res};
-		{true, _, _} -> ct:fail(Res);
-		_ -> Res
+		{true, _, _} ->
+                    docker_export_otp_src(Conf),
+                    ct:fail(Res);
+		_ ->
+                    Res
 	    end
     end.
+
+docker_export_otp_src(#core_search_conf{db_top_dir = DbTop}) ->
+    %% If this is a docker run, export the otp_src directory
+    %% to not get lost when the docker image is purged.
+    try
+        case {is_dir(DbTop), is_dir("/daily_build/otp_src/erts")}  of
+            {true, true} ->
+                %% Stolen from get_otp_src script.
+                %% Basically it's a recursive copy of otp_src dir
+                %% with preserved permissions, etc.
+                run("cd /daily_build && "
+                    "tar -cf - otp_src | (cd "++DbTop++" && tar -xpf -)"),
+                OtpSrc = DbTop ++ "/otp_src",
+                run("cd " ++ OtpSrc ++ "/erts && "
+                    "ERL_TOP=" ++ OtpSrc ++ " make local_setup"),
+                io:format("otp_src directory exported from docker image");
+            _ ->
+                ok
+        end
+    catch
+        C:E:S ->
+            io:format("Failed to export otp_src directory:"
+                      "Exception: ~p\nReason: ~p\nStack: ~p\n",
+                      [C, E, S])
+    end.
+
+run(Cmd) ->
+    Options = [binary, exit_status,stderr_to_stdout,{line,4096}],
+    Port = open_port({spawn,"sh -c \"" ++ Cmd ++ "\""}, Options),
+    run_loop(Cmd, Port, []).
+
+run_loop(Cmd, Port, Output) ->
+    receive
+        {Port, {exit_status,0}} ->
+            lists:reverse(Output);
+        {Port, {exit_status,Status}} ->
+            io:format("Failed command (~p): ~p\nOutput: ~p\n", [Status, Cmd, Output]),
+            error(bailout);
+        {Port, {data,{eol,Bin}}} ->
+            run_loop(Cmd, Port, [Bin|Output]);
+        Msg ->
+            io:format("Unexpected message: ~p\nCommand was: ~p\n", [Msg, Cmd]),
+            error(bailout)
+    end.
+
 
 win32_search(RunByTS, DBTop) ->
     case os:getenv("WSLENV") of
@@ -345,24 +421,38 @@ win32_search_2(true, DBTop0) ->
     DBTop = search_dir(DBTop0),
     Dir = "c:/ldisk/daily_build",
     io:format("Find and move 'dmp' files in: ~s to ~s~n",[Dir, DBTop]),
-    case filelib:wildcard("*.dmp", Dir) of
+    Dumps = filelib:wildcard("*.dmp", Dir),
+    OTPDumps = filter_terminal(Dumps),
+    move_dumps(Dumps, Dir, DBTop),
+    case OTPDumps of
         [] -> ok;
-        Dumps ->
-            %% We move the "daily" dmp files to this test-run
-            Str = lists:flatten(["Core-files found:", lists:join($\s, lists:reverse(Dumps))]),
-            Rename = fun(File) ->
-                             FP = filename:join(Dir, File),
-                             _ = file:rename(FP, filename:join(DBTop, File))
-                     end,
-            [Rename(File) || File <- Dumps],
+        _ ->
+            Str = lists:flatten(["Core-files found:", lists:join($\s, lists:reverse(OTPDumps))]),
             ct:fail(Str)
     end;
 win32_search_2(false, _DBTop0) ->
     DBTop = search_dir("c:/ldisk/daily_build"),
     io:format("Search for 'dmp' files in: ~s~n",[DBTop]),
-    case filelib:wildcard("*.dmp", DBTop) of
+    case filter_terminal(filelib:wildcard("*.dmp", DBTop)) of
         [] -> "Core-files found: Ignored core-files found:";
         Dumps ->
             io:format("The dmp files must be removed manually\n", []),
             lists:flatten(["Core-files found:", lists:join($\s, lists:reverse(Dumps))])
     end.
+
+%% Move all dumps to the current testrun dir, so we know which dump
+%% comes from which testrun, and that they are deleted when the
+%% testrun dir is deleted.
+move_dumps(Dumps, Dir, DBTop) ->
+    Rename = fun(File) ->
+                     FP = filename:join(Dir, File),
+                     _ = file:rename(FP, filename:join(DBTop, File))
+             end,
+    [Rename(File) || File <- Dumps].
+
+%% Ignore WindowsTerminal crashes, when printing errors
+filter_terminal(Dumps) ->
+    SkipTerminal = fun(FileName) ->
+                           string:prefix(FileName, "WindowsTerminal") =:= nomatch
+                   end,
+    lists:filter(SkipTerminal, Dumps).

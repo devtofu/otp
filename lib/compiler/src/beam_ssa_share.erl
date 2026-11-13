@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2018-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2018-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -33,6 +35,7 @@
 %%
 
 -module(beam_ssa_share).
+-moduledoc false.
 -export([module/2,block/2]).
 
 -include("beam_ssa.hrl").
@@ -51,7 +54,7 @@ module(#b_module{body=Fs0}=Module, _Opts) ->
       Blocks0 :: beam_ssa:block_map(),
       Blk :: beam_ssa:b_blk().
 
-block(#b_blk{is=Is0,last=Last0}=Blk, Blocks) ->
+block(#b_blk{is=Is0,last=Last0}=Blk, Blocks) when is_map(Blocks) ->
     case share_terminator(Last0, Blocks) of
         none ->
             Blk;
@@ -59,11 +62,10 @@ block(#b_blk{is=Is0,last=Last0}=Blk, Blocks) ->
             %% The terminator was reduced from a two-way branch to a
             %% one-way branch.
             case reverse(Is0) of
-                [#b_set{op={succeeded,Kind},args=[Dst]},#b_set{dst=Dst}|Is] ->
-                    %% A succeeded instruction must not be followed by a
-                    %% one-way branch. We must remove both the succeeded
+                [#b_set{op={succeeded,guard},args=[Dst]},#b_set{dst=Dst}|Is] ->
+                    %% A {succeeded,guard} instruction must not be followed by
+                    %% a one-way branch. We must remove both the succeeded
                     %% instruction and the instruction preceding it.
-                    guard = Kind,               %Assertion.
                     Blk#b_blk{is=reverse(Is),last=beam_ssa:normalize(Last)};
                 _ ->
                     Blk#b_blk{last=beam_ssa:normalize(Last)}
@@ -76,7 +78,7 @@ block(#b_blk{is=Is0,last=Last0}=Blk, Blocks) ->
 %%% Local functions.
 %%%
 
-function(#b_function{anno=Anno,bs=Blocks0}=F) ->
+function(#b_function{anno=Anno,bs=Blocks0}=F) when is_map(Blocks0) ->
     try
         PO = reverse(beam_ssa:rpo(Blocks0)),
         {Blocks1,Changed} = blocks(PO, Blocks0, false),
@@ -151,7 +153,7 @@ are_equivalent(_Succ, #b_blk{is=Is1,last=#b_ret{arg=RetVal1}=Ret1},
                     false
             end;
         {#b_var{},#b_var{}} ->
-            %% The return values are varibles. We must canonicalize
+            %% The return values are variables. We must canonicalize
             %% the blocks (including returns) and compare them.
             Can1 = canonical_is(Is1 ++ [Ret1]),
             Can2 = canonical_is(Is2 ++ [Ret2]),
@@ -206,7 +208,7 @@ are_equivalent(Succ0, #b_blk{is=Is1,last=#b_br{bool=#b_var{},fail=Same}},
             %% and let share_switch/2 do the work of following the
             %% branches.
             Sw = #b_switch{arg=#b_var{name=not_used},fail=Fail0,
-                           list=[{#b_literal{},Succ0}]},
+                           list=[{#b_literal{val=none},Succ0}]},
             #b_switch{fail=Fail,list=[{_,Succ}]} = share_switch(Sw, Blocks),
             Fail =:= Succ
     end;
@@ -215,7 +217,7 @@ are_equivalent(_, _, _, _, _) -> false.
 share_switch(#b_switch{fail=Fail0,list=List0}=Sw, Blocks) ->
     Prep = share_prepare_sw([{value,Fail0}|List0], Blocks, 0, []),
     Res = do_share_switch(Prep, Blocks, []),
-    [{_,Fail}|List] = [VL || {_,VL} <- sort(Res)],
+    [{_,Fail}|List] = [VL || {_,VL} <:- sort(Res)],
     Sw#b_switch{fail=Fail,list=List}.
 
 share_prepare_sw([{V,L0}|T], Blocks, N, Acc) ->
@@ -245,7 +247,7 @@ share_switch_2([[{done,{_,{_,Common}}}|_]=Eqs|T], Blocks, Acc0) ->
     %% are either terminated with a `ret` or a `br` to the same target
     %% block. Replace the labels in the `switch` for all of those
     %% blocks with the label for the first of the blocks.
-    Acc = [{N,{V,Common}} || {done,{N,{V,_}}} <- Eqs] ++ Acc0,
+    Acc = [{N,{V,Common}} || {done,{N,{V,_}}} <:- Eqs] ++ Acc0,
     share_switch_2(T, Blocks, Acc);
 share_switch_2([[{_,_}|_]=Prep|T], Blocks, Acc0) ->
     %% Two or more blocks are semantically equivalent, but they have
@@ -285,8 +287,9 @@ canonical_block({L,VarMap0}, Blocks) ->
 %%    * Variables defined in the instruction sequence are replaced with
 %%    {var,0}, {var,1}, and so on. Free variables are not changed.
 %%
-%%    * `location` annotations that would produce a `line` instruction are
-%%    kept. All other annotations are cleared.
+%%    * `location` annotations that would produce `line` or
+%%    `executable_line` instructions are kept. All other annotations
+%%    are cleared.
 %%
 %%    * Instructions are repackaged into tuples instead of into the
 %%    usual records. The main reason is to avoid violating the types for
@@ -298,32 +301,27 @@ canonical_is(Is) ->
     Can.
 
 canonical_is([#b_set{op=Op,dst=Dst,args=Args0}=I|Is], VarMap0, Acc) ->
-    Args = [canonical_arg(Arg, VarMap0) || Arg <-Args0],
+    Args = [canonical_arg(Arg, VarMap0) || Arg <- Args0],
     Var = {var,map_size(VarMap0)},
     VarMap = VarMap0#{Dst=>Var},
-    LineAnno = case Op of
-                   bs_match ->
-                       %% The location annotation for a bs_match instruction
-                       %% is only used in warnings, never to emit a `line`
-                       %% instruction. Therefore, it should not be included.
-                       [];
-                   _ ->
-                       %% The location annotation will be used in a `line`
-                       %% instruction. It must be included.
-                       beam_ssa:get_anno(location, I, none)
-               end,
+    LineAnno =
+        case {Op,Is} of
+            {executable_line, _} ->
+                %% The location annotation will be used in a
+                %% `executable_line` instruction.
+                beam_ssa:get_anno(location, I, none);
+            {_, [#b_set{op={succeeded,body},args=[Dst]}|_]} ->
+                %% The location annotation will be used in a `line`
+                %% instruction.
+                beam_ssa:get_anno(location, I, none);
+            {_, _} ->
+                %% The location annotation will not be included in
+                %% any BEAM instruction.
+                []
+        end,
     canonical_is(Is, VarMap, {Op,LineAnno,Var,Args,Acc});
-canonical_is([#b_ret{arg=Arg}], VarMap, Acc0) ->
-    Acc1 = case Acc0 of
-               {call,_Anno,Var,[#b_local{}|_]=Args,PrevAcc} ->
-                   %% This is a tail-recursive call to a local function.
-                   %% There will be no line instruction generated;
-                   %% thus, the annotation is not significant.
-                   {call,[],Var,Args,PrevAcc};
-               _ ->
-                   Acc0
-           end,
-    {{ret,canonical_arg(Arg, VarMap),Acc1},VarMap};
+canonical_is([#b_ret{arg=Arg}], VarMap, Acc) ->
+    {{ret,canonical_arg(Arg, VarMap),Acc},VarMap};
 canonical_is([#b_br{bool=#b_var{}=Arg,fail=Fail}], VarMap, Acc) ->
     %% A previous buggy version of this code omitted the canonicalized
     %% argument in the return value. Unfortunately, that worked most
@@ -332,6 +330,19 @@ canonical_is([#b_br{bool=#b_var{}=Arg,fail=Fail}], VarMap, Acc) ->
     {{br,canonical_arg(Arg, VarMap),succ,Fail,Acc},VarMap};
 canonical_is([#b_br{succ=Succ}], VarMap, Acc) ->
     {{br,Succ,Acc},VarMap};
+canonical_is([{tail_br,Arg0,Ret0}], VarMap, Acc0) ->
+    Arg = canonical_arg(Arg0, VarMap),
+    Ret = canonical_arg(Ret0, VarMap),
+    case Acc0 of
+        {{succeeded,body},_,Arg,[Ret],{call,_,Ret,CallArgs,PrevAcc}} ->
+            %% This is a tail-recursive call to a local function.
+            %% There will be no line instruction generated; thus, the
+            %% annotation is not significant.
+            {{tail_call,Ret,CallArgs,PrevAcc},VarMap};
+        _ ->
+            %% Not a tail-recursive call.
+            {{br_ret,Arg,Ret,Acc0},VarMap}
+    end;
 canonical_is([], VarMap, Acc) ->
     {Acc,VarMap}.
 
@@ -344,6 +355,14 @@ canonical_terminator(L, #b_br{bool=#b_literal{val=true},succ=Succ}=Br, Blocks) -
             {[],Succ};
         [_|_]=Phis ->
             {Phis ++ [Br],done}
+    end;
+canonical_terminator(_L, #b_br{bool=#b_var{}=Arg,succ=Succ,fail=?EXCEPTION_BLOCK}=Br,
+                     Blocks) ->
+    case Blocks of
+        #{Succ := #b_blk{is=[],last=#b_ret{arg=Ret}}} ->
+            {[{tail_br,Arg,Ret}],done};
+        #{} ->
+            {[Br],Succ}
     end;
 canonical_terminator(_L, #b_br{bool=#b_var{},succ=Succ}=Br, _Blocks) ->
     {[Br],Succ};

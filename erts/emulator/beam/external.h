@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 1996-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 1996-2026. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -57,6 +59,8 @@
 #define ATOM_UTF8_EXT     'v'
 #define SMALL_ATOM_UTF8_EXT 'w'
 #define V4_PORT_EXT       'x'
+#define LOCAL_EXT         'y'
+#define RECORD_EXT        'C'
 
 #define DIST_HEADER       'D'
 #define DIST_FRAG_HEADER  'E'
@@ -66,7 +70,8 @@
 #define ATOM_INTERNAL_REF2 'I'
 #define ATOM_INTERNAL_REF3 'K'
 #define BINARY_INTERNAL_REF 'J'
-#define BIT_BINARY_INTERNAL_REF 'L'
+#define BITSTRING_INTERNAL_REF 'L'
+#define MAGIC_REF_INTERNAL_REF 'N'
 #define COMPRESSED        'P'
 
 #if 0
@@ -112,9 +117,11 @@ typedef struct {
     } cache[ERTS_ATOM_CACHE_SIZE];
 } ErtsAtomCacheMap;
 
+#define ERTS_MAX_INTERNAL_ATOM_CACHE_ENTRIES 255
+
 typedef struct {
     Uint32 size;
-    Eterm atom[ERTS_ATOM_CACHE_SIZE];
+    Eterm atom[ERTS_MAX_INTERNAL_ATOM_CACHE_ENTRIES];
 } ErtsAtomTranslationTable;
 
 /*
@@ -125,6 +132,7 @@ typedef struct {
 #define ERTS_DIST_EXT_DFLAG_HDR      ((Uint32) 0x1)
 #define ERTS_DIST_EXT_ATOM_TRANS_TAB ((Uint32) 0x2)
 #define ERTS_DIST_EXT_BTT_SAFE       ((Uint32) 0x4)
+#define ERTS_DIST_EXT_INTERNAL_NC    ((Uint32) 0x8)
 
 #define ERTS_DIST_CON_ID_MASK ((Uint32) 0x00ffffff)
 
@@ -134,17 +142,17 @@ typedef struct erl_dist_external_data ErtsDistExternalData;
 struct erl_dist_external_data {
     Uint64 seq_id;
     Uint64 frag_id;
-    byte *extp;
-    byte *ext_endp;
+    const byte *extp;
+    const byte *ext_endp;
     struct binary *binp;
 };
 
 typedef struct erl_dist_external {
-    Sint heap_size;
-    DistEntry *dep;
+    ErtsDistExternalData *data;
     Uint32 flags;
     Uint32 connection_id;
-    ErtsDistExternalData *data;
+    Sint heap_size;
+    DistEntry *dep;
     struct ErtsMonLnkDist__ *mld;   /* copied from DistEntry.mld */
     ErtsAtomTranslationTable attab;
 } ErtsDistExternal;
@@ -187,7 +195,7 @@ int erts_encode_dist_ext(Eterm, byte **, Uint64, ErtsAtomCacheMap *,
                          struct TTBEncodeContext_ *, Uint *,
                          Sint *);
 ErtsExtSzRes erts_encode_ext_size(Eterm, Uint *szp);
-ErtsExtSzRes erts_encode_ext_size_2(Eterm, unsigned, Uint *szp);
+ErtsExtSzRes erts_encode_ext_size_2(Eterm, Uint64, Uint *szp);
 Uint erts_encode_ext_size_ets(Eterm);
 void erts_encode_ext(Eterm, byte **);
 byte* erts_encode_ext_ets(Eterm, byte *, struct erl_off_heap_header** ext_off_heap);
@@ -206,8 +214,15 @@ typedef enum {
     ERTS_PREP_DIST_EXT_CLOSED
 } ErtsPrepDistExtRes;
 
-ErtsPrepDistExtRes erts_prepare_dist_ext(ErtsDistExternal *, byte *, Uint, struct binary *,
-                                         DistEntry *, Uint32, ErtsAtomCache *);
+ErtsPrepDistExtRes
+erts_prepare_dist_ext(ErtsDistExternal *edep,
+                      const byte *ext,
+                      Uint size,
+                      struct binary *binp,
+                      DistEntry *dep,
+                      Uint32 conn_id,
+                      ErtsAtomCache *cache);
+
 Sint erts_decode_dist_ext_size(ErtsDistExternal *, int, int);
 Eterm erts_decode_dist_ext(ErtsHeapFactory*, ErtsDistExternal *, int);
 

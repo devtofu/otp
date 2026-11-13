@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2011-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2011-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,9 +33,9 @@
  *       ordered around it according to the semantics of the
  *       barrier specified.
  *
- *       The C11 aproch is different. The __atomic builtins
+ *       The C11 approach is different. The __atomic builtins
  *       API takes a memory model parameter. Assuming that all
- *       memory syncronizations using the involved atomic
+ *       memory synchronizations using the involved atomic
  *       variables are made using this API, the synchronizations
  *       will adhere to the memory models used. That is, you do
  *       *not* know how loads and stores will be ordered around
@@ -69,7 +71,7 @@
  *          Why is this? Since all synchronizations is expected
  *          to be made using the __atomic builtins, memory
  *          barriers only have to be issued by some of them,
- *          and you do not know which ones wont issue memory
+ *          and you do not know which ones won't issue memory
  *          barriers.
  *
  *          One can easily be fooled into believing that when
@@ -93,8 +95,8 @@
  *          __ATOMIC_ACQUIRE and __ATOMIC_RELEASE memory
  *          models. This since an __atomic builtin memory
  *          access using the __ATOMIC_ACQUIRE must at least
- *          issue an aquire memory barrier and an __atomic
- *          builtin memory acess with the __ATOMIC_RELEASE
+ *          issue an acquire memory barrier and an __atomic
+ *          builtin memory access with the __ATOMIC_RELEASE
  *          memory model must at least issue a release memory
  *          barrier. Otherwise the two cannot be paired.
  *       4. All __atomic builtins accessing memory using the
@@ -140,6 +142,21 @@
 #define ETHR_StoreStore	(1 << 3)
 
 #define ETHR_COMPILER_BARRIER __asm__ __volatile__("" : : : "memory")
+
+#if ETHR_HAVE_GCC_ASM_ARM_ISB_SY_INSTRUCTION
+#define ETHR_INSTRUCTION_BARRIER ethr_instruction_fence__()
+
+static __inline__ __attribute__((__always_inline__)) void
+ethr_instruction_fence__(void)
+{
+    __asm__ __volatile__("isb sy" : : : "memory");
+}
+#else
+/* !! Note that we DO NOT define a fallback !!
+ *
+ * See the definition of ERTS_THR_INSTRUCTION_BARRIER in erl_threads.h for
+ * details. */
+#endif
 
 #if ETHR_HAVE_GCC_ASM_ARM_DMB_INSTRUCTION
 
@@ -240,7 +257,7 @@ ethr_full_fence__(void)
 #endif
 
 /*
- * Define ETHR_READ_DEPEND_MEMORY_BARRIER for all architechtures
+ * Define ETHR_READ_DEPEND_MEMORY_BARRIER for all architectures
  * not known to order data dependent loads
  *
  * This is a bit too conservative, but better safe than sorry...

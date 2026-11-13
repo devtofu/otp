@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2010-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2010-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,6 +30,7 @@ struct cipher_type_t {
 	const char* str;    /* before init */
 	ERL_NIF_TERM atom;  /* after init */
     }type;
+     const char* str_v3;      /* the algorithm name as in OpenSSL 3.x */
     union {
 	const EVP_CIPHER* (*funcp)(void); /* before init, NULL if notsup */
 	const EVP_CIPHER* p;              /* after init, NULL if notsup */
@@ -49,12 +52,9 @@ struct cipher_type_t {
 #define CCM_MODE 64
 #define GCM_MODE 128
 
-
 #ifdef FIPS_SUPPORT
-/* May have FIPS support, must check dynamically if it is enabled */
-# define CIPHER_FORBIDDEN_IN_FIPS(P) (((P)->flags & NO_FIPS_CIPHER) && FIPS_mode())
+# define CIPHER_FORBIDDEN_IN_FIPS(P) (((P)->flags & NO_FIPS_CIPHER) && FIPS_MODE())
 #else
-/* No FIPS support since the symbol FIPS_SUPPORT is undefined */
 # define CIPHER_FORBIDDEN_IN_FIPS(P) 0
 #endif
 
@@ -63,6 +63,7 @@ struct evp_cipher_ctx {
     EVP_CIPHER_CTX* ctx;
     int iv_len;
     ERL_NIF_TERM padding; /* id of the padding to add by get_final_args() */
+    ErlNifBinary key_bin;
     int padded_size;   /* Length of the padding that was added */
     int encflag; /* 1 if encrypting, 0 if decrypting */
     unsigned int size; /* The sum of all sizes of input texts to get_update_args() */
@@ -74,7 +75,7 @@ struct evp_cipher_ctx {
 
 ERL_NIF_TERM cipher_info_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]);
 
-int init_cipher_ctx(ErlNifEnv *env);
+int init_cipher_ctx(ErlNifEnv *env, ErlNifBinary* rt_buf);
 
 void init_cipher_types(ErlNifEnv* env);
 const struct cipher_type_t* get_cipher_type_no_key(ERL_NIF_TERM type);

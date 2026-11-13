@@ -1,3 +1,24 @@
+%% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright 2010 held by the authors. All Rights Reserved.
+%% Copyright Ericsson AB 2017-2025. All Rights Reserved.
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%
+%% %CopyrightEnd%
+
 %%% File        : dialyzer_common.erl
 %%% Author      : Stavros Aronis <aronisstav@gmail.com>
 %%% Description : Generator and common infrastructure for simple dialyzer
@@ -13,6 +34,7 @@
 
 -define(suite_suffix, "_SUITE").
 -define(data_folder, "_data").
+-define(excludes, ["dialyzer_cl", "plt"]). % _SUITE_data dirs that we shouldn't automatically make suites for
 -define(suite_data, ?suite_suffix ++ ?data_folder).
 -define(erlang_extension, ".erl").
 -define(output_file_mode, write).
@@ -20,7 +42,6 @@
 -define(input_files_directory, "src").
 -define(result_files_directory, "results").
 -define(plt_filename,"dialyzer_plt").
--define(home_plt_filename,".dialyzer_plt").
 -define(plt_lockfile,"plt_lock").
 -define(required_modules, [erts, kernel, stdlib]).
 
@@ -45,7 +66,7 @@ check_plt(OutDir) ->
 	{error, _ } ->
 	    io:format("No plt found in test run directory!"),
 	    PltLockFile = filename:join(OutDir, ?plt_lockfile),
-	    case file:read_file_info(PltLockFile) of 
+	    case file:read_file_info(PltLockFile) of
 		{ok, _} ->
 		    explain_fail_with_lock(),
 		    fail;
@@ -89,14 +110,13 @@ explain_fail_with_lock() ->
 
 obtain_plt(PltFilename) ->
     io:format("Obtaining plt:"),
-    HomeDir = os:getenv("HOME"),
-    HomePlt = filename:join(HomeDir, ?home_plt_filename),
+    InitPlt = dialyzer_cplt:get_default_cplt_filename(),
     io:format("Will try to use ~s as a starting point and add otp apps ~w.",
-	      [HomePlt, ?required_modules]),
+	      [InitPlt, ?required_modules]),
     try dialyzer:run([{analysis_type, plt_add},
 		      {apps, ?required_modules},
 		      {output_plt, PltFilename},
-		      {init_plt, HomePlt}]) of
+		      {init_plt, InitPlt}]) of
 	[] ->
 	    io:format("Successfully added everything!"),
 	    ok
@@ -108,9 +128,14 @@ obtain_plt(PltFilename) ->
 
 build_plt(PltFilename) ->
     io:format("Building plt from scratch:"),
+
+    %% build_plt/1 builds the plt using default warning options; -Wunknown is
+    %% enabled by default, so tests that do not satisfy -Wunknown will break.
+    %% for this reason, we must pass no_unknown in this analysis.
+    DefaultWarnings = {warnings, [no_unknown]},
     try dialyzer:run([{analysis_type, plt_build},
 		      {apps, ?required_modules},
-		      {output_plt, PltFilename}]) of
+		      {output_plt, PltFilename}, DefaultWarnings]) of
 	[] ->
 	    io:format("Successfully created plt!"),
 	    ok
@@ -121,7 +146,7 @@ build_plt(PltFilename) ->
     end.
 
 -spec check(atom(), dialyzer:dial_options(), string(), string()) ->
-		   'same' | {differ, [term()]}.
+		   'same' | {differ, TestCase :: atom(), [term()]}.
 
 check(TestCase, Opts, Dir, OutDir) ->
     PltFilename = plt_file(OutDir),
@@ -154,18 +179,20 @@ check(TestCase, Opts, Dir, OutDir) ->
 		_  ->
 		    case file:open(NewResFile,[?output_file_mode]) of
 			{ok, OutFile} ->
-			    io:format(OutFile,"\n~s",[Warns]),
+			    file:write(OutFile, [$\n, unicode:characters_to_binary(Warns)]),
 			    file:close(OutFile);
 			Other -> erlang:error(Other)
 		    end
 	    end,
-	    case file_utils:diff(NewResFile, OldResFile) of
-		'same' -> file:delete(NewResFile),
-			  'same';
-		Any    -> escape_strings(Any)
-	    end
+            case compare_results(TestCase, NewResFile, OldResFile) of
+              same ->
+                file:delete(NewResFile),
+                same;
+              {differ, _, _}=Diff ->
+                Diff
+            end
     catch
-	Kind:Error -> {'dialyzer crashed', Kind, Error}
+	Kind:Error:Stacktrace -> {'dialyzer crashed', Kind, Error, Stacktrace}
     end.
 
 fix_options(Opts, Dir) ->
@@ -178,7 +205,7 @@ fix_options([{pa, Path} | Rest], Dir, Acc) ->
 	true       -> fix_options(Rest, Dir, Acc);
 	{error, _} -> erlang:error("Bad directory for pa: " ++ Path)
     end;
-fix_options([{DirOption, RelativeDirs} | Rest], Dir, Acc) 
+fix_options([{DirOption, RelativeDirs} | Rest], Dir, Acc)
   when DirOption =:= include_dirs ;
        DirOption =:= files_rec ;
        DirOption =:= files ->
@@ -204,9 +231,18 @@ create_all_suites() ->
     Suites = get_suites(Cwd),
     lists:foreach(fun create_suite/1, Suites).
 
-escape_strings({differ,List}) ->
-    Map = fun({T,L,S}) -> {T,L,xmerl_lib:export_text(S)} end,
-    {differ, lists:keysort(3, lists:map(Map, List))}.
+compare_results(TestCase, NewResFile, OldResFile) ->
+  maybe
+    {'differ', List} ?= file_utils:diff(NewResFile, OldResFile),
+    [_|_] ?= Escaped = [{T, L, xmerl_lib:export_text(S)}
+                        || {T, L, S} <- List,
+                           not lists:prefix("%", S),
+                           S =/= "\n"],
+    {differ, TestCase, lists:keysort(2, Escaped)}
+  else
+    same -> same;
+    [] -> same
+  end.
 
 -spec get_suites(file:filename()) -> [string()].
 
@@ -215,15 +251,22 @@ get_suites(Dir) ->
 	{error, _} -> [];
 	{ok, Filenames} ->
 	    FullFilenames = [filename:join(Dir, F) || F <-Filenames ],
-	    Dirs = [suffix(filename:basename(F), ?suite_data) ||
+	    Dirs = [is_suite_data(filename:basename(F), ?suite_data) ||
 		       F <- FullFilenames,
-		       file_utils:file_type(F) =:= {ok, 'directory'}],
+		       file_utils:file_type(F) =:= {ok, 'directory'},
+			   file_utils:file_type(filename:join(F, ?input_files_directory)) =:= {ok, 'directory'}],
 	    [S || {yes, S} <- Dirs]
     end.
 
-suffix(String, Suffix) ->
+is_suite_data(String, Suffix) ->
     case string:split(String, Suffix, trailing) of
-	[Prefix,[]] -> {yes, Prefix};
+        [Prefix,[]] ->
+            case lists:member(Prefix, ?excludes) of
+                true ->
+                   no;
+                false ->
+                   {yes, Prefix}
+            end;
         _ -> no
     end.
 

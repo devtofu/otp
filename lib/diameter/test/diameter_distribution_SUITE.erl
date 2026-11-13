@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2013-2019. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2013-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -25,19 +27,27 @@
 
 -module(diameter_distribution_SUITE).
 
--export([suite/0,
-         all/0]).
+%% testcases, no common_test dependency
+-export([run/0]).
 
-%% testcases
--export([enslave/1, enslave/0,
-         ping/1,
+%% common_test wrapping
+-export([
+         %% Framework functions
+         suite/0,
+         all/0,
+         init_per_suite/1,
+         end_per_suite/1,
+
+         %% The test cases
+         traffic/1
+        ]).
+
+%% rpc calls
+-export([ping/1,
          start/1,
+         stop/1,
          connect/1,
-         send_local/1,
-         send_remote/1,
-         send_timeout/1,
-         send_failover/1,
-         stop/1, stop/0]).
+         call/1]).
 
 %% diameter callbacks
 -export([peer_up/3,
@@ -49,14 +59,16 @@
          handle_error/5,
          handle_request/3]).
 
--export([call/1]).
-
 -include("diameter.hrl").
 -include("diameter_gen_base_rfc6733.hrl").
 
+-include("diameter_util.hrl").
+
+
 %% ===========================================================================
 
--define(util, diameter_util).
+-define(DL(F),    ?DL(F, [])).
+-define(DL(F, A), ?LOG("DDISTRS", F, A)).
 
 -define(CLIENT, 'CLIENT').
 -define(SERVER, 'SERVER').
@@ -94,58 +106,78 @@
 
 %% The order here is significant and causes the server to listen
 %% before the clients connect.
--define(NODES, [{server, ?SERVER},
+-define(NODES, [{server,  ?SERVER},
                 {client0, ?CLIENT},
                 {client1, ?CLIENT},
                 {client2, ?CLIENT}]).
 
-%% Options to ct_slave:start/2.
--define(TIMEOUTS, [{T, 15000} || T <- [boot_timeout,
-                                       init_timeout,
-                                       start_timeout]]).
 
 %% ===========================================================================
 
 suite() ->
-    [{timetrap, {seconds, 60}}].
+    [{timetrap, {seconds, 90}}].
 
 all() ->
-    [enslave,
-     ping,
-     start,
-     connect,
-     send_local,
-     send_remote,
-     send_timeout,
-     send_failover,
-     stop].
+    [traffic].
+
+
+init_per_suite(Config) ->
+    ?DUTIL:init_per_suite(Config).
+
+end_per_suite(Config) ->
+    ?DUTIL:end_per_suite(Config).
+
+
+traffic(Config) ->
+    ?DL("traffic -> entry"),
+    Factor = dia_factor(Config),
+    Res = do_traffic(Factor),
+    ?DL("traffic -> done when"
+        "~n   Res: ~p", [Res]),
+    Res.
+
 
 %% ===========================================================================
-%% start/stop testcases
 
-%% enslave/1
+run() ->
+    [] = ?RUN([{fun() -> do_traffic(1) end, 60000}]).
+    %% process for linked peers to die with
+
+%% traffic/0
+
+do_traffic(Factor) ->
+    ?DL("do_traffic -> make sure we have distro"),
+    true = is_alive(),  %% need distribution for peer nodes
+    ?DL("do_traffic -> get nodes"),
+    Nodes = get_nodes(),
+    ?DL("do_traffic -> ping nodes"),
+    [] = ping(Nodes),  %% drop client node
+    ?DL("do_traffic -> start nodes"),
+    [] = start(Nodes),
+    ?DL("do_traffic -> connect nodes"),
+    [_] = connect(Nodes),
+    ?DL("do_traffic -> send (to) nodes"),
+    [] = send(Nodes, Factor),
+    ?DL("do_traffic -> stop nodes"),
+    [] = stop(Nodes),
+    ?DL("do_traffic -> done"),
+    ok.
+
+%% get_nodes/0
 %%
-%% Start four slave nodes, one to implement a Diameter server,
-%% three to implement a client.
+%% Start four nodes;
+%%   - one to implement a Diameter server,
+%%   - three to implement a client.
 
-enslave() ->
-    [{timetrap, {seconds, 30*length(?NODES)}}].
-
-enslave(Config) ->
+get_nodes() ->
     Here = filename:dirname(code:which(?MODULE)),
     Ebin = filename:join([Here, "..", "ebin"]),
-    Dirs = [Here, Ebin],
-    Nodes = [{N,S} || {M,S} <- ?NODES, N <- [slave(M, Dirs)]],
-    ?util:write_priv(Config, nodes, [{N,S} || {{N,ok},S} <- Nodes]),
-    [] = [{T,S} || {{_,E} = T, S} <- Nodes, E /= ok].
+    Args = ["-pa", Here, Ebin],
+    [{N,S} || {M,S} <- ?NODES, N <- [start(M, Args)]].
 
-slave(Name, Dirs) ->
-    add_pathsa(Dirs, ct_slave:start(Name, ?TIMEOUTS)).
-
-add_pathsa(Dirs, {ok, Node}) ->
-    {Node, rpc:call(Node, code, add_pathsa, [Dirs])};
-add_pathsa(_, No) ->
-    {No, error}.
+start(Name, Args) ->
+    {ok, _, Node} = ?DUTIL:peer(#{name => Name, args => Args}),
+    Node.
 
 %% ping/1
 %%
@@ -160,11 +192,10 @@ ping({?CLIENT, Nodes}) ->
           node() /= N,
           pang <- [net_adm:ping(N)]];
 
-ping(Config) ->
-    Nodes = ?util:read_priv(Config, nodes),
-    [] = [{N,RC} || {N,S} <- Nodes,
-                    RC <- [rpc:call(N, ?MODULE, ping, [{S, Nodes}])],
-                    RC /= []].
+ping(Nodes) ->
+    [{N,RC} || {N,S} <- Nodes,
+               RC <- [rpc:call(N, ?MODULE, ping, [{S, Nodes}])],
+               RC /= []].
 
 %% start/1
 %%
@@ -175,11 +206,24 @@ start(SvcName)
     ok = diameter:start(),
     ok = diameter:start_service(SvcName, ?SERVICE((?L(SvcName))));
 
-start(Config) ->
-    Nodes = ?util:read_priv(Config, nodes),
-    [] = [{N,RC} || {N,S} <- Nodes,
-                    RC <- [rpc:call(N, ?MODULE, start, [S])],
-                    RC /= ok].
+start(Nodes) ->
+    [{N,RC} || {N,S} <- Nodes,
+               RC <- [rpc:call(N, ?MODULE, start, [S])],
+               RC /= ok].
+
+%% stop/1
+%%
+%% Stop diameter services.
+
+stop(SvcName)
+  when is_atom(SvcName) ->
+    ok = diameter:stop_service(SvcName),
+    ok = diameter:stop();
+
+stop(Nodes) ->
+    [{N,RC} || {N,S} <- Nodes,
+               RC <- [rpc:call(N, ?MODULE, stop, [S])],
+               RC /= ok].
 
 sequence() ->
     sequence(sname()).
@@ -212,66 +256,63 @@ peers(client2) -> nodes().
 %% Establish one connection to the server from each of the client
 %% nodes.
 
-connect({?SERVER, Config}) ->
-    ?util:write_priv(Config, lref, {node(), ?util:listen(?SERVER, tcp)}),
-    ok;
+connect({?SERVER, _, []}) ->
+    [_LRef = ?LISTEN(?SERVER, tcp)];
 
-connect({?CLIENT, Config}) ->
-    ?util:connect(?CLIENT, tcp, ?util:read_priv(Config, lref)),
-    ok;
+connect({?CLIENT, [{Node, _} | _], [LRef] = Acc}) ->
+    ?CONNECT(?CLIENT, tcp, {Node, LRef}),
+    Acc;
 
-connect(Config) ->
-    Nodes = ?util:read_priv(Config, nodes),
-    [] = [{N,RC} || {N,S} <- Nodes,
-                    RC <- [rpc:call(N, ?MODULE, connect, [{S,Config}])],
-                    RC /= ok].
-
-%% stop/1
-%%
-%% Stop the slave nodes.
-
-stop() ->
-    [{timetrap, {seconds, 30*length(?NODES)}}].
-
-stop(_Config) ->
-    [] = [{N,E} || {N,_} <- ?NODES,
-                   {error, _, _} = E <- [ct_slave:stop(N)]].
+connect(Nodes) ->
+    lists:foldl(fun({N,S}, A) ->
+                        rpc:call(N, ?MODULE, connect, [{S, Nodes, A}])
+                end,
+                [],
+                Nodes).
 
 %% ===========================================================================
-%% traffic testcases
 
-%% send_local/1
-%%
+%% send/2
+
+send(Nodes, Factor) ->
+    ?RUN([[fun send/3, Nodes, T, Factor]
+          || T <- [local, remote, timeout, failover]]).
+
+%% send/3
+
 %% Send a request from the first client node, using a the local
 %% transport.
-
-send_local(Config) ->
+send(Nodes, local, Factor) ->
+    ?DL("send(local) -> entry - expect success (~p)", [?SUCCESS]),
     #diameter_base_STA{'Result-Code' = ?SUCCESS}
-        = send(Config, local, str(?LOGOUT)).
+        = send(Nodes, 0, str(?LOGOUT), Factor),
+    ?DL("send(local) -> success (=success)"),
+    ok;
 
-%% send_remote/1
-%%
 %% Send a request from the first client node, using a transport on the
 %% another node.
-
-send_remote(Config) ->
+send(Nodes, remote, Factor) ->
+    ?DL("send(remote) -> entry - expect success (~p)", [?SUCCESS]),
     #diameter_base_STA{'Result-Code' = ?SUCCESS}
-        = send(Config, remote, str(?LOGOUT)).
+        = send(Nodes, 1, str(?LOGOUT), Factor),
+    ?DL("send(remote) -> success (=success)"),
+    ok;
 
-%% send_timeout/1
-%%
 %% Send a request that the server discards.
+send(Nodes, timeout, Factor) ->
+    ?DL("send(timeout) -> entry - expect timeout"),
+    {error, timeout} = send(Nodes, 1, str(?TIMEOUT), Factor),
+    ?DL("send(timeout) -> success (=timeout)"),
+    ok;
 
-send_timeout(Config) ->
-    {error, timeout} = send(Config, remote, str(?TIMEOUT)).
-
-%% send_failover/1
-%%
-%% Send a request that causes the server to remote transports down.
-
-send_failover(Config) ->
+%% Send a request that causes the server to take the transport down.
+send(Nodes, failover, Factor) ->
+    ?DL("send(failover) -> entry - expect busy (~p)", [?BUSY]),
     #'diameter_base_answer-message'{'Result-Code' = ?BUSY}
-        = send(Config, remote, str(?MOVED)).
+        = send(Nodes, 2, str(?MOVED), Factor),
+    ?DL("send(failover) -> success (=busy)"),
+    ok.
+
 
 %% ===========================================================================
 
@@ -280,21 +321,70 @@ str(Cause) ->
                        'Auth-Application-Id' = ?DICT:id(),
                        'Termination-Cause'   = Cause}.
 
-%% send/2
+%% send/4
 
-send(Config, Where, Req) ->
-    [_, {Node, _} | _] = ?util:read_priv(Config, nodes) ,
-    rpc:call(Node, ?MODULE, call, [{Where, Req}]).
+%% There is a "bug" in diameter, which can cause this function to return
+%% {error, timeout} even though only a fraction on the time has expired.
+%% This is because the timer has in fact *not* expired. Instead what
+%% has happened is the transport process has died and the selection
+%% of a new transport fails (I think its a race causing the pick_peer
+%% to return the same tranport process), at that error is converted to
+%% a timeout error.
+%% So, if this call returns {error, timeout} but only a fraction of the
+%% time has passed we skip instead!
+send([_, {Node, _} | _], Where, Req, Factor) ->
+    ?DL("send -> make rpc call to node ~p", [Node]),
+    case rpc:call(Node, ?MODULE, call, [{Where, Req, Factor}]) of
+        {{error, timeout} = Result, T1, T2, Timeout}
+          when is_integer(T1) andalso is_integer(T2) ->
+            TDiff = T2 - T1,
+            ?DL("request completed:"
+                "~n   Time:    ~w msec"
+                "~n   Timeout: ~w msec"
+                "~n   Result:  ~p", [TDiff, Timeout, Result]),
+            if
+                (TDiff < 100) ->
+                    exit({skip, {invalid_timeout, TDiff, Timeout}});
+                true ->
+                    Result
+            end;
+        {Result, T1, T2, Timeout} when is_integer(T1) andalso is_integer(T2) ->
+            ?DL("request completed:"
+                "~n   Time:    ~w msec"
+                "~n   Timeout: ~w msec"
+                "~n   Result:  ~p", [T2-T1, Timeout, Result]),
+            Result;
+        {badrpc, Reason} ->
+            ?DL("rpc failed:"
+                "~n   Reason: ~p", [Reason]),
+            ct:fail({rpc_call_failed, Node, Where, Req, Reason})
+    end.
 
 %% call/1
 
-call({Where, Req}) ->
-    diameter:call(?CLIENT, ?DICT, Req, [{extra, [{Where, sname()}]}]).
+call({Where, Req, Factor}) ->
+    Timeout = timeout(Factor),
+    ?DL("call -> make diameter call with"
+        "~n   (own) Node: ~p"
+        "~n   Where:      ~p"
+        "~n   Req:        ~p"
+        "~nwhen"
+        "~n   Timeout:    ~w (~w)", [node(), Where, Req, Timeout, Factor]),
+    T1 = ?TS(),
+    Result = diameter:call(?CLIENT, ?DICT, Req, [{extra, [{Where, sname()}]},
+                                                 {timeout, Timeout}]),
+    T2 = ?TS(),
+    ?DL("call -> diameter call ended with"
+        "~n   Result: ~p"
+        "~nwhen"
+        "~n   T2-T1:  ~w (~w - ~w)", [Result, T2 - T1, T2, T1]),
+    {Result, T1, T2, Timeout}.
 
 %% sname/0
 
 sname() ->
     ?A(hd(string:tokens(?L(node()), "@"))).
+
 
 %% ===========================================================================
 %% diameter callbacks
@@ -311,14 +401,22 @@ peer_down(_SvcName, _Peer, State) ->
 
 %% pick_peer/4
 
-pick_peer([LP], [_, _], ?CLIENT, _State, {local, client0}) ->
+pick_peer([LP], _, ?CLIENT, _State, {0, client0}) ->
     {ok, LP};
 
-pick_peer([_], [RP | _], ?CLIENT, _State, {remote, client0}) ->
+pick_peer(_, Peers, ?CLIENT, _State, {1, client0}) ->
+    [RP] = [T || {_, #diameter_caps{origin_state_id = {[1],_}}} = T <- Peers],
     {ok, RP};
 
-pick_peer([LP], [], ?CLIENT, _State, {remote, client0}) ->
-    {ok, LP}.
+%% Sending on the remote transport causes the server to take the
+%% transport down. Retransmission on the local.
+pick_peer(LP, RP, ?CLIENT, _State, {2, client0}) ->
+    {ok, case [T || {_, #diameter_caps{origin_state_id = {[2],_}}} = T <- RP] of
+             [T] ->
+                 T;
+             _ ->
+                 hd([_] = LP)
+         end}.
 
 %% prepare_request/4
 
@@ -347,7 +445,9 @@ handle_answer(Pkt, _Req, ?CLIENT, _Peer, {_, client0}) ->
 
 %% handle_error/5
 
-handle_error(Reason, _Req, ?CLIENT, _Peer, {_, client0}) ->
+handle_error(Reason, _Req, ?CLIENT = Svc, _Peer, {_, client0}) ->
+    ?DL("~w(~p) -> entry with"
+        "~n   Reason: ~p", [?FUNCTION_NAME, Svc, Reason]),
     {error, Reason}.
 
 %% handle_request/3
@@ -380,3 +480,22 @@ fail(0, _) ->     %% sent from the originating node ...
 fail(_, TPid) ->  %% ... or through a remote node: force failover
     exit(TPid, kill),
     discard.
+
+
+%% ===========================================================================
+
+-define(CALL_TO_DEFAULT, 5000).
+timeout(Factor) when (Factor > 0) andalso (Factor =< 20) ->
+    (Factor - 1) * 500 + ?CALL_TO_DEFAULT;
+timeout(Factor) when (Factor > 0) ->
+    3*?CALL_TO_DEFAULT. % Max at 15 seconds
+
+
+%% ===========================================================================
+
+dia_factor(Config) ->
+    config_lookup(?FUNCTION_NAME, Config).
+
+config_lookup(Key, Config) ->
+    {value, {Key, Value}} = lists:keysearch(Key, 1, Config),
+    Value.

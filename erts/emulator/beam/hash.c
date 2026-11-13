@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
+ *
+ * SPDX-License-Identifier: Apache-2.0
  * 
- * Copyright Ericsson AB 1996-2018. All Rights Reserved.
+ * Copyright Ericsson AB 1996-2025. All Rights Reserved.
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,7 +36,7 @@
 **
 */
 
-#define MAX_SHIFT (ERTS_SIZEOF_TERM * 8)
+#define MAX_SHIFT (ERTS_SIZEOF_ETERM * 8)
 
 static int hash_get_slots(Hash *h) {
     return UWORD_CONSTANT(1) << (MAX_SHIFT - h->shift);
@@ -64,6 +66,7 @@ void hash_get_info(HashInfo *hi, Hash *h)
         }
     }
     ASSERT(objects == h->nobjs);
+    (void)objects;
 
     hi->name  = h->name;
     hi->size  = hash_get_slots(h);
@@ -97,10 +100,8 @@ void hash_info(fmtfn_t to, void *arg, Hash* h)
 int
 hash_table_sz(Hash *h)
 {
-  int i;
-  for(i=0;h->name[i];i++);
-  i++;
-  return sizeof(Hash) + hash_get_slots(h)*sizeof(HashBucket*) + i;
+  const int name_len = strlen(h->name) + 1;
+  return sizeof(Hash) + hash_get_slots(h)*sizeof(HashBucket*) + name_len;
 }
 
 
@@ -110,7 +111,7 @@ static ERTS_INLINE void set_thresholds(Hash* h)
     if (h->shift < h->max_shift)
         h->shrink_threshold = hash_get_slots(h) / 5;  /* shrink at 20% load */
     else
-        h->shrink_threshold = -1;  /* never shrink below inital size */
+        h->shrink_threshold = -1;  /* never shrink below initial size */
 }
 
 /*

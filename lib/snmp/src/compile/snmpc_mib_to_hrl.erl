@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2021. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,6 +21,9 @@
 %%
 
 -module(snmpc_mib_to_hrl).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
 
 -include_lib("stdlib/include/erl_compile.hrl").
 -include("snmp_types.hrl").
@@ -33,7 +38,7 @@
 %% Args: MibName = string() without extension.
 %% Purpose: Produce a .hrl file with oid for tables and variables,
 %%          column numbers for columns and values for enums.
-%%          Writes only the first occurence of a name.  Prints a
+%%          Writes only the first occurrence of a name.  Prints a
 %%          warning if a duplicate name is found.
 %% Returns: ok | {error, Reason}
 %% Note: The Mib must be compiled.

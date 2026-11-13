@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2006-2020. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2006-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -24,7 +26,7 @@
 %%----------------------------------------------------------------------
 
 -module(megaco_codec_mstone_lib).
-
+-moduledoc false.
 
 %% API
 %% Avoid warning for local function error/1 clashing with autoimported BIF.
@@ -35,7 +37,8 @@
 	 display_system_info/0, 
 	 display_alloc_info/0, 
 	 display_app_info/0,
-	 detect_version/3]).
+	 detect_version/3,
+         parse_runtime/1]).
 
 %% Internal exports
 -export([flex_scanner_handler/1]).
@@ -82,12 +85,8 @@ display_os_info() ->
 	    Str ->
 		Str
 	end,
-    case os:type() of
-	{OsFam, OsName} ->
-	    io:format("OS:                  ~p-~p: ~s~n", [OsFam, OsName, V]);
-	OsFam ->
-	    io:format("OS:                  ~p: ~s~n", [OsFam, V])
-    end.
+    {OsFam, OsName} = os:type(),
+    io:format("OS:                  ~p-~p: ~s~n", [OsFam, OsName, V]).
 	    
 
 %%----------------------------------------------------------------------
@@ -190,12 +189,8 @@ display_alloc_info([{Alloc, Mem}|AllocInfo]) ->
     display_alloc_info(AllocInfo).
 
 alloc_info() ->
-    case erlang:system_info(allocator) of
-        {_Allocator, _Version, Features, _Settings} ->
-            alloc_info(Features);
-        _ ->
-            []
-    end.
+    {_Allocator, _Version, Features, _Settings} = erlang:system_info(allocator),
+    alloc_info(Features).
 
 alloc_info(Allocators) ->
     Allocs = [temp_alloc, sl_alloc, std_alloc, ll_alloc, eheap_alloc,
@@ -265,7 +260,14 @@ display_app_info() ->
 display_megaco_info() ->
     MI = megaco:module_info(),
     {value, {attributes, Attr}} = lists:keysearch(attributes, 1, MI),
-    {value, {app_vsn,    Ver}}  = lists:keysearch(app_vsn, 1, Attr),
+    {value, {app_vsn,    MVer}} = lists:keysearch(app_vsn, 1, Attr),
+    Ver =
+        case MVer of
+            "megaco-" ++ VStr ->
+                VStr;
+            _ ->
+                MVer
+        end,
     io:format("Megaco version:      ~s~n", [Ver]).
 
 display_asn1_info() ->
@@ -288,11 +290,11 @@ display_asn1_info() ->
 %% 
 %%----------------------------------------------------------------------
 
-expanded_messages(Codecs, DrvInclude) ->
+expanded_messages(Codecs, DrvInclude) when is_list(Codecs) ->
     MessagePackage = time_test, 
     expanded_messages(MessagePackage, Codecs, DrvInclude).
 
-expanded_messages(MessagePackage, Codecs, DrvInclude) ->
+expanded_messages(MessagePackage, Codecs, DrvInclude) when is_list(Codecs) ->
     ECodecs  = expand_codecs(Codecs, DrvInclude), 
     Messages = megaco_codec_transform:messages(MessagePackage), 
     expanded_messages2(ECodecs, Messages, []).
@@ -430,6 +432,37 @@ expand_codec(Codec, _) ->
     end.
 
 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+parse_runtime(RunTimeAtom) when is_atom(RunTimeAtom) ->
+    parse_runtime_str(atom_to_list(RunTimeAtom));
+parse_runtime(RunTimeStr) when is_list(RunTimeStr) ->
+    parse_runtime_str(RunTimeStr);
+parse_runtime(RunTime) when is_integer(RunTime) andalso (RunTime > 0) ->
+    timer:minutes(RunTime);
+parse_runtime(BadRunTime) ->
+    throw({error, {bad_runtime, BadRunTime}}).
+
+parse_runtime_str(RuneTimeStr) ->
+    try
+        begin
+            case lists:reverse(RuneTimeStr) of
+                [$s|Rest] ->
+                    timer:seconds(list_to_integer(lists:reverse(Rest)));
+                [$m|Rest] ->
+                    timer:minutes(list_to_integer(lists:reverse(Rest)));
+                [$h|Rest] ->
+                    timer:hours(list_to_integer(lists:reverse(Rest)));
+                _ ->
+                    timer:minutes(list_to_integer(RuneTimeStr))
+            end
+        end
+    catch
+        _:_:_ ->
+            throw({error, {bad_runtime, RuneTimeStr}})
+    end.
+
+
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -449,7 +482,7 @@ start_flex_scanner() ->
         {flex_scanner_error, Reason} ->
             error({failed_loading_flex_scanner_driver, Reason})
     after 10000 ->
-            exit(Pid, kill),
+            erlang:exit_signal(Pid, kill),
             error({failed_starting_flex_scanner, timeout})
     end.
 

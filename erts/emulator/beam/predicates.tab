@@ -2,7 +2,9 @@
 //
 // %CopyrightBegin%
 //
-// Copyright Ericsson AB 2020. All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
+//
+// Copyright Ericsson AB 2020-2026. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,10 +23,6 @@
 
 pred.never() {
     return 0;
-}
-
-pred.compiled_with_otp_20_or_higher() {
-    return S->otp_20_or_higher;
 }
 
 // Test whether a jump table can be used.
@@ -126,7 +124,7 @@ pred.mixed_types(Size, Rest) {
 // Test whether Bif is "heavy" and should always go through its export entry.
 pred.is_heavy_bif(Bif) {
     BeamFile_ImportEntry *import;
-    Export *export;
+    const Export *export;
 
     if (Bif.type != TAG_u || Bif.val >= S->beam.imports.count) {
         return 0;
@@ -142,15 +140,6 @@ pred.is_heavy_bif(Bif) {
     }
 
     return 0;
-}
-
-// Test whether the given literal is a map.
-pred.literal_is_map(Lit) {
-    Eterm term;
-
-    ASSERT(Lit.type == TAG_q);
-    term = beamfile_get_literal(&S->beam, Lit.val);
-    return is_map(term);
 }
 
 // Predicate to test whether all of the given new small map keys are literals
@@ -191,24 +180,6 @@ pred.is_empty_map(Lit) {
     return is_flatmap(term) && flatmap_get_size(flatmap_val(term)) == 0;
 }
 
-// Test whether a binary construction is too big.
-pred.binary_too_big(Size) {
-    return Size.type == TAG_o ||
-        (Size.type == TAG_u && ((Size.val >> (8*sizeof(Uint)-3)) != 0));
-}
-
-
-// Test whether the negation of the given number is small.
-pred.negation_is_small(Int) {
-    /*
-     * Check for the rare case of overflow in BeamInstr (UWord) -> Sint.
-     * Cast to the correct type before using IS_SSMALL (Sint).
-     */
-    return Int.type == TAG_i &&
-        !(Int.val & ~((((BeamInstr)1) << ((sizeof(Sint)*8)-1))-1)) &&
-        IS_SSMALL(-((Sint)Int.val));
-}
-
 // Mark this label. Always succeeds.
 pred.smp_mark_target_label(L) {
     ASSERT(L.type == TAG_f);
@@ -228,7 +199,33 @@ pred.map_key_sort(Size, Rest) {
     return beam_load_map_key_sort(S, Size, Rest);
 }
 
-// Test that the two registers are distinct.
-pred.distinct(Reg1, Reg2) {
-    return Reg1.type != Reg2.type || Reg1.val != Reg2.val;
+// Test that two operands are distinct.
+pred.distinct(Val1, Val2) {
+    if (Val1.type != Val2.type) {
+        return 1;
+    } else if (Val1.type == TAG_x || Val1.type == TAG_y) {
+        /* We must not compare the type indices (if any). */
+        return (Val1.val & REG_MASK) != (Val2.val & REG_MASK);
+    } else if (Val1.type == TAG_n) {
+        /* NIL has no associated value. */
+        return 0;
+    } else {
+        return Val1.val != Val2.val;
+    }
+}
+
+// Test that two operands are equal when disregarding types. Opposite of the
+// `distinct` predicate.
+pred.equal(Val1, Val2) {
+    if (Val1.type != Val2.type) {
+        return 0;
+    } else if (Val1.type == TAG_x || Val1.type == TAG_y) {
+        /* We must not compare the type indices (if any). */
+        return (Val1.val & REG_MASK) == (Val2.val & REG_MASK);
+    } else if (Val1.type == TAG_n) {
+        /* NIL has no associated value. */
+        return 1;
+    } else {
+        return Val1.val == Val2.val;
+    }
 }

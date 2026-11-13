@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 2010-2017. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2010-2025. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,8 +16,8 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
- * %CopyrightEnd% 
+ *
+ * %CopyrightEnd%
  */
 
 #include <erl_nif.h>
@@ -29,10 +31,10 @@
 #include <windows.h>  
 #include <gl/gl.h>
 #include <gl/glu.h>
-#elif defined(HAVE_GL_GL_H)
+#elif defined(HAVE_GL_GL_H) && defined(HAVE_GL_GLU_H)
 #include <GL/gl.h>
 # include <GL/glu.h>	
-#elif defined(HAVE_OPENGL_GL_H)
+#elif defined(HAVE_OPENGL_GL_H) && defined(HAVE_OPENGL_GLU_H)
 #include <OpenGL/gl.h> 
 #include <OpenGL/glu.h> 
 #endif

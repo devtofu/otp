@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1996-2016. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(digraph_SUITE).
@@ -31,7 +33,8 @@
 	 init_per_group/2,end_per_group/2]).
 
 -export([opts/1, degree/1, path/1, cycle/1, vertices/1,
-	 edges/1, data/1, otp_3522/1, otp_3630/1, otp_8066/1, vertex_names/1]).
+         edges/1, edge_updates/1, edge_update_after_delete/1,
+         data/1, otp_3522/1, otp_3630/1, otp_8066/1, vertex_names/1]).
 
 -export([spawn_graph/2]).
 
@@ -44,7 +47,8 @@ all() ->
      {group, tickets}, vertex_names].
 
 groups() -> 
-    [{misc, [], [vertices, edges, data, vertex_names]},
+    [{misc, [], [vertices, edges, edge_updates, edge_update_after_delete,
+                 data, vertex_names]},
      {tickets, [], [otp_3522, otp_3630, otp_8066]}].
 
 init_per_suite(Config) ->
@@ -190,6 +194,72 @@ edges(Config) when is_list(Config) ->
     [] = digraph:edges(G),
     [] = digraph:vertices(G),
     digraph:delete(G),
+    ok.
+
+%% Replacing an edge label must not duplicate or reorder its neighbours.
+edge_updates(Config) when is_list(Config) ->
+    lists:foreach(
+      fun(Options) ->
+              G = digraph:new(Options),
+              [digraph:add_vertex(G, V) || V <- [a, b, c]],
+              Edges0 = lists:flatmap(
+                         fun(N) ->
+                                 Out = {out, N},
+                                 In = {in, N},
+                                 Out = digraph:add_edge(G, Out, a, b, original),
+                                 In = digraph:add_edge(G, In, c, a, original),
+                                 [Out, In]
+                         end, lists:seq(1, 128)),
+              1 = digraph:add_edge(G, 1, a, b, original),
+              1.0 = digraph:add_edge(G, 1.0, a, b, original),
+              Edges = Edges0 ++ [1, 1.0],
+              Before = {digraph:in_edges(G, a), digraph:out_edges(G, a),
+                        digraph:in_edges(G, b), digraph:out_edges(G, c)},
+              lists:foreach(
+                fun(Label) ->
+                        lists:foreach(
+                          fun(E) ->
+                                  {E, V1, V2, _} = digraph:edge(G, E),
+                                  E = digraph:add_edge(G, E, V1, V2, Label),
+                                  {E, V1, V2, Label} = digraph:edge(G, E)
+                          end, lists:reverse(Edges)),
+                        Before = {digraph:in_edges(G, a), digraph:out_edges(G, a),
+                                  digraph:in_edges(G, b), digraph:out_edges(G, c)}
+                end, [updated, updated_again]),
+              Count = length(Edges),
+              Count = digraph:no_edges(G),
+              {error, {bad_edge, [a, c]}} =
+                  digraph:add_edge(G, {out, 1}, a, c, invalid),
+              true = digraph:delete(G)
+      end, [[Mode, Access] || Mode <- [cyclic, acyclic],
+                             Access <- [private, protected]]),
+    ok.
+
+%% Deletion can interpret match-spec syntax in an arbitrary edge identifier.
+%% A later insertion of a surviving edge must retain or restore its neighbours.
+%% This also passes if deletion is changed to treat such identifiers literally.
+edge_update_after_delete(Config) when is_list(Config) ->
+    lists:foreach(
+      fun({Mode, Id}) ->
+              Other = case Id of
+                          {nested, _} -> {nested, other};
+                          [_] -> [other];
+                          _ -> other
+                      end,
+              G = digraph:new([Mode]),
+              a = digraph:add_vertex(G, a),
+              b = digraph:add_vertex(G, b),
+              Id = digraph:add_edge(G, Id, a, b, original),
+              Other = digraph:add_edge(G, Other, a, b, original),
+              true = digraph:del_edge(G, Id),
+              Other = digraph:add_edge(G, Other, a, b, updated),
+              {Other, a, b, updated} = digraph:edge(G, Other),
+              [Other] = digraph:out_edges(G, a),
+              [Other] = digraph:in_edges(G, b),
+              1 = digraph:no_edges(G),
+              true = digraph:delete(G)
+      end, [{Mode, Id} || Mode <- [cyclic, acyclic],
+                         Id <- ['_', '$1', {nested, '_'}, ['$1']]]),
     ok.
 
 data(Config) when is_list(Config) ->
@@ -486,9 +556,6 @@ sane1(G) ->
               end
       end, EVs),
 
-    %% sink_vertices and source_vertices were introduced in 2001. They
-    %% are not documented.
-
     %% sink: a vertex with no outgoing edges
     SinkVs = [V || V <- Vs, digraph:out_edges(G, V) =:= [] ],
     case lists:sort(SinkVs) =:=  lists:sort(digraph:sink_vertices(G)) of
@@ -496,7 +563,7 @@ sane1(G) ->
         false -> 
             io:format("Bad sinks~n"), put(sane, no)
     end,
-    %% sink: a vertex with no incoming edges
+    %% source: a vertex with no incoming edges
     SourceVs = [V || V <- Vs, digraph:in_edges(G, V) =:= [] ],
     case lists:sort(SourceVs) =:=  lists:sort(digraph:source_vertices(G)) of
         true -> ok;

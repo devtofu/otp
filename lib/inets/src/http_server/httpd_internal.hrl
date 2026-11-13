@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2009-2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2009-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -26,7 +28,7 @@
 -define(SERVER_SOFTWARE,"inets/develop").	% Define in Makefile!
 -endif.
 -define(SERVER_PROTOCOL,"HTTP/1.1").
--define(DEFAULT_MODS, [mod_alias, mod_auth, mod_esi, mod_actions, mod_cgi,
+-define(DEFAULT_MODS, [mod_alias, mod_auth, mod_esi,
 		       mod_dir, mod_get, mod_head, mod_log, mod_disk_log]).
 -define(SOCKET_CHUNK_SIZE,8192).
 -define(SOCKET_MAX_POLL,25).
@@ -39,6 +41,8 @@
 	[{errmsg,"[an error occurred while processing this directive]"},
 	 {timefmt,"%A, %d-%b-%y %T %Z"},
 	 {sizefmt,"abbrev"}]).
+-define(ERROR_WHITESPACE_BEFORE_COLON, "Whitespace before colon in header").
 
+-define(CL_TE_ERROR, "Transfer-Encoding and Content-Length headers in the same request are forbidden").
 
 -endif. % -ifdef(httpd_internal_hrl).

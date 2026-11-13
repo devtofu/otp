@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2017-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2017-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -29,6 +31,7 @@
          direct_binary_arg/1]).
 
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
 suite() ->
     [{ct_hooks,[ts_install_cth]},
@@ -135,13 +138,13 @@ unaligned_sub_binaries(Config) when is_list(Config) ->
     ok.
 
 direct_binary_arg(Config) when is_list(Config) ->
-    {'EXIT',{badarg, _}} = (catch erlang:iolist_to_iovec(<<1:1>>)),
+    ?assertError(badarg, erlang:iolist_to_iovec(<<1:1>>)),
     [<<1>>] = erlang:iolist_to_iovec(<<1>>),
     [] = erlang:iolist_to_iovec(<<>>),
     ok.
 
 illegality_test(Fun, Variations) ->
-    [{'EXIT',{badarg, _}} = (catch Fun(Variation)) || Variation <- Variations],
+    [?assertError(badarg, Fun(Variation)) || Variation <- Variations],
     ok.
 
 equivalence_test(Fun, [Head | _] = Variations) ->

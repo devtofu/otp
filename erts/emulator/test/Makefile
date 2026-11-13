@@ -1,7 +1,9 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 1997-2020. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 1997-2026. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -39,6 +41,7 @@ MODULES= \
 	bif_SUITE \
 	big_SUITE \
 	binary_SUITE \
+	bitops_SUITE \
 	bs_bincomp_SUITE \
 	bs_bit_binaries_SUITE \
 	bs_construct_SUITE \
@@ -59,8 +62,10 @@ MODULES= \
 	dirty_nif_SUITE \
 	distribution_SUITE \
 	driver_SUITE \
+	dummy \
 	dump_SUITE \
 	efile_SUITE \
+	erl_debugger_SUITE \
 	erts_debug_SUITE \
 	estone_SUITE \
 	erl_link_SUITE \
@@ -76,6 +81,7 @@ MODULES= \
 	hello_SUITE \
 	hibernate_SUITE \
 	iovec_SUITE \
+	jit_SUITE \
 	list_bif_SUITE \
 	lttng_SUITE \
 	lcnt_SUITE \
@@ -84,6 +90,7 @@ MODULES= \
 	module_info_SUITE \
 	monitor_SUITE \
 	multi_load_SUITE \
+	native_record_SUITE \
 	nested_SUITE \
 	nif_SUITE \
 	node_container_SUITE \
@@ -92,12 +99,12 @@ MODULES= \
 	message_queue_data_SUITE \
 	op_SUITE \
 	os_signal_SUITE \
-	perf_SUITE \
 	port_SUITE \
 	port_bif_SUITE \
 	prim_eval_SUITE \
 	persistent_term_SUITE \
 	process_SUITE \
+	process_max_heap_size_SUITE \
 	pseudoknot_SUITE \
 	receive_SUITE \
 	ref_SUITE \
@@ -123,7 +130,10 @@ MODULES= \
 	trace_meta_SUITE \
 	trace_call_count_SUITE \
 	trace_call_time_SUITE \
+	trace_call_memory_SUITE \
 	tracer_SUITE \
+	trace_session_SUITE \
+	trace_sessions \
 	tracer_test \
 	scheduler_SUITE \
 	port_trace_SUITE \
@@ -136,7 +146,9 @@ MODULES= \
 	erts_test_utils \
 	erts_test_destructor \
 	crypto_reference \
-	literal_area_collector_test
+	literal_area_collector_test \
+        erts_test_sync_tracer \
+        ext_records
 
 NO_OPT= bs_bincomp \
 	bs_bit_binaries \
@@ -149,24 +161,41 @@ NO_OPT= bs_bincomp \
 	guard \
 	map
 
-NATIVE= hibernate
+STRIPPED_TYPES= \
+	bs_bincomp \
+	bs_construct \
+	bs_match_bin \
+	bs_match_int \
+	bs_match_tail \
+	bs_match_misc \
+	bs_utf
 
 NO_OPT_MODULES= $(NO_OPT:%=%_no_opt_SUITE)
 NO_OPT_ERL_FILES= $(NO_OPT_MODULES:%=%.erl)
 
-NATIVE_MODULES= $(NATIVE:%=%_native_SUITE)
-NATIVE_ERL_FILES= $(NATIVE_MODULES:%=%.erl)
+STRIPPED_TYPES_MODULES= $(STRIPPED_TYPES:%=%_stripped_types_SUITE)
+STRIPPED_TYPES_ERL_FILES= $(STRIPPED_TYPES_MODULES:%=%.erl)
 
-ERL_FILES= $(MODULES:%=%.erl)
+STDLIB_MODULES=error_info_lib
+
+ERL_FILES= $(MODULES:%=%.erl) \
+	$(STDLIB_MODULES:%=$(ERL_TOP)/lib/stdlib/test/%.erl)
+
+HRL_FILES= erts_test_utils.hrl
 
 TARGET_FILES = $(MODULES:%=$(EBIN)/%.$(EMULATOR))
+
+KERNEL_MODULES=gen_tcp_dist
+KERNEL_ERL_FILES=$(ERL_TOP)/lib/kernel/examples/gen_tcp_dist/src/gen_tcp_dist.erl
 
 EMAKEFILE=Emakefile
 
 TEST_SPEC_FILES= emulator.spec \
 		 emulator.spec.win \
 		 emulator_bench.spec \
+		 emulator_gh.spec \
 		 emulator_smoke.spec \
+		 emulator_trace.spec \
                  emulator_node_container_SUITE.spec
 
 # ----------------------------------------------------
@@ -177,20 +206,23 @@ RELSYSDIR = $(RELEASE_PATH)/emulator_test
 # ----------------------------------------------------
 # FLAGS
 # ----------------------------------------------------
-ERL_MAKE_FLAGS += 
-ERL_COMPILE_FLAGS +=
+ERL_MAKE_FLAGS +=
+ERL_COMPILE_FLAGS += +nowarn_missing_spec_documented
+ERL_COMPILE_FLAGS := $(filter-out +deterministic,$($(ERL_COMPILE_FLAGS)))
 
 # ----------------------------------------------------
 # Targets
 # ----------------------------------------------------
 
-make_emakefile: $(NO_OPT_ERL_FILES) $(NATIVE_ERL_FILES)
+make_emakefile: $(NO_OPT_ERL_FILES) \
+  $(KERNEL_ERL_FILES) $(STRIPPED_TYPES_ERL_FILES)
 	$(ERL_TOP)/make/make_emakefile $(ERL_COMPILE_FLAGS) +compressed -o$(EBIN) \
-	$(MODULES) >> $(EMAKEFILE)
+	$(MODULES) $(STDLIB_MODULES) $(KERNEL_MODULES) >> $(EMAKEFILE)
 	$(ERL_TOP)/make/make_emakefile +no_copt +no_postopt +no_ssa_opt +no_bsm_opt \
         $(ERL_COMPILE_FLAGS) -o$(EBIN) $(NO_OPT_MODULES) >> $(EMAKEFILE)
-	$(ERL_TOP)/make/make_emakefile $(ERL_COMPILE_FLAGS) \
-	-o$(EBIN) $(NATIVE_MODULES) >> $(EMAKEFILE)
+	$(ERL_TOP)/make/make_emakefile +strip_types \
+        $(ERL_COMPILE_FLAGS) -o$(EBIN) $(STRIPPED_TYPES_MODULES) >> $(EMAKEFILE)
+
 
 tests debug opt: make_emakefile
 	erl $(ERL_MAKE_FLAGS) -make
@@ -211,7 +243,7 @@ targets: $(TARGET_FILES)
 %_no_opt_SUITE.erl: %_SUITE.erl
 	sed -e 's;-module($(basename $<));-module($(basename $@));' $< > $@
 
-%_native_SUITE.erl: %_SUITE.erl
+%_stripped_types_SUITE.erl: %_SUITE.erl
 	sed -e 's;-module($(basename $<));-module($(basename $@));' $< > $@
 
 # ----------------------------------------------------
@@ -225,8 +257,10 @@ release_tests_spec: make_emakefile
 	$(INSTALL_DIR) "$(RELSYSDIR)"
 	$(INSTALL_DATA) $(EMAKEFILE) $(TEST_SPEC_FILES) \
 		$(ERL_FILES) "$(RELSYSDIR)"
+	$(INSTALL_DATA) $(HRL_FILES) "$(RELSYSDIR)"
 	$(INSTALL_DATA) $(NO_OPT_ERL_FILES) "$(RELSYSDIR)"
-	$(INSTALL_DATA) $(NATIVE_ERL_FILES) "$(RELSYSDIR)"
+	$(INSTALL_DATA) $(KERNEL_ERL_FILES) "$(RELSYSDIR)"
+	$(INSTALL_DATA) $(STRIPPED_TYPES_ERL_FILES) "$(RELSYSDIR)"
 	chmod -R u+w "$(RELSYSDIR)"
 	tar cf - *_SUITE_data property_test | (cd "$(RELSYSDIR)"; tar xf -)
 

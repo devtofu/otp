@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2012-2017. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2012-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -127,7 +129,5 @@ transform_to_EXTERNAL1994_maps(V0) ->
 	_  ->
 	    %% Keep the EXTERNAL 1990 definition to avoid losing
 	    %% information.
-	    V = [{K,V} || {K,V} <- maps:to_list(V0),
-                          V =/= asn1_NOVALUE],
-            maps:from_list(V)
+            #{K => V || K := V <- V0, V =/= asn1_NOVALUE}
     end.

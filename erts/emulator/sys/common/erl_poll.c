@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2006-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2006-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -70,6 +72,12 @@
  */
 #  define _DARWIN_UNLIMITED_SELECT
 #endif
+
+/*
+ * According to posix, select() implementations should
+ * support a max timeout value of at least 31 days.
+ */
+#define ERTS_SELECT_MAX_TV_SEC__ (31*24*60*60-1)
 
 #ifndef WANT_NONBLOCKING
 #  define WANT_NONBLOCKING
@@ -1757,6 +1765,17 @@ get_timeout_timeval(ErtsPollSet *ps,
     }
     else {
 	ErtsMonotonicTime sec = timeout/(1000*1000);
+        if (sec >= ERTS_SELECT_MAX_TV_SEC__) {
+            tvp->tv_sec = ERTS_SELECT_MAX_TV_SEC__;
+            tvp->tv_usec = 0;
+            /*
+             * If we actually should time out on
+             * this (huge) timeout, the select() call
+             * will be restarted with a newly calculated
+             * timeout after verifying the timeout...
+             */
+            return 1;
+        }
 	tvp->tv_sec = sec;
 	tvp->tv_usec = timeout - sec*(1000*1000);
 
@@ -1792,8 +1811,15 @@ get_timeout_timespec(ErtsPollSet *ps,
     }
     else {
 	ErtsMonotonicTime sec = timeout/(1000*1000*1000);
-	tsp->tv_sec = sec;
-	tsp->tv_nsec = timeout - sec*(1000*1000*1000);
+        if (sizeof(tsp->tv_sec) == 8
+            || sec <= (ErtsMonotonicTime) INT_MAX) {
+            tsp->tv_sec = sec;
+            tsp->tv_nsec = timeout - sec*(1000*1000*1000);
+        }
+        else {
+            tsp->tv_sec = INT_MAX;
+            tsp->tv_nsec = 0;
+        }
 
 	ASSERT(tsp->tv_sec >= 0);
 	ASSERT(tsp->tv_nsec >= 0);
@@ -1948,7 +1974,7 @@ ERTS_POLL_EXPORT(erts_poll_wait)(ErtsPollSet *ps,
         /*
          * This may have happened because another thread deselected
          * a fd in our poll set and then closed it, i.e. the driver
-         * behaved correctly. We wan't to avoid looking for a bad
+         * behaved correctly. We want to avoid looking for a bad
          * fd, that may even not exist anymore. Therefore, handle
          * update requests and try again. This behaviour should only
          * happen when using SELECT as the polling mechanism.
@@ -2449,7 +2475,7 @@ ERTS_POLL_EXPORT(erts_poll_get_selected_events)(ErtsPollSet *ps,
     char fname[30];
     char s[256];
     FILE *f;
-    unsigned int pos, flags, mnt_id;
+    unsigned int pos, flags, mnt_id, ino;
     int hdr_lines, line = 1;
     sprintf(fname,"/proc/%d/fdinfo/%d",getpid(), ps->kp_fd);
     for (fd = 0; fd < len; fd++)
@@ -2459,14 +2485,16 @@ ERTS_POLL_EXPORT(erts_poll_get_selected_events)(ErtsPollSet *ps,
         fprintf(stderr,"failed to open file %s, errno = %d\n", fname, errno);
         return;
     }
-    hdr_lines = fscanf(f,"pos:\t%x\nflags:\t%x\nmnt_id:\t%x\n",
-                       &pos, &flags, &mnt_id);
+
+    hdr_lines = fscanf(f,"pos:\t%x\nflags:\t%x\nmnt_id:\t%x\nino:\t%x\n",
+                       &pos, &flags, &mnt_id, &ino);
     if (hdr_lines < 2) {
         fprintf(stderr,"failed to parse file %s, errno = %d\n", fname, errno);
         ASSERT(0);
         fclose(f);
         return;
     }
+
     line += hdr_lines;
     while (fgets(s, sizeof(s) / sizeof(*s), f)) {
         /* tfd:       10 events: 40000019 data:       180000000a */

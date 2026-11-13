@@ -1,7 +1,9 @@
 %
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2018-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2018-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,10 +22,11 @@
 
 %%
 %%----------------------------------------------------------------------
-%% Purpose: Convert between diffrent cipher suite representations
+%% Purpose: Convert between different cipher suite representations
 %% 
 %%----------------------------------------------------------------------
 -module(ssl_cipher_format).
+-moduledoc false.
 
 -include("ssl_api.hrl").
 -include("ssl_cipher.hrl").
@@ -66,6 +69,7 @@ suite_map_to_str(#{key_exchange := null,
                cipher := null,
                mac := null,
                prf := null}) ->
+    %% Internal value for signaling renegotiation abilities.
     "TLS_EMPTY_RENEGOTIATION_INFO_SCSV";
 suite_map_to_str(#{key_exchange := any,
                cipher := Cipher,
@@ -88,6 +92,7 @@ suite_map_to_str(#{key_exchange := Kex,
         "_" ++ string:to_upper(atom_to_list(Mac)).
 
 suite_str_to_map("TLS_EMPTY_RENEGOTIATION_INFO_SCSV") ->
+    %% Internal value for signaling renegotiation abilities.
     #{key_exchange => null,
       cipher => null,
       mac => null,
@@ -988,6 +993,11 @@ suite_bin_to_map(?TLS_DHE_RSA_WITH_CHACHA20_POLY1305_SHA256) ->
       cipher => chacha20_poly1305, 
       mac => aead, 
       prf => sha256};
+suite_bin_to_map(?TLS_ECDHE_PSK_WITH_CHACHA20_POLY1305_SHA256) ->
+    #{key_exchange => ecdhe_psk,
+      cipher => chacha20_poly1305,
+      mac => aead,
+      prf => sha256};
 %% TLS 1.3 Cipher Suites RFC8446
 suite_bin_to_map(?TLS_AES_128_GCM_SHA256) ->
     #{key_exchange => any,
@@ -1655,6 +1665,11 @@ suite_map_to_bin(#{key_exchange := dhe_rsa,
         mac := aead, 
         prf := sha256}) ->
     ?TLS_DHE_RSA_WITH_CHACHA20_POLY1305_SHA256;
+suite_map_to_bin(#{key_exchange := ecdhe_psk,
+        cipher := chacha20_poly1305,
+        mac := aead,
+        prf := sha256}) ->
+    ?TLS_ECDHE_PSK_WITH_CHACHA20_POLY1305_SHA256;
 
 %% RFC 6655 - TLS-1.2 cipher suites
 suite_map_to_bin(#{key_exchange := psk,
@@ -2040,6 +2055,5 @@ openssl_cipher_str_to_algs(Kex, Part1, Part2) ->
         false ->
             {Cipher, Hash, default_prf(Kex, Hash)}
     end.
-
 
 

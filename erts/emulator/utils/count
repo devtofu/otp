@@ -2,7 +2,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1998-2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1998-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -24,7 +26,7 @@
 main(_) ->
     DisDir = "./dis",
     ok = filelib:ensure_dir(filename:join(DisDir, "dummy")),
-    io:format("Dissambling to ~s\n", [DisDir]),
+    io:format("Disassembling to ~s\n", [DisDir]),
     ok = file:set_cwd(DisDir),
     Path = code:get_path() -- ["."],
     Beams0 = [filelib:wildcard(filename:join(Dir, "*.beam")) ||
@@ -98,7 +100,7 @@ increment(Key, Inc) ->
     end.
 
 %%%
-%%% Counting sempahore to limit the number of processes that
+%%% Counting semaphore to limit the number of processes that
 %%% can run concurrently.
 %%%
 

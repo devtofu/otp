@@ -1,9 +1,11 @@
-#!/usr/bin/env perl 
+#!/usr/bin/env perl
 #
 # %CopyrightBegin%
-# 
-# Copyright Ericsson AB 1999-2016. All Rights Reserved.
-# 
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 1999-2025. All Rights Reserved.
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -15,7 +17,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# 
+#
 # %CopyrightEnd%
 #
 use strict;
@@ -52,6 +54,16 @@ my $architecture = shift;
 defined $architecture or die "No architecture specified";
 $architecture =~ s&^.*[/\\]&&;	# Remove directory part if any
 
+if ($architecture eq "win32") {
+  if ($ENV{"CONFIG_SUBTYPE"} eq "arm64" || $ENV{"CONFIG_SUBTYPE"} eq "x64_arm64") {
+    $architecture = "aarch64-pc-windows";
+  } elsif ($ENV{"CONFIG_SUBTYPE"} eq "win64") {
+    $architecture = "x86_64-pc-windows";
+  } elsif ($ENV{"CONFIG_SUBTYPE"} eq "win32") {
+    $architecture = "i686-pc-windows";
+  }
+}
+
 open(FILE, ">$outputfile") or die "Can't create $outputfile: $!";
 
 print FILE <<EOF;
@@ -59,11 +71,6 @@ print FILE <<EOF;
 #define ERLANG_OTP_RELEASE "$release"
 #define ERLANG_OTP_VERSION "$otp_version"
 #define ERLANG_VERSION "$version"
-#if ERTS_SAVED_COMPILE_TIME
-#  define ERLANG_COMPILE_DATE "$time_str"
-#else
-#  define ERLANG_COMPILE_DATE ""
-#endif
 #define ERLANG_ARCHITECTURE "$architecture"
 EOF
 

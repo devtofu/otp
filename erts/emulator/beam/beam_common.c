@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 1996-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 1996-2026. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,6 +36,10 @@
 #include "dist.h"
 #include "beam_catches.h"
 #include "beam_common.h"
+#include "erl_global_literals.h"
+#ifdef VALGRIND
+#  include <valgrind/memcheck.h>
+#endif
 
 #ifdef USE_VM_PROBES
 #include "dtrace-wrapper.h"
@@ -233,7 +239,7 @@ void erts_dirty_process_main(ErtsSchedulerData *esdp)
             if (ERTS_PROC_IS_EXITING(c_p)) {
                 sys_strcpy(fun_buf, "<exiting>");
             } else {
-                ErtsCodeMFA *cmfa = erts_find_function_from_pc(c_p->i);
+                const ErtsCodeMFA *cmfa = erts_find_function_from_pc(c_p->i);
                 if (cmfa) {
 		    dtrace_fun_decode(c_p, cmfa, NULL, fun_buf);
                 } else {
@@ -364,7 +370,7 @@ ubif2mfa(void* uf)
 /*
  * Mapping from the error code 'class tag' to atoms.
  */
-Eterm exception_tag[NUMBER_EXC_TAGS] = {
+const Eterm exception_tag[NUMBER_EXC_TAGS] = {
   am_error,	/* 0 */
   am_exit,	/* 1 */
   am_throw,	/* 2 */
@@ -373,7 +379,7 @@ Eterm exception_tag[NUMBER_EXC_TAGS] = {
 /*
  * Mapping from error code 'index' to atoms.
  */
-Eterm error_atom[NUMBER_EXIT_CODES] = {
+const Eterm error_atom[NUMBER_EXIT_CODES] = {
   am_internal_error,	/* 0 */
   am_normal,		/* 1 */
   am_internal_error,	/* 2 */
@@ -394,6 +400,9 @@ Eterm error_atom[NUMBER_EXIT_CODES] = {
   am_notsup,		/* 17 */
   am_badmap,		/* 18 */
   am_badkey,		/* 19 */
+  am_badrecord,         /* 20 */
+  am_badfield,          /* 21 */
+  am_novalue,           /* 22 */
 };
 
 /* Returns the return address at E[0] in printable form, skipping tracing in
@@ -401,9 +410,9 @@ Eterm error_atom[NUMBER_EXIT_CODES] = {
  *
  * This is needed to generate correct stacktraces when throwing errors from
  * instructions that return like an ordinary function, such as call_nif. */
-ErtsCodePtr erts_printable_return_address(Process* p, Eterm *E) {
-    Eterm *stack_bottom = STACK_START(p);
-    Eterm *scanner = E;
+ErtsCodePtr erts_printable_return_address(const Process* p, const Eterm *E) {
+    const Eterm *stack_bottom = STACK_START(p);
+    const Eterm *scanner = E;
 
     ASSERT(is_CP(scanner[0]));
 
@@ -413,11 +422,11 @@ ErtsCodePtr erts_printable_return_address(Process* p, Eterm *E) {
         erts_inspect_frame(scanner, &return_address);
 
         if (BeamIsReturnTrace(return_address)) {
-            scanner += CP_SIZE + 2;
-        } else if (BeamIsReturnTimeTrace(return_address)) {
-            scanner += CP_SIZE + 1;
+            scanner += CP_SIZE + BEAM_RETURN_TRACE_FRAME_SZ;
+        } else if (BeamIsReturnCallAccTrace(return_address)) {
+            scanner += CP_SIZE + BEAM_RETURN_CALL_ACC_TRACE_FRAME_SZ;
         } else if (BeamIsReturnToTrace(return_address)) {
-            scanner += CP_SIZE;
+            scanner += CP_SIZE + BEAM_RETURN_TO_TRACE_FRAME_SZ;
         } else {
             return return_address;
         }
@@ -509,25 +518,30 @@ handle_error(Process* c_p, ErtsCodePtr pc, Eterm* reg,
     /* Get the fully expanded error term */
     Value = expand_error_value(c_p, c_p->freason, Value);
 
-    /* Save final error term and stabilize the exception flags so no
-       further expansion is done. */
-    c_p->fvalue = Value;
+    /* Stabilize the exception flags so no further expansion is
+       done. */
     c_p->freason = PRIMARY_EXCEPTION(c_p->freason);
 
+    /* Clear out error term from process structure to avoid keeping
+       garbage. */
+    c_p->fvalue = NIL;
+
     /* Find a handler or die */
-    if ((c_p->catches > 0 || IS_TRACED_FL(c_p, F_EXCEPTION_TRACE))
+    if ((c_p->catches > 0 || c_p->return_trace_frames > 0)
 	&& !(c_p->freason & EXF_PANIC)) {
 	ErtsCodePtr new_pc;
         /* The Beam handler code (catch_end or try_end) checks reg[0]
-	   for THE_NON_VALUE to see if the previous code finished
-	   abnormally. If so, reg[1], reg[2] and reg[3] should hold the
-	   exception class, term and trace, respectively. (If the
-	   handler is just a trap to native code, these registers will
-	   be ignored.) */
+         * for THE_NON_VALUE to see if the previous code finished
+         * abnormally. If so, reg[1], reg[2] and reg[3] should hold
+         * the term, trace, and exception class, respectively. Note
+         * that the handler code will only need to move the class
+         * to reg[0] to have all registers correctly set up for the
+         * code that follows.
+         */
 	reg[0] = THE_NON_VALUE;
-	reg[1] = exception_tag[GET_EXC_CLASS(c_p->freason)];
-	reg[2] = Value;
-	reg[3] = c_p->ftrace;
+	reg[1] = Value;
+	reg[2] = c_p->ftrace;
+	reg[3] = exception_tag[GET_EXC_CLASS(c_p->freason)];
         if ((new_pc = next_catch(c_p, reg))) {
 
 #if defined(BEAMASM) && (defined(NATIVE_ERLANG_STACK) || defined(__aarch64__))
@@ -549,10 +563,7 @@ handle_error(Process* c_p, ErtsCodePtr pc, Eterm* reg,
             /* To avoid keeping stale references. */
             c_p->stop[0] = NIL;
 #endif
-#ifdef ERTS_SUPPORT_OLD_RECV_MARK_INSTRS
-	    /* No longer safe to use this position */
-            erts_msgq_recv_marker_clear(c_p, erts_old_recv_marker_id);
-#endif
+            c_p->ftrace = NIL;
 	    return new_pc;
 	}
 	if (c_p->catches > 0) erts_exit(ERTS_ERROR_EXIT, "Catch not found");
@@ -569,22 +580,16 @@ handle_error(Process* c_p, ErtsCodePtr pc, Eterm* reg,
 static ErtsCodePtr
 next_catch(Process* c_p, Eterm *reg) {
     int active_catches = c_p->catches > 0;
-    ErtsCodePtr return_to_trace_address = NULL;
+    ErtsCodePtr return_address = NULL;
     int have_return_to_trace = 0;
     Eterm *ptr, *prev;
+    ErtsCodePtr handler;
+#ifdef DEBUG
+    ErtsCodePtr dbg_return_to_trace_address = NULL;
+#endif
 
     ptr = prev = c_p->stop;
-    ASSERT(ptr <= STACK_START(c_p));
-
-    /* This function is only called if we have active catch tags or have
-     * previously called a function that was exception-traced. As the exception
-     * trace flag isn't cleared after the traced function returns (and the
-     * catch tag inserted by it is gone), it's possible to land here with an
-     * empty stack, and the process should simply die when that happens. */
-    if (ptr == STACK_START(c_p)) {
-        ASSERT(!active_catches && IS_TRACED_FL(c_p, F_EXCEPTION_TRACE));
-        return NULL;
-    }
+    ASSERT(ptr < STACK_START(c_p));
 
     while (ptr < STACK_START(c_p)) {
         Eterm val = ptr[0];
@@ -596,7 +601,6 @@ next_catch(Process* c_p, Eterm *reg) {
 
             ptr++;
         } else if (is_CP(val)) {
-            ErtsCodePtr return_address;
             const Eterm *frame;
 
             prev = ptr;
@@ -604,58 +608,74 @@ next_catch(Process* c_p, Eterm *reg) {
 
             if (BeamIsReturnTrace(return_address)) {
                 if (return_address == beam_exception_trace) {
-                    ErtsTracer *tracer;
                     ErtsCodeMFA *mfa;
 
                     mfa = (ErtsCodeMFA*)cp_val(frame[0]);
-                    tracer = ERTS_TRACER_FROM_ETERM(&frame[1]);
 
                     ASSERT_MFA(mfa);
-                    erts_trace_exception(c_p, mfa, reg[1], reg[2], tracer);
+                    erts_trace_exception(c_p, mfa, reg[3], reg[1], frame[1], frame[2]);
                 }
+                ASSERT(c_p->return_trace_frames > 0);
+                c_p->return_trace_frames--;
 
-                ptr += CP_SIZE + 2;
-            } else if (BeamIsReturnTimeTrace(return_address)) {
-                ptr += CP_SIZE + 1;
+                ptr += CP_SIZE + BEAM_RETURN_TRACE_FRAME_SZ;
+            } else if (BeamIsReturnCallAccTrace(return_address)) {
+                ptr += CP_SIZE + BEAM_RETURN_CALL_ACC_TRACE_FRAME_SZ;
             } else if (BeamIsReturnToTrace(return_address)) {
-                have_return_to_trace = 1; /* Record next cp */
-                return_to_trace_address = NULL;
-
-                ptr += CP_SIZE;
-            } else {
-                /* This is an ordinary call frame: if the previous frame was a
-                 * return_to trace we should record this CP as a return_to
-                 * candidate. */
-                if (have_return_to_trace) {
-                    return_to_trace_address = return_address;
-                    have_return_to_trace = 0;
-                } else {
-                    return_to_trace_address = NULL;
+                ErtsTracerRef *ref = get_tracer_ref_from_weak_id(&c_p->common,
+                                                                 frame[0]);
+                if (ref && IS_SESSION_TRACED_FL(ref, F_TRACE_RETURN_TO)) {
+                    ref->flags |= F_TRACE_RETURN_TO_MARK;
+                    have_return_to_trace = 1;
                 }
-
+                ptr += CP_SIZE + BEAM_RETURN_TO_TRACE_FRAME_SZ;
+            } else {
+            #ifdef DEBUG
+                dbg_return_to_trace_address = return_address;
+            #endif
                 ptr += CP_SIZE;
             }
         } else {
             ptr++;
         }
     }
-
+    if (have_return_to_trace) {
+        ErtsTracerRef *ref;
+        for (ref = c_p->common.tracee.first_ref; ref; ref = ref->next) {
+            ref->flags &= ~F_TRACE_RETURN_TO_MARK;
+        }
+    }
     return NULL;
 
  found_catch:
     ASSERT(ptr < STACK_START(c_p));
     c_p->stop = prev;
 
-    if (IS_TRACED_FL(c_p, F_TRACE_RETURN_TO) && return_to_trace_address) {
-        /* The stackframe closest to the catch contained an
-         * return_to_trace entry, so since the execution now
-         * continues after the catch, a return_to trace message
-         * would be appropriate.
+    if (have_return_to_trace) {
+        ErtsTracerRef *ref;
+        /*
+         * Execution now continues after catching exception from
+         * return_to traced function(s).
          */
-        erts_trace_return_to(c_p, return_to_trace_address);
+        ASSERT(return_address == dbg_return_to_trace_address);
+
+        for (ref = c_p->common.tracee.first_ref; ref; ref = ref->next) {
+            if (ref->flags & F_TRACE_RETURN_TO_MARK) {
+                ASSERT(IS_SESSION_TRACED_FL(ref, F_TRACE_RETURN_TO));
+                erts_trace_return_to(c_p, return_address, ref);
+                ref->flags &= ~F_TRACE_RETURN_TO_MARK;
+            }
+        }
     }
 
-    return catch_pc(*ptr);
+    /* Clear the try_tag or catch_tag in the stack frame so that we
+     * don't have to do it in the JITted code for the try_case
+     * instruction. (Unfortunately, a catch_end will still need to
+     * clear the catch_tag because it is executed even when no
+     * exception has occurred.) */
+    handler = catch_pc(*ptr);
+    *ptr = NIL;
+    return handler;
 }
 
 /*
@@ -738,6 +758,9 @@ expand_error_value(Process* c_p, Uint freason, Eterm Value) {
     case (GET_EXC_INDEX(EXC_BADARITY)):
     case (GET_EXC_INDEX(EXC_BADMAP)):
     case (GET_EXC_INDEX(EXC_BADKEY)):
+    case (GET_EXC_INDEX(EXC_BADRECORD)):
+    case (GET_EXC_INDEX(EXC_BADFIELD)):
+    case (GET_EXC_INDEX(EXC_NOVALUE)):
         /* Some common exceptions: value -> {atom, value} */
         ASSERT(is_value(Value));
 	hp = HAlloc(c_p, 3);
@@ -756,12 +779,13 @@ expand_error_value(Process* c_p, Uint freason, Eterm Value) {
 
 
 static void
-gather_stacktrace(Process* p, struct StackTrace* s, int depth)
+gather_stacktrace(Process* p, struct StackTrace* s)
 {
     ErtsCodePtr prev;
     Eterm *ptr;
 
-    if (depth == 0) {
+    if (s->depth >= s->max_depth) {
+        ASSERT(s->depth == s->max_depth);
         return;
     }
 
@@ -777,18 +801,18 @@ gather_stacktrace(Process* p, struct StackTrace* s, int depth)
 
     ASSERT(ptr >= STACK_TOP(p) && ptr <= STACK_START(p));
 
-    while (ptr < STACK_START(p) && depth > 0) {
+    while (ptr < STACK_START(p) && s->depth < s->max_depth) {
         if (is_CP(*ptr)) {
             ErtsCodePtr return_address;
 
             erts_inspect_frame(ptr, &return_address);
 
             if (BeamIsReturnTrace(return_address)) {
-                ptr += CP_SIZE + 2;
-            } else if (BeamIsReturnTimeTrace(return_address)) {
-                ptr += CP_SIZE + 1;
+                ptr += CP_SIZE + BEAM_RETURN_TRACE_FRAME_SZ;
+            } else if (BeamIsReturnCallAccTrace(return_address)) {
+                ptr += CP_SIZE + BEAM_RETURN_CALL_ACC_TRACE_FRAME_SZ;
             } else if (BeamIsReturnToTrace(return_address)) {
-                ptr += CP_SIZE;
+                ptr += CP_SIZE + BEAM_RETURN_TO_TRACE_FRAME_SZ;
             } else {
                 if (return_address != prev) {
                     ErtsCodePtr adjusted_address;
@@ -808,7 +832,6 @@ gather_stacktrace(Process* p, struct StackTrace* s, int depth)
 #endif
 
                     s->trace[s->depth++] = adjusted_address;
-                    depth--;
                 }
 
                 ptr += CP_SIZE;
@@ -826,7 +849,7 @@ gather_stacktrace(Process* p, struct StackTrace* s, int depth)
  *
  * There is an issue with line number information. Line number
  * information is associated with the address *before* an operation
- * that may fail or be stored stored on the stack. But continuation
+ * that may fail or be stored on the stack. But continuation
  * pointers point after its call instruction, not before. To avoid
  * finding the wrong line number, we'll need to adjust them so that
  * they point at the beginning of the call instruction or inside the
@@ -858,22 +881,19 @@ save_stacktrace(Process* c_p, ErtsCodePtr pc, Eterm* reg,
                 const ErtsCodeMFA *bif_mfa, Eterm args) {
     struct StackTrace* s;
     int sz;
-    int depth = erts_backtrace_depth;    /* max depth (never negative) */
+    /* Max depth (never negative), -1 as there is always a current function. */
+    const int max_depth = MAX(erts_backtrace_depth - 1, 0);
     Eterm error_info = THE_NON_VALUE;
 
-    if (depth > 0) {
-	/* There will always be a current function */
-	depth --;
-    }
-
-    /* Create a container for the exception data */
-    sz = (offsetof(struct StackTrace, trace) + sizeof(ErtsCodePtr) * depth
+    /* Create a bignum container for the stack trace */
+    sz = (offsetof(struct StackTrace, trace) + sizeof(ErtsCodePtr) * max_depth
           + sizeof(Eterm) - 1) / sizeof(Eterm);
-    s = (struct StackTrace *) HAlloc(c_p, 1 + sz);
+    s = (struct StackTrace *) HAlloc(c_p, sz);
     /* The following fields are inside the bignum */
-    s->header = make_pos_bignum_header(sz);
+    s->header = make_pos_bignum_header(sz - 1);
     s->freason = c_p->freason;
     s->depth = 0;
+    s->max_depth = max_depth;
 
     /*
      * If the failure was in a BIF other than 'error/1', 'error/2',
@@ -905,9 +925,8 @@ save_stacktrace(Process* c_p, ErtsCodePtr pc, Eterm* reg,
 	s->current = bif_mfa;
 	/* Save first stack entry */
 	ASSERT(pc);
-	if (depth > 0) {
+	if (s->depth < max_depth) {
 	    s->trace[s->depth++] = pc;
-	    depth--;
 	}
 	s->pc = NULL;
 
@@ -936,6 +955,9 @@ save_stacktrace(Process* c_p, ErtsCodePtr pc, Eterm* reg,
             break;
 
             /* Kernel */
+        case am_code:
+            format_module = am_erl_kernel_errors;
+            break;
         case am_os:
             format_module = am_erl_kernel_errors;
             break;
@@ -982,10 +1004,13 @@ save_stacktrace(Process* c_p, ErtsCodePtr pc, Eterm* reg,
 
 	args = make_arglist(c_p, reg, bif_mfa->arity);
     } else {
+        if (c_p->freason & EXF_HAS_EXT_INFO && is_map(c_p->fvalue)) {
+            error_info = c_p->fvalue;
+        }
 
     non_bif_stacktrace:
-
 	s->current = c_p->current;
+
         /*
 	 * For a function_clause error, the arguments are in the beam
 	 * registers and c_p->current is set.
@@ -1027,13 +1052,24 @@ save_stacktrace(Process* c_p, ErtsCodePtr pc, Eterm* reg,
     }
 
     /* Save the actual stack trace */
-    gather_stacktrace(c_p, s, depth);
+    gather_stacktrace(c_p, s);
+
+#ifdef VALGRIND
+    /* Make sure entire bignum is defined in case it shows up in a crash dump */
+    {
+        const int words_left = s->max_depth - s->depth;
+        if (words_left) {
+            VALGRIND_MAKE_MEM_DEFINED(&s->trace[s->depth],
+                                      words_left * sizeof(ErtsCodePtr));
+        }
+    }
+#endif
 }
 
 void
-erts_save_stacktrace(Process* p, struct StackTrace* s, int depth)
+erts_save_stacktrace(Process* p, struct StackTrace* s)
 {
-    gather_stacktrace(p, s, depth);
+    gather_stacktrace(p, s);
 }
 
 /*
@@ -1095,7 +1131,7 @@ static Eterm *get_freason_ptr_from_exc(Eterm exc) {
 
     if (exc == NIL) {
         /*
-         * Is is not exactly clear when exc can be NIL. Probably only
+         * It is not exactly clear when exc can be NIL. Probably only
          * when the exception has been generated from native code.
          * Return a pointer to an Eterm that can be safely written and
          * ignored.
@@ -1255,11 +1291,13 @@ build_stacktrace(Process* c_p, Eterm exc) {
     return res;
 }
 
-Export*
-call_error_handler(Process* p, const ErtsCodeMFA *mfa, Eterm* reg, Eterm func)
+const Export *call_error_handler(Process* p,
+                                 const ErtsCodeMFA *mfa,
+                                 Eterm* reg,
+                                 Eterm func)
 {
+    const Export* ep;
     Eterm* hp;
-    Export* ep;
     int arity;
     Eterm args;
     Uint sz;
@@ -1303,52 +1341,8 @@ call_error_handler(Process* p, const ErtsCodeMFA *mfa, Eterm* reg, Eterm func)
     return ep;
 }
 
-static Export*
-apply_setup_error_handler(Process* p, Eterm module, Eterm function, Uint arity, Eterm* reg)
-{
-    Export* ep;
-
-    /*
-     * Find the export table index for the error handler. Return NULL if
-     * there is no error handler module.
-     */
-
-    if ((ep = erts_active_export_entry(erts_proc_get_error_handler(p),
-				     am_undefined_function, 3)) == NULL) {
-	return NULL;
-    } else {
-	int i;
-	Uint sz = 2*arity;
-	Eterm* hp;
-	Eterm args = NIL;
-
-	/*
-	 * Always copy args from registers to a new list; this ensures
-	 * that we have the same behaviour whether or not this was
-	 * called from apply or fixed_apply (any additional last
-	 * THIS-argument will be included, assuming that arity has been
-	 * properly adjusted).
-	 */
-
-	if (HeapWordsLeft(p) < sz) {
-	    erts_garbage_collect(p, sz, reg, arity);
-	}
-	hp = HEAP_TOP(p);
-	HEAP_TOP(p) += sz;
-	for (i = arity-1; i >= 0; i--) {
-	    args = CONS(hp, reg[i], args);
-	    hp += 2;
-	}
-	reg[0] = module;
-	reg[1] = function;
-	reg[2] = args;
-    }
-
-    return ep;
-}
-
 static ERTS_INLINE void
-apply_bif_error_adjustment(Process *p, Export *ep,
+apply_bif_error_adjustment(Process *p, const Export *ep,
                            Eterm *reg, Uint arity,
                            ErtsCodePtr I, Uint stack_offset)
 {
@@ -1436,11 +1430,11 @@ apply_bif_error_adjustment(Process *p, Export *ep,
     }
 }
 
-Export*
+const Export *
 apply(Process* p, Eterm* reg, ErtsCodePtr I, Uint stack_offset)
 {
+    const Export *ep;
     int arity;
-    Export* ep;
     Eterm tmp;
     Eterm module = reg[0];
     Eterm function = reg[1];
@@ -1509,7 +1503,7 @@ apply(Process* p, Eterm* reg, ErtsCodePtr I, Uint stack_offset)
     tmp = args;
     arity = 0;
     while (is_list(tmp)) {
-	if (arity < (MAX_REG - 1)) {
+        if (arity < MAX_ARG) {
 	    reg[arity++] = CAR(list_val(tmp));
 	    tmp = CDR(list_val(tmp));
 	} else {
@@ -1521,26 +1515,21 @@ apply(Process* p, Eterm* reg, ErtsCodePtr I, Uint stack_offset)
 	goto error;
     }
 
-    /*
-     * Get the index into the export table, or failing that the export
-     * entry for the error handler.
-     *
-     * Note: All BIFs have export entries; thus, no special case is needed.
-     */
+    /* Call the referenced function, if any: should the function not be found,
+     * create a stub entry which in turn calls the error handler. */
+    ep = erts_export_get_or_make_stub(module, function, arity);
 
-    if ((ep = erts_active_export_entry(module, function, arity)) == NULL) {
-	if ((ep = apply_setup_error_handler(p, module, function, arity, reg)) == NULL) goto error;
-    }
     apply_bif_error_adjustment(p, ep, reg, arity, I, stack_offset);
     DTRACE_GLOBAL_CALL_FROM_EXPORT(p, ep);
+
     return ep;
 }
 
-Export*
+const Export *
 fixed_apply(Process* p, Eterm* reg, Uint arity,
             ErtsCodePtr I, Uint stack_offset)
 {
-    Export* ep;
+    const Export *ep;
     Eterm module;
     Eterm function;
 
@@ -1567,103 +1556,28 @@ fixed_apply(Process* p, Eterm* reg, Uint arity,
 	return apply(p, reg, I, stack_offset);
     }
 
-    /*
-     * Get the index into the export table, or failing that the export
-     * entry for the error handler module.
-     *
-     * Note: All BIFs have export entries; thus, no special case is needed.
-     */
-
-    if ((ep = erts_active_export_entry(module, function, arity)) == NULL) {
-	if ((ep = apply_setup_error_handler(p, module, function, arity, reg)) == NULL)
-	    goto error;
-    }
+    /* Call the referenced function, if any: should the function not be found,
+     * create a stub entry which in turn calls the error handler. */
+    ep = erts_export_get_or_make_stub(module, function, arity);
 
     apply_bif_error_adjustment(p, ep, reg, arity, I, stack_offset);
     DTRACE_GLOBAL_CALL_FROM_EXPORT(p, ep);
     return ep;
 }
 
-int
-erts_hibernate(Process* c_p, Eterm* reg)
-{
-    int arity;
-    Eterm tmp;
-    Eterm module = reg[0];
-    Eterm function = reg[1];
-    Eterm args = reg[2];
+void erts_hibernate(Process *c_p, Eterm *regs, int arity) {
+    const Uint max_default_arg_reg =
+        sizeof(c_p->def_arg_reg) / sizeof(c_p->def_arg_reg[0]);
 
-    if (is_not_atom(module) || is_not_atom(function)) {
-	/*
-	 * No need to test args here -- done below.
-	 */
-    error:
-	c_p->freason = BADARG;
-
-    error2:
-	reg[0] = module;
-	reg[1] = function;
-	reg[2] = args;
-	return 0;
+    /* Save some memory if possible. */
+    if (arity <= max_default_arg_reg && c_p->arg_reg != c_p->def_arg_reg) {
+        erts_free(ERTS_ALC_T_ARG_REG, c_p->arg_reg);
+        c_p->max_arg_reg = max_default_arg_reg;
+        c_p->arg_reg = c_p->def_arg_reg;
     }
 
-    arity = 0;
-    tmp = args;
-    while (is_list(tmp)) {
-	if (arity < MAX_REG) {
-	    tmp = CDR(list_val(tmp));
-	    arity++;
-	} else {
-	    c_p->freason = SYSTEM_LIMIT;
-	    goto error2;
-	}
-    }
-    if (is_not_nil(tmp)) {	/* Must be well-formed list */
-	goto error;
-    }
-
-    /*
-     * At this point, arguments are known to be good.
-     */
-
-    if (c_p->arg_reg != c_p->def_arg_reg) {
-	/* Save some memory */
-	erts_free(ERTS_ALC_T_ARG_REG, c_p->arg_reg);
-	c_p->arg_reg = c_p->def_arg_reg;
-	c_p->max_arg_reg = sizeof(c_p->def_arg_reg)/sizeof(c_p->def_arg_reg[0]);
-    }
-
-#ifdef USE_VM_PROBES
-    if (DTRACE_ENABLED(process_hibernate)) {
-        ErtsCodeMFA cmfa = { module, function, arity};
-        DTRACE_CHARBUF(process_name, DTRACE_TERM_BUF_SIZE);
-        DTRACE_CHARBUF(mfa_buf, DTRACE_TERM_BUF_SIZE);
-        dtrace_fun_decode(c_p, &cmfa, process_name, mfa_buf);
-        DTRACE2(process_hibernate, process_name, mfa_buf);
-    }
-#endif
-    /*
-     * Arrange for the process to be resumed at the given MFA with
-     * the stack cleared.
-     */
-    c_p->arity = 3;
-    c_p->arg_reg[0] = module;
-    c_p->arg_reg[1] = function;
-    c_p->arg_reg[2] = args;
-    c_p->stop = c_p->hend - CP_SIZE; /* Keep first continuation pointer */
-
-    switch(erts_frame_layout) {
-    case ERTS_FRAME_LAYOUT_RA:
-        ASSERT(c_p->stop[0] == make_cp(beam_normal_exit));
-        break;
-    case ERTS_FRAME_LAYOUT_FP_RA:
-        ASSERT(c_p->stop[0] == make_cp(NULL));
-        ASSERT(c_p->stop[1] == make_cp(beam_normal_exit));
-        break;
-    }
-
-    c_p->catches = 0;
-    c_p->i = beam_run_process;
+    sys_memcpy(c_p->arg_reg, regs, arity * sizeof(Eterm));
+    c_p->arity = arity;
 
     /*
      * If there are no waiting messages, garbage collect and
@@ -1682,10 +1596,9 @@ erts_hibernate(Process* c_p, Eterm* reg)
 	    erts_atomic32_read_band_relb(&c_p->state, ~ERTS_PSFLG_ACTIVE);
 	ASSERT(!ERTS_PROC_IS_EXITING(c_p));
     }
+
     erts_proc_unlock(c_p, ERTS_PROC_LOCK_MSGQ|ERTS_PROC_LOCK_STATUS);
-    c_p->current = &BIF_TRAP_EXPORT(BIF_hibernate_3)->info.mfa;
     c_p->flags |= F_HIBERNATE_SCHED; /* Needed also when woken! */
-    return 1;
 }
 
 ErtsCodePtr
@@ -1694,161 +1607,126 @@ call_fun(Process* p,    /* Current process. */
          Eterm* reg,    /* Contents of registers. */
          Eterm args)    /* THE_NON_VALUE or pre-built list of arguments. */
 {
-    Eterm fun = reg[arity];
-    Eterm hdr;
-    int i;
-    Eterm* hp;
+    ErtsCodeIndex code_ix;
+    ErtsCodePtr code_ptr;
+    ErlFunThing *funp;
+    Eterm fun;
 
-    if (!is_boxed(fun)) {
-	goto badfun;
+    fun = reg[arity];
+
+    if (is_not_any_fun(fun)) {
+        p->current = NULL;
+        p->freason = EXC_BADFUN;
+        p->fvalue = fun;
+        return NULL;
     }
-    hdr = *boxed_val(fun);
 
-    if (is_fun_header(hdr)) {
-	ErlFunThing* funp = (ErlFunThing *) fun_val(fun);
-	ErlFunEntry* fe = funp->fe;
-	ErtsCodePtr code_ptr = fe->address;
-	Eterm* var_ptr;
-	unsigned num_free = funp->num_free;
-        const ErtsCodeMFA *mfa = erts_code_to_codemfa(code_ptr);
-	int actual_arity = mfa->arity;
+    funp = (ErlFunThing*)fun_val(fun);
 
-	if (actual_arity == arity+num_free) {
-	    DTRACE_LOCAL_CALL(p, mfa);
-	    if (num_free == 0) {
-		return code_ptr;
-	    } else {
-		var_ptr = funp->env;
-		reg += arity;
-		i = 0;
-		do {
-		    reg[i] = var_ptr[i];
-		    i++;
-		} while (i < num_free);
-		reg[i] = fun;
-		return code_ptr;
-	    }
-	    return code_ptr;
-	} else {
-	    /*
-	     * Something wrong here. First build a list of the arguments.
-	     */
+    code_ix = erts_active_code_ix();
+    code_ptr = (funp->entry.disp)->addresses[code_ix];
 
-	    if (is_non_value(args)) {
-		Uint sz = 2 * arity;
-		args = NIL;
-		if (HeapWordsLeft(p) < sz) {
-		    erts_garbage_collect(p, sz, reg, arity+1);
-		    fun = reg[arity];
-		}
-		hp = HEAP_TOP(p);
-		HEAP_TOP(p) += sz;
-		for (i = arity-1; i >= 0; i--) {
-		    args = CONS(hp, reg[i], args);
-		    hp += 2;
-		}
-	    }
+    if (ERTS_LIKELY(code_ptr != beam_unloaded_fun &&
+                    fun_arity(funp) == arity)) {
+        for (int i = 0; i < fun_num_free(funp); i++) {
+            reg[i + arity] = funp->env[i];
+        }
 
-	    if (actual_arity >= 0) {
-		/*
-		 * There is a fun defined, but the call has the wrong arity.
-		 */
-		hp = HAlloc(p, 3);
-		p->freason = EXC_BADARITY;
-		p->fvalue = TUPLE2(hp, fun, args);
-		return NULL;
-	    } else {
-		Export* ep;
-		Module* modp;
-		Eterm module;
-		ErtsCodeIndex code_ix = erts_active_code_ix();
-
-		/*
-		 * No arity. There is no module loaded that defines the fun,
-		 * either because the fun is newly created from the external
-		 * representation (the module has never been loaded),
-		 * or the module defining the fun has been unloaded.
-		 */
-
-		module = fe->module;
-
-		ERTS_THR_READ_MEMORY_BARRIER;
-		if (fe->pend_purge_address) {
-		    /*
-		     * The system is currently trying to purge the
-		     * module containing this fun. Suspend the process
-		     * and let it try again when the purge operation is
-		     * done (may succeed or not).
-		     */
-		    ep = erts_suspend_process_on_pending_purge_lambda(p, fe);
-		    ASSERT(ep);
-		}
-		else {
-		    if ((modp = erts_get_module(module, code_ix)) != NULL
-			&& modp->curr.code_hdr != NULL) {
-			/*
-			 * There is a module loaded, but obviously the fun is not
-			 * defined in it. We must not call the error_handler
-			 * (or we will get into an infinite loop).
-			 */
-			goto badfun;
-		    }
-
-		    /*
-		     * No current code for this module. Call the error_handler module
-		     * to attempt loading the module.
-		     */
-
-		    ep = erts_find_function(erts_proc_get_error_handler(p),
-					    am_undefined_lambda, 3, code_ix);
-		    if (ep == NULL) {	/* No error handler */
-			p->current = NULL;
-			p->freason = EXC_UNDEF;
-			return NULL;
-		    }
-		}
-		reg[0] = module;
-		reg[1] = fun;
-		reg[2] = args;
-		reg[3] = NIL;
-                return ep->addresses[code_ix];
-	    }
-	}
-    } else if (is_export_header(hdr)) {
-	Export *ep;
-	int actual_arity;
-
-	ep = *((Export **) (export_val(fun) + 1));
-	actual_arity = ep->info.mfa.arity;
-
-	if (arity == actual_arity) {
+#ifdef USE_VM_CALL_PROBES
+        if (is_local_fun(funp)) {
+            DTRACE_LOCAL_CALL(p, erts_code_to_codemfa(code_ptr));
+        } else {
+            const Export *ep = funp->entry.exp;
             DTRACE_GLOBAL_CALL(p, &ep->info.mfa);
-            return ep->addresses[erts_active_code_ix()];
-	} else {
-	    /*
-	     * Wrong arity. First build a list of the arguments.
-	     */
+        }
+#endif
 
-	    if (is_non_value(args)) {
-		args = NIL;
-		hp = HAlloc(p, arity*2);
-		for (i = arity-1; i >= 0; i--) {
-		    args = CONS(hp, reg[i], args);
-		    hp += 2;
-		}
-	    }
-
-	    hp = HAlloc(p, 3);
-	    p->freason = EXC_BADARITY;
-	    p->fvalue = TUPLE2(hp, fun, args);
-	    return NULL;
-	}
+        return code_ptr;
     } else {
-    badfun:
-	p->current = NULL;
-	p->freason = EXC_BADFUN;
-	p->fvalue = fun;
-	return NULL;
+        /* Something wrong here. First build a list of the arguments. */
+        if (is_non_value(args)) {
+            Uint sz = 2 * arity;
+            Eterm *hp;
+
+            args = NIL;
+
+            if (HeapWordsLeft(p) < sz) {
+                erts_garbage_collect(p, sz, reg, arity+1);
+
+                fun = reg[arity];
+                funp = (ErlFunThing*)fun_val(fun);
+            }
+
+            hp = HEAP_TOP(p);
+            HEAP_TOP(p) += sz;
+
+            for (int i = arity - 1; i >= 0; i--) {
+                args = CONS(hp, reg[i], args);
+                hp += 2;
+            }
+        }
+
+        if (fun_arity(funp) != arity) {
+            /* There is a fun defined, but the call has the wrong arity. */
+            Eterm *hp = HAlloc(p, 3);
+            p->freason = EXC_BADARITY;
+            p->fvalue = TUPLE2(hp, fun, args);
+            return NULL;
+        } else {
+            const ErlFunEntry *fe;
+            const Export *ep;
+            Eterm module;
+            Module *modp;
+
+            /* There is no module loaded that defines the fun, either because
+             * the fun is newly created from the external representation (the
+             * module has never been loaded), or the module defining the fun
+             * has been unloaded. */
+            ASSERT(is_local_fun(funp) && code_ptr == beam_unloaded_fun);
+            fe = funp->entry.fun;
+            module = fe->module;
+
+            ERTS_THR_READ_MEMORY_BARRIER;
+            if (fe->pend_purge_address) {
+                /* The system is currently trying to purge the
+                 * module containing this fun. Suspend the process
+                 * and let it try again when the purge operation is
+                 * done (may succeed or not). */
+                ep = erts_suspend_process_on_pending_purge_lambda(p, fe);
+            } else {
+                if ((modp = erts_get_module(module, code_ix)) != NULL
+                    && modp->curr.code_hdr != NULL) {
+                    /* There is a module loaded, but obviously the fun is
+                     * not defined in it. We must not call the error_handler
+                     * (or we will get into an infinite loop). */
+                    p->current = NULL;
+                    p->freason = EXC_BADFUN;
+                    p->fvalue = fun;
+                    return NULL;
+                }
+
+                /* No current code for this module. Call the error_handler
+                 * module to attempt loading the module. */
+
+                ep = erts_find_function(erts_proc_get_error_handler(p),
+                                        am_undefined_lambda, 3, code_ix);
+                if (ep == NULL) {
+                    /* No error handler */
+                    p->current = NULL;
+                    p->freason = EXC_UNDEF;
+                    return NULL;
+                }
+            }
+
+            ASSERT(ep);
+
+            reg[0] = module;
+            reg[1] = fun;
+            reg[2] = args;
+            reg[3] = NIL;
+
+            return ep->dispatch.addresses[code_ix];
+        }
     }
 }
 
@@ -1883,50 +1761,20 @@ apply_fun(Process* p, Eterm fun, Eterm args, Eterm* reg)
     return call_fun(p, arity, reg, args);
 }
 
-ErlFunThing*
-new_fun_thing(Process* p, ErlFunEntry* fe, int arity, int num_free)
-{
-    ErlFunThing* funp;
-
-    funp = (ErlFunThing*) p->htop;
-    p->htop += ERL_FUN_SIZE + num_free;
-    erts_refc_inc(&fe->refc, 2);
-
-    funp->thing_word = HEADER_FUN;
-    funp->next = MSO(p).first;
-    MSO(p).first = (struct erl_off_heap_header*) funp;
-    funp->fe = fe;
-    funp->num_free = num_free;
-    funp->creator = p->common.id;
-    funp->arity = arity;
-
-#ifdef DEBUG
-    {
-        const ErtsCodeMFA *mfa = erts_get_fun_mfa(fe);
-        ASSERT(funp->arity == mfa->arity - num_free);
-        ASSERT(arity == fe->arity);
-    }
-#endif
-
-    return funp;
-}
-
 int
 is_function2(Eterm Term, Uint arity)
 {
-    if (is_fun(Term)) {
-	ErlFunThing* funp = (ErlFunThing *) fun_val(Term);
-	return funp->arity == arity;
-    } else if (is_export(Term)) {
-	Export* exp = (Export *) (export_val(Term)[1]);
-	return exp->info.mfa.arity == arity;
+    if (is_any_fun(Term)) {
+        ErlFunThing *funp = (ErlFunThing*)fun_val(Term);
+        return fun_arity(funp) == arity;
     }
+
     return 0;
 }
 
 Eterm get_map_element(Eterm map, Eterm key)
 {
-    Uint32 hx;
+    erts_ihash_t hx;
     const Eterm *vs;
     if (is_flatmap(map)) {
 	flatmap_t *mp;
@@ -1959,7 +1807,7 @@ Eterm get_map_element(Eterm map, Eterm key)
     return vs ? *vs : THE_NON_VALUE;
 }
 
-Eterm get_map_element_hash(Eterm map, Eterm key, Uint32 hx)
+Eterm get_map_element_hash(Eterm map, Eterm key, erts_ihash_t hx)
 {
     const Eterm *vs;
 
@@ -2052,11 +1900,14 @@ erts_gc_new_map(Process* p, Eterm* reg, Uint live,
     }
 
     thp    = p->htop;
-    mhp    = thp + 1 + n/2;
+    mhp    = thp + (n == 0 ? 0 : 1) + n/2;
     E      = p->stop;
-    keys   = make_tuple(thp);
-    *thp++ = make_arityval(n/2);
-
+    if (n == 0) {
+        keys   = ERTS_GLOBAL_LIT_EMPTY_TUPLE;
+    } else {
+        keys   = make_tuple(thp);
+        *thp++ = make_arityval(n/2);
+    }
     mp = (flatmap_t *)mhp; mhp += MAP_HEADER_FLATMAP_SZ;
     mp->thing_word = MAP_HEADER_FLATMAP;
     mp->size = n/2;
@@ -2121,12 +1972,14 @@ erts_gc_update_map_assoc(Process* p, Eterm* reg, Uint live,
     Eterm new_key;
     Eterm* kp;
     Eterm map;
+    int changed_values = 0;
+    int changed_keys = 0;
 
     num_updates = n / 2;
     map = reg[live];
 
     if (is_not_flatmap(map)) {
-	Uint32 hx;
+	erts_ihash_t hx;
 	Eterm val;
 
 	ASSERT(is_hashmap(map));
@@ -2172,35 +2025,46 @@ erts_gc_update_map_assoc(Process* p, Eterm* reg, Uint live,
      * Build the skeleton for the map, ready to be filled in.
      *
      * +-----------------------------------+
-     * | (Space for aritvyal for keys)     | <-----------+
-     * +-----------------------------------+		 |
-     * | (Space for key 1)		   |		 |    <-- kp
-     * +-----------------------------------+		 |
-     *        .				    		 |
-     *        .				    		 |
-     *        .				    		 |
-     * +-----------------------------------+		 |
-     * | (Space for last key)		   |		 |
-     * +-----------------------------------+		 |
-     * | MAP_HEADER			   |		 |
-     * +-----------------------------------+		 |
-     * | (Space for number of keys/values) |		 |
-     * +-----------------------------------+		 |
-     * | Boxed tuple pointer            >----------------+
+     * | MAP_HEADER_FLATMAP                |
      * +-----------------------------------+
-     * | (Space for value 1)		   |                  <-- hp
+     * | (Space for number of keys/values) |
+     * +-----------------------------------+
+     * | Boxed tuple pointer            >----------------+
+     * +-----------------------------------+             |
+     * | (Space for value 1)               |             |    <-- hp
+     * +-----------------------------------+             |
+     *        .                                          |
+     *        .                                          |
+     *        .                                          |
+     * +-----------------------------------+             |
+     * | (Space for last value)	           |             |
+     * +-----------------------------------+             |
+     * +-----------------------------------+             |
+     * | (Space for aritvyal for keys)     | <-----------+
+     * +-----------------------------------+
+     * | (Space for key 1)                 |                  <-- kp
+     * +-----------------------------------+
+     *        .
+     *        .
+     *        .
+     * +-----------------------------------+
+     * | (Space for last key)              |
      * +-----------------------------------+
      */
 
+    hp = p->htop;
     E = p->stop;
-    kp = p->htop + 1;		/* Point to first key */
-    hp = kp + num_old + num_updates;
 
     res = make_flatmap(hp);
     mp = (flatmap_t *)hp;
     hp += MAP_HEADER_FLATMAP_SZ;
     mp->thing_word = MAP_HEADER_FLATMAP;
-    mp->keys = make_tuple(kp-1);
+
+    kp = hp + num_old + num_updates; /* Point to key tuple. */
+
+    mp->keys = make_tuple(kp);
+
+    kp = kp + 1;                /* Point to first key. */
 
     old_vals = flatmap_get_values(old_mp);
     old_keys = flatmap_get_keys(old_mp);
@@ -2217,21 +2081,25 @@ erts_gc_update_map_assoc(Process* p, Eterm* reg, Uint live,
 	Eterm key;
 	Sint c;
 
-	ASSERT(kp < (Eterm *)mp);
 	key = *old_keys;
-	if ((c = CMP_TERM(key, new_key)) < 0) {
+	if ((c = (key == new_key) ? 0 : erts_cmp_flatmap_keys(key, new_key)) < 0) {
 	    /* Copy old key and value */
 	    *kp++ = key;
 	    *hp++ = *old_vals;
 	    old_keys++, old_vals++, num_old--;
 	} else {		/* Replace or insert new */
-	    GET_TERM(new_p[1], *hp++);
-	    if (c > 0) {	/* If new new key */
+	    GET_TERM(new_p[1], *hp);
+	    if (c > 0) {	/* If new key */
 		*kp++ = new_key;
+                changed_keys = 1;
 	    } else {		/* If replacement */
+                if (*old_vals != *hp) {
+                    changed_values = 1;
+                }
 		*kp++ = key;
 		old_keys++, old_vals++, num_old--;
 	    }
+            hp++;
 	    n--;
 	    if (n == 0) {
 		break;
@@ -2263,6 +2131,28 @@ erts_gc_update_map_assoc(Process* p, Eterm* reg, Uint live,
 	    GET_TERM(new_p[1], *hp++);
 	    new_p += 2;
 	}
+    } else if (!changed_keys && !changed_values) {
+        /*
+         * All updates are now done, no new keys were introduced, and
+         * all new values were the same as old ones. We can just
+         * return the old map and skip committing the new allocation,
+         * effectively releasing it.
+         */
+        ASSERT(n == 0);
+        return map;
+    } else if (!changed_keys) {
+        /*
+         * All updates are now done, no new keys were introduced, but
+         * some values were changed. We can retain the old key tuple.
+         */
+        ASSERT(n == 0);
+        mp->size = old_mp->size;
+        mp->keys = old_mp->keys;
+        while (num_old-- > 0) {
+            *hp++ = *old_vals++;
+        }
+        p->htop = hp;
+        return res;
     } else {
 	/*
 	 * All updates are now done. We may still have old
@@ -2270,7 +2160,6 @@ erts_gc_update_map_assoc(Process* p, Eterm* reg, Uint live,
 	 */
 	ASSERT(n == 0);
 	while (num_old-- > 0) {
-	    ASSERT(kp < (Eterm *)mp);
 	    *kp++ = *old_keys++;
 	    *hp++ = *old_vals++;
 	}
@@ -2278,20 +2167,22 @@ erts_gc_update_map_assoc(Process* p, Eterm* reg, Uint live,
 
     /*
      * Calculate how many values that are unused at the end of the
-     * key tuple and fill it out with a bignum header.
+     * value array and fill it out with a bignum header.
      */
-    if ((n = (Eterm *)mp - kp) > 0) {
-	*kp = make_pos_bignum_header(n-1);
+    if ((n = boxed_val(mp->keys) - hp) > 0) {
+        ASSERT(n <= num_updates);
+	*hp = make_pos_bignum_header(n-1);
     }
 
     /*
      * Fill in the size of the map in both the key tuple and in the map.
      */
 
-    n = kp - p->htop - 1;	/* Actual number of keys/values */
-    *p->htop = make_arityval(n);
-    p->htop  = hp;
+    n = hp - (Eterm *)mp - MAP_HEADER_FLATMAP_SZ;	/* Actual number of keys/values */
+    ASSERT(n <= old_mp->size + num_updates);
     mp->size = n;
+    *(boxed_val(mp->keys)) = make_arityval(n);
+    p->htop  = kp;
 
     /* The expensive case, need to build a hashmap */
     if (n > MAP_SMALL_MAP_LIMIT) {
@@ -2331,7 +2222,7 @@ erts_gc_update_map_exact(Process* p, Eterm* reg, Uint live,
     map = reg[live];
 
     if (is_not_flatmap(map)) {
-	Uint32 hx;
+	erts_ihash_t hx;
 	Eterm val;
 
 	/* apparently the compiler does not emit is_map instructions,
@@ -2467,8 +2358,8 @@ int catchlevel(Process *p)
 int
 erts_is_builtin(Eterm Mod, Eterm Name, int arity)
 {
+    const Export *ep;
     Export e;
-    Export* ep;
 
     if (Mod == am_erlang) {
         /*

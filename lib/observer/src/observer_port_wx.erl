@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2011-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2011-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -17,6 +19,7 @@
 %%
 %% %CopyrightEnd%
 -module(observer_port_wx).
+-moduledoc false.
 
 -export([start_link/3]).
 
@@ -147,12 +150,19 @@ handle_event(#wx{event=#wxSize{size={W,_}}},  State=#state{grid=Grid}) ->
     observer_lib:set_listctrl_col_size(Grid, W),
     {noreply, State};
 
-handle_event(#wx{event=#wxList{type=command_list_item_activated,
-			       itemIndex=Index}},
-	     State=#state{grid=Grid, ports=Ports, open_wins=Opened}) ->
-    Port = lists:nth(Index+1, Ports),
-    NewOpened = display_port_info(Grid, Port, Opened),
-    {noreply, State#state{open_wins=NewOpened}};
+handle_event(#wx{event = #wxList{type      = command_list_item_activated,
+                                 itemIndex = Index}},
+	     State = #state{grid      = Grid,
+                            ports     = Ports,
+                            open_wins = Opened}) ->
+    if
+        length(Ports) >= (Index+1) ->
+            Port      = lists:nth(Index+1, Ports),
+            NewOpened = display_port_info(Grid, Port, Opened),
+            {noreply, State#state{open_wins=NewOpened}};
+        true -> % Race - should we do somthing here?
+            {noreply, State}
+    end;
 
 handle_event(#wx{event=#wxList{type=command_list_item_right_click,
 			       itemIndex=Index}},
@@ -366,9 +376,9 @@ create_menus(Parent) ->
     MenuEntries =
 	[{"View",
 	  [#create_menu{id = ?ID_PORT_INFO_SELECTED,
-			text = "Port info for selected ports\tCtrl-I"},
+			text = "Port info for selected ports\tCtrl+I"},
 	   separator,
-	   #create_menu{id = ?ID_REFRESH, text = "Refresh\tCtrl-R"},
+	   #create_menu{id = ?ID_REFRESH, text = "Refresh\tCtrl+R"},
 	   #create_menu{id = ?ID_REFRESH_INTERVAL, text = "Refresh Interval..."}
 	  ]},
 	 {"Trace",

@@ -2,7 +2,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2018-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2018-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,8 +25,6 @@
 
 -module(ssl_ECC).
 
--behaviour(ct_suite).
-
 -include_lib("common_test/include/ct.hrl").
 -include_lib("public_key/include/public_key.hrl").
 
@@ -42,8 +42,8 @@
          client_ecdhe_ecdsa_server_ecdhe_ecdsa/1
         ]).
 
-%% Test diffrent certificate chain types, note that it is the servers
-%% chain that affect what cipher suite that will be choosen
+%% Test different certificate chain types, note that it is the servers
+%% chain that affect what cipher suite that will be chosen
 
 %% ECDH_RSA 
 client_ecdh_rsa_server_ecdh_rsa(Config) when is_list(Config) ->

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2018-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -22,6 +24,7 @@
 -compile(export_all).
 
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 -include_lib("kernel/include/logger.hrl").
 -include_lib("kernel/src/logger_internal.hrl").
 
@@ -44,8 +47,7 @@
 -define(keyval_rep,[{function,?FUNCTION_NAME}, {line,?LINE}]).
 
 suite() ->
-    [{timetrap,{seconds,30}},
-     {ct_hooks, [logger_test_lib]}].
+    [{timetrap,{seconds,30}}].
 
 init_per_suite(Config) ->
     Hs0 = logger:get_handler_config(),
@@ -81,6 +83,8 @@ groups() ->
 
 all() -> 
     [start_stop,
+     start_debug,
+     start_crash,
      replace_default,
      replace_file,
      replace_disk_log
@@ -102,11 +106,69 @@ start_stop(_Config) ->
 start_stop(cleanup,_Config) ->
     logger:remove_handler(simple).
 
+%% Test that the simple logger works when debug level is used
+start_debug(Config) ->
+
+    ConfigFile = filename:join(proplists:get_value(priv_dir, Config), "sys.config"),
+    LogFile = filename:join(proplists:get_value(priv_dir, Config), "file.log"),
+    SysConfig = [{kernel,[{logger,[{handler,default,logger_std_h,
+                                    #{config => #{file => LogFile}}}]}]}],
+    ok = file:write_file(ConfigFile, io_lib:format("~p.",[SysConfig])),
+
+    Run =
+        fun(Args) ->
+                CmdLine =
+                    lists:flatten(
+                      [ct:get_progname(), " ", Args,
+                       " -config ", filename:rootname(ConfigFile),  " -noshell -s init stop"]),
+                "" = os:cmd(CmdLine),
+                {ok, Bin} = file:read_file(LogFile),
+                Bin
+        end,
+
+    Output = Run(""),
+    LogOutput = re:replace(unicode:characters_to_binary(Output),"\r\n","\n",[global]),
+    ct:log("~ts",[LogOutput]),
+    nomatch = re:run(LogOutput,"^=PROGRESS REPORT====",[global,multiline]),
+
+    InfoOutput = Run("-kernel logger_level info"),
+    InfoLogOutput = re:replace(unicode:characters_to_binary(InfoOutput),"\r\n","\n",[global]),
+    ct:log("~ts",[InfoLogOutput]),
+    {match,InfoNumReports} = re:run(InfoLogOutput,"^=PROGRESS REPORT====",[global,multiline]),
+
+    %% Test that more progress reports are logged for info than default
+    ?assert(0 < length(InfoNumReports)),
+
+    DebugOutput = Run("-kernel logger_level debug"),
+    DebugLogOutput = re:replace(unicode:characters_to_binary(DebugOutput),"\r\n","\n",[global]),
+    ct:log("~ts",[DebugLogOutput]),
+    {match,DebugNumReports} = re:run(DebugLogOutput,"^=PROGRESS REPORT====",[global,multiline]),
+
+    %% Test that more progress reports are logged for debug than info
+    ?assert(length(InfoNumReports) < length(DebugNumReports)),
+
+    ok.
+
+%% Test that the simple logger works during startup crash
+start_crash(_Config) ->
+
+    Output = os:cmd(ct:get_progname() ++ " -user baduser"),
+    ErrorOutput = re:replace(unicode:characters_to_binary(Output),"\r\n","\n",[global]),
+    ct:log("~ts",[ErrorOutput]),
+    {match,[_]} = re:run(ErrorOutput,"(^=SUPERVISOR REPORT====| supervisor_report *\n)",[global,multiline]),
+    {match,[_, _]} = re:run(ErrorOutput,"^=CRASH REPORT====",[global,multiline]),
+    {match,[_]} = re:run(ErrorOutput,"^=INFO REPORT====",[global,multiline]),
+    {match,[[CD]]} = re:run(ErrorOutput,"^Crash dump is being written to: (.*)\\.\\.\\.done",
+                            [{capture, all_but_first, binary}, global,multiline]),
+    ok = file:delete(CD),
+    ok.
+
+
 %% This testcase just tests that it does not crash, the default handler prints
 %% to stdout which we cannot read from in a detached slave.
 replace_default(Config) ->
 
-    {ok, _, Node} = logger_test_lib:setup(Config, [{logger, [{handler, default, undefined}]}]),
+    {ok, _, Peer, Node} = logger_test_lib:setup(Config, [{logger, [{handler, default, undefined}]}]),
     log(Node, emergency, [?str]),
     log(Node, alert, [?str,[]]),
     log(Node, error, [?map_rep]),
@@ -119,11 +181,11 @@ replace_default(Config) ->
 
     ok = rpc:call(Node, logger, add_handlers, [kernel]),
 
-    ok.
+    ok = peer:stop(Peer).
 
 replace_file(Config) ->
 
-    {ok, _, Node} = logger_test_lib:setup(Config, [{logger, [{handler, default, undefined}]}]),
+    {ok, _, Peer, Node} = logger_test_lib:setup(Config, [{logger, [{handler, default, undefined}]}]),
     log(Node, emergency, [M1=?str]),
     log(Node, alert, [M2=?str,[]]),
     log(Node, error, [?map_rep]),
@@ -163,11 +225,11 @@ replace_file(Config) ->
      "=NOTICE REPORT===="++_,
      _
     ] = Lines,
-    ok.
+    ok = peer:stop(Peer).
 
 replace_disk_log(Config) ->
 
-    {ok, _, Node} = logger_test_lib:setup(Config, [{logger, [{handler, default, undefined}]}]),
+    {ok, _, Peer, Node} = logger_test_lib:setup(Config, [{logger, [{handler, default, undefined}]}]),
     log(Node, emergency, [M1=?str]),
     log(Node, alert, [M2=?str,[]]),
     log(Node, error, [?map_rep]),
@@ -206,4 +268,4 @@ replace_disk_log(Config) ->
      "=NOTICE REPORT===="++_,
      _
     ] = Lines,
-    ok.
+    ok = peer:stop(Peer).

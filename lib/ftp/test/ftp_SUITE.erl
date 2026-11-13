@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2004-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2004-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -32,7 +34,6 @@
                          end)(inet:gethostname())
        ).
 
--define(BAD_HOST, "badhostname").
 -define(BAD_USER, "baduser").
 -define(BAD_DIR,  "baddirectory").
 
@@ -64,7 +65,8 @@ all() ->
      appup,
      error_ehost,
      error_datafail,
-     clean_shutdown
+     clean_shutdown,
+     pasv_ip_not_validated
     ].
 
 groups() ->
@@ -277,8 +279,8 @@ init_per_group(Group, Config) when Group == ftpes_passive;
                                    Group == ftpes_active_reuse;
                                    Group == ftps_passive_reuse;
                                    Group == ftps_active_reuse ->
-    catch crypto:stop(),
-    try crypto:start() of
+    catch application:stop(crypto),
+    try application:start(crypto) of
         ok when Group == ftpes_passive; Group == ftpes_active ->
             start_ftpd([{ftpd_ssl,true}|Config]);
         ok when Group == ftps_passive; Group == ftps_active ->
@@ -306,8 +308,8 @@ init_per_testcase(Case, Config0) ->
     application:ensure_started(ftp),
     case Case of
         error_datafail ->
-            catch crypto:stop(),
-            try crypto:start() of
+            catch application:stop(crypto),
+            try application:start(crypto) of
                 ok ->
                     Config = start_ftpd([{ftpd_ssl,true},{ftpd_ssl_reuse,true}|Config0]),
                     init_per_testcase2(Case, Config)
@@ -318,6 +320,8 @@ init_per_testcase(Case, Config0) ->
         clean_shutdown ->
             Config = start_ftpd(Config0),
             init_per_testcase2(Case, Config);
+        pasv_ip_not_validated ->
+            Config0;
         _ ->
             init_per_testcase2(Case, Config0)
     end.
@@ -377,6 +381,7 @@ end_per_testcase(user, _Config) -> ok;
 end_per_testcase(bad_user, _Config) -> ok;
 end_per_testcase(error_elogin, _Config) -> ok;
 end_per_testcase(error_ehost, _Config) -> ok;
+end_per_testcase(pasv_ip_not_validated, _Config) -> ok;
 end_per_testcase(T, Config) when T =:= error_datafail; T =:= clean_shutdown ->
     T == error_datafail andalso ftp__close(Config),
     stop_ftpd(Config),
@@ -425,13 +430,13 @@ vsftpd_tls() ->
 app() ->
     [{doc, "Test that the ftp app file is ok"}].
 app(Config) when is_list(Config) ->
-    ok = ?t:app_test(ftp).
+    ok = test_server:app_test(ftp).
 
 %%--------------------------------------------------------------------
 appup() ->
     [{doc, "Test that the ftp appup file is ok"}].
 appup(Config) when is_list(Config) ->
-    ok = ?t:appup_test(ftp).
+    ok = test_server:appup_test(ftp).
 
 %%--------------------------------------------------------------------
 
@@ -498,17 +503,21 @@ ls() ->
       "\"test\" directory. We assume that ls never fails, since "
       "it's output is meant to be read by humans. "}].
 ls(Config0) ->
-    Config = set_state([reset,{mkdir,"test"}], Config0),
+    TestFileName = "testing-file",
+    Config = set_state([reset,{mkdir,"test"},{mkfile, TestFileName, TestFileName}], Config0),
     Pid = proplists:get_value(ftp, Config),
     {ok, _R1} = ftp:ls(Pid),
     {ok, _R2} = ftp:ls(Pid, id2ftp("test",Config)),
+    {ok, _R3} = ftp:nlist(Pid, id2ftp(TestFileName, Config)),
+    {ok, []} = ftp:nlist(Pid, id2ftp("non-existing-folder",Config)),
+    {ok, []} = ftp:nlist(Pid, id2ftp("test/non-existing-file",Config)),
     %% neither nlist nor ls operates on a directory
     %% they operate on a pathname, which *can* be a
     %% directory, but can also be a filename or a group
     %% of files (including wildcards).
     case proplists:get_value(wildcard_support, Config) of
         true ->
-            {ok, _R3} = ftp:ls(Pid, id2ftp("te*",Config));
+            {ok, _R4} = ftp:ls(Pid, id2ftp("te*",Config));
         _ ->
             ok
     end.
@@ -516,21 +525,25 @@ ls(Config0) ->
 %%-------------------------------------------------------------------------
 nlist() ->
     [{doc,"Open an ftp connection; nlist the current directory, and the "
-               "\"test\" directory. Nlist does not behave consistenly over "
+               "\"test\" directory. Nlist does not behave consistently over "
                "operating systems. On some it is an error to have an empty "
                "directory."}].
 nlist(Config0) ->
-    Config = set_state([reset,{mkdir,"test"}], Config0),
+    TestFileName = "testing-file",
+    Config = set_state([reset,{mkdir,"test"},{mkfile, TestFileName, TestFileName}], Config0),
     Pid = proplists:get_value(ftp, Config),
     {ok, _R1} = ftp:nlist(Pid),
     {ok, _R2} = ftp:nlist(Pid, id2ftp("test",Config)),
+    {ok, _R3} = ftp:nlist(Pid, id2ftp(TestFileName, Config)),
+    {ok, []} = ftp:nlist(Pid, id2ftp("non-existing-folder",Config)),
+    {ok, []} = ftp:nlist(Pid, id2ftp("test/non-existing-file",Config)),
     %% neither nlist nor ls operates on a directory
     %% they operate on a pathname, which *can* be a
     %% directory, but can also be a filename or a group
     %% of files (including wildcards).
     case proplists:get_value(wildcard_support, Config) of
         true ->
-            {ok, _R3} = ftp:nlist(Pid, id2ftp("te*",Config));
+            {ok, _R4} = ftp:nlist(Pid, id2ftp("te*",Config));
         _ ->
             ok
     end.
@@ -549,8 +562,8 @@ rename(Config0) ->
                     id2ftp(OldFile,Config),
                     id2ftp(NewFile,Config)),
 
-    true = (chk_file(NewFile,Contents,Config)
-            and chk_no_file([OldFile],Config)),
+    true = chk_file(NewFile,Contents,Config)
+            andalso chk_no_file([OldFile],Config),
     {error,epath} = ftp:rename(Pid,
                                id2ftp("non_existing_file",Config),
                                id2ftp(NewFile,Config)),
@@ -862,7 +875,7 @@ recv_chunk_delay(Config0) when is_list(Config0) ->
 delay_recv_chunk(Pid) ->
      delay_recv_chunk(Pid, <<>>).
 delay_recv_chunk(Pid, Acc) ->
-    ct:pal("Received size ~p", [byte_size(Acc)]),
+    ct:log("Received size ~p", [byte_size(Acc)]),
     case ftp:recv_chunk(Pid) of
          ok ->
              {ok, Acc};
@@ -888,7 +901,7 @@ quote(Config) ->
     Pid = proplists:get_value(ftp, Config),
     ["257 \""++_Rest] = ftp:quote(Pid, "pwd"), %% 257
     [_| _] = ftp:quote(Pid, "help"),
-    %% This negativ test causes some ftp servers to hang. This test
+    %% This negative test causes some ftp servers to hang. This test
     %% is not important for the client, so we skip it for now.
     %%["425 Can't build data connection: Connection refused."]
     %% = ftp:quote(Pid, "list"),
@@ -948,7 +961,7 @@ unexpected_call(Config) when is_list(Config) ->
     Flag =  process_flag(trap_exit, true),
     Pid = proplists:get_value(ftp, Config),
 
-    %% Serious programming fault, connetion will be shut down
+    %% A serious programming fault, the connection will be shut down
     case (catch gen_server:call(Pid, {self(), foobar, 10}, infinity)) of
         {error, {connection_terminated, 'API_violation'}} ->
             ok;
@@ -965,7 +978,7 @@ unexpected_cast()->
 unexpected_cast(Config) when is_list(Config) ->
     Flag = process_flag(trap_exit, true),
     Pid = proplists:get_value(ftp, Config),
-    %% Serious programming fault, connetion will be shut down
+     %% A serious programming fault, the connection will be shut down
     gen_server:cast(Pid, {self(), foobar, 10}),
     ct:sleep(500),
     undefined = process_info(Pid, status),
@@ -977,7 +990,7 @@ unexpected_bang()->
 unexpected_bang(Config) when is_list(Config) ->
     Flag = process_flag(trap_exit, true),
     Pid = proplists:get_value(ftp, Config),
-    %% Could be an innocent misstake the connection lives.
+    %% Could be an innocent mistake the connection lives.
     Pid ! foobar,
     ct:sleep(500),
     {status, _} = process_info(Pid, status),
@@ -1016,7 +1029,7 @@ clean_shutdown(Config) ->
 %%-------------------------------------------------------------------------
 ftp_worker() ->
     [{doc, "Makes sure the ftp worker processes are added and removed "
-      "appropriatly to/from the supervison tree."}].
+      "appropriately to/from the supervison tree."}].
 ftp_worker(Config) ->
     Pid = proplists:get_value(ftp,Config),
     case supervisor:which_children(ftp_sup) of
@@ -1062,7 +1075,7 @@ error_ehost(_Config) ->
 %%%----------------------------------------------------------------
 error_datafail() ->
     [{doc, "Test that failure to open data channel captures "
-     "error emitted on ctrl chanenel"}].
+     "error emitted on ctrl channel"}].
 
 error_datafail(Config) ->
     Self = self(),
@@ -1071,13 +1084,13 @@ error_datafail(Config) ->
     % and erlang:group_leader/2 does not work under ct
     dbg:start(),
     dbg:tracer(process, {fun
-        ({trace,P,call,{ftp,verbose,[M,_,'receive']}}, ok) when P == Pid -> Self ! M, ok;
+        ({trace,P,call,{ftp_internal,verbose,[M,_,'receive']}}, ok) when P == Pid -> Self ! M, ok;
         (_, ok) -> ok
     end, ok}),
-    dbg:tpl(ftp, verbose, []),
+    dbg:tpl(ftp_internal, verbose, []),
     dbg:p(Pid, [call]),
     {error,_} = ftp:ls(Pid),
-    dbg:stop_clear(),
+    dbg:stop(),
     Recv = fun(Recv) ->
         receive
             Msg when is_list(Msg) ->
@@ -1092,6 +1105,69 @@ error_datafail(Config) ->
     Result = Recv(Recv),
     Result.
 
+pasv_ip_not_validated() ->
+    [{doc, "PASV response IP must be validated against the control connection "
+      "peer address (CVE-2026-48858 / GHSA-24cv-hwgr-37fq). A malicious server "
+      "must not be able to redirect the data connection to an arbitrary host."}].
+
+pasv_ip_not_validated(_Config) ->
+    %% The victim service listens on 127.0.0.2 (a different loopback address).
+    %% The malicious FTP server listens on 127.0.0.1.
+    %% The PASV response will advertise 127.0.0.2:VictimPort.
+    %% Without the fix the client connects to 127.0.0.2 (victim).
+    %% With the fix the client ignores the IP in PASV and uses the control
+    %% peer address (127.0.0.1) instead, so the victim never gets a connection.
+    VictimIP = {127,0,0,2},
+    {ok, VictimLSock} = gen_tcp:listen(0,
+        [binary, {reuseaddr, true}, {active, false}, inet, {ip, VictimIP}]),
+    {ok, VictimPort} = inet:port(VictimLSock),
+
+    Self = self(),
+    spawn(fun() ->
+        case gen_tcp:accept(VictimLSock, 3000) of
+            {ok, Sock} ->
+                {ok, Peer} = inet:peername(Sock),
+                gen_tcp:close(Sock),
+                Self ! {victim_connected, Peer};
+            {error, _} ->
+                Self ! victim_not_connected
+        end
+    end),
+
+    %% Malicious FTP server on 127.0.0.1.
+    {ok, FtpLSock} = gen_tcp:listen(0,
+        [binary, {reuseaddr, true}, {active, false}, inet, {ip, {127,0,0,1}}]),
+    {ok, FtpPort} = inet:port(FtpLSock),
+
+    spawn_link(fun() -> malicious_ftp_server(FtpLSock, {VictimIP, VictimPort}) end),
+
+    application:ensure_started(ftp),
+    {ok, Pid} = ftp:open("127.0.0.1", [{port, FtpPort}]),
+    ok = ftp:user(Pid, "user", "pass"),
+    %% The ls call will trigger PASV.  With the vulnerability present the
+    %% client connects to VictimPort; with the fix it should refuse to do so
+    %% and return an error instead.
+    _Ignored = ftp:ls(Pid),
+    catch ftp:close(Pid),
+
+    Result = receive
+        {victim_connected, Peer} ->
+            {fail, Peer};
+        victim_not_connected ->
+            ok
+    end,
+
+    gen_tcp:close(FtpLSock),
+    gen_tcp:close(VictimLSock),
+
+    case Result of
+        {fail, FailPeer} ->
+            ct:fail("ftp client connected data channel to redirected victim "
+                    "address ~p instead of the FTP server (CVE-2026-48858)",
+                    [FailPeer]);
+        ok ->
+            ok
+    end.
 %%--------------------------------------------------------------------
 %% Internal functions  -----------------------------------------------
 %%--------------------------------------------------------------------
@@ -1217,7 +1293,7 @@ start_ftpd(Config0) ->
                     ct:log("Ftp server ~p started on ~p:~p but is unusable:~n~p:~p",
                            [AbsName,Host,Port,Class,Exception]),
                     catch stop_ftpd(Config),
-                    {skip, [AbsName," started but unusuable"]}
+                    {skip, [AbsName," started but unusable"]}
             end;
         {error,Msg} ->
             {skip, [AbsName," not started: ",Msg]}
@@ -1247,11 +1323,11 @@ ftp_start_service(Config, Options) ->
     Host = proplists:get_value(ftpd_host,Config),
     Port = proplists:get_value(ftpd_port,Config),
     ct:log("Host=~p, Port=~p",[Host,Port]),
-    {ok,Pid} = ftp:start_service([{host, Host},{port,Port} | Options]),
+    {ok,Pid} = ftp:open([{host, Host},{port,Port} | Options]),
     [{ftp,Pid}|Config].
 
 ftp_stop_service(Config) ->
-    ok = ftp:stop_service(proplists:get_value(ftp,Config)),
+    ok = ftp:close(proplists:get_value(ftp,Config)),
     Config.
 
 split(Cs) -> string:tokens(Cs, "\r\n").
@@ -1403,3 +1479,53 @@ unwanted_error_report(LogFile) ->
             ct:fail({no_logfile, LogFile})
     end.
 
+%% Minimal FTP server that injects a malicious PASV redirect.
+malicious_ftp_server(LSock, VictimAddr) ->
+    {ok, Ctrl} = gen_tcp:accept(LSock),
+    gen_tcp:send(Ctrl, "220 PoC FTP Server\r\n"),
+    malicious_ftp_loop(Ctrl, VictimAddr).
+
+malicious_ftp_loop(Ctrl, VictimAddr) ->
+    case malicious_ftp_recv_line(Ctrl) of
+        {ok, Line} ->
+            [Cmd | _] = string:tokens(string:trim(Line), " "),
+            malicious_ftp_handle(string:uppercase(Cmd), Ctrl, VictimAddr),
+            malicious_ftp_loop(Ctrl, VictimAddr);
+        {error, _} ->
+            gen_tcp:close(Ctrl)
+    end.
+
+malicious_ftp_handle("USER", Ctrl, _) ->
+    gen_tcp:send(Ctrl, "331 Password required\r\n");
+malicious_ftp_handle("PASS", Ctrl, _) ->
+    gen_tcp:send(Ctrl, "230 Logged in\r\n");
+malicious_ftp_handle("SYST", Ctrl, _) ->
+    gen_tcp:send(Ctrl, "215 UNIX Type: L8\r\n");
+malicious_ftp_handle("TYPE", Ctrl, _) ->
+    gen_tcp:send(Ctrl, "200 Type set\r\n");
+malicious_ftp_handle("PASV", Ctrl, {{A1,A2,A3,A4}, VictimPort}) ->
+    %% Advertise the victim IP:port — a different host than the FTP server.
+    P1 = VictimPort bsr 8,
+    P2 = VictimPort band 16#FF,
+    Resp = io_lib:format(
+        "227 Entering Passive Mode (~b,~b,~b,~b,~b,~b)\r\n",
+        [A1, A2, A3, A4, P1, P2]),
+    gen_tcp:send(Ctrl, Resp);
+malicious_ftp_handle(Cmd, Ctrl, _) when Cmd =:= "LIST"; Cmd =:= "NLST" ->
+    gen_tcp:send(Ctrl, "150 Opening data connection\r\n"),
+    timer:sleep(200),
+    gen_tcp:send(Ctrl, "226 Transfer complete\r\n");
+malicious_ftp_handle("QUIT", Ctrl, _) ->
+    gen_tcp:send(Ctrl, "221 Goodbye\r\n"),
+    gen_tcp:close(Ctrl);
+malicious_ftp_handle(_, Ctrl, _) ->
+    gen_tcp:send(Ctrl, "500 Unknown command\r\n").
+
+malicious_ftp_recv_line(Sock) ->
+    malicious_ftp_recv_line(Sock, <<>>).
+malicious_ftp_recv_line(Sock, Acc) ->
+    case gen_tcp:recv(Sock, 1, 5000) of
+        {ok, <<"\n">>} -> {ok, binary_to_list(<<Acc/binary, "\n">>)};
+        {ok, Byte}     -> malicious_ftp_recv_line(Sock, <<Acc/binary, Byte/binary>>);
+        {error, _} = E -> E
+    end.

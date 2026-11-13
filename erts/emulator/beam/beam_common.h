@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 1996-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 1996-2026. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -111,7 +113,6 @@ do {									\
 
 #define x(N) reg[N]
 #define y(N) E[N]
-#define r(N) x(N)
 #define Q(N) (N*sizeof(Eterm *))
 #define l(N) (freg[N].fd)
 
@@ -125,7 +126,6 @@ do {									\
         dst = x(loader_x_reg_index(dst));       \
         break;					\
      case LOADER_Y_REG:				\
-        ASSERT(loader_y_reg_index(dst) >= 1);	\
         dst = y(loader_y_reg_index(dst));       \
         break;					\
      }						\
@@ -153,80 +153,81 @@ do {						\
 
 #ifdef USE_VM_CALL_PROBES
 
-#define DTRACE_LOCAL_CALL(p, mfa)					\
-    if (DTRACE_ENABLED(local_function_entry)) {				\
-        DTRACE_CHARBUF(process_name, DTRACE_TERM_BUF_SIZE);		\
-        DTRACE_CHARBUF(mfa_buf, DTRACE_TERM_BUF_SIZE);			\
-        int depth = STACK_START(p) - STACK_TOP(p);			\
-        dtrace_fun_decode(p, mfa, process_name, mfa_buf);               \
-        DTRACE3(local_function_entry, process_name, mfa_buf, depth);	\
+#define DTRACE_LOCAL_CALL(p, cmfa)                                      \
+    if (DTRACE_ENABLED(local_function_entry)) {                         \
+        DTRACE_CHARBUF(process_name, DTRACE_TERM_BUF_SIZE);             \
+        DTRACE_CHARBUF(mfa_buf, DTRACE_TERM_BUF_SIZE);                  \
+        int depth = STACK_START(p) - STACK_TOP(p);                      \
+        dtrace_fun_decode(p, cmfa, process_name, mfa_buf);              \
+        DTRACE3(local_function_entry, process_name, mfa_buf, depth);    \
     }
 
-#define DTRACE_GLOBAL_CALL(p, mfa)					\
-    if (DTRACE_ENABLED(global_function_entry)) {			\
-        DTRACE_CHARBUF(process_name, DTRACE_TERM_BUF_SIZE);		\
-        DTRACE_CHARBUF(mfa_buf, DTRACE_TERM_BUF_SIZE);			\
-        int depth = STACK_START(p) - STACK_TOP(p);			\
-        dtrace_fun_decode(p, mfa, process_name, mfa_buf);               \
+#define DTRACE_GLOBAL_CALL(p, cmfa)                                     \
+    if (DTRACE_ENABLED(global_function_entry)) {	                    \
+        DTRACE_CHARBUF(process_name, DTRACE_TERM_BUF_SIZE);             \
+        DTRACE_CHARBUF(mfa_buf, DTRACE_TERM_BUF_SIZE);                  \
+        int depth = STACK_START(p) - STACK_TOP(p);                      \
+        dtrace_fun_decode(p, cmfa, process_name, mfa_buf);              \
         DTRACE3(global_function_entry, process_name, mfa_buf, depth);	\
     }
 
-#define DTRACE_RETURN(p, mfa)                                    \
+#define DTRACE_RETURN(p, cmfa)                                  \
     if (DTRACE_ENABLED(function_return)) {                      \
         DTRACE_CHARBUF(process_name, DTRACE_TERM_BUF_SIZE);     \
         DTRACE_CHARBUF(mfa_buf, DTRACE_TERM_BUF_SIZE);          \
         int depth = STACK_START(p) - STACK_TOP(p);              \
-        dtrace_fun_decode(p, mfa, process_name, mfa_buf);       \
+        dtrace_fun_decode(p, cmfa, process_name, mfa_buf);      \
         DTRACE3(function_return, process_name, mfa_buf, depth); \
     }
 
-#define DTRACE_BIF_ENTRY(p, mfa)                                    \
+#define DTRACE_BIF_ENTRY(p, cmfa)                                   \
     if (DTRACE_ENABLED(bif_entry)) {                                \
         DTRACE_CHARBUF(process_name, DTRACE_TERM_BUF_SIZE);         \
         DTRACE_CHARBUF(mfa_buf, DTRACE_TERM_BUF_SIZE);              \
-        dtrace_fun_decode(p, mfa, process_name, mfa_buf);           \
+        dtrace_fun_decode(p, cmfa, process_name, mfa_buf);          \
         DTRACE2(bif_entry, process_name, mfa_buf);                  \
     }
 
-#define DTRACE_BIF_RETURN(p, mfa)                                   \
+#define DTRACE_BIF_RETURN(p, cmfa)                                  \
     if (DTRACE_ENABLED(bif_return)) {                               \
         DTRACE_CHARBUF(process_name, DTRACE_TERM_BUF_SIZE);         \
         DTRACE_CHARBUF(mfa_buf, DTRACE_TERM_BUF_SIZE);              \
-        dtrace_fun_decode(p, mfa, process_name, mfa_buf);           \
+        dtrace_fun_decode(p, cmfa, process_name, mfa_buf);          \
         DTRACE2(bif_return, process_name, mfa_buf);                 \
     }
 
-#define DTRACE_NIF_ENTRY(p, mfa)                                        \
+#define DTRACE_NIF_ENTRY(p, cmfa)                                       \
     if (DTRACE_ENABLED(nif_entry)) {                                    \
         DTRACE_CHARBUF(process_name, DTRACE_TERM_BUF_SIZE);             \
         DTRACE_CHARBUF(mfa_buf, DTRACE_TERM_BUF_SIZE);                  \
-        dtrace_fun_decode(p, mfa, process_name, mfa_buf);               \
+        dtrace_fun_decode(p, cmfa, process_name, mfa_buf);              \
         DTRACE2(nif_entry, process_name, mfa_buf);                      \
     }
 
-#define DTRACE_NIF_RETURN(p, mfa)                                       \
+#define DTRACE_NIF_RETURN(p, cmfa)                                      \
     if (DTRACE_ENABLED(nif_return)) {                                   \
         DTRACE_CHARBUF(process_name, DTRACE_TERM_BUF_SIZE);             \
         DTRACE_CHARBUF(mfa_buf, DTRACE_TERM_BUF_SIZE);                  \
-        dtrace_fun_decode(p, mfa, process_name, mfa_buf);               \
+        dtrace_fun_decode(p, cmfa, process_name, mfa_buf);              \
         DTRACE2(nif_return, process_name, mfa_buf);                     \
     }
 
-#define DTRACE_GLOBAL_CALL_FROM_EXPORT(p,e)                                        \
-    do {                                                                           \
-        if (DTRACE_ENABLED(global_function_entry)) {                               \
-            ErtsCodePtr fp__ = (((Export *) (e))->addresses[erts_active_code_ix()]); \
-            DTRACE_GLOBAL_CALL((p), erts_code_to_codemfa(fp__));                   \
-        }                                                                          \
+#define DTRACE_GLOBAL_CALL_FROM_EXPORT(p,e)                               \
+    do {                                                                  \
+        if (DTRACE_ENABLED(global_function_entry)) {                      \
+            const ErtsDispatchable *disp__ = &(e)->dispatch;              \
+            ErtsCodePtr fp__ = disp__->addresses[erts_active_code_ix()];  \
+            DTRACE_GLOBAL_CALL((p), erts_code_to_codemfa(fp__));          \
+        }                                                                 \
     } while(0)
 
-#define DTRACE_RETURN_FROM_PC(p, i)                                                      \
-    do {                                                                                 \
-        const ErtsCodeMFA* cmfa;                                                         \
-        if (DTRACE_ENABLED(function_return) && (cmfa = erts_find_function_from_pc(i))) { \
-            DTRACE_RETURN((p), cmfa);                                                    \
-        }                                                                                \
-    } while(0)
+#define DTRACE_RETURN_FROM_PC(p, i)                                     \
+    if (DTRACE_ENABLED(function_return)) {                              \
+        const ErtsCodeMFA* cmfa  = erts_find_function_from_pc(i);       \
+        if (cmfa) {                                                     \
+            DTRACE_RETURN((p), cmfa);                                   \
+        }                                                               \
+    }
 
 #else /* USE_VM_PROBES */
 #define DTRACE_LOCAL_CALL(p, mfa)        do {} while (0)
@@ -250,19 +251,13 @@ do {						\
 ErtsCodeMFA *ubif2mfa(void* uf);
 ErtsCodePtr handle_error(Process* c_p, ErtsCodePtr pc,
                          Eterm* reg, const ErtsCodeMFA* bif_mfa);
-Export* call_error_handler(Process* p, const ErtsCodeMFA* mfa,
+const Export *call_error_handler(Process* p, const ErtsCodeMFA* mfa,
                            Eterm* reg, Eterm func);
-Export* fixed_apply(Process* p, Eterm* reg, Uint arity,
+const Export *fixed_apply(Process* p, Eterm* reg, Uint arity,
                     ErtsCodePtr I, Uint offs);
-Export* apply(Process* p, Eterm* reg, ErtsCodePtr I, Uint offs);
+const Export *apply(Process* p, Eterm* reg, ErtsCodePtr I, Uint offs);
 ErtsCodePtr call_fun(Process* p, int arity, Eterm* reg, Eterm args);
 ErtsCodePtr apply_fun(Process* p, Eterm fun, Eterm args, Eterm* reg);
-Eterm new_fun(Process* p, Eterm* reg,
-		     ErlFunEntry* fe, int num_free);
-ErlFunThing* new_fun_thing(Process* p,
-                           ErlFunEntry* fe,
-                           int arity,
-                           int num_free);
 int is_function2(Eterm Term, Uint arity);
 Eterm erts_gc_new_map(Process* p, Eterm* reg, Uint live,
                       Uint n, const Eterm* data);
@@ -273,7 +268,7 @@ Eterm erts_gc_update_map_assoc(Process* p, Eterm* reg, Uint live,
 Eterm erts_gc_update_map_exact(Process* p, Eterm* reg, Uint live,
                                Uint n, const Eterm* data);
 Eterm get_map_element(Eterm map, Eterm key);
-Eterm get_map_element_hash(Eterm map, Eterm key, Uint32 hx);
+Eterm get_map_element_hash(Eterm map, Eterm key, erts_ihash_t hx);
 int raw_raise(Eterm stacktrace, Eterm exc_class, Eterm value, Process *c_p);
 void erts_sanitize_freason(Process* c_p, Eterm exc);
 Eterm add_stacktrace(Process* c_p, Eterm Value, Eterm exc);
@@ -285,27 +280,31 @@ void check_monitor_long_schedule(Process *c_p, Uint64 start_time,
 extern ErtsCodePtr beam_run_process;
 extern ErtsCodePtr beam_normal_exit;
 extern ErtsCodePtr beam_exit;
-extern ErtsCodePtr beam_save_calls;
+extern ErtsCodePtr beam_save_calls_export;
+extern ErtsCodePtr beam_save_calls_fun;
 extern ErtsCodePtr beam_bif_export_trap;
 extern ErtsCodePtr beam_export_trampoline;
 extern ErtsCodePtr beam_continue_exit;
 extern ErtsCodePtr beam_unloaded_fun;
+extern ErtsCodePtr beam_i_line_breakpoint_cleanup;
 
 extern ErtsCodePtr beam_return_to_trace;   /* OpCode(i_return_to_trace) */
 extern ErtsCodePtr beam_return_trace;      /* OpCode(i_return_trace) */
 extern ErtsCodePtr beam_exception_trace;   /* OpCode(i_exception_trace) */
-extern ErtsCodePtr beam_return_time_trace; /* OpCode(i_return_time_trace) */
+extern ErtsCodePtr beam_call_trace_return; /* OpCode(i_call_trace_return) */
 
 /** @brief Inspects an Erlang stack frame, returning the base of the data
  *         (first Y register).
  * @param[in] frame The frame to inspect. Must point at a CP.
  * @param[out] return_address The return address of \p frame */
 ERTS_GLB_INLINE
-const Eterm *erts_inspect_frame(Eterm *frame, ErtsCodePtr *return_address);
+const Eterm *erts_inspect_frame(const Eterm *frame,
+                                ErtsCodePtr *return_address);
 
 #if ERTS_GLB_INLINE_INCL_FUNC_DEF
 ERTS_GLB_INLINE
-const Eterm *erts_inspect_frame(Eterm *frame, ErtsCodePtr *return_address) {
+const Eterm *erts_inspect_frame(const Eterm *frame,
+                                ErtsCodePtr *return_address) {
     ASSERT(is_CP(frame[0]));
 
     if (ERTS_LIKELY(erts_frame_layout == ERTS_FRAME_LAYOUT_RA)) {

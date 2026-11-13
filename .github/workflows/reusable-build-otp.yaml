@@ -1,0 +1,67 @@
+## %CopyrightBegin%
+##
+## SPDX-License-Identifier: Apache-2.0
+##
+## Copyright Ericsson AB 2024-2026. All Rights Reserved.
+##
+## Licensed under the Apache License, Version 2.0 (the "License");
+## you may not use this file except in compliance with the License.
+## You may obtain a copy of the License at
+##
+##     http://www.apache.org/licenses/LICENSE-2.0
+##
+## Unless required by applicable law or agreed to in writing, software
+## distributed under the License is distributed on an "AS IS" BASIS,
+## WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+## See the License for the specific language governing permissions and
+## limitations under the License.
+##
+## %CopyrightEnd%
+
+name: Build Erlang/OTP (build)
+
+on:
+  workflow_call:
+    inputs:
+      base_branch:
+        description: "The base branch to build against"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Erlang/OTP
+    ## 32-bit and cross-compile build inside an i386/debian container.
+    ## On ubuntu-26.04 the preinstalled Docker's default seccomp profile
+    ## blocks the socketcall syscall that 32-bit glibc needs for sockets,
+    ## which breaks name resolution inside the container
+    ## (https://github.com/actions/runner-images/issues/14790).
+    ## Pin those to ubuntu-24.04 until a fixed Docker lands on the runner.
+    ## clang is a 64-bit build and stays on ubuntu-latest.
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read   # actions/checkout + ./.github/actions/build-base-image
+    strategy:
+      matrix:
+        include:
+          - type: 32-bit
+            runner: ubuntu-24.04
+          - type: cross-compile
+            runner: ubuntu-24.04
+          - type: clang
+            runner: ubuntu-latest
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build Base Image
+        uses: ./.github/actions/build-base-image
+        with:
+            BASE_BRANCH: ${{ inputs.base_branch }}
+            TYPE: ${{ matrix.type }}

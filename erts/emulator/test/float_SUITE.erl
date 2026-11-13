@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1997-2017. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,21 +16,25 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
 -module(float_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
 -export([all/0, suite/0, groups/0,
+         init_per_testcase/2, end_per_testcase/2,
          fpe/1,fp_drv/1,fp_drv_thread/1,denormalized/1,match/1,
          t_mul_add_ops/1,negative_zero/1,
-         bad_float_unpack/1, write/1, cmp_zero/1, cmp_integer/1, cmp_bignum/1]).
+         bad_float_unpack/1, write/1, cmp_zero/1, cmp_integer/1, cmp_bignum/1,
+         t_mul_neg_zero/1]).
 -export([otp_7178/1]).
 -export([hidden_inf/1]).
 -export([arith/1]).
+-export([id/1]).
 
 suite() ->
     [{ct_hooks,[ts_install_cth]},
@@ -38,10 +44,15 @@ all() ->
     [fpe, fp_drv, fp_drv_thread, otp_7178, denormalized,
      match, bad_float_unpack, write, {group, comparison}
      ,hidden_inf, negative_zero
-     ,arith, t_mul_add_ops].
+     ,arith, t_mul_add_ops, t_mul_neg_zero].
 
 groups() -> 
     [{comparison, [parallel], [cmp_zero, cmp_integer, cmp_bignum]}].
+
+init_per_testcase(_TestCase, Config) ->
+    Config.
+end_per_testcase(_TestCase, Config) ->
+    erts_test_utils:ept_check_leaked_nodes(Config).
 
 %%
 %% OTP-7178, list_to_float on very small numbers should give 0.0
@@ -53,7 +64,7 @@ otp_7178(Config) when is_list(Config) ->
     true = (X < 0.00000001) and (X > -0.00000001),
     Y = list_to_float("1.0e-325325325"),
     true = (Y < 0.00000001) and (Y > -0.00000001),
-    {'EXIT', {badarg,_}} = (catch list_to_float("1.0e83291083210")),
+    ?assertError(badarg, list_to_float("1.0e83291083210")),
     ok.
 
 negative_zero(Config) when is_list(Config) ->
@@ -65,10 +76,22 @@ negative_zero(Config) when is_list(Config) ->
 
 do_negative_zero(Op, Ops) ->
     Res = <<(my_apply(erlang, Op, Ops))/float>>,
+
+    %% Test the canonical op against its mixed-type instruction
     Res = <<(case {Op, Ops} of
                  {'-', [A]} -> -A;
                  {'*', [A, B]} -> A * B
              end)/float>>,
+
+    %% Test the canonical op against its type-specific instructions, if
+    %% applicable
+    Res = <<(case {Op, Ops} of
+                {'-', [C]} when is_float(C) -> -C;
+                {'-', [C]} -> -C;
+                {'*', [C, D]} when is_float(C), is_float(D) -> C * D;
+                {'*', [C, D]} -> C * D
+            end)/float>>,
+
     Res.
 
 %% Forces floating point exceptions and tests that subsequent, legal,
@@ -77,13 +100,13 @@ do_negative_zero(Op, Ops) ->
 
 fpe(Config) when is_list(Config) ->
     0.0 = math:log(1.0),
-    {'EXIT', {badarith, _}} = (catch math:log(-1.0)),
+    ?assertError(badarith, math:log(-1.0)),
     0.0 = math:log(1.0),
-    {'EXIT', {badarith, _}} = (catch math:log(0.0)),
+    ?assertError(badarith, math:log(0.0)),
     0.0 = math:log(1.0),
-    {'EXIT',{badarith,_}} = (catch 3.23e133 * id(3.57e257)),
+    ?assertError(badarith, 3.23e133 * id(3.57e257)),
     0.0 = math:log(1.0),
-    {'EXIT',{badarith,_}} = (catch 5.0/id(0.0)),
+    ?assertError(badarith, 5.0/id(0.0)),
     0.0 = math:log(1.0),
     ok.
 
@@ -98,7 +121,7 @@ fp_drv_thread(Config) when is_list(Config) ->
     %% Run in a separate node since it used to crash the emulator...
     Parent = self(),
     DrvDir = proplists:get_value(data_dir, Config),
-    {ok,Node} = start_node(Config),
+    {ok, Peer, Node} = ?CT_PEER(),
     Tester = spawn_link(Node,
                         fun () ->
                                 Parent !
@@ -107,7 +130,7 @@ fp_drv_thread(Config) when is_list(Config) ->
                                              DrvDir)}
                         end),
     Result = receive {Tester, Res} -> Res end,
-    stop_node(Node),
+    peer:stop(Peer),
     Result.
 
 fp_drv_test(Test, DrvDir) ->
@@ -166,7 +189,7 @@ match(Config) when is_list(Config) ->
     one = match_1(1.0),
     two = match_1(2.0),
     a_lot = match_1(1000.0),
-    {'EXIT',_} = (catch match_1(0.5)),
+    ?assertError(_, match_1(0.5)),
     ok.
 
 match_1(1.0) -> one;
@@ -192,7 +215,7 @@ cmp_zero(_Config) ->
     cmp(0.5e-323,0).
 
 cmp_integer(_Config) ->
-    Axis = (1 bsl 53)-2.0, %% The point where floating points become unprecise
+    Axis = (1 bsl 53)-2.0, %% The point where floating points become imprecise
     span_cmp(Axis,2,200),
     cmp(Axis*Axis,round(Axis)).
 
@@ -285,23 +308,8 @@ cmp(Big,Small,BigGtSmall,BigLtSmall,SmallGtBig,SmallLtBig,
 
 id(I) -> I.
 
-start_node(Config) when is_list(Config) ->
-    Pa = filename:dirname(code:which(?MODULE)),
-    Name = list_to_atom(atom_to_list(?MODULE)
-                        ++ "-"
-                        ++ atom_to_list(proplists:get_value(testcase, Config))
-                        ++ "-"
-                        ++ integer_to_list(erlang:system_time(second))
-                        ++ "-"
-                        ++ integer_to_list(erlang:unique_integer([positive]))),
-    test_server:start_node(Name, slave, [{args, "-pa "++Pa}]).
-
-stop_node(Node) ->
-    test_server:stop_node(Node).
-
-
 %% Test that operations that might hide infinite intermediate results
-%% do not supress the badarith.
+%% do not suppress the badarith.
 hidden_inf(Config) when is_list(Config) ->
     ZeroP = 0.0,
     ZeroN = id(ZeroP) * (-1),
@@ -312,14 +320,14 @@ hidden_inf(Config) when is_list(Config) ->
     ok.
 
 hidden_inf_1(A, B, Zero, Huge) ->
-    {'EXIT',{badarith,_}} = (catch (B / (A / Zero))),
-    {'EXIT',{badarith,_}} = (catch (B * (A / Zero))),
-    {'EXIT',{badarith,_}} = (catch (B / (Huge * Huge))),
-    {'EXIT',{badarith,_}} = (catch (B * (Huge * Huge))),
-    {'EXIT',{badarith,_}} = (catch (B / (Huge + Huge))),
-    {'EXIT',{badarith,_}} = (catch (B * (Huge + Huge))),
-    {'EXIT',{badarith,_}} = (catch (B / (-Huge - Huge))),
-    {'EXIT',{badarith,_}} = (catch (B * (-Huge - Huge))).
+    ?assertError(badarith, (B / (A / Zero))),
+    ?assertError(badarith, (B * (A / Zero))),
+    ?assertError(badarith, (B / (Huge * Huge))),
+    ?assertError(badarith, (B * (Huge * Huge))),
+    ?assertError(badarith, (B / (Huge + Huge))),
+    ?assertError(badarith, (B * (Huge + Huge))),
+    ?assertError(badarith, (B / (-Huge - Huge))),
+    ?assertError(badarith, (B * (-Huge - Huge))).
 
 %% Improve code coverage in our different arithmetic functions
 %% and make sure they yield consistent results.
@@ -372,49 +380,51 @@ do_bin_ops(A, B) ->
 
 op_add(A, B) ->
     Info = [A,B],
-    R = unify(catch A + B, Info),
-    R = unify(my_apply(erlang,'+',[A,B]), Info),
+    R = unify(fun() -> A + B end, Info),
+    R = unify(fun() -> my_apply(erlang,'+',[A,B]) end, Info),
     case R of
-        _ when A + B =:= element(1,R) -> ok;
+        _ when A + B == element(1,R) -> ok;
         {{'EXIT',badarith}, Info} -> ok
     end.
 
 op_sub(A, B) ->
     Info = [A,B],
-    R = unify(catch A - B, Info),
-    R = unify(my_apply(erlang,'-',[A,B]), Info),
+    R = unify(fun() -> A - B end, Info),
+    R = unify(fun() -> my_apply(erlang,'-',[A,B]) end, Info),
     case R of
-        _ when A - B =:= element(1,R) -> ok;
+        _ when A - B == element(1,R) -> ok;
         {{'EXIT',badarith}, Info} -> ok
     end.
 
 op_mul(A, B) ->
     Info = [A,B],
-    R = unify(catch A * B, Info),
-    R = unify(my_apply(erlang,'*',[A,B]), Info),
+    R = unify(fun() -> A * B end, Info),
+    R = unify(fun() -> my_apply(erlang,'*',[A,B]) end, Info),
     case R of
-        _ when A * B =:= element(1,R) -> ok;
+        _ when A * B == element(1,R) -> ok;
         {{'EXIT',badarith}, Info} -> ok
     end.
 
 op_div(A, B) ->
     Info = [A,B],
-    R = unify(catch A / B, Info),
-    R = unify(my_apply(erlang,'/',[A,B]), Info),
+    R = unify(fun() -> A / B end, Info),
+    R = unify(fun() -> my_apply(erlang,'/',[A,B]) end, Info),
     case R of
-        _ when A / B =:= element(1,R) -> ok;
+        _ when A / B == element(1,R) -> ok;
         {{'EXIT',badarith}, Info} -> ok
     end.
 
 my_apply(M, F, A) ->
-    catch apply(id(M), id(F), A).
+    apply(id(M), id(F), A).
 
-% Unify exceptions be removing stack traces.
-% and add argument info to make it easer to debug failed matches.
-unify({'EXIT',{Reason,_Stack}}, Info) ->
-    {{'EXIT', Reason}, Info};
-unify(Other, Info) ->
-    {Other, Info}.
+% Unify exceptions by removing stack traces
+% and add argument info to make it easier to debug failed matches.
+unify(Fun, Info) ->
+    try Fun() of
+        Value -> {Value, Info}
+    catch
+        error:Reason -> {{'EXIT', Reason}, Info}
+    end.
 
 
 -define(epsilon, 1.0e-20).
@@ -439,3 +449,45 @@ op_mul_add(0, _, _, R) -> R;
 op_mul_add(N, A, B, R) when is_float(A), is_float(B), is_float(R) ->
     op_mul_add(N - 1, A, B, R * A + B).
 
+t_mul_neg_zero(Config) when is_list(Config) ->
+    ?assert(t_mul_neg_zero_guard_fail_test(id(-0.0))),
+    ?assert(t_mul_neg_zero_guard_test(id(-0.0))),
+    ?assert(t_mul_neg_zero_add_guard_fail_test(id(-0.0))),
+    ?assert(t_mul_neg_zero_add_guard_test(id(-0.0))),
+
+    ?assert(t_mul_neg_zero_body_fail_test(id(-0.0))),
+    ?assert(t_mul_neg_zero_body_test(id(-0.0), id(10.0))),
+    ?assert(t_mul_neg_zero_add_body_fail_test(id(-0.0))),
+    ?assert(t_mul_neg_zero_add_body_test(id(-0.0), id(10.0))),
+
+    ok.
+
+%% The arm JIT used to convert the Zero * 10.0 to 0.0 instead of -0.0.
+t_mul_neg_zero_guard_fail_test(Zero) when Zero * 10.0 =:= -0.0 ->
+    true;
+t_mul_neg_zero_guard_fail_test(_Zero) ->
+    false.
+
+t_mul_neg_zero_guard_test(Zero) when Zero * 10.0 =:= -0.0 ->
+    true.
+
+t_mul_neg_zero_body_fail_test(Zero) ->
+    try Zero * 10.0 =:= -0.0 catch _:_ -> false end.
+
+t_mul_neg_zero_body_test(Zero, Mul) ->
+    Zero * Mul =:= -0.0.
+
+%% The JIT used to convert the Zero * 10.0 + 0 to -0.0 instead of +0.0.
+t_mul_neg_zero_add_guard_fail_test(Zero) when Zero * 10.0 + 0 =:= +0.0 ->
+    true;
+t_mul_neg_zero_add_guard_fail_test(_Zero) ->
+    false.
+
+t_mul_neg_zero_add_guard_test(Zero) when Zero * 10.0 + 0 =:= +0.0 ->
+    true.
+
+t_mul_neg_zero_add_body_fail_test(Zero) ->
+    try Zero * 10.0 + 0 =:= +0.0 catch _:_ -> false end.
+
+t_mul_neg_zero_add_body_test(Zero, Mul) ->
+    Zero * Mul + 0 =:= +0.0.

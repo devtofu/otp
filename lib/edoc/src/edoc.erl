@@ -1,7 +1,16 @@
 %% =====================================================================
-%% Licensed under the Apache License, Version 2.0 (the "License"); you may
-%% not use this file except in compliance with the License. You may obtain
-%% a copy of the License at <http://www.apache.org/licenses/LICENSE-2.0>
+%% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0 OR LGPL-2.1-or-later
+%%
+%% Copyright Ericsson AB 2009-2026. All Rights Reserved.
+%% Copyright 2001-2007 Richard Carlsson
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
 %%
 %% Unless required by applicable law or agreed to in writing, software
 %% distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,7 +28,8 @@
 %% above, a recipient may use your version of this file under the terms of
 %% either the Apache License or the LGPL.
 %%
-%% @copyright 2001-2007 Richard Carlsson
+%% %CopyrightEnd%
+%%
 %% @author Richard Carlsson <carlsson.richard@gmail.com>
 %% @version {@version}
 %% @end
@@ -43,11 +53,13 @@
 %%
 %% This module provides the main user interface to EDoc.
 %% <ul>
-%%   <li><a href="overview-summary.html">EDoc User Manual</a></li>
-%%   <li><a href="overview-summary.html#Running_EDoc">Running EDoc</a></li>
+%%   <li><a href="chapter.html">EDoc User Manual</a></li>
+%%   <li><a href="chapter.html#Running_EDoc">Running EDoc</a></li>
 %% </ul>
 
 -module(edoc).
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
 
 -export([files/1, files/2,
 	 application/1, application/2, application/3,
@@ -109,8 +121,8 @@
 
 -type edoc_module() :: xmerl_scan:xmlElement().
 %% The EDoc documentation data for a module,
-%% expressed as an XML document in {@link //xmerl. XMerL} format. See
-%% the file <a href="edoc.dtd">`edoc.dtd'</a> for details.
+%% expressed as an XML document in {@link //xmerl/xmerl. XMerL} format. See
+%% the file <a href="assets/edoc.dtd">`edoc.dtd'</a> for details.
 
 -type ordset(T) :: ordsets:ordset(T).
 -type function_name() :: {atom(), integer()}.
@@ -189,7 +201,7 @@ files(Files) ->
 
 %% @doc Runs EDoc on a given set of source files. See {@link run/2} for
 %% details, including options.
-%% @equiv run([], Files, Options)
+%% @equiv run(Files, Options)
 
 -spec files(Files, Options) -> ok when
       Files :: [filename()],
@@ -286,7 +298,8 @@ opt_defaults() ->
 opt_negations() ->
     [{no_preprocess, preprocess},
      {no_subpackages, subpackages},
-     {no_report_missing_types, report_missing_types}].
+     {no_report_missing_types, report_missing_types},
+     {no_link_predefined_types, link_predefined_types}].
 
 %% @doc Runs EDoc on a given set of source files. Note
 %% that the doclet plugin module has its own particular options; see the
@@ -544,7 +557,7 @@ layout(Doc) ->
 
 %% INHERIT-OPTIONS: edoc_lib:run_layout/2
 
--spec layout(Doc, Opts) -> string() when
+-spec layout(Doc, Opts) -> term() when
       Doc :: edoc_module(),
       Opts :: proplist().
 layout(Doc, Opts) ->
@@ -561,7 +574,7 @@ read_comments(File) ->
 
 %% @doc Extracts comments from an Erlang source code file. See the
 %% module {@link //syntax_tools/erl_comment_scan} for details on the
-%% representation of comments. Currently, no options are avaliable.
+%% representation of comments. Currently, no options are available.
 
 -spec read_comments(File, Opts) -> [comment()] when
       File :: filename(),
@@ -612,6 +625,15 @@ read_source(Name) ->
 %%      The default value is `false'.
 %%      `no_report_missing_types' is an alias for
 %%      `{report_missing_types, false}'.
+%%  </dd>
+%%  <dt>{@type {link_predefined_types, boolean()@}}
+%%  </dt>
+%%  <dd>If the value is `true', all predefined data types will have a link
+%%      to the erlang module. This option is to be used when generating
+%%      documentation for the Erlang/OTP docs.
+%%      The default value is `false'.
+%%      `no_link_predefined_types' is an alias for
+%%      `{link_predefined_types, false}'.
 %%  </dd>
 %% </dl>
 %%
@@ -788,9 +810,9 @@ get_doc(File) ->
 %%  <dd><ul>
 %%       <li>`Macros' = {@type Macro | [Macro]}</li>
 %%       <li>`Macro' = {@type {Name::atom(), Text::string() | MacroFun@}}</li>
-%%       <li>`MacroFun' = {@type fun((MacroArgument::string(),
+%%       <li>`MacroFun' = `fun((MacroArgument::string(),
 %%                                    Line :: integer(),
-%%                                    edoc_lib:edoc_env()) -> (Text::string()))}</li>
+%%                                    edoc_lib:edoc_env()) -> (Text::string()))'</li>
 %%      </ul>
 %%    Specifies a set of user-defined EDoc macros. The text
 %%    substituted for macro calls is specified as either a {@type
@@ -798,7 +820,7 @@ get_doc(File) ->
 %%    macro argument text, the current line number, and the current
 %%    environment. The fun is to return a {@type string()}.
 %%    See
-%%    <a href="overview-summary.html#Macro_expansion">Macro expansion</a>
+%%    <a href="chapter.html#Macro_expansion">Macro expansion</a>
 %%    for details.
 %%  </dd>
 %%  <dt>{@type {hidden, boolean()@}}

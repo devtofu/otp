@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1999-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1999-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -24,6 +26,10 @@
 %%%----------------------------------------------------------------------
 
 -module(dist_util).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}},
+          {nowarn_possibly_unsafe_function, {erlang, binary_to_atom, 2}}]).
 
 %%-compile(export_all).
 -export([handshake_we_started/1, handshake_other_started/1,
@@ -31,9 +37,12 @@
 	 start_timer/1, setup_timer/2, 
 	 reset_timer/1, cancel_timer/1,
          is_node_name/1, split_node/1, is_allowed/2,
-	 shutdown/3, shutdown/4]).
+	 shutdown/3, shutdown/4,
+         net_ticker_spawn_options/0]).
 
--import(error_logger,[error_msg/2]).
+-import(error_logger,[error_msg/2, warning_msg/2]).
+
+-compile([{nowarn_deprecated_function, [{erlang,exit,2}]}]).
 
 -include("dist_util.hrl").
 -include("dist.hrl").
@@ -43,15 +52,6 @@
 -else.
 -define(shutdown_trace(A,B), noop).
 -endif.
-
--define(to_port(FSend, Socket, Data),
-	case FSend(Socket, Data) of
-	    {error, closed} ->
-		self() ! {tcp_closed, Socket},
-	        {error, closed};
-	    R ->
-	        R
-        end).
 
 
 -define(int16(X), [((X) bsr 8) band 16#ff, (X) band 16#ff]).
@@ -69,8 +69,6 @@
 
 -define(u32(X3,X2,X1,X0),
         (((X3) bsl 24) bor ((X2) bsl 16) bor ((X1) bsl 8) bor (X0))).
-
--define(CREATION_UNKNOWN,0).
 
 -record(tick, {read = 0,
 	       write = 0,
@@ -124,6 +122,10 @@ dflag2str(?DFLAG_FRAGMENTS) ->
     "FRAGMENTS";
 dflag2str(?DFLAG_HANDSHAKE_23) ->
     "HANDSHAKE_23";
+dflag2str(?DFLAG_UNLINK_ID) ->
+    "UNLINK_ID";
+dflag2str(?DFLAG_MANDATORY_25_DIGEST) ->
+    "MANDATORY_25_DIGEST";
 dflag2str(?DFLAG_SPAWN) ->
     "SPAWN";
 dflag2str(?DFLAG_NAME_ME) ->
@@ -132,8 +134,14 @@ dflag2str(?DFLAG_V4_NC) ->
     "V4_NC";
 dflag2str(?DFLAG_ALIAS) ->
     "ALIAS";
-dflag2str(_) ->
-    "UNKNOWN".
+dflag2str(?DFLAG_LOCAL_EXT) ->
+    "LOCAL_EXT";
+dflag2str(?DFLAG_ALTACT_SIG) ->
+    "ALTACT_SIG";
+dflag2str(?DFLAG_NATIVE_RECORDS) ->
+    "NATIVE_RECORDS";
+dflag2str(Other) ->
+    lists:flatten(io_lib:format("UNKNOWN<~.16.0B>", [Other])).
 
 
 adjust_flags(ThisFlags, OtherFlags) ->
@@ -143,7 +151,7 @@ publish_flag(_, NameMeFlg, _) when (NameMeFlg band ?DFLAG_NAME_ME) =/= 0 ->
     ?DFLAG_NAME_ME;
 publish_flag(hidden, _, _) ->
     0;
-publish_flag(_, _, OtherNode) when is_atom(OtherNode) ->
+publish_flag(_, _, OtherNode) ->
     case net_kernel:publish_on_node(OtherNode) of
 	true ->
 	    ?DFLAG_PUBLISHED;
@@ -200,13 +208,13 @@ handshake_other_started(#hs_data{request_type=ReqType,
     AddFlgs = convert_flags(AddFlgs0),
     RejFlgs = convert_flags(RejFlgs0),
     ReqFlgs = convert_flags(ReqFlgs0),
-    {PreOtherFlags,NodeOrHost,Creation,SendNameVersion} = recv_name(HSData0),
+    {PreOtherFlags0,NodeOrHost,Creation} = recv_name(HSData0),
+    PreOtherFlags = expand_mandatory_25_flag(PreOtherFlags0),
     EDF = erts_internal:get_dflags(),
     PreThisFlags = make_this_flags(ReqType, AddFlgs, RejFlgs, NodeOrHost, EDF,
                                    PreOtherFlags),
     HSData1 = HSData0#hs_data{this_flags=PreThisFlags,
                               other_flags=PreOtherFlags,
-                              other_version=flags_to_version(PreOtherFlags),
                               other_node=NodeOrHost,
                               other_started=true,
                               other_creation=Creation,
@@ -215,26 +223,39 @@ handshake_other_started(#hs_data{request_type=ReqType,
                               require_flags=ReqFlgs},
     check_dflags(HSData1, EDF),
     ?debug({"MD5 connection from ~p~n", [NodeOrHost]}),
-    HSData2 = mark_pending(HSData1),
+    {AcceptedPending, HSData2} = mark_pending(HSData1),
     Node = HSData2#hs_data.other_node,
-    {MyCookie,HisCookie} = get_cookies(Node),
+    Cookie = auth:get_cookie(Node),
     ChallengeA = gen_challenge(),
     send_challenge(HSData2, ChallengeA),
     reset_timer(HSData2#hs_data.timer),
-    HSData3 = recv_complement(HSData2, SendNameVersion),
+    HSData3 = recv_complement(HSData2),
     check_dflags(HSData3, EDF),
     ChosenFlags = adjust_flags(HSData3#hs_data.this_flags,
                                HSData3#hs_data.other_flags),
     HSData4 = HSData3#hs_data{this_flags = ChosenFlags,
                               other_flags = ChosenFlags},
-    ChallengeB = recv_challenge_reply(HSData4, ChallengeA, MyCookie),
-    send_challenge_ack(HSData4, gen_digest(ChallengeB, HisCookie)),
+    ChallengeB = recv_challenge_reply(HSData4, ChallengeA, Cookie),
+    case AcceptedPending of
+        up_pending -> wait_pending(HSData4);
+        _ -> continue
+    end,
+    send_challenge_ack(HSData4, gen_digest(ChallengeB, Cookie)),
     ?debug({dist_util, self(), accept_connection, Node}),
     connection(HSData4);
 
 handshake_other_started(OldHsData) when element(1,OldHsData) =:= hs_data ->
     handshake_other_started(convert_old_hsdata(OldHsData)).
 
+expand_mandatory_25_flag(Flags) ->
+    if
+        Flags band ?DFLAG_MANDATORY_25_DIGEST =/= 0 ->
+            %% From OTP 25, the single flag ?DFLAG_MANDATORY_25_DIGEST can
+            %% replace all the flags in ?MANDATORY_DFLAGS_25.
+            Flags bor ?MANDATORY_DFLAGS_25;
+        true ->
+            Flags
+    end.
 
 %%
 %% Check mandatory flags...
@@ -242,10 +263,19 @@ handshake_other_started(OldHsData) when element(1,OldHsData) =:= hs_data ->
 check_dflags(#hs_data{other_node = Node,
                       other_flags = OtherFlags,
                       other_started = OtherStarted,
-                      require_flags = RequiredFlags} = HSData,
+                      require_flags = RequiredFlags,
+                      other_creation = OtherCreation} = HSData,
              #erts_dflags{}=EDF) ->
 
-    Mandatory = (EDF#erts_dflags.mandatory bor RequiredFlags),
+    Mask = case OtherCreation of
+               undefined ->
+                   %% Old 'send_name' without creation and high flag bits
+                   %% Only check low 32 flag bits for now
+                   (1 bsl 32) - 1;
+               _ ->
+                   bnot 0
+           end,
+    Mandatory = Mask band (EDF#erts_dflags.mandatory bor RequiredFlags),
     Missing = check_mandatory(Mandatory, OtherFlags, []),
     case Missing of
         [] ->
@@ -288,8 +318,10 @@ check_mandatory(Mandatory, OtherFlags, Missing) ->
 mark_pending(#hs_data{kernel_pid=Kernel,
 		      other_node=Node,
 		      this_node=MyNode}=HSData) ->
-    case do_mark_pending(Kernel, MyNode, Node,
-			 HSData#hs_data.other_flags) of
+    KernelReply = do_mark_pending(Kernel, MyNode, Node,
+                                  HSData#hs_data.other_flags),
+    {KernelReply,
+     case KernelReply of
 	ok ->
 	    send_status(HSData, ok),
 	    reset_timer(HSData#hs_data.timer),
@@ -319,8 +351,12 @@ mark_pending(#hs_data{kernel_pid=Kernel,
 
 	    %% This can happen if the other node goes down,
 	    %% and goes up again and contact us before we have
-	    %% detected that the socket was closed. 
-	    wait_pending(Kernel),
+	    %% detected that the socket was closed.
+            %% It can also happen if the old connection went down silently,
+            %% without us knowing, a lost TCP FIN or RST packet for example.
+
+            %% Continue handshake to verify cookie and then wait for old
+            %% connection to die.
 	    reset_timer(HSData#hs_data.timer),
             HSData;
 
@@ -328,15 +364,17 @@ mark_pending(#hs_data{kernel_pid=Kernel,
 	    %% FIXME: is this a case ?
 	    ?debug({dist_util,self(),mark_pending,already_pending,Node}),
 	    ?shutdown(Node)
-    end.
+        end
+    }.
+
 
 
 %%
-%% Marking pending and negotiating away 
-%% simultaneous connection problems
+%% Tell net_kernel we are waiting for old connection to die.
 %%
-
-wait_pending(Kernel) ->
+wait_pending(#hs_data{kernel_pid=Kernel,
+		      other_node=Node}) ->
+    Kernel ! {self(), {wait_pending, Node}},
     receive
 	{Kernel, pending} ->
 	    ?trace("wait_pending returned for pid ~p.~n", 
@@ -388,7 +426,7 @@ shutdown(_Module, _Line, _Data, Reason) ->
     exit(Reason).
 %% Use this line to debug connection.  
 %% Set net_kernel verbose = 1 as well.
-%%    exit({Reason, ?MODULE, _Line, _Data, erlang:timestamp()}).
+%%    exit({Reason, {?MODULE, _Line, _Data, erlang:timestamp()}}).
 
 handshake_we_started(#hs_data{request_type=ReqType,
                               this_node=MyNode,
@@ -400,40 +438,37 @@ handshake_we_started(#hs_data{request_type=ReqType,
     RejFlgs = convert_flags(RejFlgs0),
     ReqFlgs = convert_flags(ReqFlgs0),
     EDF = erts_internal:get_dflags(),
-    {NameMeFlg, NameToSend, MinVersion} =
+    {NameMeFlg, NameToSend} =
         case node() of
             nonode@nohost ->
                 {node, "undefined", Host} = split_node(MyNode),
-                false = net_kernel:dist_listen(),
-                {?DFLAG_NAME_ME, Host, ?ERL_DIST_VER_6};
+                {?DFLAG_NAME_ME, Host};
 
             _ ->
-                {0, MyNode, PreHSData#hs_data.other_version}
+                {0, MyNode}
         end,
     PreThisFlags = make_this_flags(ReqType, AddFlgs, RejFlgs, Node, EDF, NameMeFlg),
     HSData = PreHSData#hs_data{this_node = NameToSend,
                                this_flags = PreThisFlags,
-                               other_version = MinVersion,
                                add_flags = AddFlgs,
                                reject_flags = RejFlgs,
                                require_flags = ReqFlgs},
-    SendNameVersion = send_name(HSData),
+    send_name(HSData),
     HSData1 = recv_status(HSData),
-    {PreOtherFlags, ChallengeA, Creation} = recv_challenge(HSData1),
+    {PreOtherFlags0, ChallengeA, Creation} = recv_challenge(HSData1),
+    PreOtherFlags = expand_mandatory_25_flag(PreOtherFlags0),
     ChosenFlags = adjust_flags(PreThisFlags, PreOtherFlags),
     HSData2 = HSData1#hs_data{this_flags = ChosenFlags,
 			       other_flags = ChosenFlags,
 			       other_started = false,
-                               other_version = flags_to_version(PreOtherFlags),
                                other_creation = Creation},
     check_dflags(HSData2, EDF),
-    MyChallenge = gen_challenge(),
-    {MyCookie,HisCookie} = get_cookies(Node),
-    send_complement(HSData2, SendNameVersion),
-    send_challenge_reply(HSData2,MyChallenge,
-			 gen_digest(ChallengeA,HisCookie)),
+    ChallengeB = gen_challenge(),
+    Cookie = auth:get_cookie(Node),
+    send_challenge_reply(HSData2, ChallengeB,
+                         gen_digest(ChallengeA, Cookie)),
     reset_timer(HSData2#hs_data.timer),
-    recv_challenge_ack(HSData2, MyChallenge, MyCookie),
+    recv_challenge_ack(HSData2, ChallengeB, Cookie),
     connection(HSData2);
 
 handshake_we_started(OldHsData) when element(1,OldHsData) =:= hs_data ->
@@ -450,21 +485,24 @@ convert_flags(Flags) when is_integer(Flags) ->
 convert_flags(_Undefined) ->
     0.
 
-flags_to_version(Flags) ->
-    case Flags band ?DFLAG_HANDSHAKE_23 of
-        0 ->
-            ?ERL_DIST_VER_5;
-        ?DFLAG_HANDSHAKE_23 ->
-            ?ERL_DIST_VER_6
-    end.
-
-
-
 %% --------------------------------------------------------------
 %% The connection has been established.
 %% --------------------------------------------------------------
 
+-record(state, {kernel          :: pid(),
+                node            :: node(),
+                tick_intensity  :: 4..1000,
+                socket          :: term(),
+                publish_type    :: 'hidden' | 'normal',
+                handle          :: erlang:dist_handle(),
+                f_tick          :: function(),
+                f_getstat       :: function() | 'undefined',
+                f_setopts       :: function() | 'undefined',
+                f_getopts       :: function() | 'undefined'}).
+
 connection(#hs_data{other_node = Node,
+                    other_creation = Creation,
+                    other_flags = Flags,
 		    socket = Socket,
 		    f_address = FAddress,
 		    f_setopts_pre_nodeup = FPreNodeup,
@@ -475,28 +513,35 @@ connection(#hs_data{other_node = Node,
 	ok -> 
 	    {DHandle,NamedMe} = do_setnode(HSData), % Succeeds or exits the process.
 	    Address = FAddress(Socket,Node),
-	    mark_nodeup(HSData,Address,NamedMe),
+	    TickIntensity = mark_nodeup(HSData,Address,NamedMe),
 	    case FPostNodeup(Socket) of
 		ok ->
                     case HSData#hs_data.f_handshake_complete of
                         undefined -> ok;
-                        HsComplete -> HsComplete(Socket, Node, DHandle)
+                        HsComplete when is_function(HsComplete, 3) ->
+                            HsComplete(Socket, Node, DHandle);
+                        HsComplete when is_function(HsComplete, 4) ->
+                            Context = #{creation => Creation, flags => Flags},
+                            HsComplete(Socket, Node, DHandle, Context)
                     end,
-		    con_loop({HSData#hs_data.kernel_pid,
-			      Node,
-			      Socket,
-			      PType,
-                              DHandle,
-			      HSData#hs_data.mf_tick,
-			      HSData#hs_data.mf_getstat,
-			      HSData#hs_data.mf_setopts,
-			      HSData#hs_data.mf_getopts},
+		    con_loop(#state{kernel = HSData#hs_data.kernel_pid,
+                                    node = Node,
+                                    socket = Socket,
+                                    tick_intensity = TickIntensity,
+                                    publish_type = PType,
+                                    handle = DHandle,
+                                    f_tick = HSData#hs_data.mf_tick,
+                                    f_getstat = HSData#hs_data.mf_getstat,
+                                    f_setopts = HSData#hs_data.mf_setopts,
+                                    f_getopts = HSData#hs_data.mf_getopts},
 			     #tick{});
-		_ ->
-		    ?shutdown2(Node, connection_setup_failed)
+		Error1 ->
+		    ?shutdown2(
+                       {Node, Socket},
+                       {f_setopts_post_nodeup_failed, Error1})
 	    end;
-	_ ->
-	    ?shutdown(Node)
+	Error2 ->
+	    ?shutdown2({Node, Socket}, {f_setopts_pre_nodeup_failed, Error2})
     end.
 
 %% Generate a message digest from Challenge number and Cookie	
@@ -521,23 +566,10 @@ gen_challenge() ->
       (B + (C bsl 16)) bxor 
       (D + (H bsl 16)) ) band 16#ffffffff.
 
-%%
-%% Get the cookies for a node from auth
-%%    
-get_cookies(Node) ->
-    case auth:get_cookie(Node) of
-	X when is_atom(X) ->
-	    {X,X}
-%	{Y,Z} when is_atom(Y), is_atom(Z) ->
-%	    {Y,Z};
-%	_ ->
-%	    erlang:error("Corrupt cookie database")
-    end.    
-
 %% No error return; either succeeds or terminates the process.
 do_setnode(#hs_data{other_node = Node, socket = Socket, 
                     this_node = MyNode,
-		    other_flags = Flags, other_version = Version,
+		    other_flags = Flags,
 		    f_getll = GetLL,
                     other_creation = Creation}=HSData) ->
     case GetLL(Socket) of
@@ -550,19 +582,19 @@ do_setnode(#hs_data{other_node = Node, socket = Socket,
                           MyNode ->
                               false
                       end,
-	    ?trace("setnode: node=~p port=~p flags=~p(~p) ver=~p creation=~p~n",
-		   [Node, Port, Flags, publish_type(Flags), Version, Creation]),
+	    ?trace("setnode: node=~p port=~p flags=~p(~p) creation=~p~n",
+		   [Node, Port, Flags, publish_type(Flags), Creation]),
 
             MyNode = node(), % ASSERT
             try
-                DHandle = erlang:setnode(Node, Port, {Flags, Version, Creation}),
+                DHandle = erlang:setnode(Node, Port, {Flags, Creation}),
                 {DHandle, NamedMe}
             catch
                 error:system_limit ->
 		    error_msg("** Distribution system limit reached, "
 			      "no table space left for node ~w ** ~n",
 			      [Node]),
-		    ?shutdown(Node);
+		    ?shutdown({Node, Socket});
                 error:Other:Stacktrace ->
                     exit({Other, Stacktrace})
 	    end;
@@ -570,7 +602,7 @@ do_setnode(#hs_data{other_node = Node, socket = Socket,
 	    error_msg("** Distribution connection error, "
 		      "could not get low level port for node ~w ** ~n",
 		      [Node]),
-	    ?shutdown(Node)
+	    ?shutdown({Node, Socket})
     end.
 
 mark_nodeup(#hs_data{kernel_pid = Kernel, 
@@ -580,8 +612,8 @@ mark_nodeup(#hs_data{kernel_pid = Kernel,
 	    Address, NamedMe) ->
     Kernel ! {self(), {nodeup,Node,Address,publish_type(Flags),NamedMe}},
     receive
-	{Kernel, inserted} ->
-	    ok;
+	{Kernel, inserted, TickIntensity} ->
+	    TickIntensity;
 	{Kernel, bad_request} ->
 	    TypeT = case OtherStarted of
 		       true ->
@@ -600,42 +632,43 @@ getstat(DHandle, _Socket, undefined) ->
 getstat(_DHandle, Socket, MFGetstat) ->
     MFGetstat(Socket).
 
-con_loop({Kernel, Node, Socket, Type, DHandle, MFTick, MFGetstat,
-          MFSetOpts, MFGetOpts}=ConData,
+con_loop(#state{kernel = Kernel, node = Node,
+                socket = Socket, handle = DHandle,
+                f_getstat = MFGetstat, f_setopts = MFSetOpts,
+                f_getopts = MFGetOpts} = ConData,
 	 Tick) ->
     receive
 	{tcp_closed, Socket} ->
-	    ?shutdown2(Node, connection_closed);
+	    ?shutdown2({Node, Socket}, tcp_closed);
 	{Kernel, disconnect} ->
-	    ?shutdown2(Node, disconnected);
+	    ?shutdown2({Node, Socket}, disconnected);
 	{Kernel, aux_tick} ->
 	    case getstat(DHandle, Socket, MFGetstat) of
 		{ok, _, _, PendWrite} ->
-		    send_aux_tick(Type, Socket, PendWrite, MFTick);
+		    send_aux_tick(ConData, PendWrite);
 		_ ->
 		    ignore_it
 	    end,
 	    con_loop(ConData, Tick);
 	{Kernel, tick} ->
-	    case send_tick(DHandle, Socket, Tick, Type, 
-			   MFTick, MFGetstat) of
+	    case send_tick(ConData, Tick) of
 		{ok, NewTick} ->
 		    con_loop(ConData, NewTick);
 		{error, not_responding} ->
  		    error_msg("** Node ~p not responding **~n"
  			      "** Removing (timedout) connection **~n",
  			      [Node]),
- 		    ?shutdown2(Node, net_tick_timeout);
-		_Other ->
-		    ?shutdown2(Node, send_net_tick_failed)
+		    ?shutdown2({Node, Socket}, net_tick_timeout);
+		Error1 ->
+		    ?shutdown2({Node, Socket}, {send_net_tick_failed, Error1})
 	    end;
 	{From, get_status} ->
 	    case getstat(DHandle, Socket, MFGetstat) of
 		{ok, Read, Write, _} ->
 		    From ! {self(), get_status, {ok, Read, Write}},
 		    con_loop(ConData, Tick);
-		_ ->
-		    ?shutdown2(Node, get_status_failed)
+		Error2 ->
+		    ?shutdown2({Node, Socket}, {get_status_failed, Error2})
 	    end;
 	{From, Ref, {setopts, Opts}} ->
 	    Ret = case MFSetOpts of
@@ -660,35 +693,17 @@ con_loop({Kernel, Node, Socket, Type, DHandle, MFTick, MFGetstat,
 
 send_name(#hs_data{socket = Socket, this_node = Node, 
 		   f_send = FSend, 
-		   this_flags = Flags,
-		   other_version = Version}) ->
+		   this_flags = Flags}) ->
     NameBin = to_binary(Node),
-    if Version =:= undefined;
-       Version =:= ?ERL_DIST_VER_5 ->
-            %% We treat "5" the same as 'undefined' as there are
-            %% custom made epmd modules out there with a hardcoded "5".
-            %%
-            %% Send old 'n' message but with DFLAG_HANDSHAKE_23
-            %% Old nodes will ignore DFLAG_HANDSHAKE_23 and reply old 'n' challenge.
-            %% New nodes will see DFLAG_HANDSHAKE_23 and reply new 'N' challenge.
-            ?trace("send_name: 'n' node=~p, version=~w\n",
-                   [Node, ?ERL_DIST_VER_5]),
-            _ = ?to_port(FSend, Socket,
-                         [<<$n, ?ERL_DIST_VER_5:16, Flags:32>>, NameBin]),
-            ?ERL_DIST_VER_5;
-
-       is_integer(Version), Version >= ?ERL_DIST_VER_6 ->
-            Creation = case name_type(Flags) of
-                           static -> erts_internal:get_creation();
-                           dynamic -> 0
-                       end,
-            NameLen = byte_size(NameBin),
-            ?trace("send_name: 'N' node=~p creation=~w\n",
-                   [Node, Creation]),
-            _ = ?to_port(FSend, Socket,
-                         [<<$N, Flags:64, Creation:32, NameLen:16>>, NameBin]),
-            ?ERL_DIST_VER_6
-    end.
+    Creation = case name_type(Flags) of
+                   static -> erts_internal:get_creation();
+                   dynamic -> 0
+               end,
+    NameLen = byte_size(NameBin),
+    ?trace("send_name: 'N' node=~p creation=~w\n",
+           [Node, Creation]),
+    to_port(FSend, Socket,
+            [<<$N, Flags:64, Creation:32, NameLen:16>>, NameBin]).
 
 to_binary(Atom) when is_atom(Atom) ->
     atom_to_binary(Atom, latin1);
@@ -697,61 +712,28 @@ to_binary(List) when is_list(List) ->
 
 send_challenge(#hs_data{socket = Socket, this_node = Node, 
 			this_flags = ThisFlags,
-                        other_flags = OtherFlags,
 			f_send = FSend},
 	       Challenge ) ->
-    case OtherFlags band ?DFLAG_HANDSHAKE_23 of
-        0 ->
-            %% Reply with old 'n' message
-            ?trace("send: 'n' challenge=~w\n", [Challenge]),
-
-            ?to_port(FSend, Socket, [<<$n,
-                                       ?ERL_DIST_VER_5:16, % echo same Version back
-                                       ThisFlags:32,
-                                       Challenge:32>>,
-                                     atom_to_list(Node)]);
-
-        ?DFLAG_HANDSHAKE_23 ->
-            %% Reply with new 'N' message
-            Creation = erts_internal:get_creation(),
-            NodeName = atom_to_binary(Node, latin1),
-            NameLen = byte_size(NodeName),
-            ?trace("send: 'N' challenge=~w creation=~w\n",
-                   [Challenge,Creation]),
-            ?to_port(FSend, Socket, [<<$N,
-                                       ThisFlags:64,
-                                       Challenge:32,
-                                       Creation:32,
-                                       NameLen:16>>, NodeName])
-    end.
-
-send_complement(#hs_data{socket = Socket,
-                         f_send = FSend,
-                         this_flags = Flags,
-                         other_flags = Flags},
-                SendNameVersion) ->
-    if SendNameVersion =:= ?ERL_DIST_VER_5,
-       (Flags band ?DFLAG_HANDSHAKE_23) =/= 0 ->
-            %% We sent an old 'n' name message and need to complement
-            %% with creation value.
-            Creation = erts_internal:get_creation(),
-            FlagsHigh = Flags bsr 32,
-            ?trace("send_complement: 'c' flags_high=~w creation=~w\n", [FlagsHigh,Creation]),
-            ?to_port(FSend, Socket, [<<$c, FlagsHigh:32, Creation:32>>]);
-       true->
-            ok % no complement msg needed
-    end.
+    %% Reply with new 'N' message
+    Creation = erts_internal:get_creation(),
+    NodeName = atom_to_binary(Node, latin1),
+    NameLen = byte_size(NodeName),
+    ?trace("send: 'N' challenge=~w creation=~w\n",
+           [Challenge,Creation]),
+    to_port(FSend, Socket,
+            [<<$N,ThisFlags:64, Challenge:32, Creation:32, NameLen:16>>,
+             NodeName]).
 
 send_challenge_reply(#hs_data{socket = Socket, f_send = FSend}, 
 		     Challenge, Digest) ->
     ?trace("send_reply: challenge=~w digest=~p\n",
 	   [Challenge,Digest]),
-    ?to_port(FSend, Socket, [$r,?int32(Challenge),Digest]).
+    to_port(FSend, Socket, [$r,?int32(Challenge),Digest]).
 
 send_challenge_ack(#hs_data{socket = Socket, f_send = FSend}, 
 		   Digest) ->
     ?trace("send_ack: digest=~p\n", [Digest]),
-    ?to_port(FSend, Socket, [$a,Digest]).
+    to_port(FSend, Socket, [$a,Digest]).
 
 
 %%
@@ -764,10 +746,19 @@ recv_name(#hs_data{socket = Socket, f_recv = Recv} = HSData) ->
             recv_name_old(HSData, Data);
         {ok, [$N | _] = Data} ->
             recv_name_new(HSData, Data);
-	_ ->
-	    ?shutdown(no_node)
+	Other ->
+	    ?shutdown2({no_node, Socket}, {recv_name_failed, Other})
     end.
 
+%% OTP 25.3:
+%% We accept old 'send_name' messages ($n) used by OTP-22 and older.
+%% OTP-23 or OTP-24 nodes, not using epmd, may send the old message
+%% to us if they do not know our OTP version.
+%% Hence, we accept the old 'send_name' and the accompanying
+%% 'send_complement', but we do not send them ourself.
+%% This was removed prematurely in OTP-25.0,
+%% therefore versions 25.0 to 25.2.* are broken in this regard.
+%% Can be safely removed in OTP-27.0.
 recv_name_old(HSData,
              [$n, V1, V0, F3, F2, F1, F0 | Node] = Data) ->
     <<_Version:16>> = <<V1,V0>>,
@@ -776,7 +767,7 @@ recv_name_old(HSData,
     case is_node_name(Node) of
         true ->
             check_allowed(HSData, Node),
-            {Flags, list_to_atom(Node), ?CREATION_UNKNOWN, ?ERL_DIST_VER_5};
+            {Flags, list_to_atom(Node), undefined};
         false ->
             ?shutdown(Data)
     end.
@@ -799,9 +790,9 @@ recv_name_new(HSData,
                                  %% Keep host name as string
                                  Name
                          end,
-            {Flags, NodeOrHost, Creation, ?ERL_DIST_VER_6};
+            {Flags, NodeOrHost, Creation};
         false ->
-            ?shutdown(Data)
+            ?shutdown({name, Data})
     end.
 
 is_node_name(NodeName) ->
@@ -841,7 +832,9 @@ split_node(Node) ->
                     Split;
                 false ->
                     {host,Host}
-            end
+            end;
+        _ ->
+            {error, {invalid_node, Node}}
     end.
 
 %% Check if connecting node is allowed to connect
@@ -932,32 +925,11 @@ publish_type(Flags) ->
 %% wait for challenge after connect
 recv_challenge(#hs_data{socket=Socket, f_recv=Recv}=HSData) ->
     case Recv(Socket, 0, infinity) of
-	{ok, [$n | _]=Msg} ->
-            recv_challenge_old(HSData, Msg);
         {ok,[$N | _]=Msg} ->
             recv_challenge_new(HSData, Msg);
 	Other ->
-            ?shutdown2(no_node, {recv_challenge_failed, Other})
+            ?shutdown2({no_node, Socket}, {recv_challenge_failed, Other})
     end.
-
-recv_challenge_old(#hs_data{other_node=Node},
-                   [$n, V1,V0, F3,F2,F1,F0, C3,C2,C1,C0 | Ns]=Msg) ->
-    <<_Version:16>> = <<V1,V0>>,
-    <<Flags:32>> = <<F3,F2,F1,F0>>,
-    <<Challenge:32>> = <<C3,C2,C1,C0>>,
-    ?trace("recv: 'n' node=~p, challenge=~w version=~w\n",
-           [Ns, Challenge, _Version]),
-    try {list_to_existing_atom(Ns), Flags band ?DFLAG_HANDSHAKE_23} of
-        {Node, 0} ->
-            {Flags, Challenge, ?CREATION_UNKNOWN};
-        _ ->
-            ?shutdown2(no_node, {recv_challenge_failed, version, Msg})
-    catch
-        error:badarg ->
-            ?shutdown2(no_node, {recv_challenge_failed, no_node, Ns})
-    end;
-recv_challenge_old(_, Other) ->
-    ?shutdown2(no_node, {recv_challenge_failed, Other}).
 
 recv_challenge_new(#hs_data{other_node=Node},
                    [$N,
@@ -979,43 +951,36 @@ recv_challenge_new(#hs_data{other_node=Node},
     ?trace("recv: 'N' node=~p, challenge=~w creation=~w\n",
            [Ns, Challenge, Creation]),
 
-    case Flags band ?DFLAG_HANDSHAKE_23 of
-        ?DFLAG_HANDSHAKE_23 ->
-            try list_to_existing_atom(Ns) of
-                Node ->
-                    {Flags, Challenge, Creation};
-                _ ->
-                    ?shutdown2(no_node, {recv_challenge_failed, no_node, Ns})
-            catch
-                error:badarg ->
-                    ?shutdown2(no_node, {recv_challenge_failed, no_node, Ns})
-            end;
-       0 ->
-            ?shutdown2(no_node, {recv_challenge_failed, version, Msg})
+    try list_to_existing_atom(Ns) of
+        Node ->
+            {Flags, Challenge, Creation};
+        _ ->
+            ?shutdown2(no_node, {recv_challenge_failed, no_node, Ns})
+    catch
+        error:badarg ->
+            ?shutdown2(no_node, {recv_challenge_failed, no_node, Ns})
     end;
 recv_challenge_new(_, Other) ->
     ?shutdown2(no_node, {recv_challenge_failed, Other}).
 
 
+%% See comment for recv_name_old
 recv_complement(#hs_data{socket = Socket,
                          f_recv = Recv,
-                         other_flags = Flags} = HSData,
-                SendNameVersion) ->
-    if SendNameVersion =:= ?ERL_DIST_VER_5,
-       (Flags band ?DFLAG_HANDSHAKE_23) =/= 0 ->
-            case Recv(Socket, 0, infinity) of
-                {ok, [$c, F7,F6,F5,F4, Cr3,Cr2,Cr1,Cr0]} ->
-                    <<FlagsHigh:32>> = <<F7,F6,F5,F4>>,
-                    <<Creation:32>> = <<Cr3,Cr2,Cr1,Cr0>>,
-                    ?trace("recv_complement: creation=~w\n", [Creation]),
-                    HSData#hs_data{other_creation = Creation,
-                                   other_flags = Flags bor (FlagsHigh bsl 32)};
-                Other ->
-                    ?shutdown2(no_node, {recv_complement_failed, Other})
-            end;
-         true ->
-            HSData
-    end.
+                         other_flags = Flags,
+                         other_creation = undefined} = HSData) ->
+    case Recv(Socket, 0, infinity) of
+        {ok, [$c, F7,F6,F5,F4, Cr3,Cr2,Cr1,Cr0]} ->
+            <<FlagsHigh:32>> = <<F7,F6,F5,F4>>,
+            <<Creation:32>> = <<Cr3,Cr2,Cr1,Cr0>>,
+            ?trace("recv_complement: creation=~w\n", [Creation]),
+            HSData#hs_data{other_creation = Creation,
+                           other_flags = Flags bor (FlagsHigh bsl 32)};
+        Other ->
+            ?shutdown2(no_node, {recv_complement_failed, Other})
+    end;
+recv_complement(HSData) ->
+    HSData.
 
 
 %%
@@ -1041,7 +1006,8 @@ recv_challenge_reply(#hs_data{socket = Socket,
 		    ?shutdown2(NodeB, {recv_challenge_reply_failed, bad_cookie})
 	    end;
 	Other ->
-	    ?shutdown2(no_node, {recv_challenge_reply_failed, Other})
+	    ?shutdown2({no_node, Socket},
+                       {recv_challenge_reply_failed, Other})
     end.
 
 recv_challenge_ack(#hs_data{socket = Socket, f_recv = FRecv, 
@@ -1058,15 +1024,21 @@ recv_challenge_ack(#hs_data{socket = Socket, f_recv = FRecv,
 		_ ->
 		    error_msg("** Connection attempt to node ~w cancelled."
                               " Invalid challenge ack. **~n", [NodeB]),
-		    ?shutdown2(NodeB, {recv_challenge_ack_failed, bad_cookie})
+		    ?shutdown2(
+                       {NodeB, Socket}, {recv_challenge_ack_failed, bad_cookie})
 	    end;
 	Other ->
-	    ?shutdown2(NodeB, {recv_challenge_ack_failed, Other})
+	    ?shutdown2(
+               {NodeB, Socket}, {recv_challenge_ack_failed, Other})
     end.
 
-recv_status(#hs_data{kernel_pid = Kernel, socket = Socket, 
-                     this_flags = MyFlgs,
-		     other_node = Node, f_recv = Recv} = HSData) ->
+recv_status(
+  #hs_data{
+     kernel_pid = Kernel,
+     socket = Socket,
+     this_flags = MyFlgs,
+     other_node = Node,
+     f_recv = Recv} = HSData) ->
     case Recv(Socket, 0, infinity) of
         {ok, "snamed:"++Rest} ->
             <<NameLen:16,
@@ -1083,9 +1055,11 @@ recv_status(#hs_data{kernel_pid = Kernel, socket = Socket,
 	    ?debug({dist_util,self(),recv_status, Node, Stat}),
 	    case {Stat, name_type(MyFlgs)} of
                 {"not_allowed", _} ->
-                    ?shutdown2(Node, {recv_status_failed, not_allowed});
+                    ?shutdown2(
+                       {Node, Socket}, {recv_status_failed, not_allowed});
                 {_, dynamic} ->
-                    ?shutdown2(Node, {recv_status_failed, unexpected, Stat});
+                    ?shutdown2(
+                       {Node, Socket}, {recv_status_failed, unexpected, Stat});
                 _ ->
                     continue
             end,
@@ -1100,20 +1074,20 @@ recv_status(#hs_data{kernel_pid = Kernel, socket = Socket,
                     ?debug({is_pending,self(),Reply}),
                     send_status(HSData, Reply),
                     if not Reply ->
-                            ?shutdown(Node);
+                            ?shutdown({Node, Socket});
                        Reply ->
                             HSData
                     end;
                 "ok" -> HSData;
                 "ok_simultaneous" -> HSData;
                 Other ->
-                    ?shutdown2(Node, {recv_status_failed, unknown, Other})
+                    ?shutdown2(
+                       {Node, Socket}, {recv_status_failed, unknown, Other})
             end;
 
 	Error ->
-	    ?debug({dist_util,self(),recv_status_error, 
-		Node, Error}),
-	    ?shutdown2(Node, {recv_status_failed, Error})
+	    ?debug({dist_util, self(), recv_status_error, Node, Error}),
+	    ?shutdown2({Node, Socket}, {recv_status_failed, Error})
     end.
 
 
@@ -1127,13 +1101,14 @@ recv_status_reply(#hs_data{socket = Socket,
                 "true" -> true;
                 "false" -> false;
                 Other ->
-                    ?shutdown2(Node, {recv_status_failed, unexpected, Other})
+                    ?shutdown2(
+                       {Node, Socket}, {recv_status_failed, unexpected, Other})
             end;
 
 	Error ->
 	    ?debug({dist_util,self(),recv_status_error,
 		Node, Error}),
-	    ?shutdown2(Node, {recv_status_failed, Error})
+	    ?shutdown2({Node, Socket}, {recv_status_failed, Error})
     end.
 
 
@@ -1148,22 +1123,32 @@ send_status(#hs_data{socket = Socket,
     case FSend(Socket, [$s, "named:",
                        <<NameLen:16, NameBin/binary>>,
                        <<Creation:32>>]) of
-	{error, _} ->
-	    ?shutdown(Node);
+	{error, _} = Error->
+	    ?shutdown2({Node, Socket}, {send_status_failed, Error});
 	_ ->
-	    true
+	    ok
     end;
 send_status(#hs_data{socket = Socket, other_node = Node,
 		    f_send = FSend}, Stat) ->
     ?debug({dist_util,self(),send_status, Node, Stat}),
     case FSend(Socket, [$s | atom_to_list(Stat)]) of
-	{error, _} ->
-	    ?shutdown(Node);
-	_ -> 
-	    true
+	{error, _} = Error ->
+	    ?shutdown2({Node, Socket}, {send_status_failed, Error});
+	_ ->
+	    ok
     end.
-    
-    
+
+to_port(FSend, Socket, Data) ->
+    case FSend(Socket, Data) of
+        {error, closed} ->
+            self() ! {tcp_closed, Socket},
+            ok;
+        {error, _} = Error ->
+            ?shutdown2(Socket, {f_send_failed, Error});
+        ok ->
+            ok
+    end.
+
 
 %%
 %% Send a TICK to the other side.
@@ -1179,8 +1164,8 @@ send_status(#hs_data{socket = Socket, other_node = Node,
 %% ticker process, In that case this code will never run 
 
 %% And then every 60 seconds we also check the connection and 
-%% close it if we havn't received anything on it for the 
-%% last 60 secs. If ticked == tick we havn't received anything 
+%% close it if we haven't received anything on it for the 
+%% last 60 secs. If ticked == tick we haven't received anything 
 %% on the connection the last 60 secs. 
 
 %% The detection time interval is thus, by default, 45s < DT < 75s 
@@ -1188,19 +1173,41 @@ send_status(#hs_data{socket = Socket, other_node = Node,
 %% A HIDDEN node is always ticked if we haven't read anything
 %% as a (primitive) hidden node only ticks when it receives a TICK !!
 	
-send_tick(DHandle, Socket, Tick, Type, MFTick, MFGetstat) ->
+send_tick(#state{handle = DHandle, socket = Socket,
+                 tick_intensity = TickIntensity,
+                 publish_type = Type, f_tick = MFTick,
+                 node = Node,
+                 f_getstat = MFGetstat}, Tick) ->
     #tick{tick = T0,
 	  read = Read,
 	  write = Write,
 	  ticked = Ticked0} = Tick,
     T = T0 + 1,
-    T1 = T rem 4,
+    T1 = T rem TickIntensity,
+    LogMissed = application:get_env(kernel, log_missed_net_ticks, false),
     case getstat(DHandle, Socket, MFGetstat) of
 	{ok, Read, _, _} when Ticked0 =:= T ->
+        LogMissed andalso
+            warning_msg("** Node ~p: ~w consecutive net ticks missed "
+                        "(tick ~w/~w) — net_tick_timeout **~n",
+                        [Node, TickIntensity, T, TickIntensity]),
 	    {error, not_responding};
 
         {ok, R, W1, Pend} ->
             RDiff = R - Read,
+            case RDiff of
+                0 when LogMissed ->
+                    MissedCount = case T - Ticked0 of
+                                      D when D > 0 -> D;
+                                      D -> TickIntensity + D
+                                  end,
+                    warning_msg("** Node ~p: net tick ~w/~w missed "
+                                "(~w consecutive, ~w until timeout) **~n",
+                                [Node, T, TickIntensity,
+                                 MissedCount, TickIntensity - MissedCount]);
+                _ ->
+                    ok
+            end,
             W2 = case need_to_tick(Type, RDiff, W1-Write, Pend) of
                      true ->
                          MFTick(Socket),
@@ -1232,9 +1239,10 @@ need_to_tick(hidden, 0, _, _) ->  % nothing read from hidden
 need_to_tick(_, _, _, _) ->
     false.
 
-send_aux_tick(normal, _, Pend, _) when Pend /= false, Pend /= 0 ->
+send_aux_tick(#state{publish_type = normal}, Pend) when Pend /= false,
+                                                        Pend /= 0 ->
     ok; %% Dont send tick if pending write.
-send_aux_tick(_Type, Socket, _Pend, MFTick) ->
+send_aux_tick(#state{socket = Socket, f_tick = MFTick}, _Pend) ->
     MFTick(Socket).
 
 %% ------------------------------------------------------------
@@ -1254,7 +1262,7 @@ setup_timer(Pid, Timeout) ->
 	    setup_timer(Pid, Timeout)
     after Timeout ->
 	    ?trace("Timer expires ~p, ~p~n",[Pid, Timeout]),
-	    ?shutdown2(timer, setup_timer_timeout)
+	    ?shutdown2({timer, Pid}, setup_timer_timeout)
     end.
 
 reset_timer(Timer) ->
@@ -1263,5 +1271,22 @@ reset_timer(Timer) ->
 
 cancel_timer(Timer) ->
     unlink(Timer),
-    exit(Timer, shutdown).
+    exit(Timer, cancel_setup_timer).
+
+net_ticker_spawn_options() ->
+    Opts = application:get_env(kernel, net_ticker_spawn_options, []),
+    [link, {priority, max} | cleanup_net_ticker_spawn_options(Opts)].
+
+cleanup_net_ticker_spawn_options([]) ->
+    [];
+cleanup_net_ticker_spawn_options([link|Opts]) ->
+    cleanup_net_ticker_spawn_options(Opts);
+cleanup_net_ticker_spawn_options([{priority, _}|Opts]) ->
+    cleanup_net_ticker_spawn_options(Opts);
+cleanup_net_ticker_spawn_options([monitor|Opts]) ->
+    cleanup_net_ticker_spawn_options(Opts);
+cleanup_net_ticker_spawn_options([{monitor, _}|Opts]) ->
+    cleanup_net_ticker_spawn_options(Opts);
+cleanup_net_ticker_spawn_options([Opt|Opts]) ->
+    [Opt|cleanup_net_ticker_spawn_options(Opts)].
 

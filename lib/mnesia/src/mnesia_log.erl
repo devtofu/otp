@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -48,7 +50,7 @@
 %%   with the same interface as mnesia_backup and configure
 %%   Mnesia so the alternate module performs the actual accesses
 %%   to the backup media. This means that the user may put the
-%%   backup on medias that Mnesia does not know about possibly on
+%%   backup on media that Mnesia does not know about possibly on
 %%   hosts where Erlang is not running.
 %%
 %% All these logs have to some extent a common structure.
@@ -93,7 +95,7 @@
 %% The log file structure for the mnesia_down log is as follows.
 %%
 %%    After the mnesia log section follows a mnesia_down section
-%%    containg lists with yoyo records as single element.
+%%    containing lists with yoyo records as single element.
 %%
 %%    +-----------------+
 %%    | mnesia log head |
@@ -124,6 +126,7 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 -module(mnesia_log).
+-moduledoc false.
 
 -export([
 	 append/2,

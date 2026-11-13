@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2017. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,6 +21,9 @@
 %%
 %%
 -module(asn1ct_constructed_per).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
 
 -export([gen_encode_sequence/3]).
 -export([gen_decode_sequence/3]).
@@ -454,8 +459,8 @@ dec_external(#gen{pack=map}, _Typename) ->
     Vars = asn1ct_name:all(term),
     Names = ['direct-reference','indirect-reference',
              'data-value-descriptor',encoding],
-    Zipped = lists:zip(Names, Vars),
-    MapInit = lists:join(",", [["'",N,"'=>",{var,V}] || {N,V} <- Zipped]),
+    MapInit = lists:join(",", [["'",N,"'=>",{var,V}] ||
+                                  N <- Names && V <- Vars]),
     emit(["OldFormat = #{",MapInit,"}",com,nl,
           "ASN11994Format =",nl,
           {call,ext,transform_to_EXTERNAL1994_maps,
@@ -730,23 +735,55 @@ gen_decode_sof(Erules, Typename, SeqOrSetOf, #type{}=D) ->
     do_gen_decode_sof(Erules, Typename, SeqOrSetOf, D),
     emit([".",nl,nl]).
 
-do_gen_decode_sof(Erules, Typename, SeqOrSetOf, D) ->
+do_gen_decode_sof(Erules, TypeName, SeqOrSetOf, D) ->
+    case asn1ct_imm:effective_constraint(bitstring, D#type.constraint) of
+        no ->
+            %% Could be fragmented.
+            do_gen_decode_fragmented(Erules, TypeName, SeqOrSetOf, D);
+        SizeConstraint ->
+            do_gen_decode_sof_plain(Erules, TypeName, SeqOrSetOf, D, SizeConstraint)
+    end.
+
+do_gen_decode_fragmented(Erules, TypeName, SeqOrSetOf, D) ->
     {_SeqOrSetOf,ComponentType} = D#type.def,
-    SizeConstraint = asn1ct_imm:effective_constraint(bitstring,
-						     D#type.constraint),
-    ObjFun =
-	case D#type.tablecinf of
-	    [{objfun,_}|_R] ->
-		", ObjFun";
-	    _ ->
-		""
-	end,
+    ObjFun = obj_fun_arg(D),
+    Key = erlang:md5(term_to_binary({fragmented,TypeName,SeqOrSetOf,ComponentType})),
+    Gen = fun(_Fd, Name) ->
+                  do_gen_dec_fragmented_1(Erules, Name, TypeName,
+                                          SeqOrSetOf, ComponentType, D)
+	  end,
+    F = asn1ct_func:call_gen("dec_components", Key, Gen),
+    emit([{asis,F}, "(Bytes", ObjFun,", [])"]).
+
+do_gen_dec_fragmented_1(Erules, Name, TypeName, SeqOrSetOf, ComponentType, D) ->
+    ObjFun = obj_fun_arg(D),
+    emit([{asis,Name}, "(Bytes", ObjFun, ", Acc) ->", nl]),
+    {Num,Buf} = gen_decode_length(no, Erules),
+    Key = erlang:md5(term_to_binary({TypeName,SeqOrSetOf,ComponentType})),
+    Gen = fun(_Fd, Name2) ->
+		  gen_decode_sof_components(Erules, Name2,
+					    TypeName, SeqOrSetOf,
+					    ComponentType, false)
+	  end,
+    F = asn1ct_func:call_gen("dec_fragment", Key, Gen),
+    emit([",",nl,
+          "{Acc1,Buf1} = ",
+	  {asis,F}, "(", Num, ", ", Buf, ObjFun, ", Acc),",nl]),
+    emit(["if ",Num," >= 16384 ->",nl,
+          {asis,Name},"(Buf1", ObjFun, ", Acc1);",nl,
+          "true ->",nl,
+          "{lists:reverse(Acc1),Buf1}",nl,
+          "end.",nl]).
+
+do_gen_decode_sof_plain(Erules, TypeName, SeqOrSetOf, D, SizeConstraint) ->
+    {_SeqOrSetOf,ComponentType} = D#type.def,
+    ObjFun = obj_fun_arg(D),
     {Num,Buf} = gen_decode_length(SizeConstraint, Erules),
-    Key = erlang:md5(term_to_binary({Typename,SeqOrSetOf,ComponentType})),
+    Key = erlang:md5(term_to_binary({TypeName,SeqOrSetOf,ComponentType})),
     Gen = fun(_Fd, Name) ->
 		  gen_decode_sof_components(Erules, Name,
-					    Typename, SeqOrSetOf,
-					    ComponentType)
+					    TypeName, SeqOrSetOf,
+					    ComponentType, true)
 	  end,
     F = asn1ct_func:call_gen("dec_components", Key, Gen),
     emit([",",nl,
@@ -759,16 +796,16 @@ gen_decode_length(Constraint, Erule) ->
     Imm = asn1ct_imm:per_dec_length(Constraint, true, is_aligned(Erule)),
     asn1ct_imm:dec_slim_cg(Imm, "Bytes").
 
-gen_decode_sof_components(Erule, Name, Typename, SeqOrSetOf, Cont) ->
-    {ObjFun,ObjFun_Var} =
-	case Cont#type.tablecinf of
-	    [{objfun,_}|_R] ->
-		{", ObjFun",", _"};
-	    _ ->
-		{"",""}
-	end,
-    emit([{asis,Name},"(0, Bytes",ObjFun_Var,", Acc) ->",nl,
-	  "{lists:reverse(Acc),Bytes};",nl]),
+gen_decode_sof_components(Erule, Name, Typename, SeqOrSetOf, Cont, Reverse) ->
+    ObjFun = obj_fun_arg(Cont),
+    ObjFunPat = obj_fun_pat(Cont),
+    emit([{asis,Name},"(0, Bytes",ObjFunPat,", Acc) ->",nl]),
+    case Reverse of
+        true ->
+            emit(["{lists:reverse(Acc),Bytes};",nl]);
+        false ->
+            emit(["{Acc,Bytes};",nl])
+    end,
     emit([{asis,Name},"(Num, Bytes",ObjFun,", Acc) ->",nl,
 	  "{Term,Remain} = "]),
     Constructed_Suffix = asn1ct_gen:constructed_suffix(SeqOrSetOf,
@@ -794,6 +831,15 @@ gen_decode_sof_components(Erule, Name, Typename, SeqOrSetOf, Cont) ->
     end,
     emit([{asis,Name},"(Num-1, Remain",ObjFun,", [Term|Acc]).",nl]).
 
+obj_fun_arg(#type{tablecinf=[{objfun,_}|_]}) ->
+    ", ObjFun";
+obj_fun_arg(#type{}) ->
+    "".
+
+obj_fun_pat(#type{tablecinf=[{objfun,_}|_]}) ->
+    ", _";
+obj_fun_pat(#type{}) ->
+    "".
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% General and special help functions (not exported)
@@ -1821,11 +1867,9 @@ gen_dec_choice1(Erule, TopType, CompList, noext=Ext) ->
 gen_dec_choice1(Erule, TopType, CompList, {ext,_,_}=Ext) ->
     emit_getchoice(Erule, CompList, Ext),
     Imm = asn1ct_imm:per_dec_open_type(is_aligned(Erule)),
-    emit(["begin",nl]),
     BytesVar = asn1ct_gen:mk_var(asn1ct_name:curr(bytes)),
     {Dst,DstBuf} = asn1ct_imm:dec_slim_cg(Imm, BytesVar),
-    emit([nl,
-	  "end,",nl,
+    emit([",",nl,
 	  "case Choice of",nl]),
     Pre = {safe,fun(St) ->
 			emit(["{TmpVal,_} = "]),

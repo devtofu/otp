@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2016-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,6 +20,7 @@
 %% %CopyrightEnd%
 %%
 -module(erts_literal_area_collector).
+-moduledoc false.
 
 -export([start/0, send_copy_request/3, release_area_switch/0]).
 
@@ -36,7 +39,7 @@
 %%
 start() ->
     process_flag(trap_exit, true),
-    msg_loop(undefined, 0, 0, []).
+    msg_loop(undefined, {0, none}, 0, []).
 
 %%
 %% The VM will send us a 'copy_literals' message
@@ -44,7 +47,9 @@ start() ->
 %% be handled is added. We will also be informed
 %% about more areas when we call release_area_switch().
 %%
-msg_loop(Area, Outstnd, GcOutstnd, NeedGC) ->
+msg_loop(Area, {Ongoing, NeedIReq} = OReqInfo, GcOutstnd, NeedGC) ->
+    %% 'Ongoing' is the sum of currently outstanding requests
+    %% and currently delayed requests allowing GC.
 
     HibernateTmo =
         if Area =:= undefined ->
@@ -56,38 +61,55 @@ msg_loop(Area, Outstnd, GcOutstnd, NeedGC) ->
     receive
 
 	%% A new area to handle has arrived...
-	copy_literals when Outstnd == 0 ->
+	copy_literals when Ongoing == 0 ->
 	    switch_area();
 
 	%% Process (_Pid) has completed the request...
-	{copy_literals, {Area, _GcAllowed, _Pid}, ok} when Outstnd == 1 ->
-	    switch_area(); %% Last process completed...
-	{copy_literals, {Area, false, _Pid}, ok} ->
-	    msg_loop(Area, Outstnd-1, GcOutstnd, NeedGC);
-	{copy_literals, {Area, true, _Pid}, ok} when NeedGC == [] ->
-	    msg_loop(Area, Outstnd-1, GcOutstnd-1, []);
-	{copy_literals, {Area, true, _Pid}, ok} ->
-	    erts_literal_area_collector:send_copy_request(hd(NeedGC), Area, true),
-	    msg_loop(Area, Outstnd-1, GcOutstnd, tl(NeedGC));
+	{copy_literals, {Area, init, _Pid}, ok} ->
+            case check_send_copy_req(Area, Ongoing-1, NeedIReq) of
+                {0, none} -> switch_area(); %% Last process completed...
+                NewOReqInfo -> msg_loop(Area, NewOReqInfo, GcOutstnd, NeedGC)
+            end;
+	{copy_literals, {Area, ReqType, _Pid}, ok} when NeedGC == [],
+                                                        ReqType /= init ->
+            case check_send_copy_req(Area, Ongoing-1, NeedIReq) of
+                {0, none} -> switch_area(); %% Last process completed...
+                NewOReqInfo -> msg_loop(Area, NewOReqInfo, GcOutstnd-1, [])
+            end;
+	{copy_literals, {Area, ReqType, _Pid}, ok} when ReqType /= init ->
+            [{GCPid,GCWork} | NewNeedGC] = NeedGC,
+	    send_copy_req(GCPid, Area, GCWork),
+	    msg_loop(Area, {Ongoing-1, NeedIReq}, GcOutstnd, NewNeedGC);
 
 	%% Process (Pid) failed to complete the request
 	%% since it needs to garbage collect in order to
 	%% complete the request...
-	{copy_literals, {Area, false, Pid}, need_gc} when GcOutstnd < ?MAX_GC_OUTSTND ->
-	    erts_literal_area_collector:send_copy_request(Pid, Area, true),
-	    msg_loop(Area, Outstnd, GcOutstnd+1, NeedGC);
-	{copy_literals, {Area, false, Pid}, need_gc} ->
-	    msg_loop(Area, Outstnd, GcOutstnd, [Pid|NeedGC]);
+	{copy_literals, {Area, init, Pid}, GCWork} when GcOutstnd
+                                                        < ?MAX_GC_OUTSTND ->
+	    send_copy_req(Pid, Area, GCWork),
+	    msg_loop(Area, OReqInfo, GcOutstnd+1, NeedGC);
+	{copy_literals, {Area, init, Pid}, GCWork} ->
+	    msg_loop(Area, check_send_copy_req(Area, Ongoing, NeedIReq),
+                     GcOutstnd, [{Pid,GCWork} | NeedGC]);
 
 	%% Not handled message regarding the area that we
 	%% currently are working with. Crash the VM so
 	%% we notice this bug...
-	{copy_literals, {Area, _, _}, _} = Msg when erlang:is_reference(Area) ->
+	{copy_literals, {Area, _, _}, _} = Msg ->
 	    exit({not_handled_message, Msg});
+
+        {change_prio, From, Ref, Prio} ->
+            change_prio(From, Ref, Prio),
+	    msg_loop(Area, OReqInfo, GcOutstnd, NeedGC);
+
+        {get_status, Ref, From} when is_pid(From); is_reference(From) ->
+            From ! {Ref, if Ongoing == 0 -> idle; true -> working end},
+            msg_loop(Area, OReqInfo, GcOutstnd, NeedGC);
 
 	%% Unexpected garbage message. Get rid of it...
 	_Ignore ->
-	    msg_loop(Area, Outstnd, GcOutstnd, NeedGC)
+	    msg_loop(Area, OReqInfo, GcOutstnd, NeedGC)
+
     after HibernateTmo ->
             %% We hibernate in order to clear the heap completely.
             erlang:hibernate(?MODULE, start, [])
@@ -98,34 +120,68 @@ switch_area() ->
     case Res of
 	false ->
 	    %% No more areas to handle...
-	    msg_loop(undefined, 0, 0, []);
+	    msg_loop(undefined, {0, none}, 0, []);
 	true ->
-	    %% Send requests to all processes to copy
+	    %% Send requests to OReqLim processes to copy
 	    %% all live data they have referring to the
-	    %% literal area that is to be released...
+	    %% literal area that is to be released.
+            %% Continue sending requests for all other
+            %% processes when responses comes back until
+            %% all processes have been handled...
 	    Area = make_ref(),
-	    Outstnd = send_copy_reqs(erlang:processes(), Area, false),
-	    msg_loop(Area, Outstnd, 0, [])
+            Iter = erlang:processes_iterator(),
+            OReqLim = erlang:system_info(outstanding_system_requests_limit),
+	    msg_loop(Area, send_copy_reqs(Iter, Area, OReqLim), 0, [])
     end.
 
-send_copy_reqs(Ps, Area, GC) ->
-    send_copy_reqs(Ps, Area, GC, 0).
+check_send_copy_req(_Area, Ongoing, none) ->
+    {Ongoing, none};
+check_send_copy_req(Area, Ongoing, Iter0) ->
+    case erlang:processes_next(Iter0) of
+        none ->
+            {Ongoing, none};
+        {Pid, Iter1} ->
+            send_copy_req(Pid, Area, init),
+            {Ongoing+1, Iter1}
+    end.
 
-send_copy_reqs([], _Area, _GC, N) ->
-    N;
-send_copy_reqs([P|Ps], Area, GC, N) ->
-    erts_literal_area_collector:send_copy_request(P, Area, GC),
-    send_copy_reqs(Ps, Area, GC, N+1).
+send_copy_reqs(Iter, Area, OReqLim) ->
+    send_copy_reqs(Iter, Area, OReqLim, 0).
+
+send_copy_reqs(Iter, _Area, OReqLim, N) when N >= OReqLim ->
+    {N, Iter};
+send_copy_reqs(Iter0, Area, OReqLim, N) ->
+    case erlang:processes_next(Iter0) of
+        none ->
+            {N, none};
+        {Pid, Iter1} ->
+            send_copy_req(Pid, Area, init),
+            send_copy_reqs(Iter1, Area, OReqLim, N+1)
+    end.
+
+send_copy_req(P, Area, How) ->
+    erts_literal_area_collector:send_copy_request(P, Area, How).
 
 -spec release_area_switch() -> boolean().
 
 release_area_switch() ->
     erlang:nif_error(undef). %% Implemented in beam_bif_load.c
 
--spec send_copy_request(To, AreaId, GcAllowed) -> 'ok' when
+-spec send_copy_request(To, AreaId, How) -> 'ok' when
       To :: pid(),
       AreaId :: term(),
-      GcAllowed :: boolean().
+      How :: 'init' | 'check_gc' | 'need_gc'.
 
-send_copy_request(_To, _AreaId, _GcAllowed) ->
+send_copy_request(_To, _AreaId, _How) ->
     erlang:nif_error(undef). %% Implemented in beam_bif_load.c
+
+change_prio(From, Ref, Prio) ->
+    try
+        OldPrio = process_flag(priority, Prio),
+        _ = From ! {Ref, OldPrio},
+        ok
+    catch
+        _:_ ->
+            _ = From ! {Ref, error},
+            ok
+    end.

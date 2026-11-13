@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1996-2017. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(dummy_h).
@@ -22,7 +24,7 @@
 %% Test event handler for gen_event_SUITE.erl
 
 -export([init/1, handle_event/2, handle_call/2, handle_info/2,
-	 terminate/2]).
+	 terminate/2, format_status/1]).
 
 init(make_error) ->
     {error, my_error};
@@ -63,6 +65,9 @@ handle_call(hibernate, _State) ->
 handle_call(hibernate_later, _State) ->
     timer:send_after(1000,sleep),
     {ok,later,[]};
+handle_call({delayed_answer, T}, State) ->
+    receive after T -> ok end,
+    {ok, delayed, State};
 handle_call(_Query, State) ->
     {ok, ok, State}.
 
@@ -97,3 +102,5 @@ terminate(_Reason, {undef_in_terminate, {Mod, Fun}}) ->
 terminate(_Reason, _State) ->
     ok.
 
+format_status(#{ state := _State } = S) ->
+    S#{ state := "dummy1_h handler state" }.

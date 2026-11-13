@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2016-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2016-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,8 +25,13 @@
 
 -export([all/0,suite/0,groups/0,init_per_suite/1,end_per_suite/1,
 	 init_per_group/2,end_per_group/2,
+         unsafe_get_list/1,
 	 beam_validator/1,trunc_and_friends/1,cover_safe_and_pure_bifs/1,
-         cover_trim/1]).
+         cover_trim/1,
+         head_tail/1,
+         min_max/1,
+         non_throwing/1,
+         setelement/1]).
 
 suite() ->
     [{ct_hooks,[ts_install_cth]}].
@@ -33,14 +40,20 @@ all() ->
     [{group,p}].
 
 groups() ->
-    [{p,[parallel],
+    [{p,test_lib:parallel(),
       [beam_validator,
+       unsafe_get_list,
        trunc_and_friends,
        cover_safe_and_pure_bifs,
-       cover_trim
+       cover_trim,
+       head_tail,
+       min_max,
+       non_throwing,
+       setelement
       ]}].
 
 init_per_suite(Config) ->
+    _ = id(Config),
     test_lib:recompile(?MODULE),
     Config.
 
@@ -52,6 +65,21 @@ init_per_group(_GroupName, Config) ->
 
 end_per_group(_GroupName, Config) ->
     Config.
+
+unsafe_get_list(_Config) ->
+    [[1], [1], [1]] = create_rows(id(3)),
+    ok.
+
+create_rows(Num) -> create_rows(Num, [[1]]).
+
+create_rows(1, Rows) ->
+    Rows;
+create_rows(Num, [PrevRow | _] = Rows) ->
+    [_PrevRowH | PrevRowT] = PrevRow,
+    [] = first(PrevRowT, PrevRow),
+    create_rows(Num - 1, [[1] | Rows]).
+
+first(Fst, _Snd) -> Fst.
 
 %% Cover code in beam_validator.
 
@@ -128,6 +156,17 @@ cover_safe_and_pure_bifs(Config) ->
 cover_trim(_Config) ->
     ok = cover_trim_1(<<"abc">>, id([42])),
     ok = cover_trim_1({a,b,c}, id([42])),
+
+    true = cover_trim_2("keep-alive", "1"),
+    false = cover_trim_2("keep-alive", "0"),
+    false = cover_trim_2("other", "1"),
+    false = cover_trim_2("other", "0"),
+
+    true = cover_trim_3("keep-alive", -1),
+    false = cover_trim_3("keep-alive", 100),
+    false = cover_trim_3("other", -10),
+    false = cover_trim_3("other", -100),
+
     ok.
 
 cover_trim_1(Something, V) ->
@@ -137,6 +176,218 @@ cover_trim_1(Something, V) ->
         hd(V) =:= 42 ->
             ok
     end.
+
+cover_trim_2(Header, NList)->
+    id(0),
+    case id(Header) of
+        "keep-alive" when hd(NList) >= $1 ->
+            true;
+        _Connect ->
+            false
+    end.
+
+cover_trim_3(Header, N)->
+    id(0),
+    case id(Header) of
+        "keep-alive" when abs(N) < 42 ->
+            true;
+        _Connect ->
+            false
+    end.
+
+%% GH-7024: The loader transformations for hd/1 and tl/1 were incorrect and
+%% failed when certain optimizations were turned off.
+head_tail(_Config) ->
+    {1, ok} = head_case(),
+    {1, ok} = tail_case(),
+
+    1 = hd(id([1])),
+    [] = tl(id([1])),
+
+    ok.
+
+head_case() ->
+    case 1 of
+        X when hd(X) -> blurf;
+        X -> {X, ok}
+    end.
+
+tail_case() ->
+    case 1 of
+        X when tl(X) -> blurf;
+        X -> {X, ok}
+    end.
+
+min_max(_Config) ->
+    False = id(false),
+    True = id(true),
+
+    false = bool_min_false(False, False),
+    false = bool_min_false(False, True),
+    false = bool_min_false(True, False),
+    true = bool_min_true(True, True),
+
+    false = bool_max_false(False, False),
+    true = bool_max_true(False, True),
+    true = bool_max_true(True, False),
+    true = bool_max_true(True, True),
+
+    11 = min_increment(100),
+    11 = min_increment(10),
+    10 = min_increment(9),
+    1 = min_increment(0),
+    0 = min_increment(-1),
+    11 = min_increment(a),
+
+    {42,42} = max_number(id(42)),
+    {42,42.0} = max_number(id(42.0)),
+    {-1,1} = max_number(id(-1)),
+    {-1,1} = max_number(id(-1.0)),
+
+    100 = int_clamped_add(-1),
+    100 = int_clamped_add(0),
+    105 = int_clamped_add(5),
+    110 = int_clamped_add(10),
+    110 = int_clamped_add(11),
+
+    100 = num_clamped_add(-1),
+    100 = num_clamped_add(0),
+    105 = num_clamped_add(5),
+    110 = num_clamped_add(10),
+    110 = num_clamped_add(11),
+
+    105 = num_clamped_add(5),
+    105.0 = num_clamped_add(5.0),
+    110 = num_clamped_add(a),
+    110 = num_clamped_add({a,b,c}),
+    110 = num_clamped_add({a,b,c}),
+
+    ok.
+
+%% GH-7170: The following functions would cause a crash in
+%% beam_ssa_codegen.
+
+bool_min_false(A, B) when is_boolean(A), is_boolean(B) ->
+    false = min(A, B).
+
+bool_min_true(A, B) when is_boolean(A), is_boolean(B) ->
+    true = min(A, B).
+
+bool_max_false(A, B) when is_boolean(A), is_boolean(B) ->
+    false = max(A, B).
+
+bool_max_true(A, B) when is_boolean(B) ->
+    true = max(A, B),
+    if
+        is_boolean(A) ->
+            true = max(A, B)
+    end.
+
+max_number(A) ->
+    Res = {trunc(A), max(A, 1)},
+    Res = {trunc(A), max(1, A)}.
+
+min_increment(A) ->
+    Res = min(10, A) + 1,
+    Res = min(A, 10) + 1,
+    Res = min(id(A), 10) + 1.
+
+int_clamped_add(A) when is_integer(A) ->
+    min(max(A, 0), 10) + 100.
+
+num_clamped_add(A) ->
+    min(max(A, 0), 10) + 100.
+
+non_throwing(_Config) ->
+    abc = thing_to_atom(~"abc"),
+    [] = thing_to_atom(a),
+    [] = thing_to_atom(42),
+    [] = thing_to_atom([a,b,c]),
+    erlang = thing_to_existing_atom(~"erlang"),
+    [] = thing_to_existing_atom(~"not an existing atom"),
+    [] = thing_to_existing_atom(a),
+    ok.
+
+thing_to_atom(Bin0) ->
+    Bin = id(Bin0),
+    Res = try
+              binary_to_atom(Bin)
+          catch
+              _:_ ->
+                  []
+          end,
+    Res = try
+              binary_to_atom(Bin, utf8)
+          catch
+              _:_ ->
+                  []
+          end,
+    if
+        is_atom(Res) ->
+            List = unicode:characters_to_list(Bin),
+            Res = try
+                      list_to_atom(List)
+                  catch
+                      _:_ ->
+                          []
+                  end;
+        true ->
+            Res
+    end.
+thing_to_existing_atom(Bin0) ->
+    Bin = id(Bin0),
+    Res = try
+              binary_to_existing_atom(Bin)
+          catch
+              _:_ ->
+                  []
+          end,
+    Res = try
+              binary_to_existing_atom(Bin, utf8)
+          catch
+              _:_ ->
+                  []
+          end,
+    if
+        is_atom(Res) ->
+            List = unicode:characters_to_list(Bin),
+            Res = try
+                      list_to_existing_atom(List)
+                  catch
+                      _:_ ->
+                          []
+                  end;
+        true ->
+            Res
+    end.
+
+setelement(Config) ->
+    do_setelement(Config, []),
+    do_setelement(Config, [no_ssa_opt_deoptimize_update_tuple]),
+    ok.
+
+do_setelement(Config, ExtraOpts) ->
+    DataDir = test_lib:get_data_dir(Config),
+
+    Mod = test_setelement,
+
+    File = filename:join(DataDir, atom_to_list(Mod)) ++ ".erl",
+
+    io:format("Extra options: ~p\n", [ExtraOpts]),
+
+    {ok,Mod,Code} = compile:file(File, [report,binary|ExtraOpts]),
+    {module,Mod} = code:load_binary(Mod, "", Code),
+
+    ok = Mod:Mod(),
+
+    true = code:delete(Mod),
+    false = code:purge(Mod),
+
+    ok.
+
+%%%
+%%% Common utilities.
+%%%
 
 id(I) ->
     I.

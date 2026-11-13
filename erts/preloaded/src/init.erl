@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2021. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -39,14 +41,203 @@
 %%        -pz Path+      : Add my own paths last.
 %%        -run           : Start own processes.
 %%        -s             : Start own processes.
+%%        -S             : Start own processes and terminate further option processing.
 %% 
 %% Experimental flags:
 %%        -profile_boot    : Use an 'eprof light' to profile boot sequence
 %%        -init_debug      : Activate debug printouts in init
 %%        -loader_debug    : Activate debug printouts in erl_prim_loader
-%%        -code_path_choice : strict | relaxed
 
 -module(init).
+-moduledoc """
+Coordination of system startup.
+
+This module is preloaded and contains the code for the `init` system process
+that coordinates the startup of the system. The first function evaluated at
+startup is [`boot(BootArgs)`](`boot/1`), where `BootArgs` is a list of
+command-line arguments supplied to the Erlang runtime system from the local
+operating system; see [`erl(1)`](erl_cmd.md).
+
+`init` reads the boot script, which contains instructions on how to initiate the
+system. For more information about boot scripts, see
+[`script(4)`](`e:sasl:script.md`).
+
+`init` also contains functions to restart, reboot, and stop the system.
+
+[](){: #flags }
+
+## Command-Line Flags
+
+The `init` module interprets the following command-line flags:
+
+- **`--`** - Everything following `--` up to the next flag is considered plain
+  arguments and can be retrieved using `get_plain_arguments/0`.
+
+- **`-epmd_module Module`** - This flag is deprecated and has been replaced by
+  the `kernel` application parameter [`epmd_module`](`e:kernel:kernel_app.md#epmd_module`).
+
+- **`-eval Expr`** - Scans, parses, and evaluates an arbitrary expression `Expr`
+  during system initialization. If any of these steps fail (syntax error, parse
+  error, or exception during evaluation), Erlang stops with an error message. In
+  the following example Erlang is used as a hexadecimal calculator:
+
+  ```text
+  % erl -noshell -eval 'R = 16#1F+16#A0, io:format("~.16B~n", [R])' \\
+  -s erlang halt
+  BF
+  ```
+
+  If multiple `-eval` expressions are specified, they are evaluated sequentially
+  in the order specified. `-eval` expressions are evaluated sequentially with
+  `-s` and `-run` function calls (this also in the order specified). As with
+  `-s` and `-run`, an evaluation that does not terminate blocks the system
+  initialization process.
+
+- **`-extra`** - Everything following `-extra` is considered plain arguments and
+  can be retrieved using `get_plain_arguments/0`.
+
+  Example:
+
+  ```erlang
+  % erl -extra +A 1 --
+  ...
+  1> init:get_plain_arguments().
+  ["+A","1","--"]
+  ```
+
+  The `-extra` flag can be passed on the command line, through `ERL_*FLAGS` or
+  `-args_file`. It only effects the remaining command-line flags in the entity
+  in which it is passed. If multiple `-extra` flags are passed they are
+  concatenated using the same order rules as `ERL_*FLAGS` or `-args_file` in
+  which they are given.
+
+  Example:
+
+  ```text
+  % ERL_AFLAGS="-extra a" ERL_ZFLAGS="-extra d" erl -extra b -extra c
+  ...
+  1> init:get_plain_arguments().
+  ["a","b","-extra","c","d"]
+  ```
+
+- **`-S Mod [Func [Arg1, Arg2, ...]]`** - Evaluates the specified function call
+  during system initialization. `Func` defaults to `start`. If no arguments are
+  provided, the function is assumed to be of arity 0. Otherwise it is assumed to
+  be of arity 1, taking the list `[Arg1,Arg2,...]` as argument. All arguments
+  are passed as strings. If an exception is raised, Erlang stops with an error
+  message.
+
+  Example:
+
+  ```text
+  % erl -S httpd serve --port 8080 /var/www/html
+  ```
+
+  This starts the Erlang runtime system and evaluates the function
+  `httpd:serve(["--port", "8080", "/var/www/html"])`. All arguments up to the
+  end of the command line will be passed to the called function.
+
+  The function is executed sequentially in an initialization process, which then
+  terminates normally and passes control to the user. This means that a `-S`
+  call that does not return blocks further processing; to avoid this, use some
+  variant of `spawn` in such cases.
+
+  The `-S` flag is only allowed on the command line. If passed through
+  `ERL_*FLAGS` or `-args_file` it will be parsed as a normal command line flag.
+
+- **`-run Mod [Func [Arg1, Arg2, ...]]`** - Evaluates the specified function
+  call during system initialization. `Func` defaults to `start`. If no arguments
+  are provided, the function is assumed to be of arity 0. Otherwise it is
+  assumed to be of arity 1, taking the list `[Arg1,Arg2,...]` as argument. All
+  arguments are passed as strings. If an exception is raised, Erlang stops with
+  an error message.
+
+  Example:
+
+  ```text
+  % erl -run foo -run foo bar -run foo bar baz 1 2
+  ```
+
+  This starts the Erlang runtime system and evaluates the following functions:
+
+  ```text
+  foo:start()
+  foo:bar()
+  foo:bar(["baz", "1", "2"]).
+  ```
+
+  The functions are executed sequentially in an initialization process, which
+  then terminates normally and passes control to the user. This means that a
+  `-run` call that does not return blocks further processing; to avoid this, use
+  some variant of `spawn` in such cases.
+
+  > #### Note {: .info }
+  >
+  > This flag will not forward arguments beginning with a hyphen (-) to the
+  > specified function, as these will be interpreted as flags to the runtime. If
+  > the function uses flags in this form, it is advised to use `-S` instead.
+
+- **`-s Mod [Func [Arg1, Arg2, ...]]`** - Evaluates the specified function call
+  during system initialization. `Func` defaults to `start`. If no arguments are
+  provided, the function is assumed to be of arity 0. Otherwise it is assumed to
+  be of arity 1, taking the list `[Arg1,Arg2,...]` as argument. All arguments
+  are passed as atoms. If an exception is raised, Erlang stops with an error
+  message.
+
+  Example:
+
+  ```text
+  % erl -s foo -s foo bar -s foo bar baz 1 2
+  ```
+
+  This starts the Erlang runtime system and evaluates the following functions:
+
+  ```text
+  foo:start()
+  foo:bar()
+  foo:bar([baz, '1', '2']).
+  ```
+
+  The functions are executed sequentially in an initialization process, which
+  then terminates normally and passes control to the user. This means that a
+  `-s` call that does not return blocks further processing; to avoid this, use
+  some variant of `spawn` in such cases.
+
+  Because of the limited length of atoms, it is recommended to use `-run`
+  instead.
+
+  > #### Note {: .info }
+  >
+  > This flag will not forward arguments beginning with a hyphen (-) to the
+  > specified function, as these will be interpreted as flags to the runtime. If
+  > the function uses flags in this form, it is advised to use `-S` instead,
+  > with the additional caveat that arguments are passed as strings instead of
+  > atoms.
+
+## Example
+
+```erlang
+% erl -- a b -children thomas claire -ages 7 3 -- x y
+...
+
+1> init:get_plain_arguments().
+["a","b","x","y"]
+2> init:get_argument(children).
+{ok,[["thomas","claire"]]}
+3> init:get_argument(ages).
+{ok, [["7","3"]]}
+4> init:get_argument(silly).
+error
+```
+
+### See Also
+
+`m:erl_prim_loader`, `m:heart`
+""".
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}},
+          {nowarn_possibly_unsafe_function, {erlang, binary_to_term, 1}},
+          {nowarn_deprecated_function, [{erlang,exit,2}]}]).
 
 -export([restart/1,restart/0,reboot/0,stop/0,stop/1,
 	 get_status/0,boot/1,get_arguments/0,get_plain_arguments/0,
@@ -56,14 +247,16 @@
 -export([run_on_load_handlers/0]).
 
 %% internal exports
--export([fetch_loaded/0,ensure_loaded/1,make_permanent/2,
+-export([fetch_loaded/0,ensure_loaded/1,ensure_modules_loaded/1,make_permanent/2,
 	 notify_when_started/1,wait_until_started/0, 
-	 objfile_extension/0, archive_extension/0,code_path_choice/0,
+         objfile_extension/0,
          get_configfd/1, set_configfd/2]).
 
 -include_lib("kernel/include/file.hrl").
 
+-doc "Current status of init.".
 -type internal_status() :: 'starting' | 'started' | 'stopping'.
+-doc "Code loading mode.".
 -type mode() :: 'embedded' | 'interactive'.
 
 -record(state, {flags = [],
@@ -86,7 +279,6 @@
 	 path,
 	 pa,
 	 pz,
-	 path_choice,
 	 prim_load,
 	 load_mode,
 	 vars
@@ -98,31 +290,94 @@
 debug(false, _) -> ok;
 debug(_, T)     -> erlang:display(T).
 
+debug(false, _, Fun) ->
+    Fun();
+debug(_, T, Fun) ->
+    erlang:display(T),
+    T1 = erlang:monotonic_time(),
+    Val = Fun(),
+    T2 = erlang:monotonic_time(),
+    Time = erlang:convert_time_unit(T2 - T1, native, microsecond),
+    erlang:display({done_in_microseconds, Time}),
+    Val.
+
+-doc false.
 -spec get_configfd(integer()) -> none | term().
 get_configfd(ConfigFdId) ->
     request({get_configfd, ConfigFdId}).
 
+-doc false.
 -spec set_configfd(integer(), term()) -> 'ok'.
 set_configfd(ConfigFdId, Config) ->
     request({set_configfd, ConfigFdId, Config}),
     ok.
 
+-doc """
+Returns all command-line flags and the system-defined flags, see
+`get_argument/1`.
+""".
 -spec get_arguments() -> Flags when
       Flags :: [{Flag :: atom(), Values :: [string()]}].
 get_arguments() ->
     request(get_arguments).
 
+-doc "Returns any plain command-line arguments as a list of strings (possibly empty).".
 -spec get_plain_arguments() -> [Arg] when
       Arg :: string().
 get_plain_arguments() ->
     bs2ss(request(get_plain_arguments)).
 
+-doc """
+Returns all values associated with the command-line user flag `Flag`.
+
+If `Flag` is provided several times, each `Values` is returned in preserved order.
+Example:
+
+```erlang
+% erl -a b c -a d
+...
+1> init:get_argument(a).
+{ok,[["b","c"],["d"]]}
+```
+
+The following flags are defined automatically and can be retrieved using this
+function:
+
+- **`root`** - The installation directory of Erlang/OTP, `$ROOT`:
+
+  ```text
+  2> init:get_argument(root).
+  {ok,[["/usr/local/otp/releases/otp_beam_solaris8_r10b_patched"]]}
+  ```
+
+- **`progname`** - The name of the program which started Erlang:
+
+  ```erlang
+  3> init:get_argument(progname).
+  {ok,[["erl"]]}
+  ```
+
+- **`home`{: #home }** - The home directory (on Unix, the value of $HOME):
+
+  ```erlang
+  4> init:get_argument(home).
+  {ok,[["/home/harry"]]}
+  ```
+
+Returns `error` if no value is associated with `Flag`.
+""".
 -spec get_argument(Flag) -> {'ok', Arg} | 'error' when
       Flag :: atom(),
       Arg :: [Values :: [string()]].
 get_argument(Arg) ->
     request({get_argument, Arg}).
 
+-doc """
+Gets the identity of the boot script used to boot the system.
+
+`Id` can be any Erlang term. In the delivered boot scripts, `Id` is `{Name, Vsn}`.
+`Name` and `Vsn` are strings.
+""".
 -spec script_id() -> Id when
       Id :: term().
 script_id() ->
@@ -132,6 +387,7 @@ script_id() ->
 %% (i.e., not absolute) if prim_file:get_cwd() returned an error tuple
 %% during boot. filename:absname/2 is not available during boot so we
 %% construct the path here instead of during boot
+-doc false.
 -spec script_name() -> string().
 script_name() ->
     {BootCWD, ScriptPath} = request(get_script_name),
@@ -162,31 +418,49 @@ bs2ss(L0) when is_list(L0) ->
 bs2ss(L) ->
     L.
 
+-doc """
+The current status of the `init` process can be inspected.
+
+During system startup (initialization), `InternalStatus` is `starting`, and
+`ProvidedStatus` indicates how far the boot script has been interpreted. Each
+`{progress, Info}` term interpreted in the boot script affects `ProvidedStatus`,
+that is, `ProvidedStatus` gets the value of `Info`.
+""".
 -spec get_status() -> {InternalStatus, ProvidedStatus} when
       InternalStatus :: internal_status(),
       ProvidedStatus :: term().
 get_status() ->
     request(get_status).
 
+-doc false.
 -spec fetch_loaded() -> [{module(),file:filename()}].
 fetch_loaded() ->
     request(fetch_loaded).
 
 %% Handle dynamic code loading until the
 %% real code_server has been started.
--spec ensure_loaded(atom()) -> 'not_allowed' | {'module', atom()}.
+-doc false.
+-spec ensure_loaded(module()) -> 'error' | {'module', module()}.
 ensure_loaded(Module) ->
     request({ensure_loaded, Module}).
 
+-doc false.
+-spec ensure_modules_loaded([module()]) -> 'ok'.
+ensure_modules_loaded(Modules) ->
+    request({ensure_modules_loaded, Modules}).
+
+-doc false.
 -spec make_permanent(file:filename(), 'false' | file:filename()) ->
 	'ok' | {'error', term()}.
 make_permanent(Boot,Config) ->
     request({make_permanent,Boot,Config}).
 
+-doc false.
 -spec notify_when_started(pid()) -> 'ok' | 'started'.
 notify_when_started(Pid) ->
     request({notify_when_started,Pid}).
 
+-doc false.
 -spec wait_until_started() -> 'ok'.
 wait_until_started() ->
     receive 
@@ -200,9 +474,26 @@ request(Req) ->
 	    Rep
     end.
 
+-doc "The same as [`restart([])`](`restart/1`).".
 -spec restart() -> 'ok'.
 restart() -> restart([]).
 
+-doc """
+Restart all Erlang applications.
+
+The system is restarted _inside_ the running Erlang node, which means that the
+emulator is not restarted. All applications are taken down smoothly, all code is
+unloaded, and all ports are closed before the system is booted again in the same
+way as initially started.
+
+The same `BootArgs` are used when restarting the system unless the `mode` option
+is given, allowing the code loading mode to be set to either `embedded` or
+`interactive`. All other `BootArgs` remain the same.
+
+To limit the shutdown time, the time `init` is allowed to spend taking down
+applications, command-line flag `-shutdown_time` is to be used.
+""".
+-doc(#{since => <<"OTP 23.0">>}).
 -spec restart([{mode, mode()}]) -> 'ok'.
 restart([]) ->
     init ! {stop,restart}, ok;
@@ -211,12 +502,36 @@ restart([{mode, Mode}]) when Mode =:= embedded; Mode =:= interactive ->
 restart(Opts) when is_list(Opts) ->
     erlang:error(badarg, [Opts]).
 
+-doc """
+Reboot the Erlang node.
+
+All applications are taken down smoothly, all code is unloaded, and all ports
+are closed before the system terminates.
+
+If command-line flag `-heart` was specified, the `heart` program tries to reboot
+ the system. For more information, see `m:heart`.
+
+To limit the shutdown time, the time `init` is allowed to spend taking down
+applications, command-line flag `-shutdown_time` is to be used.
+""".
 -spec reboot() -> 'ok'.
 reboot() -> init ! {stop,reboot}, ok.
 
+-doc "The same as [`stop(0)`](`stop/1`).".
 -spec stop() -> 'ok'.
 stop() -> init ! {stop,stop}, ok.
 
+-doc """
+Stop the Erlang node.
+
+All applications are taken down smoothly, all code is unloaded, and all ports
+are closed before the system terminates by calling [`halt(Status)`](`halt/1`).
+If command-line flag `-heart` was specified, the `heart` program is terminated
+before the Erlang node terminates. For more information, see `m:heart`.
+
+To limit the shutdown time, the time `init` is allowed to spend taking down
+applications, command-line flag `-shutdown_time` is to be used.
+""".
 -spec stop(Status) -> 'ok' when
       Status :: non_neg_integer() | string().
 stop(Status) when is_integer(Status), Status >= 0 ->
@@ -239,31 +554,59 @@ is_bytelist(_) -> false.
 %% the call to halt(Status) by the init process cannot fail
 stop_1(Status) -> init ! {stop,{stop,Status}}, ok.
 
+-doc """
+Starts the Erlang runtime system.
+
+This function is called when the emulator is started and coordinates system startup.
+
+`BootArgs` are all command-line arguments except the emulator flags, that is,
+flags and plain arguments; see [`erl(1)`](erl_cmd.md).
+
+`init` interprets some of the flags, see section
+[Command-Line Flags](`m:init#flags`) below. The remaining flags ("user flags")
+and plain arguments are passed to the `init` loop and can be retrieved by
+calling `get_arguments/0` and `get_plain_arguments/0`, respectively.
+""".
 -spec boot(BootArgs) -> no_return() when
       BootArgs :: [binary()].
 boot(BootArgs) ->
     register(init, self()),
     process_flag(trap_exit, true),
 
-    {Start0,Flags,Args} = parse_boot_args(BootArgs),
+    {Start,Flags,Args} = parse_boot_args(BootArgs),
     %% We don't get to profile parsing of BootArgs
     case b2a(get_flag(profile_boot, Flags, false)) of
         false -> ok;
         true  -> debug_profile_start()
     end,
-    Start = map(fun prepare_run_args/1, Start0),
     boot(Start, Flags, Args).
 
-prepare_run_args({eval, [Expr]}) ->
-    {eval,Expr};
-prepare_run_args({_, L=[]}) ->
-    bs2as(L);
-prepare_run_args({_, L=[_]}) ->
-    bs2as(L);
-prepare_run_args({s, [M,F|Args]}) ->
-    [b2a(M), b2a(F) | bs2as(Args)];
-prepare_run_args({run, [M,F|Args]}) ->
-    [b2a(M), b2a(F) | bs2ss(Args)].
+fold_eval_args([Expr]) -> Expr;
+fold_eval_args(Exprs) -> Exprs.
+
+%% Ensure that when no arguments were explicitly passed on the command line,
+%% an empty arguments list will be passed to the function to be applied.
+interpolate_empty_mfa_args({M, F, []}) -> {M, F, [[]]};
+interpolate_empty_mfa_args({_M, _F, [_Args]} = MFA) -> MFA.
+
+-spec run_args_to_mfa([binary()]) -> {atom(), atom(), [] | [nonempty_list(binary())]} | no_return().
+run_args_to_mfa([]) ->
+    erlang:display_string(
+      "Error! The -S option must be followed by at least a module to start, such as "
+      "`-S Module` or `-S Module Function` to start with a function.\r\n\r\n"
+    ),
+    halt();
+run_args_to_mfa([M]) -> {b2a(M), start, []};
+run_args_to_mfa([M, F]) -> {b2a(M), b2a(F), []};
+run_args_to_mfa([M, F | A]) -> {b2a(M), b2a(F), [A]}.
+
+%% Convert -run / -s / -S arguments to startup instructions, such that
+%% no instructions are emitted if no arguments follow the flag, otherwise,
+%% an `{apply, M, F, A}' instruction is.
+run_args_to_start_instructions([], _Converter) -> [];
+run_args_to_start_instructions(Args, Converter) ->
+    {M, F, A} = run_args_to_mfa(Args),
+    [{apply, M, F, map(Converter, A)}].
 
 b2a(Bin) when is_binary(Bin) ->
     list_to_atom(b2s(Bin));
@@ -284,17 +627,6 @@ map(_F, []) ->
 map(F, [X|Rest]) ->
     [F(X) | map(F, Rest)].
 
--spec code_path_choice() -> 'relaxed' | 'strict'.
-code_path_choice() ->
-    case get_argument(code_path_choice) of
-	{ok,[["strict"]]} ->
-	    strict;
-	{ok,[["relaxed"]]} ->
-	    relaxed;
-	_Else ->
-	    relaxed
-    end.
-
 boot(Start,Flags,Args) ->
     start_on_load_handler_process(),
     BootPid = do_boot(Flags,Start),
@@ -304,60 +636,9 @@ boot(Start,Flags,Args) ->
 		   bootpid = BootPid},
     boot_loop(BootPid,State).
 
-%%% Convert a term to a printable string, if possible.
-to_string(X, D) when is_list(X), D < 4 ->			% assume string
-    F = flatten(X, []),
-    case printable_list(F) of
-	true when length(F) > 0 ->  F;
-	_false ->
-            List = [to_string(E, D+1) || E <- X],
-            flatten(["[",join(List),"]"], [])
-    end;
-to_string(X, _D) when is_list(X) ->
-    "[_]";
-to_string(X, _D) when is_atom(X) ->
-    atom_to_list(X);
-to_string(X, _D) when is_pid(X) ->
-    pid_to_list(X);
-to_string(X, _D) when is_float(X) ->
-    float_to_list(X);
-to_string(X, _D) when is_integer(X) ->
-    integer_to_list(X);
-to_string(X, D) when is_tuple(X), D < 4 ->
-    List = [to_string(E, D+1) || E <- tuple_to_list(X)],
-    flatten(["{",join(List),"}"], []);
-to_string(X, _D) when is_tuple(X) ->
-    "{_}";
-to_string(_X, _D) ->
-    "".						% can't do anything with it
-
-%% This is an incorrect and narrow definition of printable characters.
-%% The correct one is in io_lib:printable_list/1
-%%
-printable_list([H|T]) when is_integer(H), H >= 32, H =< 126 ->
-    printable_list(T);
-printable_list([$\n|T]) -> printable_list(T);
-printable_list([$\r|T]) -> printable_list(T);
-printable_list([$\t|T]) -> printable_list(T);
-printable_list([]) -> true;
-printable_list(_) ->  false.
-
-join([] = T) ->
-    T;
-join([_Elem] = T) ->
-    T;
-join([Elem|T]) ->
-    [Elem,","|join(T)].
-
-flatten([H|T], Tail) when is_list(H) ->
-    flatten(H, flatten(T, Tail));
-flatten([H|T], Tail) ->
-    [H|flatten(T, Tail)];
-flatten([], Tail) ->
-    Tail.
-
 things_to_string([X|Rest]) ->
-    " (" ++ to_string(X, 0) ++ ")" ++ things_to_string(Rest);
+    " (" ++ erts_internal:term_to_string(X, 32768) ++ ")" ++
+        things_to_string(Rest);
 things_to_string([]) ->
     "".
 
@@ -395,9 +676,14 @@ boot_loop(BootPid, State) ->
 	    notify(State#state.subscribed),
 	    loop(State#state{status = {started,PS},
 			     subscribed = []});
+        {'EXIT',BootPid,terminating} ->
+            %% If BootPid exited with terminating, then AC is about to
+            %% terminate and thus the entire system. We ignore this here
+            %% in order to give kernel a chance to flush logs to disk.
+            boot_loop(BootPid, State);
 	{'EXIT',BootPid,Reason} ->
-	    erlang:display({"init terminating in do_boot",Reason}),
-	    crash("init terminating in do_boot", [Reason]);
+	    % erlang:display({"init terminating in do_boot",Reason}),
+	    crash("Runtime terminating during boot", [Reason]);
 	{'EXIT',Pid,Reason} ->
 	    Kernel = State#state.kernel,
 	    terminate(Pid,Kernel,Reason), %% If Pid is a Kernel pid, halt()!
@@ -411,6 +697,10 @@ boot_loop(BootPid, State) ->
 	    {Res, Loaded} = ensure_loaded(Module, State#state.loaded),
 	    From ! {init,Res},
 	    boot_loop(BootPid,State#state{loaded = Loaded});
+        {From,{ensure_modules_loaded,Modules}} ->
+            Loaded = ensure_modules_loaded(Modules, State#state.loaded),
+            From ! {init, ok},
+            boot_loop(BootPid,State#state{loaded = Loaded});
 	Msg ->
 	    boot_loop(BootPid,handle_msg(Msg,State))
     end.
@@ -462,9 +752,9 @@ new_kernelpid({_Name,ignore},BootPid,State) ->
     BootPid ! {self(),ignore},
     State;
 new_kernelpid({Name,What},BootPid,State) ->
-    erlang:display({"could not start kernel pid",Name,What}),
-    clear_system(BootPid,State),
-    crash("could not start kernel pid", [Name, What]).
+    % erlang:display({"could not start kernel pid",Name,What}),
+    clear_system(false,BootPid,State),
+    crash("Could not start kernel pid", [Name, What]).
 
 %% Here is the main loop after the system has booted.
 
@@ -558,7 +848,7 @@ do_handle_msg(Msg,State) ->
                         true -> logger:info("init got unexpected: ~p", [X],
                                             #{ error_logger=>#{tag=>info_msg}});
                         false ->
-                            erlang:display_string("init got unexpected: "),
+                            erlang:display_string(stdout, "init got unexpected: "),
                             erlang:display(X)
                     end
             end
@@ -591,7 +881,7 @@ set_flag(_Flag,false,Flags) ->
     {ok,Flags};
 set_flag(Flag,Value,Flags) when is_list(Value) ->
     %% The flag here can be -boot or -config, which means the value is
-    %% a file name! Thus the file name encoding is used when coverting.
+    %% a file name! Thus the file name encoding is used when converting.
     Encoding = file:native_name_encoding(),
     case catch unicode:characters_to_binary(Value,Encoding,Encoding) of
 	{'EXIT',_} ->
@@ -604,7 +894,7 @@ set_flag(_,_,_) ->
 
 %%% -------------------------------------------------
 %%% Stop the system. 
-%%% Reason is: restart | reboot | stop
+%%% Reason is: restart | {restart, Mode} | reboot | stop
 %%% According to reason terminate emulator or restart
 %%% system using the same init process again.
 %%% -------------------------------------------------
@@ -613,8 +903,13 @@ stop(Reason,State) ->
     BootPid = State#state.bootpid,
     {_,Progress} = State#state.status,
     State1 = State#state{status = {stopping, Progress}},
-    clear_system(BootPid,State1),
+    clear_system(should_unload(Reason),BootPid,State1),
     do_stop(Reason,State1).
+
+%% There is no need to unload code if the system is shutting down
+should_unload(stop) -> false;
+should_unload({stop, _}) -> false;
+should_unload(_) -> true.
 
 do_stop({restart,Mode},#state{start=Start, flags=Flags0, args=Args}) ->
     Flags = update_flag(mode, Flags0, atom_to_binary(Mode)),
@@ -635,13 +930,13 @@ do_restart(Start,Flags,Args) ->
     erl_init:restart(),
     boot(Start,Flags,Args).
 
-clear_system(BootPid,State) ->
+clear_system(Unload,BootPid,State) ->
     Heart = get_heart(State#state.kernel),
     Logger = get_logger(State#state.kernel),
     shutdown_pids(Heart,Logger,BootPid,State),
-    unload(Heart),
-    kill_em([Logger]),
-    do_unload([logger_server]).
+    Unload andalso unload(Heart),
+    exit(Logger,kill),
+    Unload andalso do_unload([logger_server]).
 
 flush() ->
     receive
@@ -663,10 +958,30 @@ stop_heart(State) ->
 
 shutdown_pids(Heart,Logger,BootPid,State) ->
     Timer = shutdown_timer(State#state.flags),
+    global_prepare_shutdown(),
     catch shutdown(State#state.kernel,BootPid,Timer,State),
     kill_all_pids(Heart,Logger), % Even the shutdown timer.
     kill_all_ports(Heart), % Logger has no ports
     flush_timout(Timer).
+
+global_prepare_shutdown() ->
+    %% Inform global that we are shutting down, so it wont
+    %% send 'lost_connection' messages when connections
+    %% goes down...
+    case whereis(global_name_server) of
+        undefined ->
+            ok;
+        Pid ->
+            Mon = erlang:monitor(process, Pid),
+            Pid ! {prepare_shutdown, self(), Mon},
+            receive
+                {Mon, ok} ->
+                    erlang:demonitor(Mon, [flush]),
+                    ok;
+                {'DOWN', Mon, process, Pid, _Reason} ->
+                    ok
+            end
+    end.
 
 get_heart(Kernel) ->
     get_kernelpid(heart,Kernel).
@@ -733,30 +1048,27 @@ resend(_) ->
 %%
 %% Kill all existing pids in the system (except init and heart).
 kill_all_pids(Heart,Logger) ->
-    case get_pids(Heart,Logger) of
-	[] ->
-	    ok;
-	Pids ->
-	    kill_em(Pids),
-	    kill_all_pids(Heart,Logger)  % Continue until all are really killed.
+    Iter = erlang:processes_iterator(),
+    case kill_pids(Heart, Logger, Iter, false) of
+        true ->
+            %% Continue until all are really killed.
+            kill_all_pids(Heart, Logger);
+        false ->
+            ok
     end.
-    
-%% All except system processes.
-get_pids(Heart,Logger) ->
-    Pids = [P || P <- processes(), not erts_internal:is_system_process(P)],
-    delete(Heart,Logger,self(),Pids).
 
-delete(Heart,Logger,Init,[Heart|Pids]) -> delete(Heart,Logger,Init,Pids);
-delete(Heart,Logger,Init,[Logger|Pids])  -> delete(Heart,Logger,Init,Pids);
-delete(Heart,Logger,Init,[Init|Pids])  -> delete(Heart,Logger,Init,Pids);
-delete(Heart,Logger,Init,[Pid|Pids])   -> [Pid|delete(Heart,Logger,Init,Pids)];
-delete(_,_,_,[])                  -> [].
-    
-kill_em([Pid|Pids]) ->
-    exit(Pid,kill),
-    kill_em(Pids);
-kill_em([]) ->
-    ok.
+kill_pids(Heart, Logger, Iter0, MorePids) ->
+    case erlang:processes_next(Iter0) of
+        none -> MorePids;
+        {Pid, Iter1} ->
+            case erts_internal:is_system_process(Pid) orelse
+                lists:member(Pid, [Heart, Logger, self()]) of
+                true -> kill_pids(Heart, Logger, Iter1, MorePids);
+                false ->
+                    exit(Pid, kill),
+                    kill_pids(Heart, Logger, Iter1, true)
+            end
+    end.
 
 %%
 %% Kill all existing ports in the system (except the heart port),
@@ -780,9 +1092,9 @@ kill_all_ports(_,_) ->
     ok.
 
 unload(false) ->
-    do_unload(sub([logger_server|erlang:pre_loaded()],erlang:loaded()));
+    do_unload(erlang:loaded() -- [logger_server|erlang:pre_loaded()]);
 unload(_) ->
-    do_unload(sub([heart,logger_server|erlang:pre_loaded()],erlang:loaded())).
+    do_unload(erlang:loaded() -- [heart,logger_server|erlang:pre_loaded()]).
 
 do_unload([M|Mods]) ->
     catch erlang:purge_module(M),
@@ -791,13 +1103,6 @@ do_unload([M|Mods]) ->
     do_unload(Mods);
 do_unload([]) ->
     ok.
-
-sub([H|T],L) -> sub(T,del(H,L));
-sub([],L)    -> L.
-    
-del(Item, [Item|T]) -> T;
-del(Item, [H|T])    -> [H|del(Item, T)];
-del(_Item, [])      -> [].
 
 %%% -------------------------------------------------
 %%% If the terminated Pid is one of the processes
@@ -812,8 +1117,9 @@ del(_Item, [])      -> [].
 terminate(Pid,Kernel,Reason) ->
     case kernel_pid(Pid,Kernel) of
 	{ok,Name} ->
+            %% If you change this time, also change the time in logger_simple_h.erl
 	    sleep(500), %% Flush error printouts!
-	    erlang:display({"Kernel pid terminated",Name,Reason}),
+	    % erlang:display({"Kernel pid terminated",Name,Reason}),
 	    crash("Kernel pid terminated", [Name, Reason]);
 	_ ->
 	    false
@@ -826,7 +1132,16 @@ kernel_pid(Pid,[_|T]) ->
 kernel_pid(_,_) ->
     false.
 
-sleep(T) -> receive after T -> ok end.
+sleep(T) ->
+    T0 = erlang:monotonic_time(millisecond),
+    receive
+        {From, {ensure_loaded, Module}} ->
+            {Res, _Loaded} = ensure_loaded(Module, []),
+            From ! {init, Res},
+            sleep(max(0, T - (erlang:monotonic_time(millisecond) - T0)))
+    after T ->
+            ok
+    end.
 
 %%% -------------------------------------------------
 %%% Start the loader. 
@@ -835,7 +1150,7 @@ sleep(T) -> receive after T -> ok end.
 
 start_prim_loader(Init, Path0, {Pa,Pz}) ->
     Path = case Path0 of
-	       false -> Pa ++ ["."|Pz];
+	       false -> Pa ++ Pz ++ ["."];
 	       _ -> Path0
 	   end,
     case erl_prim_loader:start() of
@@ -868,6 +1183,7 @@ do_boot(Flags,Start) ->
 do_boot(Init,Flags,Start) ->
     process_flag(trap_exit,true),
     Root = get_root(Flags),
+    true = check_bindir(Flags),
     Path = get_flag_list(path, Flags, false),
     {Pa,Pz} = PathFls = path_flags(Flags),
     start_prim_loader(Init, bs2ss(Path), PathFls),
@@ -878,9 +1194,7 @@ do_boot(Init,Flags,Start) ->
     catch ?ON_LOAD_HANDLER ! {init_debug_flag,Deb},
     BootVars = get_boot_vars(Root, Flags),
 
-    PathChoice = code_path_choice(),
     Es = #es{init=Init,debug=Deb,path=Path,pa=Pa,pz=Pz,
-	     path_choice=PathChoice,
 	     prim_load=true,load_mode=LoadMode,
 	     vars=BootVars},
     eval_script(BootList, Es),
@@ -900,6 +1214,14 @@ get_root(Flags) ->
 	    Root;
 	_ ->
 	    exit(no_or_multiple_root_variables)
+    end.
+
+check_bindir(Flags) ->
+    case get_argument(bindir, Flags) of
+	{ok,[[_Bindir]]} ->
+	    true;
+	_ ->
+	    exit(no_or_multiple_bindir_variables)
     end.
 
 get_boot_vars(Root, Flags) ->
@@ -925,7 +1247,10 @@ path_flags(Flags) ->
     {bs2ss(Pa),bs2ss(Pz)}.
 
 get_boot(BootFile0,Root) ->
-    BootFile = BootFile0 ++ ".boot",
+    BootFile = case BootFile0 of
+        "$ROOT/" ++ BootFile1 -> Root ++ "/bin/" ++ BootFile1 ++ ".boot";
+        _ -> BootFile0 ++ ".boot"
+    end,
     
     case get_boot(BootFile) of
 	{ok, CmdList} ->
@@ -981,26 +1306,26 @@ eval_script([{progress,Info}=Progress|T], #es{debug=Deb}=Es) ->
 eval_script([{preLoaded,_}|T], #es{}=Es) ->
     eval_script(T, Es);
 eval_script([{path,Path}|T], #es{path=false,pa=Pa,pz=Pz,
-				 path_choice=PathChoice,
-				 vars=Vars}=Es) ->
-    RealPath0 = make_path(Pa, Pz, Path, Vars),
-    RealPath = patch_path(RealPath0, PathChoice),
-    erl_prim_loader:set_path(RealPath),
+				 vars=Vars,debug=Deb}=Es) ->
+    debug(Deb, {path,Path},
+          fun() ->
+                  RealPath = make_path(Pa, Pz, Path, Vars),
+                  erl_prim_loader:set_path(RealPath)
+          end),
     eval_script(T, Es);
 eval_script([{path,_}|T], #es{}=Es) ->
     %% Ignore, use the command line -path flag.
     eval_script(T, Es);
-eval_script([{kernel_load_completed}|T], #es{load_mode=Mode}=Es0) ->
-    Es = case Mode of
-	     embedded -> Es0;
-	     _ -> Es0#es{prim_load=false}
-	 end,
-    eval_script(T, Es);
-eval_script([{primLoad,Mods}|T], #es{init=Init,prim_load=PrimLoad}=Es)
+eval_script([{kernel_load_completed}|T], #es{load_mode=Mode}=Es) ->
+    eval_script(T, Es#es{prim_load=(Mode == embedded)});
+eval_script([{primLoad,Mods}|T], #es{init=Init,prim_load=PrimLoad,debug=Deb}=Es)
   when is_list(Mods) ->
     case PrimLoad of
 	true ->
-	    load_modules(Mods, Init);
+            debug(Deb, {primLoad,Mods},
+                  fun() ->
+                          Init ! {self(), loaded, ensure_modules_loaded(Mods, [])}
+                  end);
 	false ->
 	    %% Do not load now, code_server does that dynamically!
 	    ok
@@ -1008,54 +1333,54 @@ eval_script([{primLoad,Mods}|T], #es{init=Init,prim_load=PrimLoad}=Es)
     eval_script(T, Es);
 eval_script([{kernelProcess,Server,{Mod,Fun,Args}}|T],
 	    #es{init=Init,debug=Deb}=Es) ->
-    debug(Deb, {start,Server}),
-    start_in_kernel(Server, Mod, Fun, Args, Init),
+    debug(Deb, {start,Server}, fun() -> start_in_kernel(Server, Mod, Fun, Args, Init) end),
     eval_script(T, Es);
 eval_script([{apply,{Mod,Fun,Args}}=Apply|T], #es{debug=Deb}=Es) ->
-    debug(Deb, Apply),
-    apply(Mod, Fun, Args),
+    debug(Deb, Apply, fun() -> apply(Mod, Fun, Args) end),
     eval_script(T, Es);
 eval_script([], #es{}) ->
     ok;
 eval_script(What, #es{}) ->
     exit({'unexpected command in bootfile',What}).
 
-load_modules(Mods0, Init) ->
-    Mods = [M || M <- Mods0, not erlang:module_loaded(M)],
-    F = prepare_loading_fun(),
-    case erl_prim_loader:get_modules(Mods, F) of
-	{ok,{Prep0,[]}} ->
-	    Prep = [Code || {_,{prepared,Code,_}} <- Prep0],
-	    ok = erlang:finish_loading(Prep),
-	    Loaded = [{Mod,Full} || {Mod,{_,_,Full}} <- Prep0],
-	    Init ! {self(),loaded,Loaded},
-	    Beams = [{M,Beam,Full} || {M,{on_load,Beam,Full}} <- Prep0],
-	    load_rest(Beams, Init);
-	{ok,{_,[_|_]=Errors}} ->
-	    Ms = [M || {M,_} <- Errors],
-	    exit({load_failed,Ms})
+ensure_modules_loaded(Mods, Loaded) ->
+    ModsToLoad = [M || M <- Mods, not erlang:module_loaded(M)],
+    case has_small_memory() of
+        true ->
+            %% Load one module at the time to reduce the peak memory usage.
+            [Info || M <- ModsToLoad, Info <- do_load_modules([M])] ++ Loaded;
+        false ->
+            %% Load the modules in parallel.
+            do_load_modules(ModsToLoad) ++ Loaded
     end.
 
-load_rest([{Mod,Beam,Full}|T], Init) ->
-    do_load_module(Mod, Beam),
-    Init ! {self(),loaded,[{Mod,Full}]},
-    load_rest(T, Init);
-load_rest([], _) ->
-    ok.
+do_load_modules(Mods) ->
+    {ok,{Prep0,[]}} = erl_prim_loader:get_modules(Mods, prepare_loading_fun()),
+    Prep = [Code || {_,{prepared,Code,_}} <- Prep0],
+    ok = erlang:finish_loading(Prep),
+    _ = [do_load_module(Mod, Beam) || {Mod,{on_load, Beam, _Full}} <- Prep0],
+    [{Mod,Full} || {Mod,{_,_,Full}} <- Prep0].
+
+has_small_memory() ->
+    %% Heuristic for small memory. If true, we'll try to preserve
+    %% memory by not loading code in parallel.
+    (erlang:system_info(wordsize) =:= 4 andalso
+     erlang:system_info(schedulers_online) =:= 1) orelse
+        erlang:system_info(debug_compiled).
 
 prepare_loading_fun() ->
     fun(Mod, FullName, Beam) ->
-	    case erlang:prepare_loading(Mod, Beam) of
-		{error,_}=Error ->
-		    Error;
-		Prepared ->
-		    case erlang:has_prepared_code_on_load(Prepared) of
-			true ->
-			    {ok,{on_load,Beam,FullName}};
-			false ->
-			    {ok,{prepared,Prepared,FullName}}
-		    end
-	    end
+            case erlang:prepare_loading(Mod, Beam) of
+                {error,_}=Error ->
+                    Error;
+                Prepared ->
+                    case erlang:has_prepared_code_on_load(Prepared) of
+                        true ->
+                            {ok,{on_load,Beam,FullName}};
+                        false ->
+                            {ok,{prepared,Prepared,FullName}}
+                    end
+            end
     end.
 
 make_path(Pa, Pz, Path, Vars) ->
@@ -1090,72 +1415,6 @@ add_var(Path, _) ->
 extract_var([$/|Path],Var) -> {reverse(Var),Path};
 extract_var([H|T],Var)     -> extract_var(T,[H|Var]);
 extract_var([],Var)        -> {reverse(Var),[]}.
-
-patch_path(Dirs, strict) ->
-    Dirs;
-patch_path(Dirs, relaxed) ->
-    ArchiveExt = archive_extension(),
-    [patch_dir(Dir, ArchiveExt) || Dir <- Dirs].
-
-patch_dir(Orig, ArchiveExt) ->
-    case funny_split(Orig, $/) of
-	["nibe", RevApp, RevArchive | RevTop] ->
-	    App = reverse(RevApp),
-	    case funny_splitwith(RevArchive, $.) of
-		{Ext, Base} when Ext =:= ArchiveExt, Base =:= App ->
-		    %% Orig archive
-		    Top = reverse([reverse(C) || C <- RevTop]),
-		    Dir = join(Top ++ [App, "ebin"], "/"),
-		    Archive = Orig;
-		_ ->
-		    %% Orig directory
-		    Top = reverse([reverse(C) || C <- [RevArchive | RevTop]]),
-		    Archive = join(Top ++ [App ++ ArchiveExt, App, "ebin"], "/"),
-		    Dir = Orig
-	    end,
-	    %% First try dir, second try archive and at last use orig if both fails
-	    case erl_prim_loader:read_file_info(Dir) of
-		{ok, #file_info{type = directory}} ->
-		    Dir;
-		_ ->
-		    case erl_prim_loader:read_file_info(Archive) of
-			{ok, #file_info{type = directory}} ->
-			    Archive;
-			_ ->
-			    Orig
-		    end
-	    end;
-	_ ->
-	    Orig
-    end.
-
-%% Returns all lists in reverse order
-funny_split(List, Sep) ->
-   funny_split(List, Sep, [], []).
-
-funny_split([Sep | Tail], Sep, Path, Paths) ->
-    funny_split(Tail, Sep, [], [Path | Paths]);
-funny_split([Head | Tail], Sep, Path, Paths) ->
-    funny_split(Tail, Sep, [Head | Path], Paths);
-funny_split([], _Sep, Path, Paths) ->
-    [Path | Paths].
-
-%% Returns {BeforeSep, AfterSep} where BeforeSep is in reverse order
-funny_splitwith(List, Sep) ->
-    funny_splitwith(List, Sep, [], List).
-
-funny_splitwith([Sep | Tail], Sep, Acc, _Orig) ->
-    {Acc, Tail};
-funny_splitwith([Head | Tail], Sep, Acc, Orig) ->
-    funny_splitwith(Tail, Sep, [Head | Acc], Orig);
-funny_splitwith([], _Sep, _Acc, Orig) ->
-    {[], Orig}.
-
--spec join([string()], string()) -> string().
-join([H1, H2 | T], S) ->
-    H1 ++ S ++ join([H2 | T], S);
-join([H], _) ->
-    H.
 
 %% Servers that are located in the init kernel are linked
 %% and supervised by init.
@@ -1195,20 +1454,63 @@ start_it([]) ->
     ok;
 start_it({eval,Bin}) ->
     Str = b2s(Bin),
-    {ok,Ts,_} = erl_scan:string(Str),
-    Ts1 = case reverse(Ts) of
-	      [{dot,_}|_] -> Ts;
-	      TsR -> reverse([{dot,erl_anno:new(1)} | TsR])
-	  end,
-    {ok,Expr} = erl_parse:parse_exprs(Ts1),
-    {value, _Value, _Bs} = erl_eval:exprs(Expr, erl_eval:new_bindings()),
-    ok;
-start_it([_|_]=MFA) ->
-    case MFA of
-	[M]        -> M:start();
-	[M,F]      -> M:F();
-	[M,F|Args] -> M:F(Args)	% Args is a list
+    try
+        {ok,Ts,_} = erl_scan:string(Str),
+        Ts1 = case reverse(Ts) of
+                  [{dot,_}|_] -> Ts;
+                  TsR -> reverse([{dot,erl_anno:new(1)} | TsR])
+              end,
+        {ok,Expr} = erl_parse:parse_exprs(Ts1),
+        {value, _Value, _Bs} = erl_eval:exprs(Expr, erl_eval:new_bindings()),
+        ok
+    catch E:R:ST ->
+            Message = [<<"Error! Failed to eval: ">>, Bin, <<"\r\n\r\n">>],
+            erlang:display_string(binary_to_list(iolist_to_binary(Message))),
+            erlang:raise(E,R,ST)
+    end;
+start_it({apply,M,F,Args}) ->
+    case code:ensure_loaded(M) of
+        {module, M} ->
+            try apply(M, F, Args)
+            catch error:undef:ST ->
+                    maybe
+                        false ?= erlang:function_exported(M, F, length(Args)),
+                        Message = ["Error! ",atom_to_binary(M),":",
+                                   atom_to_list(F),"/",integer_to_list(length(Args)),
+                                   " is not exported."
+                                   "\r\n\r\n"],
+                        erlang:display_string(binary_to_list(iolist_to_binary(Message)))
+                    end,
+                    erlang:raise(error,undef,ST);
+                  E:R:ST ->
+                    erlang:display({E,R,ST}),
+                    erlang:raise(E,R,ST)
+            end;
+        {error, Reason} ->
+            Message = [explain_ensure_loaded_error(M, Reason), <<"\r\n\r\n">>],
+            erlang:display_string(binary_to_list(iolist_to_binary(Message))),
+            erlang:error(undef)
     end.
+
+explain_ensure_loaded_error(M, badfile) ->
+    S = [<<"it requires a more recent Erlang/OTP version "
+           "or its .beam file was corrupted.\r\n"
+           "(You are running Erlang/OTP ">>,
+         erlang:system_info(otp_release), <<".)">>],
+    explain_add_head(M, S);
+explain_ensure_loaded_error(M, nofile) ->
+    S = <<"it cannot be found.\r\n",
+          "Make sure that the module name is correct and that its .beam file\r\n",
+          "is in the code path.">>,
+    explain_add_head(M, S);
+explain_ensure_loaded_error(M, Other) ->
+    [<<"Error! Failed to load module '", (atom_to_binary(M))/binary,
+       "'. Reason: ">>,
+     atom_to_binary(Other)].
+
+explain_add_head(M, S) ->
+    [<<"Error! Failed to load module '", (atom_to_binary(M))/binary,
+       "' because ">>, S].
 
 %% Load a module.
 
@@ -1263,24 +1565,40 @@ timer(T) ->
 %% --------------------------------------------------------
 %% Parse the command line arguments and extract things to start, flags
 %% and other arguments. We keep the relative of the groups.
+%% Returns a triplet in the form `{Start, Flags, Args}':
 %% --------------------------------------------------------
 
 parse_boot_args(Args) ->
     parse_boot_args(Args, [], [], []).
 
 parse_boot_args([B|Bs], Ss, Fs, As) ->
-    case check(B) of
+    case check(B, Bs) of
 	start_extra_arg ->
 	    {reverse(Ss),reverse(Fs),lists:reverse(As, Bs)}; % BIF
 	start_arg ->
 	    {S,Rest} = get_args(Bs, []),
-	    parse_boot_args(Rest, [{s, S}|Ss], Fs, As);
+            Instructions = run_args_to_start_instructions(S, fun bs2as/1),
+            parse_boot_args(Rest, Instructions ++ Ss, Fs, As);
 	start_arg2 ->
 	    {S,Rest} = get_args(Bs, []),
-	    parse_boot_args(Rest, [{run, S}|Ss], Fs, As);
+            Instructions = run_args_to_start_instructions(S, fun bs2ss/1),
+            parse_boot_args(Rest, Instructions ++ Ss, Fs, As);
+	ending_start_arg ->
+            {S,Rest} = get_args(Bs, []),
+            %% Forward any additional arguments to the function we are calling,
+            %% such that no init:get_plain_arguments is needed by it later.
+            MFA = run_args_to_mfa(S ++ Rest),
+            {M, F, [Args]} = interpolate_empty_mfa_args(MFA),
+            StartersWithThis = [{apply, M, F,
+                                 %% erlexec escapes and -- passed after -S
+                                 %% so we un-escape it
+                                 [map(fun("\\--") -> "--";
+                                         (A) -> A
+                                      end, map(fun b2s/1, Args))]} | Ss],
+            {reverse(StartersWithThis),reverse(Fs),reverse(As)};
 	eval_arg ->
 	    {Expr,Rest} = get_args(Bs, []),
-	    parse_boot_args(Rest, [{eval, Expr}|Ss], Fs, As);
+            parse_boot_args(Rest, [{eval, fold_eval_args(Expr)} | Ss], Fs, As);
 	{flag,A} ->
 	    {F,Rest} = get_args(Bs, []),
 	    Fl = {A,F},
@@ -1293,21 +1611,37 @@ parse_boot_args([B|Bs], Ss, Fs, As) ->
 parse_boot_args([], Start, Flags, Args) ->
     {reverse(Start),reverse(Flags),reverse(Args)}.
 
-check(<<"-extra">>) -> start_extra_arg;
-check(<<"-s">>) -> start_arg;
-check(<<"-run">>) -> start_arg2;
-check(<<"-eval">>) -> eval_arg;
-check(<<"--">>) -> end_args;
-check(<<"-",Flag/binary>>) -> {flag,b2a(Flag)};
-check(_) -> arg.
+check(<<"-extra">>, _Bs) ->
+    start_extra_arg;
+check(<<"-s">>, _Bs) -> start_arg;
+check(<<"-run">>, _Bs) -> start_arg2;
+check(<<"-S">>, Bs) ->
+    case has_end_args(Bs) of
+        true ->
+            {flag, b2a(<<"S">>)};
+        false ->
+            ending_start_arg
+    end;
+check(<<"-eval">>, _Bs) -> eval_arg;
+check(<<"--">>, _Bs) -> end_args;
+check(<<"-",Flag/binary>>, _Bs) -> {flag,b2a(Flag)};
+check(_,_) -> arg.
+
+has_end_args([<<"--">> | _Bs]) ->
+    true;
+has_end_args([_ | Bs]) ->
+    has_end_args(Bs);
+has_end_args([]) ->
+    false.
 
 get_args([B|Bs], As) ->
-    case check(B) of
+    case check(B, Bs) of
 	start_extra_arg -> {reverse(As), [B|Bs]};
 	start_arg -> {reverse(As), [B|Bs]};
 	start_arg2 -> {reverse(As), [B|Bs]};
 	eval_arg -> {reverse(As), [B|Bs]};
 	end_args -> {reverse(As), Bs};
+	ending_start_arg -> {reverse(As), [B|Bs]};
 	{flag,_} -> {reverse(As), [B|Bs]};
 	arg ->
 	    get_args(Bs, [B|As])
@@ -1408,26 +1742,24 @@ reverse([A, B]) ->
 reverse([A, B | L]) ->
     lists:reverse(L, [B, A]). % BIF
 			
+-doc false.
 -spec objfile_extension() -> nonempty_string().
 objfile_extension() ->
-    ".beam".
+    ".beam".  % currently only one possibility
+%%    %% if there are several implementations:
 %%    case erlang:system_info(machine) of
-%%      "JAM" -> ".jam";
-%%      "VEE" -> ".vee";
 %%      "BEAM" -> ".beam"
 %%    end.
 
--spec archive_extension() -> nonempty_string().
-archive_extension() ->
-    ".ez".
 
 %%%
 %%% Support for handling of on_load functions.
 %%%
 
+-doc false.
 run_on_load_handlers() ->
     Ref = monitor(process, ?ON_LOAD_HANDLER),
-    catch ?ON_LOAD_HANDLER ! run_on_load,
+    _ = catch ?ON_LOAD_HANDLER ! {run_on_load, Ref},
     receive
 	{'DOWN',Ref,process,_,noproc} ->
 	    %% There is no on_load handler process,
@@ -1435,12 +1767,13 @@ run_on_load_handlers() ->
 	    %% called and it is not the first time we
 	    %% pass through here.
 	    ok;
-	{'DOWN',Ref,process,_,on_load_done} ->
+	{'DOWN',Ref,process,_,Ref} ->
+            %% All on_load handlers have run succesfully
 	    ok;
-	{'DOWN',Ref,process,_,Res} ->
+	{'DOWN',Ref,process,_,Reason} ->
 	    %% Failure to run an on_load handler.
 	    %% This is fatal during start-up.
-	    exit(Res)
+	    exit(Reason)
     end.
 
 start_on_load_handler_process() ->
@@ -1456,34 +1789,37 @@ on_load_loop(Mods, Debug0) ->
 	    on_load_loop(Mods, Debug);
 	{loaded,Mod} ->
 	    on_load_loop([Mod|Mods], Debug0);
-	run_on_load ->
+	{run_on_load, Ref} ->
 	    run_on_load_handlers(Mods, Debug0),
-	    exit(on_load_done)
+	    exit(Ref)
     end.
 
 run_on_load_handlers([M|Ms], Debug) ->
-    debug(Debug, {running_on_load_handler,M}),
-    Fun = fun() ->
-		  Res = erlang:call_on_load_function(M),
-		  exit(Res)
-	  end,
-    {Pid,Ref} = spawn_monitor(Fun),
-    receive
-	{'DOWN',Ref,process,Pid,OnLoadRes} ->
-	    Keep = OnLoadRes =:= ok,
-	    erlang:finish_after_on_load(M, Keep),
-	    case Keep of
-		false ->
-		    Error = {on_load_function_failed,M},
-		    debug(Debug, Error),
-		    exit(Error);
-		true ->
-		    debug(Debug, {on_load_handler_returned_ok,M}),
-		    run_on_load_handlers(Ms, Debug)
-	    end
-    end;
+    debug(Debug,
+          {running_on_load_handler,M},
+          fun() -> run_on_load_handler(M, Debug) end),
+    run_on_load_handlers(Ms, Debug);
 run_on_load_handlers([], _) -> ok.
 
+run_on_load_handler(M, Debug) ->
+    Fun = fun() ->
+                  Res = erlang:call_on_load_function(M),
+                  exit(Res)
+          end,
+    {Pid,Ref} = spawn_monitor(Fun),
+    receive
+        {'DOWN',Ref,process,Pid,OnLoadRes} ->
+            Keep = OnLoadRes =:= ok,
+            erlang:finish_after_on_load(M, Keep),
+            case Keep of
+                false ->
+                    Error = {on_load_function_failed,M,OnLoadRes},
+                    debug(Debug, Error),
+                    exit(Error);
+                true ->
+                    debug(Debug, {on_load_handler_returned_ok,M})
+            end
+    end.
 
 %% debug profile (light variant of eprof)
 debug_profile_start() ->
@@ -1530,6 +1866,8 @@ collect_mfas([MFA|MFAs],Info) ->
         {call_time, []} ->
             collect_mfas(MFAs,Info);
         {call_time, false} ->
+            collect_mfas(MFAs,Info);
+        {call_time, undefined} ->
             collect_mfas(MFAs,Info);
         {call_time, Data} ->
             case collect_mfa(MFA,Data,0,0) of

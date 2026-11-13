@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0
 %% 
-%% Copyright Ericsson AB 1999-2016. All Rights Reserved.
+%% Copyright Ericsson AB 1999-2025. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,6 +25,16 @@
 %% Purpose: Interface to the UDP transport module for Megaco/H.248
 %%-----------------------------------------------------------------
 -module(megaco_udp).
+
+-compile([{nowarn_deprecated_function, [{erlang,exit,2}]}]).
+
+-moduledoc """
+Interface module to UDP transport protocol for Megaco/H.248.
+
+This module contains the public interface to the UDP/IP version
+transport protocol for Megaco/H.248.
+
+""".
 
 -include_lib("megaco/include/megaco.hrl").
 -include_lib("megaco/src/udp/megaco_udp.hrl").
@@ -51,6 +63,32 @@
 	 reset_stats/0, reset_stats/1]).
 
 
+-export_type([
+              handle/0,
+              send_handle/0,
+              counter/0
+             ]).
+
+-doc """
+An opaque data type representing an UDP socket.
+""".
+-opaque handle() :: inet:socket().
+
+-doc """
+An opaque data type representing an UDP socket, used when sending.
+""".
+-opaque send_handle() :: #send_handle{}.
+
+-doc """
+Defines the different counters handled by this transport.
+""".
+-type counter() :: medGwyGatewayNumInMessages  | 
+                   medGwyGatewayNumInOctets    |
+                   medGwyGatewayNumOutMessages |
+                   medGwyGatewayNumOutOctets   |
+                   medGwyGatewayNumErrors.
+
+
 %%-----------------------------------------------------------------
 %% External interface functions
 %%-----------------------------------------------------------------
@@ -59,11 +97,41 @@
 %% Func: get_stats/0, get_stats/1, get_stats/2
 %% Description: Retreive statistics (counters) for TCP
 %%-----------------------------------------------------------------
+-doc """
+Get all counter values for all known connections.
+""".
+
+-spec get_stats() -> {ok, TotalStats} | {error, Reason} when
+      TotalStats :: [{SH, [{Counter, integer()}]}],
+      SH         :: send_handle(),
+      Counter    :: counter(),
+      Reason     :: term().
+
 get_stats() ->
     megaco_stats:get_stats(megaco_udp_stats).
 
+
+-doc """
+Get all counter values for a given handle.
+""".
+
+-spec get_stats(SH) -> {ok, Stats} | {error, Reason} when
+      SH      :: send_handle(),
+      Stats   :: [{Counter, integer()}],
+      Counter :: counter(),
+      Reason  :: term().
+      
 get_stats(SH) when is_record(SH, send_handle) ->
     megaco_stats:get_stats(megaco_udp_stats, SH).
+
+-doc """
+Get the value of a specific counter.
+""".
+
+-spec get_stats(SH, Counter) -> {ok, integer()} | {error, Reason} when
+      SH      :: send_handle(),
+      Counter :: counter(),
+      Reason  :: term().
 
 get_stats(SH, Counter) 
   when is_record(SH, send_handle) andalso is_atom(Counter) ->
@@ -74,8 +142,21 @@ get_stats(SH, Counter)
 %% Func: reset_stats/0, reaet_stats/1
 %% Description: Reset statistics (counters) for TCP
 %%-----------------------------------------------------------------
+-doc """
+Reset all counters for all UDP handles.
+""".
+
+-spec reset_stats() -> megaco:void().
+
 reset_stats() ->
     megaco_stats:reset_stats(megaco_udp_stats).
+
+-doc """
+Reset all counters for the given UDP handle.
+""".
+
+-spec reset_stats(SH) -> megaco:void() when
+      SH :: send_handle().
 
 reset_stats(SH) when is_record(SH, send_handle) ->
     megaco_stats:reset_stats(megaco_udp_stats, SH).
@@ -86,6 +167,14 @@ reset_stats(SH) when is_record(SH, send_handle) ->
 %% Func: start_transport
 %% Description: Starts the UDP transport service
 %%-----------------------------------------------------------------
+-doc """
+This function is used for starting the UDP/IP transport service. Use
+exit(TransportRef, Reason) to stop the transport service.
+""".
+
+-spec start_transport() -> {ok, TransportRef} when
+      TransportRef :: pid().
+
 start_transport() ->
     (catch megaco_stats:init(megaco_udp_stats)),
     megaco_udp_sup:start_link().
@@ -95,6 +184,7 @@ start_transport() ->
 %% Func: stop_transport
 %% Description: Stop the UDP transport service
 %%-----------------------------------------------------------------
+-doc false.
 stop_transport(Pid) ->
     (catch unlink(Pid)), 
     stop_transport(Pid, shutdown).
@@ -107,60 +197,215 @@ stop_transport(Pid, Reason) ->
 %% Func: open
 %% Description: Function is used when opening an UDP socket
 %%-----------------------------------------------------------------
-open(SupPid, Options) ->
+-doc """
+This function is used to open an UDP/IP socket.
+
+- **`module`** - The option makes it possible for the user to provide their own
+  callback module. The functions `receive_message/4` or
+  `process_received_message/4` of this module is called when a new message is
+  received. Which one depends on the size of the message:
+
+  - **`small`** - receive_message
+
+  - **`large`** - process_received_message
+
+  Default value is _megaco_.
+
+- **`inet_backend`** - Choose the inet-backend.
+
+  This option make it possible to use a different inet-backend ('default',
+  'inet' or 'socket').
+
+  Default is `default` (system default).
+""".
+
+-spec open(TransportRef, Opts) ->
+          {ok, Handle, ControlPid} | {error, Reason} when
+      TransportRef :: pid(),
+      Opts         :: {inet_backend,   default | inet | socket} |
+                      {port,           PortNum} |
+                      {options,        list()} |
+                      {receive_handle, term()} |
+                      {module,         atom()},
+      PortNum      :: inet:port_number(),
+      Handle       :: handle(),
+      ControlPid   :: pid(),
+      Reason       :: term().
+      
+open(TransportRef, Opts) ->
     Mand = [port, receive_handle],
-    case parse_options(Options, #megaco_udp{}, Mand) of
-	{ok, UdpRec} ->
+    case parse_options(Opts, #megaco_udp{}, Mand) of
+	{ok, #megaco_udp{port         = Port,
+			 options      = Options,
+			 inet_backend = IB} = UdpRec} ->
 
 	    %%------------------------------------------------------
 	    %% Setup the socket
-	    IpOpts = [binary, {reuseaddr, true}, {active, once} |
-		      UdpRec#megaco_udp.options],
-
-	    case (catch gen_udp:open(UdpRec#megaco_udp.port, IpOpts)) of
+	    IpOpts =
+                case IB of
+                    default ->
+                        [];
+                    IB ->
+                        [{inet_backend, IB}]
+                end ++
+                [binary, {reuseaddr, true}, {active, once} |
+                 post_process_opts(IB, Options)],
+	    case (catch gen_udp:open(Port, IpOpts)) of
 		{ok, Socket} ->
+                    Handle = Socket,
 		    ?udp_debug(UdpRec, "udp open", []),
-		    NewUdpRec = UdpRec#megaco_udp{socket = Socket},
-		    case start_udp_server(SupPid, NewUdpRec) of
+		    NewUdpRec = UdpRec#megaco_udp{handle = Handle,
+                                                  socket = Socket},
+		    case start_udp_server(TransportRef, NewUdpRec) of
 			{ok, ControlPid} ->
-			    gen_udp:controlling_process(Socket, ControlPid),
-			    {ok, Socket, ControlPid};
+			    _ = gen_udp:controlling_process(Socket, ControlPid),
+			    {ok, Handle, ControlPid};
 			{error, Reason} ->
-			    Error = {error, {could_not_start_udp_server, Reason}},
+                            Reason2 = {could_not_start_udp_server, Reason},
+			    Error   = {error, Reason2},
 			    ?udp_debug({socket, Socket}, "udp close", []),
 			    gen_udp:close(Socket),
 			    Error
 
 		    end;
 		{'EXIT', Reason} ->
-		    Error = {error, {could_not_open_udp_port, Reason}},
+                    Reason2 = {could_not_open_udp_port, Reason},
+		    Error   = {error, Reason2},
 		    ?udp_debug(UdpRec, "udp open exited", [Error]),
 		    Error;
 		{error, Reason} ->
-		    Error = {error, {could_not_open_udp_port, Reason}},
+		    Reason2 = {could_not_open_udp_port, Reason},
+		    Error   = {error, Reason2},
 		    ?udp_debug(UdpRec, "udp open failed", [Error]),
 		    Error
 	    end;
-	{error, Reason} = Error ->
+	{error, _Reason} = Error ->
 	    ?udp_debug(#megaco_udp{}, "udp open failed",
-		       [Error, {options, Options}]),
-	    {error, Reason}
+		       [Error, {options, Opts}]),
+	    Error
     end.
 
+
+%% In some cases we must bind and therefor we must have the
+%% ip (or ifaddr) option.
+post_process_opts(socket = _IB, Opts) ->
+    case os:type() of
+	{win32, nt} ->
+	    %% We must bind, and therefor we must provide a "proper" address.
+	    %% Therefor...we need to figure out our domain.
+	    post_process_opts(Opts);
+	_ ->
+	    Opts
+    end;
+post_process_opts(_IB, Opts) ->
+    Opts.
+
+
+%% Socket on Windows: We need the ip (or ifaddr) option
+post_process_opts(Opts) ->
+    case lists:keymember(ip, 1, Opts) orelse
+	lists:keymember(ifaddr, 1, Opts) of
+	true ->
+	    %% No need to do anything, user has provided an address
+	    Opts;
+	false ->
+	    %% We need to figure out a proper address and provide 
+	    %% the ip option our selves.
+	    post_process_opts2(Opts)
+    end.
+	
+post_process_opts2(Opts) ->
+    case lists:member(inet, Opts) of
+	true ->
+	    post_process_opts3(inet, Opts);
+	false ->
+	    case lists:member(inet6, Opts) of
+		true ->
+		    post_process_opts3(inet6, Opts);
+		false ->
+		    post_process_opts3(inet, Opts)
+	    end
+    end.
+
+post_process_opts3(Domain, Opts) ->
+    case net:getifaddrs(Domain) of
+	{ok, IfAddrs} ->
+	    post_process_opts4(Domain, IfAddrs, Opts);
+	{error, _} ->
+	    Opts
+    end.
+
+post_process_opts4(_Domain, [] = _IfAddrs, Opts) ->
+    Opts;
+post_process_opts4(inet,
+		   [#{addr := #{family := inet,
+				addr   := {A, B, _, _}}} | IfAddrs],
+		   Opts)
+  when (A =:= 127) orelse ((A =:= 169) andalso (B =:= 254)) ->
+    post_process_opts4(inet, IfAddrs, Opts);
+post_process_opts4(inet,
+		   [#{addr   := #{family := inet,
+				  addr   := Addr},
+		      flags  := Flags} | IfAddrs],
+		   Opts) ->
+    case lists:member(up, Flags) of
+	true ->
+	    [{ip, Addr} | Opts];
+	false ->
+	    post_process_opts4(inet, IfAddrs, Opts)
+    end;
+post_process_opts4(inet6,
+		   [#{addr := #{family := inet6,	
+				addr   := {A, _, _, _, _, _, _, _}}} | IfAddrs],
+		   Opts)
+  when (A =:= 0) orelse (A =:= 16#fe80) ->
+    post_process_opts4(inet6, IfAddrs, Opts);
+post_process_opts4(inet6,
+		   [#{addr  := #{family := inet6,
+				 addr   := Addr},
+		      flags := Flags} | IfAddrs],
+		   Opts) ->
+    %% The loopback should really have been covered above, but just in case...
+    case lists:member(up, Flags) andalso (not lists:member(loopback, Flags)) of
+	true ->
+	    [{ip, Addr} | Opts];
+	false ->
+	    post_process_opts4(inet6, IfAddrs, Opts)
+    end.
+
+    
 
 %%-----------------------------------------------------------------
 %% Func: socket
 %% Description: Returns the inet socket
 %%-----------------------------------------------------------------
+-doc """
+This function is used to convert a socket `handle()` to a inet `socket()`.
+""".
+
+-spec socket(Handle) -> Socket when
+      Handle :: handle() | send_handle(),
+      Socket :: inet:socket().
+
 socket(SH) when is_record(SH, send_handle) ->
     SH#send_handle.socket;
 socket(Socket) ->
     Socket.
 
 
-upgrade_receive_handle(Pid, NewHandle) 
-  when is_pid(Pid) andalso is_record(NewHandle, megaco_receive_handle) ->
-    megaco_udp_server:upgrade_receive_handle(Pid, NewHandle).
+-doc """
+Update the receive handle of the control process (e.g. after having changed
+protocol version).
+""".
+
+-spec upgrade_receive_handle(ControlPid, NewRecvHandle) -> ok when
+      ControlPid    :: pid(),
+      NewRecvHandle :: term().
+
+upgrade_receive_handle(ControlPid, NewRecvHandle) 
+  when is_pid(ControlPid) andalso
+       is_record(NewRecvHandle, megaco_receive_handle) ->
+    megaco_udp_server:upgrade_receive_handle(ControlPid, NewRecvHandle).
 
 
 %%-----------------------------------------------------------------
@@ -168,6 +413,16 @@ upgrade_receive_handle(Pid, NewHandle)
 %% Description: Function is used for creating the handle used when 
 %%    sending data on the UDP socket
 %%-----------------------------------------------------------------
+-doc """
+Creates a send handle from a transport handle. The send handle is intended to be
+used by megaco_udp:send_message/2.
+""".
+
+-spec create_send_handle(Handle, Host, Port) -> send_handle() when
+      Handle :: handle(),
+      Host   :: inet:ip4_address() | inet:hostname(),
+      Port   :: inet:port_number().
+
 create_send_handle(Socket, {_, _, _, _} = Addr, Port) ->
     do_create_send_handle(Socket, Addr, Port);
 create_send_handle(Socket, Addr0, Port) ->
@@ -179,7 +434,6 @@ do_create_send_handle(Socket, Addr, Port) ->
     SH = #send_handle{socket = Socket, addr = Addr, port = Port},
     maybe_create_snmp_counters(SH),
     SH.
-
 
 maybe_create_snmp_counters(SH) ->
     Counters = [medGwyGatewayNumInMessages, 
@@ -211,16 +465,28 @@ create_snmp_counters(SH, [Counter|Counters]) ->
 %% Func: send_message
 %% Description: Function is used for sending data on the UDP socket
 %%-----------------------------------------------------------------
+-doc """
+Sends a message on a socket. The send handle is obtained by
+megaco_udp:create_send_handle/3. Increments the NumOutMessages and NumOutOctets
+counters if message successfully sent. In case of a failure to send, the
+NumErrors counter is _not_ incremented. This is done elsewhere in the megaco
+app.
+""".
+
+-spec send_message(SH, Msg) -> ok when
+      SH  :: send_handle(),
+      Msg :: binary() | iolist().
+
 send_message(SH, Data) when is_record(SH, send_handle) ->
     #send_handle{socket = Socket, addr = Addr, port = Port} = SH,
     Res = gen_udp:send(Socket, Addr, Port, Data),
-    case Res of
-	ok ->
-	    incNumOutMessages(SH),
-	    incNumOutOctets(SH, size(Data));
-	_ ->
-	    ok
-    end,
+    _ = case Res of
+            ok ->
+                incNumOutMessages(SH),
+                incNumOutOctets(SH, byte_size(Data));
+            _ ->
+                ok
+        end,
     Res;
 send_message(SH, _Data) ->
     {error, {bad_send_handle, SH}}.
@@ -231,6 +497,13 @@ send_message(SH, _Data) ->
 %% Description: Function is used for blocking incomming messages
 %%              on the TCP socket
 %%-----------------------------------------------------------------
+-doc """
+Stop receiving incoming messages on the socket.
+""".
+
+-spec block(Handle) -> ok when
+      Handle :: handle() | send_handle().
+
 block(SH) when is_record(SH, send_handle) ->
     block(SH#send_handle.socket);
 block(Socket) ->
@@ -243,6 +516,13 @@ block(Socket) ->
 %% Description: Function is used for blocking incomming messages
 %%              on the TCP socket
 %%-----------------------------------------------------------------
+-doc """
+Starting to receive incoming messages from the socket again.
+""".
+
+-spec unblock(Handle) -> ok when
+      Handle :: handle() | send_handle().
+
 unblock(SH) when is_record(SH, send_handle) ->
     unblock(SH#send_handle.socket);
 unblock(Socket) ->
@@ -254,13 +534,20 @@ unblock(Socket) ->
 %% Func: close
 %% Description: Function is used for closing the UDP socket
 %%-----------------------------------------------------------------
+-doc """
+This function is used for closing an active UDP socket.
+""".
+
+-spec close(Handle) -> ok when
+      Handle :: handle() | send_handle().
+
 close(#send_handle{socket = Socket}) ->
     close(Socket);
 close(Socket) ->
     ?udp_debug({socket, Socket}, "udp close", []),
-    case erlang:port_info(Socket, connected) of
-	{connected, ControlPid} ->
-	    megaco_udp_server:stop(ControlPid);
+    case inet:info(Socket) of
+        #{owner := ControlPid} = _Info when is_pid(ControlPid) ->
+	    (catch megaco_udp_server:stop(ControlPid));
 	undefined ->
 	    {error, already_closed}
     end.
@@ -294,8 +581,12 @@ parse_options([{Tag, Val} | T], UdpRec, Mand) ->
 	    parse_options(T, UdpRec#megaco_udp{receive_handle = Val}, Mand2);
 	module when is_atom(Val) ->
 	    parse_options(T, UdpRec#megaco_udp{module = Val}, Mand2);
-	serialize when (Val =:= true) orelse (Val =:= false) ->
+	serialize when is_boolean(Val) ->
 	    parse_options(T, UdpRec#megaco_udp{serialize = Val}, Mand2);
+	inet_backend when (Val =:= default) orelse
+                          (Val =:= inet) orelse
+                          (Val =:= socket)  ->
+	    parse_options(T, UdpRec#megaco_udp{inet_backend = Val}, Mand2);
         Bad ->
 	    {error, {bad_option, Bad}}
     end;
@@ -321,5 +612,19 @@ incNumOutOctets(SH, NumOctets) ->
 incCounter(Key, Inc) ->
     ets:update_counter(megaco_udp_stats, Key, Inc).
 
-% incNumErrors(SH) ->
-%     incCounter({SH, medGwyGatewayNumErrors}, 1).
+%% incNumErrors(SH) ->
+%%     incCounter({SH, medGwyGatewayNumErrors}, 1).
+
+%%-----------------------------------------------------------------
+
+%% formated_timestamp() ->
+%%     format_timestamp(os:timestamp()).
+
+%% format_timestamp(TS) ->
+%%     megaco:format_timestamp(TS).
+
+%% d(F) ->
+%%     d(F, []).
+
+%% d(F, A) ->
+%%     io:format("*** [~s] ~p " ++ F ++ "~n", [formated_timestamp(), self() | A]).

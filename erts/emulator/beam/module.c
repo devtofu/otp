@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 1996-2018. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 1996-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,6 +30,10 @@
 #include "module.h"
 #include "beam_catches.h"
 
+#ifdef BEAMASM
+#  include "beam_asm.h"
+#endif
+
 #ifdef DEBUG
 #  define IF_DEBUG(x) x
 #else
@@ -36,6 +42,8 @@
 
 #define MODULE_SIZE   50
 #define MODULE_LIMIT  (64*1024)
+
+static int module_limit = MODULE_LIMIT;
 
 static IndexTable module_tables[ERTS_NUM_CODE_IX];
 
@@ -74,6 +82,7 @@ void erts_module_instance_init(struct erl_module_instance* modi)
     modi->nif = NULL;
     modi->num_breakpoints = 0;
     modi->num_traced_exports = 0;
+    modi->unsealed = 0;
 }
 
 static Module* module_alloc(Module* tmpl)
@@ -96,10 +105,14 @@ static void module_free(Module* mod)
     erts_atomic_add_nob(&tot_module_bytes, -sizeof(Module));
 }
 
-void init_module_table(void)
+void init_module_table(int limit)
 {
     HashFunctions f;
     int i;
+
+    if (limit > 0) {
+        module_limit = limit;
+    }
 
     f.hash = (H_FUN) module_hash;
     f.cmp  = (HCMP_FUN) module_cmp;
@@ -110,8 +123,8 @@ void init_module_table(void)
     f.meta_print = (HMPRINT_FUN) erts_print;
 
     for (i = 0; i < ERTS_NUM_CODE_IX; i++) {
-	erts_index_init(ERTS_ALC_T_MODULE_TABLE, &module_tables[i], "module_code",
-			MODULE_SIZE, MODULE_LIMIT, f);
+        erts_index_init(ERTS_ALC_T_MODULE_TABLE, &module_tables[i], "module_code",
+            MODULE_SIZE, module_limit, f);
     }
 
     for (i=0; i<ERTS_NUM_CODE_IX; i++) {
@@ -130,6 +143,7 @@ erts_get_module(Eterm mod, ErtsCodeIndex code_ix)
     IndexTable* mod_tab;
 
     ASSERT(is_atom(mod));
+    ERTS_LC_ASSERT(erts_get_scheduler_id() > 0 || erts_thr_progress_lc_is_delaying());
 
     mod_tab = &module_tables[code_ix];
 
@@ -161,51 +175,17 @@ static Module* put_module(Eterm mod, IndexTable* mod_tab)
 Module*
 erts_put_module(Eterm mod)
 {
-    ERTS_LC_ASSERT(erts_initialized == 0
-		       || erts_has_code_write_permission());
+    ERTS_LC_ASSERT(erts_initialized == 0 || erts_has_code_load_permission());
 
     return put_module(mod, &module_tables[erts_staging_code_ix()]);
 }
 
-int erts_is_code_ptr_writable(struct erl_module_instance* modi,
-                                const void *ptr) {
+void *erts_writable_code_ptr(struct erl_module_instance *modi,
+                             const void *ptr)
+{
     const char *code_start, *code_end, *ptr_raw;
 
-    code_start = (char*)modi->code_hdr;
-    code_end = code_start + modi->code_length;
-    ptr_raw = (const char*)ptr;
-
-    (void)code_end;
-    (void)ptr_raw;
-
-#ifdef BEAMASM
-    {
-        const char *exec_mod_start, *rw_mod_start, *rw_mod_end;
-
-        exec_mod_start = (const char*)modi->native_module_exec;
-        rw_mod_start = (const char*)modi->native_module_rw;
-
-        rw_mod_end = rw_mod_start + modi->code_length +
-            (exec_mod_start - code_start);
-
-        if (ptr_raw >= rw_mod_start && ptr_raw <= rw_mod_end) {
-            return 1;
-        }
-
-        ASSERT(ptr_raw >= code_start && ptr_raw < code_end);
-        return 0;
-    }
-#else
-    ASSERT(ptr_raw >= code_start && ptr_raw < code_end);
-    return 1;
-#endif
-}
-
-void *erts_writable_code_ptr(struct erl_module_instance* modi,
-                             const void *ptr) {
-    const char *code_start, *code_end, *ptr_raw;
-
-    ERTS_LC_ASSERT(erts_has_code_write_permission());
+    ASSERT(modi->unsealed);
 
     code_start = (char*)modi->code_hdr;
     code_end = code_start + modi->code_length;
@@ -216,21 +196,60 @@ void *erts_writable_code_ptr(struct erl_module_instance* modi,
 
     ASSERT(ptr_raw >= code_start && ptr_raw < code_end);
 
-#ifdef BEAMASM
     {
         const char *exec_mod_start;
         char *rw_mod_start;
 
-        exec_mod_start = (const char*)modi->native_module_exec;
-        rw_mod_start = (char*)modi->native_module_rw;
+        exec_mod_start = (const char*)modi->executable_region;
+        rw_mod_start = (char*)modi->writable_region;
 
         ASSERT(code_start >= exec_mod_start);
 
         return (void*)(rw_mod_start + (ptr_raw - exec_mod_start));
     }
-#else
-    return (void*)ptr;
+}
+
+#ifdef DEBUG
+/* Protected by code mod permission. */
+static struct erl_module_instance *unsealed_module = NULL;
 #endif
+
+void erts_unseal_module(struct erl_module_instance *modi) {
+    ERTS_LC_ASSERT(erts_initialized == 0 ||
+                   erts_thr_progress_is_blocking() ||
+                   erts_has_code_mod_permission());
+    ASSERT(unsealed_module == NULL && !modi->unsealed);
+
+#ifdef BEAMASM
+    beamasm_unseal_module(modi->executable_region,
+                          modi->writable_region,
+                          modi->code_length);
+#endif
+
+#ifdef DEBUG
+    unsealed_module = modi;
+#endif
+    modi->unsealed = 1;
+}
+
+void erts_seal_module(struct erl_module_instance *modi)
+{
+    ERTS_LC_ASSERT(erts_initialized == 0 ||
+                   erts_thr_progress_is_blocking() ||
+                   erts_has_code_mod_permission());
+    ASSERT(unsealed_module == modi && modi->unsealed == 1);
+
+#ifdef BEAMASM
+    beamasm_flush_icache(modi->executable_region, modi->code_length);
+    beamasm_seal_module(modi->executable_region,
+                        modi->writable_region,
+                        modi->code_length);
+#endif
+
+#ifdef DEBUG
+    unsealed_module = NULL;
+#endif
+    modi->unsealed = 0;
 }
 
 Module *module_code(int i, ErtsCodeIndex code_ix)
@@ -241,6 +260,11 @@ Module *module_code(int i, ErtsCodeIndex code_ix)
 int module_code_size(ErtsCodeIndex code_ix)
 {
     return module_tables[code_ix].entries;
+}
+
+int erts_module_table_limit(void)
+{
+    return module_tables[erts_active_code_ix()].limit;
 }
 
 int module_table_sz(void)

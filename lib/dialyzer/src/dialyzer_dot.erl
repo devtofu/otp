@@ -1,5 +1,12 @@
 %%% -*- erlang-indent-level: 2 -*-
 %%%
+%%% %CopyrightBegin%
+%%%
+%%% SPDX-License-Identifier: Apache-2.0
+%%%
+%%% Copyright 2004-2010 held by the authors. All Rights Reserved.
+%%% Copyright Ericsson AB 2020-2025. All Rights Reserved.
+%%%
 %%% Licensed under the Apache License, Version 2.0 (the "License");
 %%% you may not use this file except in compliance with the License.
 %%% You may obtain a copy of the License at
@@ -12,6 +19,8 @@
 %%% See the License for the specific language governing permissions and
 %%% limitations under the License.
 %%%
+%%% %CopyrightEnd%
+%%%
 %%%-------------------------------------------------------------------
 %%% File    : dialyzer_dot.erl
 %%% Author  : Per Gustafsson <pergu@it.uu.se>
@@ -21,6 +30,7 @@
 %%%-------------------------------------------------------------------
 
 -module(dialyzer_dot).
+-moduledoc false.
 
 -export([translate_digraph/3, translate_digraph/5,
 	 translate_list/3, translate_list/4, translate_list/5]).
@@ -41,7 +51,7 @@
 %% filename is the name of the resulting .dot file the GraphName is
 %% pretty much useless.
 %%
-%% The resulting .dot reprsentation will be stored in the flie FileName.
+%% The resulting .dot representation will be stored in the file FileName.
 %%
 %% Interfaces:
 %%
@@ -115,12 +125,12 @@ node_format(Opt, Fun, V) ->
   Tmp = io_lib:format("~p", [Fun(V)]),
   String = lists:flatten(Tmp),
   %% io:format("~p", [String]),
-  {Width, Heigth} = calc_dim(String),
+  {Width, Height} = calc_dim(String),
   W = ((Width div 7) + 1) * 0.55,
-  H = Heigth * 0.4,
+  H = Height * 0.4,
   SL = io_lib:format("~f", [W]),
   SH = io_lib:format("~f", [H]),
-  [String, " [width=", SL, " heigth=", SH, " ", OptText,"];\n"].
+  [String, " [width=", SL, " height=", SH, " ", OptText,"];\n"].
 
 edge_format(Opt, Fun, V1, V2) ->
   OptText =

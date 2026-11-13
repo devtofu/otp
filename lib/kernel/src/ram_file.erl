@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,13 +20,16 @@
 %% %CopyrightEnd%
 %%
 -module(ram_file).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
 
 %% Binary RAM file interface
 
 %% Generic file contents operations
 -export([open/2, close/1]).
--export([write/2, read/2, copy/3,
-	 pread/2, pread/3, pwrite/2, pwrite/3, 
+-export([write/2, read/2, read_line/1, copy/3,
+         pread/2, pread/3, pwrite/2, pwrite/3,
 	 position/2, truncate/1, datasync/1, sync/1]).
 
 %% Specialized file operations
@@ -41,7 +46,7 @@
 
 %% --------------------------------------------------------------------------
 %% These operation codes were once identical between efile_drv.c
-%% and ram_file_drv.c, but now these drivers are not depeding on each other.
+%% and ram_file_drv.c, but now these drivers are not depending on each other.
 %% So, the codes could be changed to more logical values now, but why indeed?
 
 %% Defined "file" functions 
@@ -140,7 +145,42 @@ read(#file_descriptor{module = ?MODULE, data = Port}, Sz)
 	    {error, einval}
     end.
 
-write(#file_descriptor{module = ?MODULE, data = Port}, Bytes) -> 
+read_line(#file_descriptor{module = ?MODULE} = Fd) ->
+    read_line(Fd, []).
+
+read_line(Fd, Acc) ->
+    case read(Fd, 256) of
+        {ok, Data} ->
+            case binary:match(Data, <<"\n">>) of
+                {Pos, 1} ->
+                    %% Check for \r\n: replace with just \n.
+                    Before =
+                        case binary:part(Data, 0, Pos + 1) of
+                            <<CRNLData:(Pos - 1)/binary, "\r\n">> ->
+                                <<CRNLData:(Pos - 1)/binary, "\n">>;
+                            NLData ->
+                                NLData
+                        end,
+                    %% Seek back the unread portion after the \n.
+                    AfterSize = byte_size(Data) - Pos - 1,
+                    {ok, _} = position(Fd, {cur, -AfterSize}),
+
+                    if
+                       Acc =:= [] ->
+                            {ok, Before};
+                       Acc =/= [] ->
+                            {ok, iolist_to_binary(lists:reverse(Acc, [Before]))}
+                    end;
+                nomatch ->
+                    read_line(Fd, [Data | Acc])
+            end;
+        eof when Acc =:= [] ->
+            eof;
+        eof ->
+            {ok, iolist_to_binary(lists:reverse(Acc))}
+    end.
+
+write(#file_descriptor{module = ?MODULE, data = Port}, Bytes) ->
     case call_port(Port, [?RAM_FILE_WRITE | Bytes]) of
 	{ok, _Sz} ->
 	    ok;
@@ -394,7 +434,7 @@ ll_close(Port) ->
 %%% Utility functions.
 
 %% Converts a list of mode atoms into an mode word for the driver.
-%% Returns {Mode, Opts} wher Opts is a list of options for 
+%% Returns {Mode, Opts} where Opts is a list of options for 
 %% erlang:open_port/2, or {error, einval} upon failure.
 
 open_mode(List) when is_list(List) ->

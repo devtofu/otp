@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2006-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2006-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,6 +21,15 @@
 %%
 
 -module(ct_testspec).
+-moduledoc """
+Parsing of test specifications for `Common Test`.
+
+This module exports help functions for parsing of test specifications.
+""".
+-moduledoc(#{since => "OTP 19.3"}).
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}},
+          {nowarn_possibly_unsafe_function, {file, consult, 1}}]).
 
 -export([prepare_tests/1, prepare_tests/2, 
 	 collect_tests_from_list/2, collect_tests_from_list/3,
@@ -47,6 +58,7 @@
 %%% Version 1 - extract and return all tests and skips for Node 
 %%%             (incl all_nodes)
 %%%-------------------------------------------------------------------
+-doc false.
 prepare_tests(TestSpec,Node) when is_record(TestSpec,testspec),
 				  is_atom(Node) ->
     case lists:keysearch(Node,1,prepare_tests(TestSpec)) of
@@ -63,6 +75,7 @@ prepare_tests(TestSpec,Node) when is_record(TestSpec,testspec),
 %%% and the tuples in the Skip list will have the form 
 %%% {Dir,Suites,Comment} or {Dir,Suite,Cases,Comment}. 
 %%%-------------------------------------------------------------------
+-doc false.
 prepare_tests(TestSpec) when is_record(TestSpec,testspec) ->
     Tests = TestSpec#testspec.tests,
     %% Sort Tests into "flat" Run and Skip lists (not sorted per node).
@@ -259,9 +272,11 @@ get_skipped_cases1(_,_,_,[]) ->
 
 %%% collect_tests_from_file reads a testspec file and returns a record
 %%% containing the data found.
+-doc false.
 collect_tests_from_file(Specs,Relaxed) ->
     collect_tests_from_file(Specs,[node()],Relaxed).
 
+-doc false.
 collect_tests_from_file(Specs,Nodes,Relaxed) when is_list(Nodes) ->
     NodeRefs = lists:map(fun(N) -> {undefined,N} end, Nodes),
     %% [Spec1,Spec2,...] means create one testpec record per Spec file
@@ -409,9 +424,11 @@ create_spec(Terms,TestSpec,JoinedByPrev,Relaxed) ->
     TS#testspec{tests=lists:flatten(Tests),
 		logdir=LogDirs1}.
 
+-doc false.
 collect_tests_from_list(Terms,Relaxed) ->
     collect_tests_from_list(Terms,[node()],Relaxed).
 
+-doc false.
 collect_tests_from_list(Terms,Nodes,Relaxed) when is_list(Nodes) ->
     {ok,Cwd} = file:get_cwd(),
     NodeRefs = lists:map(fun(N) -> {undefined,N} end, Nodes),
@@ -460,10 +477,10 @@ replace_names(Terms) ->
 				      throw({illegal_name_in_testspec,Name});
 				 true ->
 				      [First|_] = atom_to_list(Name),
-				      if ((First == $?) or (First == $$)
-					  or (First == $_)
-					  or ((First >= $A)
-					      and (First =< $Z))) ->
+				      if First == $?;
+					 First == $$;
+					 First == $_;
+					 First >= $A andalso First =< $Z ->
 					      [Def];
 					 true ->
 					      throw({illegal_name_in_testspec,
@@ -805,6 +822,20 @@ list_nodes(#testspec{nodes=NodeRefs}) ->
 %%% and tests to run/skip.
 %%% [Spec1,Spec2,...] means create separate tests per spec
 %%% [[Spec1,Spec2,...]] means merge all specs into one
+-doc """
+Parse the given test specification files and return the tests to run and skip.
+
+[](){: #add_nodes-1 }
+
+If `SpecsIn=[Spec1,Spec2,...]`, separate tests will be created per
+specification. If `SpecsIn=[[Spec1,Spec2,...]]`, all specifications will be
+merge into one test.
+
+For each test, a `{Specs,Tests}` element is returned, where `Specs` is a list of
+all included test specifications, and `Tests` specifies actual tests to run/skip
+per node.
+""".
+-doc(#{since => <<"OTP 19.3">>}).
 -spec get_tests(Specs) -> {ok,[{Specs,Tests}]} | {error,Reason} when
       Specs :: [string()] | [[string()]],
       Tests :: {Node,Run,Skip},
@@ -981,6 +1012,9 @@ add_tests([{event_handler,Node,HOrHs,Args}|Ts],Spec) ->
 add_tests([{enable_builtin_hooks,Bool}|Ts],Spec) ->
     add_tests(Ts, Spec#testspec{enable_builtin_hooks = Bool});
 
+add_tests([{ct_hooks_order,Order}|Ts],Spec) ->
+    add_tests(Ts, Spec#testspec{ct_hooks_order = Order});
+
 add_tests([{release_shell,Bool}|Ts],Spec) ->
     add_tests(Ts, Spec#testspec{release_shell = Bool});
 
@@ -1079,7 +1113,7 @@ add_tests([],Spec) ->				% done
 %% have added something of his/her own, which we'll let pass if relaxed
 %% mode is enabled.
 check_term(Term) when is_tuple(Term) ->
-    Size = size(Term),
+    Size = tuple_size(Term),
     [Name|_] = tuple_to_list(Term),
     Valid = valid_terms(),
     case lists:member({Name,Size},Valid) of
@@ -1093,7 +1127,7 @@ check_term(Term) when is_tuple(Term) ->
 		    case get(relaxed) of
 			true ->
 			    %% warn if name resembles a CT term
-			    case resembles_ct_term(Name,size(Term)) of
+                            case resembles_ct_term(Name,tuple_size(Term)) of
 				true ->
 				    io:format("~nSuspicious term, "
 					      "please check:~n"
@@ -1207,6 +1241,7 @@ per_node([],_,_,_) ->
     [].
 
 %% Change the testspec record "back" to a list of tuples
+-doc false.
 testspec_rec2list(Rec) ->
     {Terms,_} = lists:mapfoldl(fun(unknown, Pos) ->
 				       {element(Pos, Rec),Pos+1};
@@ -1217,6 +1252,7 @@ testspec_rec2list(Rec) ->
 
 %% Extract one or more values from a testspec record and
 %% return the result as a list of tuples
+-doc false.
 testspec_rec2list(Field, Rec) when is_atom(Field) ->
     [Term] = testspec_rec2list([Field], Rec),
     Term;
@@ -1266,14 +1302,14 @@ insert_groups(Node,Dir,Suite,Group,Cases,Tests,MergeTests)
   when is_atom(Group); is_tuple(Group) ->
     insert_groups(Node,Dir,Suite,[Group],Cases,Tests,MergeTests);
 insert_groups(Node,Dir,Suite,Groups,Cases,Tests,false) when
-      ((Cases == all) or is_list(Cases)) and is_list(Groups) ->
+      Cases == all orelse is_list(Cases), is_list(Groups) ->
     Groups1 = [if is_list(Gr) ->		% preserve group path
 		       {[Gr],Cases};
 		  true ->
 		       {Gr,Cases} end || Gr <- Groups],
     append({{Node,Dir},[{Suite,Groups1}]},Tests);
 insert_groups(Node,Dir,Suite,Groups,Cases,Tests,true) when
-      ((Cases == all) or is_list(Cases)) and is_list(Groups) ->
+      Cases == all orelse is_list(Cases), is_list(Groups) ->
     Groups1 = [if is_list(Gr) ->		% preserve group path
 		       {[Gr],Cases};
 		  true ->
@@ -1385,11 +1421,11 @@ skip_groups(Node,Dir,Suite,Groups,Case,Cmt,Tests,MergeTests)
   when is_atom(Case),Case =/= all ->
     skip_groups(Node,Dir,Suite,Groups,[Case],Cmt,Tests,MergeTests);
 skip_groups(Node,Dir,Suite,Groups,Cases,Cmt,Tests,false) when
-      ((Cases == all) or is_list(Cases)) and is_list(Groups) ->
+      Cases == all orelse is_list(Cases), is_list(Groups) ->
     Suites1 = skip_groups1(Suite,[{Gr,Cases} || Gr <- Groups],Cmt,[]),
     append({{Node,Dir},Suites1},Tests);
 skip_groups(Node,Dir,Suite,Groups,Cases,Cmt,Tests,true) when
-      ((Cases == all) or is_list(Cases)) and is_list(Groups) ->
+      Cases == all orelse is_list(Cases), is_list(Groups) ->
     {Tests1,Done} =
 	lists:foldr(fun({{N,D},Suites0},{Merged,_}) when N == Node,
 							   D == Dir ->
@@ -1546,7 +1582,7 @@ is_node([master|_],_Nodes) ->
 is_node(What={N,H},Nodes) when is_atom(N), is_atom(H) ->
     is_node([What],Nodes);
 is_node([What|_],Nodes) ->
-    case lists:keymember(What,1,Nodes) or
+    case lists:keymember(What,1,Nodes) orelse
 	 lists:keymember(What,2,Nodes) of
 	true ->					
 	    true;
@@ -1592,6 +1628,7 @@ valid_terms() ->
      {event_handler,4},
      {ct_hooks,2},
      {ct_hooks,3},
+     {ct_hooks_order,2},
      {enable_builtin_hooks,2},
      {release_shell,2},
      {multiply_timetraps,2},

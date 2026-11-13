@@ -6,6 +6,7 @@ include $(ERL_TOP)/make/$(TARGET)/otp.mk
 # ----------------------------------------------------
 
 MODULES= \
+	crypto_collect_labmachine_info_SUITE \
 	crypto_bench_SUITE \
 	crypto_SUITE \
 	crypto_property_test_SUITE \
@@ -17,6 +18,7 @@ TARGET_FILES= $(MODULES:%=$(EBIN)/%.$(EMULATOR))
 
 SPEC_FILES = \
 	crypto.spec \
+	crypto_gh.spec \
 	crypto_bench.spec
 
 COVER_FILE = crypto.cover
@@ -35,7 +37,7 @@ EBIN = .
 # ----------------------------------------------------
 # Targets
 # ----------------------------------------------------
-tests debug opt: $(TARGET_FILES)
+tests $(TYPES): $(TARGET_FILES)
 
 clean:
 	rm -f $(TARGET_FILES)

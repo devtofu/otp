@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 2008-2018. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2008-2026. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,8 +16,8 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
- * %CopyrightEnd% 
+ *
+ * %CopyrightEnd%
  */
 
 #include <stdio.h>
@@ -41,6 +43,7 @@ int is_packaged_app() {
    /* } */
 #ifdef MAC_OS_X_VERSION_10_6
    NSString *  appName = [[NSRunningApplication currentApplication] localizedName];
+   if(!appName) return 0;
    return (strncmp("beam", [appName UTF8String], 4) != 0);
 #else
    return 0;
@@ -93,10 +96,45 @@ void * wxe_ps_init2() {
 
 /* _MACOSX */
 #else
+#ifdef _WIN32
+#include <windows.h>
+
+void * wxe_ps_init()
+{
+    int res;
+    size_t dir_len = 1023;
+    char dir_utf8[1024];
+    wchar_t *npath;
+    size_t path_len;
+
+    res = enif_getenv("WX_PRIV_DIR", dir_utf8, &dir_len);
+    if(res == 0) {
+        size_t utf8_len = dir_len;
+        dir_len = MultiByteToWideChar(CP_UTF8, 0, dir_utf8, utf8_len+1, NULL, 0);
+        path_len = GetEnvironmentVariableW(L"PATH",NULL,0);
+        if( dir_len > 0 && dir_len < 1024 && path_len > 0 ) {
+            npath = (wchar_t *) malloc((path_len+dir_len+2)*sizeof(wchar_t));
+            if(!npath) return NULL;
+            if(GetEnvironmentVariableW(L"PATH",npath,path_len) != (path_len-1)) {
+                free(npath);
+                return NULL;
+            }
+            npath[path_len-1] = L';';
+            if(MultiByteToWideChar(CP_UTF8, 0, dir_utf8, utf8_len+1, npath+path_len, dir_len+1) > 0) {
+                SetEnvironmentVariableW(L"PATH",npath);
+            }
+            free(npath);
+        }
+    }
+    return (void *) 0;
+}
+#else
 void * wxe_ps_init()
 {
    return (void *) 0;
 }
+#endif
+
 void * wxe_ps_init2()
 {
    return (void *) 0;

@@ -1,7 +1,8 @@
-%%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2007-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2019-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -16,7 +17,6 @@
 %% limitations under the License.
 %%
 %% %CopyrightEnd%
-%%
 
 -module(ssl_session_ticket_SUITE).
 
@@ -35,8 +35,18 @@
 %% Testcases
 -export([basic/0,
          basic/1,
-         basic_anti_replay/0,
-         basic_anti_replay/1,
+         ticketage_smaller_than_windowsize_anti_replay/0,
+         ticketage_smaller_than_windowsize_anti_replay/1,
+         ticketage_bigger_than_windowsize_anti_replay/0,
+         ticketage_bigger_than_windowsize_anti_replay/1,
+         ticketage_out_of_lifetime_anti_replay/0,
+         ticketage_out_of_lifetime_anti_replay/1,
+         ticket_reuse_anti_replay/0,
+         ticket_reuse_anti_replay/1,
+         ticket_reuse_anti_replay_server_restart/0,
+         ticket_reuse_anti_replay_server_restart/1,
+         ticket_reuse_anti_replay_server_restart_reused_seed/0,
+         ticket_reuse_anti_replay_server_restart_reused_seed/1,
          basic_stateful_stateless/0,
          basic_stateful_stateless/1,
          basic_stateless_stateful/0,
@@ -70,10 +80,15 @@
          early_data_basic/0,
          early_data_basic/1,
          early_data_basic_auth/0,
-         early_data_basic_auth/1]).
+         early_data_basic_auth/1,
+         stateless_multiple_servers/0,
+         stateless_multiple_servers/1,
+         ticket_server_restart/0,
+         ticket_server_restart/1
+        ]).
 
--include("tls_handshake.hrl").
-
+-include("ssl_test_lib.hrl").
+-include_lib("ssl/src/tls_handshake.hrl").
 -include_lib("common_test/include/ct.hrl").
 
 -define(SLEEP, 500).
@@ -90,9 +105,13 @@ all() ->
 groups() ->
     [{'tlsv1.3', [], [{group, stateful},
                       {group, stateless},
+                      {group, stateful_with_cert},
+                      {group, stateless_with_cert},
                       {group, mixed}]},
      {stateful, [], session_tests()},
-     {stateless, [], session_tests() ++ [basic_anti_replay]},
+     {stateless, [], session_tests() ++ anti_replay_tests()},
+     {stateful_with_cert, [], session_tests()},
+     {stateless_with_cert, [], session_tests() ++ anti_replay_tests()},
      {mixed, [], mixed_tests()}].
 
 session_tests() ->
@@ -107,7 +126,19 @@ session_tests() ->
      early_data_disabled_small_limit,
      early_data_enabled_small_limit,
      early_data_basic,
-     early_data_basic_auth].
+     early_data_basic_auth,
+     ticket_server_restart
+    ].
+
+anti_replay_tests() ->
+    [
+     ticketage_smaller_than_windowsize_anti_replay,
+     ticketage_bigger_than_windowsize_anti_replay,
+     ticketage_out_of_lifetime_anti_replay, ticket_reuse_anti_replay,
+     ticket_reuse_anti_replay_server_restart,
+     ticket_reuse_anti_replay_server_restart_reused_seed,
+     stateless_multiple_servers
+    ].
 
 mixed_tests() ->
     [
@@ -120,8 +151,8 @@ mixed_tests() ->
     ].
 
 init_per_suite(Config0) ->
-    catch crypto:stop(),
-    try crypto:start() of
+    catch application:stop(crypto),
+    try application:start(crypto) of
 	ok ->
 	    ssl_test_lib:clean_start(),
             ssl_test_lib:make_rsa_cert(Config0)
@@ -133,10 +164,12 @@ end_per_suite(_Config) ->
     ssl:stop(),
     application:stop(crypto).
 
-init_per_group(stateful, Config) ->
-    [{server_ticket_mode, stateful} | proplists:delete(server_ticket_mode, Config)];
-init_per_group(stateless, Config) ->
-    [{server_ticket_mode, stateless} | proplists:delete(server_ticket_mode, Config)];
+init_per_group(GroupName, Config)
+    when GroupName == stateful
+         orelse GroupName == stateless
+         orelse GroupName == stateful_with_cert
+         orelse GroupName == stateless_with_cert ->
+    [{server_ticket_mode, GroupName} | proplists:delete(server_ticket_mode, Config)];
 init_per_group(GroupName, Config) ->
     ssl_test_lib:init_per_group(GroupName, Config).
 
@@ -152,6 +185,7 @@ init_per_testcase(_, Config)  ->
 
 end_per_testcase(_TestCase, Config) ->
     application:unset_env(ssl, server_session_ticket_max_early_data),
+    application:unset_env(ssl, server_session_ticket_lifetime),
     Config.
 
 %%--------------------------------------------------------------------
@@ -167,9 +201,9 @@ basic(Config) when is_list(Config) ->
     ServerTicketMode = proplists:get_value(server_ticket_mode, Config),
 
     %% Configure session tickets
-    ClientOpts = [{session_tickets, auto}, {log_level, debug},
+    ClientOpts = [{session_tickets, auto},
                   {versions, ['tlsv1.2','tlsv1.3']}|ClientOpts0],
-    ServerOpts = [{session_tickets, ServerTicketMode}, {log_level, debug},
+    ServerOpts = [{session_tickets, ServerTicketMode},
                   {versions, ['tlsv1.2','tlsv1.3']}|ServerOpts0],
 
     Server0 =
@@ -190,6 +224,15 @@ basic(Config) when is_list(Config) ->
                                          {from, self()}, {options, ClientOpts}]),
     ssl_test_lib:check_result(Server0, ok, Client0, ok),
 
+    Server0 ! get_socket,
+    SSocket0 =
+        receive
+            {Server0, {socket, Socket0}} ->
+                Socket0
+        end,
+
+    {ok, ClientCert} = ssl:peercert(SSocket0),
+
     Server0 ! {listen, {mfa, {ssl_test_lib,
                               verify_active_session_resumption,
                               [true]}}},
@@ -208,77 +251,252 @@ basic(Config) when is_list(Config) ->
                                          {from, self()}, {options, ClientOpts}]),
     ssl_test_lib:check_result(Server0, ok, Client1, ok),
 
+    Server0 ! get_socket,
+    SSocket1 =
+        receive
+            {Server0, {socket, Socket1}} ->
+                Socket1
+        end,
+
+    ExpectedPeercert = case ServerTicketMode of
+                           stateful_with_cert -> {ok, ClientCert};
+                           stateless_with_cert -> {ok, ClientCert};
+                           _ -> {error, no_peercert}
+                       end,
+
+    ExpectedPeercert = ssl:peercert(SSocket1),
+
     process_flag(trap_exit, false),
     ssl_test_lib:close(Server0),
     ssl_test_lib:close(Client1).
 
-basic_anti_replay() ->
-    [{doc,"Test session resumption with stateless session tickets and anti_replay (erlang client - erlang server)"}].
-basic_anti_replay(Config) when is_list(Config) ->
+ticketage_smaller_than_windowsize_anti_replay() ->
+    [{doc, "Session resumption with stateless tickets and anti_replay enabled."
+      "ClientHello with DeltaAge smaller than Bloom filter window size - fresh ClientHello."
+      "DeltaAge treated as particular ClientHello adjective, calculated "
+      "as a difference between RealAge and ReportedAge of a ticket used in ClientHello."
+      "Ticket age smaller than windowsize."
+      "(Erlang client - Erlang server)"}].
+ticketage_smaller_than_windowsize_anti_replay(Config) when is_list(Config) ->
+    {Server0, Client0, Port0, ClientNode, Hostname, ClientOpts} =
+        anti_replay_helper_init(Config, auto, 10),
+    ssl_test_lib:check_result(Server0, ok, Client0, ok),
+    Client1 = anti_replay_helper_connect(Server0, Client0, Port0, ClientNode,
+                                         Hostname, ClientOpts, 0, true),
+    process_flag(trap_exit, false),
+    [ssl_test_lib:close(A) || A <- [Server0, Client0, Client1]].
+
+ticketage_bigger_than_windowsize_anti_replay() ->
+    [{doc, "Session resumption with stateless tickets and anti_replay enabled."
+      "Fresh ClientHellos."
+      "Ticket age bigger than windowsize. 0-RTT is expected to succeed."
+      "(Erlang client - Erlang server)"}].
+ticketage_bigger_than_windowsize_anti_replay(Config) when is_list(Config) ->
+    WindowSize = 3,
+    {Server0, Client0, Port0, ClientNode, Hostname, ClientOpts} =
+        anti_replay_helper_init(Config, auto, WindowSize),
+    ssl_test_lib:check_result(Server0, ok, Client0, ok),
+    Client1 = anti_replay_helper_connect(Server0, Client0, Port0, ClientNode,
+                                         Hostname, ClientOpts,
+                                         {seconds, WindowSize + 2}, true),
+    Client2 = anti_replay_helper_connect(Server0, Client0, Port0, ClientNode,
+                                         Hostname, ClientOpts,
+                                         {seconds, 2*WindowSize + 2}, true),
+    process_flag(trap_exit, false),
+    [ssl_test_lib:close(A) || A <- [Server0, Client0, Client1, Client2]].
+
+ticketage_out_of_lifetime_anti_replay() ->
+    [{doc, "Session resumption with stateless tickets and anti_replay enabled."
+      "Fresh ClientHello."
+      "Ticket age beyond its lifetime. 0-RTT is expected to fail."
+      "(Erlang client - Erlang server)"}].
+ticketage_out_of_lifetime_anti_replay(Config) when is_list(Config) ->
+    Lifetime = 4,
+    WindowSize = 2,
+    {Server0, Client0, Port0, ClientNode, Hostname, ClientOpts} =
+        anti_replay_helper_init(Config, auto, WindowSize, Lifetime),
+    ssl_test_lib:check_result(Server0, ok, Client0, ok),
+    Client1 = anti_replay_helper_connect(Server0, Client0, Port0, ClientNode,
+                                         Hostname, ClientOpts,
+                                         {seconds, Lifetime + 2}, false),
+    process_flag(trap_exit, false),
+    [ssl_test_lib:close(A) || A <- [Server0, Client0, Client1]].
+
+ticket_reuse_anti_replay() ->
+    [{doc, "Verify that 2 connection attempts with same stateless tickets "
+      "are successful."
+      "Fresh ClientHellos."
+      "Ticket age smaller than windowsize."
+      "Anti_replay allows it because both "
+      "ClientHellos are unique, look fresh(small enough DeltaAge) "
+      "and do not look like a replay attempt."
+      "(Erlang client - Erlang server)"}].
+ticket_reuse_anti_replay(Config) when is_list(Config) ->
+    {Server0, Client0, Port0, ClientNode, Hostname, ClientOpts0} =
+        anti_replay_helper_init(Config, manual, 10),
+    [Ticket] = ssl_test_lib:check_tickets(Client0),
+    ssl_test_lib:check_result(Server0, ok),
+    ClientOpts1 = [{use_ticket, [Ticket]} | ClientOpts0],
+    Client1 = anti_replay_helper_connect(Server0, Client0, Port0, ClientNode,
+                                         Hostname, ClientOpts1, 0, true),
+    Client2 = anti_replay_helper_connect(Server0, Client1, Port0, ClientNode,
+                                         Hostname, ClientOpts1, 0, true),
+    process_flag(trap_exit, false),
+    [ssl_test_lib:close(A) || A <- [Server0, Client0, Client2]].
+
+ticket_reuse_anti_replay_server_restart() ->
+    [{doc, "Verify 2 connection attempts with same stateless tickets "
+      "and server restart between. Second attempt is expected to fail as long as "
+      "Bloom filter window overlaps with startup time."
+      "Fresh ClientHellos."
+      "(Erlang client - Erlang server)"
+
+      "RFC8446 8.2: When implementations are freshly started, they SHOULD reject "
+      "0-RTT as long as any portion of their recording window overlaps the startup "
+      "time. Otherwise, they run the risk of accepting replays which were "
+      "originally sent during that period."
+     }].
+ticket_reuse_anti_replay_server_restart(Config) when is_list(Config) ->
+    WindowSize = 10,
+    {Server0, Client0, Port0, ClientNode, Hostname, ClientOpts0} =
+        anti_replay_helper_init(Config, manual, WindowSize),
+    [Ticket] = ssl_test_lib:check_tickets(Client0),
+    ssl_test_lib:check_result(Server0, ok),
+    ClientOpts1 = [{use_ticket, [Ticket]} | ClientOpts0],
+    Client1 = anti_replay_helper_connect(Server0, Client0, Port0, ClientNode,
+                                         Hostname, ClientOpts1, 0, true),
+    {Server1, Port1} = anti_replay_helper_start_server(Config, WindowSize),
+    Client2 = anti_replay_helper_connect(Server1, Client1, Port1, ClientNode,
+                                         Hostname, ClientOpts1, 0, false, false),
+    process_flag(trap_exit, false),
+    [ssl_test_lib:close(A) || A <- [Server0, Client2, Server1]].
+
+ticket_reuse_anti_replay_server_restart_reused_seed() ->
+    [{doc, "Verify 2 connection attempts with same stateless tickets "
+      "and server restart between, with the server using the same session "
+      "ticket encryption seed between restarts. Second attempt is expected to "
+      "fail as long as the Bloom filter window overlaps with startup time."
+     }].
+ticket_reuse_anti_replay_server_restart_reused_seed(Config) when is_list(Config) ->
+    WindowSize = 10,
+    Seed = crypto:strong_rand_bytes(32),
+    Config1 = [{server_ticket_seed, Seed} | Config],
+    {Server1 , Port1} = anti_replay_helper_start_server(Config1, WindowSize),
+    {ClientNode, _ServerNode, Hostname} = ssl_test_lib:run_where(Config),
     ClientOpts0 = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
-    ServerOpts0 = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
-    {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
-    ServerTicketMode = proplists:get_value(server_ticket_mode, Config),
+    ClientOpts1 = [{session_tickets, manual},
+                  {versions, ['tlsv1.2','tlsv1.3']} | ClientOpts0],
+    Client1 = ssl_test_lib:start_client([{node, ClientNode},
+                                         {port, Port1}, {host, Hostname},
+                                         {mfa, {ssl_test_lib,  %% full handshake
+                                                verify_active_session_resumption,
+                                                [false, wait_reply, {tickets, 1}]}},
+                                         {from, self()}, {options, ClientOpts1}]),
+    [Ticket] = ssl_test_lib:check_tickets(Client1),
+    ssl_test_lib:check_result(Server1, ok),
+    ClientOpts2 = [{use_ticket, [Ticket]} | ClientOpts1],
+    {Server2, Port2} = anti_replay_helper_start_server(Config1, WindowSize),
+    Client2 = anti_replay_helper_connect(Server2, Client1, Port2, ClientNode,
+                                         Hostname, ClientOpts2, 0, false, false),
+    process_flag(trap_exit, false),
+    [ssl_test_lib:close(A) || A <- [Server1, Client2, Server2]].
 
+anti_replay_helper_init(Config, Mode, WindowSize) ->
+    DefaultLifetime = ssl_config:get_ticket_lifetime(),
+    anti_replay_helper_init(Config, Mode, WindowSize, DefaultLifetime).
+
+anti_replay_helper_init(Config, Mode, WindowSize, Lifetime) ->
+    application:set_env(ssl, server_session_ticket_lifetime, Lifetime),
+    ClientOpts0 = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    {ClientNode, _ServerNode, Hostname} = ssl_test_lib:run_where(Config),
     %% Configure session tickets
-    ClientOpts = [{session_tickets, auto}, {log_level, debug},
-                  {versions, ['tlsv1.2','tlsv1.3']}|ClientOpts0],
-    ServerOpts = [{session_tickets, ServerTicketMode}, {log_level, debug},
-                  {anti_replay, '10k'},
-                  {versions, ['tlsv1.2','tlsv1.3']}|ServerOpts0],
+    ClientOpts = [{session_tickets, Mode},
+                  {versions, ['tlsv1.2','tlsv1.3']} | ClientOpts0],
 
-    Server0 =
+    {Server0 , Port0} = anti_replay_helper_start_server(Config, WindowSize),
+    MFA = case Mode of
+              auto ->
+                  {ssl_test_lib,
+                   verify_active_session_resumption,
+                   [false]};
+              manual ->
+                  {ssl_test_lib,
+                   verify_active_session_resumption,
+                   [false, wait_reply, {tickets, 1}]}
+          end,
+
+    %% Store ticket from first connection
+    Client0 = ssl_test_lib:start_client([{node, ClientNode},
+                                         {port, Port0}, {host, Hostname},
+                                         {mfa, MFA},
+                                         {from, self()}, {options, ClientOpts}]),
+    {Server0, Client0, Port0, ClientNode, Hostname, ClientOpts}.
+
+anti_replay_helper_start_server(Config, WindowSize) ->
+    {_ClientNode, ServerNode, _Hostname} = ssl_test_lib:run_where(Config),
+    ServerOpts0 = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
+    ServerTicketMode = proplists:get_value(server_ticket_mode, Config),
+    ServerTicketSeed =
+        case proplists:get_value(server_ticket_seed, Config) of
+            undefined ->
+                [];
+            Seed ->
+                [{stateless_tickets_seed, Seed}]
+        end,
+    ServerOpts = [{session_tickets, ServerTicketMode},
+                  {anti_replay, {WindowSize, 5, 72985}},
+                  {versions, ['tlsv1.2','tlsv1.3']}|ServerOpts0
+                 ] ++ ServerTicketSeed,
+
+    Server =
 	ssl_test_lib:start_server([{node, ServerNode}, {port, 0},
 				   {from, self()},
 				   {mfa, {ssl_test_lib,
                                           verify_active_session_resumption,
                                           [false]}},
 				   {options, ServerOpts}]),
-    Port0 = ssl_test_lib:inet_port(Server0),
+    Port0 = ssl_test_lib:inet_port(Server),
+    {Server, Port0}.
 
-    %% Store ticket from first connection
-    Client0 = ssl_test_lib:start_client([{node, ClientNode},
-                                         {port, Port0}, {host, Hostname},
-                                         {mfa, {ssl_test_lib,  %% Full handshake
-                                                verify_active_session_resumption,
-                                                [false]}},
-                                         {from, self()}, {options, ClientOpts}]),
-    ssl_test_lib:check_result(Server0, ok, Client0, ok),
+anti_replay_helper_connect(Server, Client0, Port0, ClientNode, Hostname,
+                           ClientOpts, Delay, ExpectedResumption) ->
+    anti_replay_helper_connect(Server, Client0, Port0, ClientNode, Hostname,
+                               ClientOpts, Delay, ExpectedResumption, true).
 
-    Server0 ! {listen, {mfa, {ssl_test_lib,
-                              verify_active_session_resumption,
-                              [true]}}},
+anti_replay_helper_connect(Server, Client0, Port0, ClientNode, Hostname,
+                           ClientOpts, Delay, ExpectedResumption, SendListen) ->
+    case SendListen of
+        true ->
+            Server ! {listen, {mfa, {ssl_test_lib,
+                                     verify_active_session_resumption,
+                                     [ExpectedResumption]}}};
+        _ ->
+            ok
+    end,
 
     %% Wait for session ticket
     ct:sleep(100),
-
     ssl_test_lib:close(Client0),
-
+    ct:sleep(Delay),
     %% Use ticket
     Client1 = ssl_test_lib:start_client([{node, ClientNode},
                                          {port, Port0}, {host, Hostname},
                                          {mfa, {ssl_test_lib,  %% Short handshake
                                                 verify_active_session_resumption,
-                                                [true]}},
+                                                [ExpectedResumption]}},
                                          {from, self()}, {options, ClientOpts}]),
-    ssl_test_lib:check_result(Server0, ok, Client1, ok),
-
-    process_flag(trap_exit, false),
-    ssl_test_lib:close(Server0),
-    ssl_test_lib:close(Client1).
+    ssl_test_lib:check_result(Server, ok, Client1, ok),
+    Client1.
 
 basic_stateful_stateless() ->
     [{doc,"Test session resumption with session tickets (erlang client - erlang server)"}].
 basic_stateful_stateless(Config) when is_list(Config) ->
     do_test_mixed(Config,
                   [{session_tickets, auto},
-                   {log_level, debug},
                    {versions, ['tlsv1.2','tlsv1.3']}],
                   [{session_tickets, stateful},
-                   {log_level, debug},
                    {versions, ['tlsv1.2','tlsv1.3']}],
                   [{session_tickets, stateless},
-                   {log_level, debug},
                    {versions, ['tlsv1.2','tlsv1.3']}]).
 
 basic_stateless_stateful() ->
@@ -286,13 +504,10 @@ basic_stateless_stateful() ->
 basic_stateless_stateful(Config) when is_list(Config) ->
     do_test_mixed(Config,
                   [{session_tickets, auto},
-                   {log_level, debug},
                    {versions, ['tlsv1.2','tlsv1.3']}],
                   [{session_tickets, stateless},
-                   {log_level, debug},
                    {versions, ['tlsv1.2','tlsv1.3']}],
                   [{session_tickets, stateful},
-                   {log_level, debug},
                    {versions, ['tlsv1.2','tlsv1.3']}]).
 
 basic_stateful_stateless_anti_replay() ->
@@ -300,13 +515,10 @@ basic_stateful_stateless_anti_replay() ->
 basic_stateful_stateless_anti_replay(Config) when is_list(Config) ->
     do_test_mixed(Config,
                   [{session_tickets, auto},
-                   {log_level, debug},
                    {versions, ['tlsv1.2','tlsv1.3']}],
                   [{session_tickets, stateful},
-                   {log_level, debug},
                    {versions, ['tlsv1.2','tlsv1.3']}],
                   [{session_tickets, stateless},
-                   {log_level, debug},
                    {anti_replay, '10k'},
                    {versions, ['tlsv1.2','tlsv1.3']}]).
 
@@ -315,71 +527,65 @@ basic_stateless_stateful_anti_replay() ->
 basic_stateless_stateful_anti_replay(Config) when is_list(Config) ->
     do_test_mixed(Config,
                   [{session_tickets, auto},
-                   {log_level, debug},
                    {versions, ['tlsv1.2','tlsv1.3']}],
                   [{session_tickets, stateless},
-                   {log_level, debug},
                    {anti_replay, '10k'},
                    {versions, ['tlsv1.2','tlsv1.3']}],
                   [{session_tickets, stateful},
-                   {log_level, debug},
                    {versions, ['tlsv1.2','tlsv1.3']}]).
 
 basic_stateful_stateless_faulty_ticket() ->
     [{doc,"Test session resumption with session tickets (erlang client - erlang server)"}].
 basic_stateful_stateless_faulty_ticket(Config) when is_list(Config) ->
+    SNI = net_adm:localhost(),
     do_test_mixed(Config,
                   [{session_tickets, auto},
-                   {log_level, debug},
                    {versions, ['tlsv1.2','tlsv1.3']}],
                   [{session_tickets, manual},
-                   {use_ticket, [<<131,100,0,12,"faultyticket">>,
-                                 <<"faulty ticket">>]},
-                   {log_level, debug},
+                   {use_ticket, [#{sni => SNI,
+                                   ticket => <<"faultyticket">>}]},
                    {versions, ['tlsv1.2','tlsv1.3']}],
                   [{session_tickets, stateless},
-                   {log_level, debug},
                    {anti_replay, '10k'},
                    {versions, ['tlsv1.2','tlsv1.3']}],
                   [{session_tickets, stateful},
-                   {log_level, debug},
                    {versions, ['tlsv1.2','tlsv1.3']}]).
 
 basic_stateless_stateful_faulty_ticket() ->
     [{doc,"Test session resumption with session tickets (erlang client - erlang server)"}].
 basic_stateless_stateful_faulty_ticket(Config) when is_list(Config) ->
+    SNI = net_adm:localhost(),
     do_test_mixed(Config,
                   [{session_tickets, auto},
-                   {log_level, debug},
                    {versions, ['tlsv1.2','tlsv1.3']}],
                   [{session_tickets, manual},
-                   {use_ticket, [<<"faulty ticket">>,
-                                 <<131,100,0,12,"faultyticket">>]},
-                   {log_level, debug},
+                   {use_ticket, [#{sni => SNI,
+                                   ticket => <<"faultyticket">>}]},
                    {versions, ['tlsv1.2','tlsv1.3']}],
                   [{session_tickets, stateless},
-                   {log_level, debug},
                    {anti_replay, '10k'},
                    {versions, ['tlsv1.2','tlsv1.3']}],
                   [{session_tickets, stateful},
-                   {log_level, debug},
                    {versions, ['tlsv1.2','tlsv1.3']}]).
 
 hello_retry_request() ->
-    [{doc,"Test session resumption with session tickets and hello_retry_request (erlang client - erlang server)"}].
+    [{doc,"Test session resumption with session tickets and hello_retry_request "
+      "(erlang client - erlang server)"}].
 hello_retry_request(Config) when is_list(Config) ->
     ClientOpts0 = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
     ServerOpts0 = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
     ServerTicketMode = proplists:get_value(server_ticket_mode, Config),
-    
+
     %% Configure session tickets
-    ClientOpts = [{session_tickets, auto}, {log_level, debug},
+    ClientOpts = [{session_tickets, auto},
                   {versions, ['tlsv1.2','tlsv1.3']},
-                  {supported_groups,[secp256r1, x25519]}|ClientOpts0],
-    ServerOpts = [{session_tickets, ServerTicketMode}, {log_level, debug},
+                  {supported_groups,[secp256r1, x25519]}|
+                  proplists:delete(versions, ClientOpts0)],
+    ServerOpts = [{session_tickets, ServerTicketMode},
                   {versions, ['tlsv1.2','tlsv1.3']},
-                  {supported_groups, [x448, x25519]}|ServerOpts0],
+                  {supported_groups, [x448, x25519]}|
+                  proplists:delete(versions, ServerOpts0)],
 
     Server0 =
 	ssl_test_lib:start_server([{node, ServerNode}, {port, 0},
@@ -430,9 +636,9 @@ multiple_tickets(Config) when is_list(Config) ->
     ServerTicketMode = proplists:get_value(server_ticket_mode, Config),
 
     %% Configure session tickets
-    ClientOpts = [{session_tickets, manual}, {log_level, debug},
+    ClientOpts = [{session_tickets, manual},
                   {versions, ['tlsv1.2','tlsv1.3']}|ClientOpts0],
-    ServerOpts = [{session_tickets, ServerTicketMode}, {log_level, debug},
+    ServerOpts = [{session_tickets, ServerTicketMode},
                   {versions, ['tlsv1.2','tlsv1.3']}|ServerOpts0],
 
     Server0 =
@@ -454,7 +660,7 @@ multiple_tickets(Config) when is_list(Config) ->
 
     Tickets0 = ssl_test_lib:check_tickets(Client0),
 
-    ct:pal("Received tickets: ~p~n", [Tickets0]),
+    ?CT_LOG("Received tickets: ~p~n", [Tickets0]),
 
     ssl_test_lib:check_result(Server0, ok),
 
@@ -488,9 +694,9 @@ multiple_tickets_2hash(Config) when is_list(Config) ->
     ServerTicketMode = proplists:get_value(server_ticket_mode, Config),
     
     %% Configure session tickets
-    ClientOpts = [{session_tickets, manual}, {log_level, debug},
+    ClientOpts = [{session_tickets, manual},
                   {versions, ['tlsv1.2','tlsv1.3']}|ClientOpts0],
-    ServerOpts = [{session_tickets, ServerTicketMode}, {log_level, debug},
+    ServerOpts = [{session_tickets, ServerTicketMode},
                   {versions, ['tlsv1.2','tlsv1.3']}|ServerOpts0],
 
     Server0 =
@@ -516,7 +722,7 @@ multiple_tickets_2hash(Config) when is_list(Config) ->
 
     Tickets0 = ssl_test_lib:check_tickets(Client0),
 
-    ct:pal("Received tickets: ~p~n", [Tickets0]),
+    ?CT_LOG("Received tickets: ~p~n", [Tickets0]),
 
     ssl_test_lib:check_result(Server0, ok),
 
@@ -540,7 +746,7 @@ multiple_tickets_2hash(Config) when is_list(Config) ->
 
     Tickets1 = ssl_test_lib:check_tickets(Client1),
 
-    ct:pal("Received tickets: ~p~n", [Tickets1]),
+    ?CT_LOG("Received tickets: ~p~n", [Tickets1]),
 
     ssl_test_lib:check_result(Server0, ok),
 
@@ -617,7 +823,7 @@ early_data_trial_decryption(Config) when is_list(Config) ->
     ServerTicketMode = proplists:get_value(server_ticket_mode, Config),
 
     %% Configure session tickets
-    ClientOpts1 = [{session_tickets, auto}, {log_level, debug},
+    ClientOpts1 = [{session_tickets, auto},
                   {versions, ['tlsv1.2','tlsv1.3']}|ClientOpts0],
     %% Send maximum sized early data to verify calculation of plain text size
     %% in the server.
@@ -625,7 +831,6 @@ early_data_trial_decryption(Config) when is_list(Config) ->
 
     %% Disabled early data triggers trial decryption upon receiving early data
     ServerOpts = [{session_tickets, ServerTicketMode}, {early_data, disabled},
-                  {log_level, debug},
                   {versions, ['tlsv1.2','tlsv1.3']}|ServerOpts0],
 
     Server0 =
@@ -677,16 +882,15 @@ early_data_client_too_much_data(Config) when is_list(Config) ->
     ServerTicketMode = proplists:get_value(server_ticket_mode, Config),
 
     %% Configure session tickets
-    ClientOpts1 = [{session_tickets, manual}, {log_level, debug},
-                  {versions, ['tlsv1.2','tlsv1.3']}|ClientOpts0],
+    ClientOpts1 = [{session_tickets, manual},
+                   {versions, ['tlsv1.2','tlsv1.3']}|ClientOpts0],
     %% Send more early data than max_early_data_size to verify calculation
     %% of plain text size in the server.
     MaxEarlyDataSize = 10000,
     ClientOpts2 = [{early_data, binary:copy(<<"F">>, 16384)}|ClientOpts1],
 
-    ServerOpts = [{session_tickets, ServerTicketMode}, {early_data, disabled},
-                  {log_level, debug},
-                  {versions, ['tlsv1.2','tlsv1.3']}|ServerOpts0],
+    ServerOpts = [{session_tickets, ServerTicketMode},
+                  {versions, ['tlsv1.2','tlsv1.3']},{early_data, enabled} |ServerOpts0],
 
     application:set_env(ssl, server_session_ticket_max_early_data, MaxEarlyDataSize),
     Server0 =
@@ -707,7 +911,7 @@ early_data_client_too_much_data(Config) when is_list(Config) ->
                                                 [false, no_reply, {tickets, 1}]}},
                                          {from, self()}, {options, ClientOpts1}]),
     Tickets0 = ssl_test_lib:check_tickets(Client0),
-    ssl_test_lib:verify_session_ticket_extension(Tickets0, MaxEarlyDataSize),
+    true = ssl_test_lib:verify_session_ticket_extension(Tickets0, MaxEarlyDataSize),
     %% ssl_test_lib:check_result(Server0, ok, Client0, ok),
 
     Server0 ! {listen, {mfa, {ssl_test_lib,
@@ -725,7 +929,8 @@ early_data_client_too_much_data(Config) when is_list(Config) ->
                                                {mfa, {ssl_test_lib,  %% Short handshake
                                                       verify_active_session_resumption,
                                                       [false, no_reply, no_tickets]}},
-                                               {from, self()}, {options, [{use_ticket, Tickets0}|ClientOpts2]}]),
+                                               {from, self()},
+                                               {options, [{use_ticket, Tickets0}|ClientOpts2]}]),
     ssl_test_lib:check_client_alert(Client1, illegal_parameter),
     process_flag(trap_exit, false),
     ssl_test_lib:close(Server0).
@@ -739,11 +944,10 @@ early_data_trial_decryption_failure(Config) when is_list(Config) ->
     ServerTicketMode = proplists:get_value(server_ticket_mode, Config),
 
     %% Configure session tickets
-    ClientOpts1 = [{session_tickets, manual}, {log_level, debug},
-                  {versions, ['tlsv1.2','tlsv1.3']}|ClientOpts0],
+    ClientOpts1 = [{session_tickets, manual},
+                   {versions, ['tlsv1.2','tlsv1.3']}|ClientOpts0],
     %% Send more early data than max_early_data_size to verify calculation
     %% of plain text size in the server.
-    MaxEarlyDataSize = 10000,
     ClientOpts2 = [{early_data, binary:copy(<<"F">>, 16385)}|ClientOpts1],
 
     %% Disabled early data triggers trial decryption upon receiving early data
@@ -756,16 +960,14 @@ early_data_trial_decryption_failure(Config) when is_list(Config) ->
     %%    in the ticket used for the 0-RTT handshake. If more data is sent the
     %%    client will trigger an illegal_parameter alert (too_much_early_data).
     ServerOpts = [{session_tickets, ServerTicketMode}, {early_data, disabled},
-                  {log_level, debug},
                   {versions, ['tlsv1.2','tlsv1.3']}|ServerOpts0],
 
-    application:set_env(ssl, server_session_ticket_max_early_data, MaxEarlyDataSize),
     Server0 =
 	ssl_test_lib:start_server([{node, ServerNode}, {port, 0},
 				   {from, self()},
 				   {mfa, {ssl_test_lib,
                                           verify_active_session_resumption,
-                                          [false]}},
+                                          [false, no_reply]}},
 				   {options, ServerOpts}]),
     Port0 = ssl_test_lib:inet_port(Server0),
 
@@ -777,10 +979,10 @@ early_data_trial_decryption_failure(Config) when is_list(Config) ->
                                                 [false, no_reply, {tickets, 1}]}},
                                          {from, self()}, {options, ClientOpts1}]),
     Tickets0 = ssl_test_lib:check_tickets(Client0),
+    true = ssl_test_lib:verify_session_ticket_extension(Tickets0, 0),
     %% Simulate a faulty client by updating the max_early_data_size extension in
     %% the received session ticket
     Tickets1 = ssl_test_lib:update_session_ticket_extension(Tickets0, 16385),
-    %% ssl_test_lib:check_result(Server0, ok, Client0, ok),
 
     Server0 ! {listen, {mfa, {ssl_test_lib,
                               verify_active_session_resumption,
@@ -791,20 +993,30 @@ early_data_trial_decryption_failure(Config) when is_list(Config) ->
 
     ssl_test_lib:close(Client0),
 
+    Me = self(),
+    Fun = fun(AlertInfo) ->
+                  Me ! {alert_info, AlertInfo}
+          end,
+
     %% Use ticket
-    Client1 = ssl_test_lib:start_client_error([{node, ClientNode},
+    _Client1 = ssl_test_lib:start_client_error([{node, ClientNode},
                                                {port, Port0}, {host, Hostname},
                                                {mfa, {ssl_test_lib,  %% Short handshake
                                                       verify_active_session_resumption,
                                                       [false, no_reply, no_tickets]}},
-                                               {from, self()}, {options, [{use_ticket, Tickets1}|ClientOpts2]}]),
+                                               {from, self()},
+                                                {options, [{use_ticket, Tickets1},
+                                                           {keep_secrets, {keylog_hs, Fun}}
+                                                          | ClientOpts2]}]),
     ssl_test_lib:check_server_alert(Server0, bad_record_mac),
+    receive_keylog_with_early_data_secret(),
     process_flag(trap_exit, false),
     application:unset_env(ssl, server_session_ticket_max_early_data),
     ssl_test_lib:close(Server0).
 
 early_data_decryption_failure() ->
-    [{doc,"Emulate faulty client that sends too much early data - server early_data enabled (erlang client - erlang server)"}].
+    [{doc,"Emulate faulty client that sends too much early data - server early_data enabled "
+      "(erlang client - erlang server)"}].
 early_data_decryption_failure(Config) when is_list(Config) ->
     ClientOpts0 = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
     ServerOpts0 = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
@@ -812,7 +1024,7 @@ early_data_decryption_failure(Config) when is_list(Config) ->
     ServerTicketMode = proplists:get_value(server_ticket_mode, Config),
 
     %% Configure session tickets
-    ClientOpts1 = [{session_tickets, manual}, {log_level, debug},
+    ClientOpts1 = [{session_tickets, manual},
                   {versions, ['tlsv1.2','tlsv1.3']}|ClientOpts0],
     %% Send more early data than max_early_data_size to verify calculation
     %% of plain text size in the server.
@@ -820,7 +1032,6 @@ early_data_decryption_failure(Config) when is_list(Config) ->
     ClientOpts2 = [{early_data, binary:copy(<<"F">>, 16385)}|ClientOpts1],
 
     ServerOpts = [{session_tickets, ServerTicketMode}, {early_data, enabled},
-                  {log_level, debug},
                   {versions, ['tlsv1.2','tlsv1.3']}|ServerOpts0],
 
     application:set_env(ssl, server_session_ticket_max_early_data, MaxEarlyDataSize),
@@ -855,14 +1066,22 @@ early_data_decryption_failure(Config) when is_list(Config) ->
 
     ssl_test_lib:close(Client0),
 
+    Me = self(),
+    Fun = fun(AlertInfo) ->
+                  Me ! {alert_info, AlertInfo}
+          end,
     %% Use ticket
-    Client1 = ssl_test_lib:start_client_error([{node, ClientNode},
+    _Client1 = ssl_test_lib:start_client_error([{node, ClientNode},
                                                {port, Port0}, {host, Hostname},
                                                {mfa, {ssl_test_lib,  %% Short handshake
                                                       verify_active_session_resumption,
                                                       [false, no_reply, no_tickets]}},
-                                               {from, self()}, {options, [{use_ticket, Tickets1}|ClientOpts2]}]),
+                                               {from, self()},
+                                                {options, [{use_ticket, Tickets1},
+                                                           {keep_secrets, {keylog_hs, Fun}}
+                                                          | ClientOpts2]}]),
     ssl_test_lib:check_server_alert(Server0, unexpected_message),
+    receive_keylog_with_early_data_secret(),
     process_flag(trap_exit, false),
     application:unset_env(ssl, server_session_ticket_max_early_data),
     ssl_test_lib:close(Server0).
@@ -876,7 +1095,7 @@ early_data_disabled_small_limit(Config) when is_list(Config) ->
     ServerTicketMode = proplists:get_value(server_ticket_mode, Config),
 
     %% Configure session tickets
-    ClientOpts1 = [{session_tickets, auto}, {log_level, debug},
+    ClientOpts1 = [{session_tickets, auto},
                   {versions, ['tlsv1.2','tlsv1.3']}|ClientOpts0],
     %% Send maximum sized early data to verify calculation of plain text size
     %% in the server.
@@ -885,7 +1104,6 @@ early_data_disabled_small_limit(Config) when is_list(Config) ->
 
     %% Disabled early data triggers trial decryption upon receiving early data
     ServerOpts = [{session_tickets, ServerTicketMode}, {early_data, disabled},
-                  {log_level, debug},
                   {versions, ['tlsv1.2','tlsv1.3']}|ServerOpts0],
     application:set_env(ssl, server_session_ticket_max_early_data, MaxEarlyDataSize),
     Server0 =
@@ -938,7 +1156,7 @@ early_data_enabled_small_limit(Config) when is_list(Config) ->
     ServerTicketMode = proplists:get_value(server_ticket_mode, Config),
 
     %% Configure session tickets
-    ClientOpts1 = [{session_tickets, auto}, {log_level, debug},
+    ClientOpts1 = [{session_tickets, auto},
                   {versions, ['tlsv1.2','tlsv1.3']}|ClientOpts0],
     %% Send maximum sized early data to verify calculation of plain text size
     %% in the server.
@@ -947,7 +1165,6 @@ early_data_enabled_small_limit(Config) when is_list(Config) ->
 
     %% Disabled early data triggers trial decryption upon receiving early data
     ServerOpts = [{session_tickets, ServerTicketMode}, {early_data, enabled},
-                  {log_level, debug},
                   {versions, ['tlsv1.2','tlsv1.3']}|ServerOpts0],
     application:set_env(ssl, server_session_ticket_max_early_data, MaxEarlyDataSize),
     Server0 =
@@ -992,7 +1209,8 @@ early_data_enabled_small_limit(Config) when is_list(Config) ->
     ssl_test_lib:close(Client1).
 
 early_data_basic() ->
-    [{doc,"Test early data when client is not authenticated (erlang client - erlang server)"}].
+    [{doc,"Test early data when client is not authenticated (erlang client - erlang server)"
+      "Also test that early data keylog happens"}].
 early_data_basic(Config) when is_list(Config) ->
     ClientOpts0 = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
     ServerOpts0 = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
@@ -1000,7 +1218,7 @@ early_data_basic(Config) when is_list(Config) ->
     ServerTicketMode = proplists:get_value(server_ticket_mode, Config),
 
     %% Configure session tickets
-    ClientOpts1 = [{session_tickets, auto}, {log_level, debug},
+    ClientOpts1 = [{session_tickets, auto},
                   {versions, ['tlsv1.2','tlsv1.3']}|ClientOpts0],
     %% Send maximum sized early data to verify calculation of plain text size
     %% in the server.
@@ -1009,8 +1227,13 @@ early_data_basic(Config) when is_list(Config) ->
 
     %% Disabled early data triggers trial decryption upon receiving early data
     ServerOpts = [{session_tickets, ServerTicketMode}, {early_data, enabled},
-                  {log_level, debug},
                   {versions, ['tlsv1.2','tlsv1.3']}|ServerOpts0],
+
+    %%% Test keylog
+    TestCase = self(),
+    Fun = fun(KeyLogInfo) ->
+                  TestCase ! {keylog, KeyLogInfo}
+          end,
 
     Server0 =
 	ssl_test_lib:start_server([{node, ServerNode}, {port, 0},
@@ -1018,7 +1241,7 @@ early_data_basic(Config) when is_list(Config) ->
 				   {mfa, {ssl_test_lib,
                                           verify_active_session_resumption,
                                           [false]}},
-				   {options, ServerOpts}]),
+				   {options, [{keep_secrets, {keylog, Fun}} | ServerOpts]}]),
     Port0 = ssl_test_lib:inet_port(Server0),
 
     %% Store ticket from first connection
@@ -1028,6 +1251,8 @@ early_data_basic(Config) when is_list(Config) ->
                                                 verify_active_session_resumption,
                                                 [false]}},
                                          {from, self()}, {options, ClientOpts1}]),
+    skip_keylogs(3), %% HS and two traffic secrets
+
     ssl_test_lib:check_result(Server0, ok, Client0, ok),
 
     Server0 ! {listen, {mfa, {ssl_test_lib,
@@ -1046,11 +1271,27 @@ early_data_basic(Config) when is_list(Config) ->
                                                 verify_active_session_resumption,
                                                 [true]}},
                                          {from, self()}, {options, ClientOpts2}]),
+    %% Check that we get the EARLY DATA keylog event
+    receive
+        {keylog, #{items := EarlyKeylog}} ->
+            ["CLIENT_EARLY_TRAFFIC_SECRET" ++ _| _] = EarlyKeylog
+    end,
+    skip_keylogs(3), %% HS and two traffic secrets so they do not end up
+                     %% in check_result
+
     ssl_test_lib:check_result(Server0, ok, Client1, ok),
 
     process_flag(trap_exit, false),
     ssl_test_lib:close(Server0),
     ssl_test_lib:close(Client1).
+
+skip_keylogs(0) ->
+    ok;
+skip_keylogs(N) ->
+    receive
+        {keylog, _} ->
+            skip_keylogs(N-1)
+    end.
 
 early_data_basic_auth() ->
     [{doc,"Test early data when client is authenticated (erlang client - erlang server)"}].
@@ -1061,7 +1302,7 @@ early_data_basic_auth(Config) when is_list(Config) ->
     ServerTicketMode = proplists:get_value(server_ticket_mode, Config),
 
     %% Configure session tickets
-    ClientOpts1 = [{session_tickets, auto}, {log_level, debug},
+    ClientOpts1 = [{session_tickets, auto},
                   {versions, ['tlsv1.2','tlsv1.3']}|ClientOpts0],
     %% Send maximum sized early data to verify calculation of plain text size
     %% in the server.
@@ -1070,7 +1311,6 @@ early_data_basic_auth(Config) when is_list(Config) ->
 
     %% Disabled early data triggers trial decryption upon receiving early data
     ServerOpts = [{session_tickets, ServerTicketMode}, {early_data, enabled},
-                  {log_level, debug},
                   {versions, ['tlsv1.2','tlsv1.3']}|ServerOpts0],
 
     Server0 =
@@ -1111,13 +1351,155 @@ early_data_basic_auth(Config) when is_list(Config) ->
                                          {from, self()},
                                          {options,
                                           proplists:delete(keyfile,
-                                                           proplists:delete(certfile, ClientOpts2))}]),
+                                                           proplists:delete(certfile,
+                                                                            ClientOpts2))}]),
     ssl_test_lib:check_result(Server0, ok, Client1, ok),
 
     process_flag(trap_exit, false),
     ssl_test_lib:close(Server0),
     ssl_test_lib:close(Client1).
 
+stateless_multiple_servers() ->
+    [{doc, "Test session resumption with session tickets, resuming on different server"}].
+stateless_multiple_servers(Config) when is_list(Config) ->
+    ClientOpts0 = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts0 = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
+    {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
+
+    Seed = crypto:strong_rand_bytes(64),
+
+    %% Configure session tickets
+    ClientOpts = [{session_tickets, auto},
+                  {versions, ['tlsv1.2','tlsv1.3']} | ClientOpts0],
+    ServerOpts = [{session_tickets, stateless},
+                  {stateless_tickets_seed, Seed},
+                  {versions, ['tlsv1.2','tlsv1.3']} | ServerOpts0],
+
+    Server0 =
+        ssl_test_lib:start_server([{node, ServerNode}, {port, 0},
+                                   {from, self()},
+                                   {mfa, {ssl_test_lib,
+                                          verify_active_session_resumption,
+                                          [false]}},
+                                   {options, ServerOpts}]),
+    Port0 = ssl_test_lib:inet_port(Server0),
+
+    Server1 =
+        ssl_test_lib:start_server([{node, ServerNode}, {port, 0},
+                                   {from, self()},
+                                   {mfa, {ssl_test_lib,  %% Short handshake
+                                          verify_active_session_resumption,
+                                          [true]}},
+                                   {options, ServerOpts}]),
+    Port1 = ssl_test_lib:inet_port(Server1),
+
+    %% Store ticket from first connection to server 0
+    Client0 =
+        ssl_test_lib:start_client([{node, ClientNode},
+                                   {port, Port0}, {host, Hostname},
+                                   {mfa, {ssl_test_lib,  %% Full handshake
+                                          verify_active_session_resumption,
+                                          [false]}},
+                                   {from, self()}, {options, ClientOpts}]),
+    ssl_test_lib:check_result(Server0, ok, Client0, ok),
+
+    %% Wait for session ticket
+    ct:sleep(100),
+
+    ssl_test_lib:close(Client0),
+
+    %% Use ticket when connecting to server 1
+    Client1 =
+        ssl_test_lib:start_client([{node, ClientNode},
+                                   {port, Port1}, {host, Hostname},
+                                   {mfa, {ssl_test_lib,  %% Short handshake
+                                          verify_active_session_resumption,
+                                          [true]}},
+                                   {from, self()}, {options, ClientOpts}]),
+    ssl_test_lib:check_result(Server1, ok, Client1, ok),
+
+    process_flag(trap_exit, false),
+    ssl_test_lib:close(Server0),
+    ssl_test_lib:close(Server1),
+    ssl_test_lib:close(Client1).
+
+ticket_server_restart() ->
+    [{doc,"Test session resumption with session ticket server restart"}].
+ticket_server_restart(Config) when is_list(Config) ->
+    process_flag(trap_exit, true),
+    ClientOpts0 = ssl_test_lib:ssl_options(client_rsa_verify_opts, Config),
+    ServerOpts0 = ssl_test_lib:ssl_options(server_rsa_verify_opts, Config),
+    {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
+    ServerTicketMode = proplists:get_value(server_ticket_mode, Config),
+
+    %% Configure session tickets
+    ClientOpts = [{session_tickets, manual},
+                  {versions, ['tlsv1.2','tlsv1.3']}|ClientOpts0],
+    ServerOpts = [{session_tickets, ServerTicketMode},
+                  {versions, ['tlsv1.2','tlsv1.3']}|ServerOpts0],
+
+    Server0 =
+        ssl_test_lib:start_server([{node, ServerNode}, {port, 0},
+                                   {from, self()},
+                                   {mfa, {ssl_test_lib,
+                                          verify_active_session_resumption,
+                                          [false, wait_reply]}},
+                                   {options, ServerOpts}]),
+    Port0 = ssl_test_lib:inet_port(Server0),
+
+    %% Store ticket from first connection
+    Client0 = ssl_test_lib:start_client([{node, ClientNode},
+                                         {port, Port0}, {host, Hostname},
+                                         {mfa, {ssl_test_lib,  %% Full handshake
+                                                verify_active_session_resumption,
+                                                [false, wait_reply, {tickets, 1}]}},
+                                         {from, self()}, {options, ClientOpts}]),
+    [_] = ssl_test_lib:check_tickets(Client0),
+    ssl_test_lib:check_result(Server0, ok),
+
+    Server0 ! get_socket,
+    SSocket0 =
+        receive
+            {Server0, {socket, Socket0}} ->
+                Socket0
+        end,
+
+    Trackers = element(8, SSocket0),
+    Tracker = proplists:get_value(session_tickets_tracker, Trackers),
+    exit(Tracker, kill), %% Fake server session ticket handler crash
+
+    Server0 ! {listen, {mfa, {ssl_test_lib,
+                              verify_active_session_resumption,
+                              [false, wait_reply]}}},
+
+    %% So client will have to do full handshake
+    Client1 = ssl_test_lib:start_client([{node, ClientNode},
+                                         {port, Port0}, {host, Hostname},
+                                         {mfa, {ssl_test_lib,  %% Full handshake
+                                                verify_active_session_resumption,
+                                                [false, wait_reply, {tickets, 1}]}},
+                                         {from, self()}, {options, ClientOpts}]),
+    [Ticket1] = ssl_test_lib:check_tickets(Client1),
+    ssl_test_lib:check_result(Server0, ok),
+
+    Server0 ! {listen, {mfa, {ssl_test_lib,
+                              verify_active_session_resumption,
+                              [true, wait_reply]}}},
+
+    %% Use ticket
+    ClientOpts1 = [{use_ticket, [Ticket1]} | ClientOpts],
+    Client2 = ssl_test_lib:start_client([{node, ClientNode},
+                                         {port, Port0}, {host, Hostname},
+                                         {mfa, {ssl_test_lib,  %% Short handshake
+                                                verify_active_session_resumption,
+                                                [true, wait_reply, no_tickets]}},
+                                         {from, self()}, {options, ClientOpts1}]),
+    ssl_test_lib:check_result(Server0, ok, Client2, ok),
+
+    process_flag(trap_exit, false),
+    ssl_test_lib:close(Client1),
+    ssl_test_lib:close(Server0),
+    ssl_test_lib:close(Client2).
 
 %%--------------------------------------------------------------------
 %% Internal functions ------------------------------------------------
@@ -1183,3 +1565,19 @@ do_test_mixed(Config, COpts1, COpts2, SOpts1, SOpts2) when is_list(Config) ->
     process_flag(trap_exit, false),
     ssl_test_lib:close(Server1),
     ssl_test_lib:close(Client1).
+
+receive_keylog_with_early_data_secret() ->
+    receive
+        {alert_info, #{items := CKeyLog}} ->
+            case ssl_test_lib:keylog_prefixes(["CLIENT_EARLY_TRAFFIC_SECRET",
+                                               "CLIENT_HANDSHAKE_TRAFFIC_SECRET",
+                                               "SERVER_HANDSHAKE_TRAFFIC_SECRET",
+                                               "CLIENT_TRAFFIC_SECRET_0",
+                                               "SERVER_TRAFFIC_SECRET_0"
+                                              ], CKeyLog) of
+                true ->
+                    ok;
+                false ->
+                    ct:fail({client_received, CKeyLog})
+            end
+    end.

@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1996-2019. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,15 +16,23 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(io_lib_format).
+-moduledoc false.
+
+-dialyzer([{nowarn_function, [iolist_to_bin/4]},
+           no_improper_lists]).
 
 %% Formatting functions of io library.
 
--export([fwrite/2,fwrite/3,fwrite_g/1,indentation/2,scan/2,unscan/1,
-         build/1, build/2]).
+-export([fwrite/2,fwrite/3,
+         fwrite_bin/2, fwrite_bin/3,
+         fwrite_g/1,
+         indentation/2,
+         scan/2,unscan/1,
+         build/1, build/2, build_bin/1, build_bin/2]).
 
 %%  Format the arguments in Args after string Format. Just generate
 %%  an error if there is an error in the arguments.
@@ -43,7 +53,8 @@
       Data :: [term()].
 
 fwrite(Format, Args) ->
-    build(scan(Format, Args)).
+    {Scanned, []} = scan(Format, Args),
+    build(Scanned).
 
 -spec fwrite(Format, Data, Options) -> io_lib:chars() when
       Format :: io:format(),
@@ -53,7 +64,28 @@ fwrite(Format, Args) ->
       CharsLimit :: io_lib:chars_limit().
 
 fwrite(Format, Args, Options) ->
-    build(scan(Format, Args), Options).
+    {Scanned, []} = scan(Format, Args),
+    build(Scanned, Options).
+
+%% Binary variants
+-spec fwrite_bin(Format, Data) -> unicode:unicode_binary() when
+      Format :: io:format(),
+      Data :: [term()].
+
+fwrite_bin(Format, Args) ->
+    {Scanned, []} = scan(Format, Args),
+    build_bin(Scanned).
+
+-spec fwrite_bin(Format, Data, Options) -> unicode:unicode_binary() when
+      Format :: io:format(),
+      Data :: [term()],
+      Options :: [Option],
+      Option :: {'chars_limit', CharsLimit},
+      CharsLimit :: io_lib:chars_limit().
+
+fwrite_bin(Format, Args, Options) ->
+    {Scanned, []} = scan(Format, Args),
+    build_bin(Scanned, Options).
 
 %% Build the output text for a pre-parsed format list.
 
@@ -71,7 +103,7 @@ build(Cs) ->
 
 build(Cs, Options) ->
     CharsLimit = get_option(chars_limit, Options, -1),
-    Res1 = build_small(Cs),
+    Res1 = build_small(Cs, CharsLimit),
     {P, S, W, Other} = count_small(Res1),
     case P + S + W of
         0 ->
@@ -81,12 +113,39 @@ build(Cs, Options) ->
             build_limited(Res1, P, NumOfLimited, RemainingChars, 0)
     end.
 
+%% binary
+
+-spec build_bin(FormatList) -> unicode:unicode_binary() when
+      FormatList :: [char() | io_lib:format_spec()].
+build_bin(Cs) ->
+    build_bin(Cs, []).
+
+-spec build_bin(FormatList, Options) -> unicode:unicode_binary() when
+      FormatList :: [char() | io_lib:format_spec()],
+      Options :: [Option],
+      Option :: {'chars_limit', CharsLimit},
+      CharsLimit :: io_lib:chars_limit().
+
+build_bin(Cs, Options) ->
+    CharsLimit = get_option(chars_limit, Options, -1),
+    Res1 = build_small_bin(Cs, CharsLimit),
+    {P, S, W, Other} = count_small(Res1),
+    case P + S + W of
+        0 ->
+            unicode:characters_to_binary(Res1);
+        NumOfLimited ->
+            RemainingChars = sub(CharsLimit, Other),
+            Res = build_limited_bin(Res1, P, NumOfLimited, RemainingChars, 0),
+            unicode:characters_to_binary(Res)
+    end.
+
 %% Parse all control sequences in the format string.
 
--spec scan(Format, Data) -> FormatList when
+-spec scan(Format, Data) -> {FormatList, Rest} when
       Format :: io:format(),
       Data :: [term()],
-      FormatList :: [char() | io_lib:format_spec()].
+      FormatList :: [char() | io_lib:format_spec()],
+      Rest :: [term()].
 
 scan(Format, Args) when is_atom(Format) ->
     scan(atom_to_list(Format), Args);
@@ -106,6 +165,8 @@ scan(Format, Args) ->
 unscan(Cs) ->
     {print(Cs), args(Cs)}.
 
+args([#{args := As, maps_order := O} | Cs]) when is_function(O, 2); O =:= reversed ->
+    [O | As] ++ args(Cs);
 args([#{args := As} | Cs]) ->
     As ++ args(Cs);
 args([_C | Cs]) ->
@@ -114,17 +175,20 @@ args([]) ->
     [].
 
 print([#{control_char := C, width := F, adjust := Ad, precision := P,
-         pad_char := Pad, encoding := Encoding, strings := Strings} | Cs]) ->
-    print(C, F, Ad, P, Pad, Encoding, Strings) ++ print(Cs);
-print([C | Cs]) ->
+         pad_char := Pad, encoding := Encoding, strings := Strings
+        } = Map | Cs]) ->
+    MapsOrder = maps:get(maps_order, Map, undefined),
+    print(C, F, Ad, P, Pad, Encoding, Strings, MapsOrder) ++ print(Cs);
+print([C | Cs]) when is_integer(C) ->
     [C | print(Cs)];
 print([]) ->
     [].
 
-print(C, F, Ad, P, Pad, Encoding, Strings) ->
+print(C, F, Ad, P, Pad, Encoding, Strings, MapsOrder) ->
     [$~] ++ print_field_width(F, Ad) ++ print_precision(P, Pad) ++
         print_pad_char(Pad) ++ print_encoding(Encoding) ++
-        print_strings(Strings) ++ [C].
+        print_strings(Strings) ++ print_maps_order(MapsOrder) ++
+        [C].
 
 print_field_width(none, _Ad) -> "";
 print_field_width(F, left) -> integer_to_list(-F);
@@ -143,12 +207,20 @@ print_encoding(latin1) -> "".
 print_strings(false) -> "l";
 print_strings(true) -> "".
 
-collect([$~|Fmt0], Args0) ->
+print_maps_order(undefined) -> "";
+print_maps_order(ordered) -> "k";
+print_maps_order(reversed) -> "K";
+print_maps_order(CmpFun) when is_function(CmpFun, 2) -> "K".
+
+collect(Fmt, Args) ->
+    collect(Fmt, Args, []).
+collect([$~|Fmt0], Args0, Acc) ->
     {C,Fmt1,Args1} = collect_cseq(Fmt0, Args0),
-    [C|collect(Fmt1, Args1)];
-collect([C|Fmt], Args) ->
-    [C|collect(Fmt, Args)];
-collect([], []) -> [].
+    collect(Fmt1, Args1, [C | Acc]);
+collect([C|Fmt], Args, Acc) ->
+    collect(Fmt, Args, [C | Acc]);
+collect([], Remain, Acc) ->
+    {lists:reverse(Acc), Remain}.
 
 collect_cseq(Fmt0, Args0) ->
     {F,Ad,Fmt1,Args1} = field_width(Fmt0, Args0),
@@ -159,18 +231,23 @@ collect_cseq(Fmt0, Args0) ->
               precision => P,
               pad_char => Pad,
               encoding => latin1,
-              strings => true},
-    {Spec1,Fmt4} = modifiers(Fmt3, Spec0),
-    {C,As,Fmt5,Args4} = collect_cc(Fmt4, Args3),
+              strings => true,
+              maps_order => undefined},
+    {Spec1,Fmt4,Args4} = modifiers(Fmt3, Args3, Spec0),
+    {C,As,Fmt5,Args5} = collect_cc(Fmt4, Args4),
     Spec2 = Spec1#{control_char => C, args => As},
-    {Spec2,Fmt5,Args4}.
+    {Spec2,Fmt5,Args5}.
 
-modifiers([$t|Fmt], Spec) ->
-    modifiers(Fmt, Spec#{encoding => unicode});
-modifiers([$l|Fmt], Spec) ->
-    modifiers(Fmt, Spec#{strings => false});
-modifiers(Fmt, Spec) ->
-    {Spec, Fmt}.
+modifiers([$t|Fmt], Args, Spec) ->
+    modifiers(Fmt, Args, Spec#{encoding => unicode});
+modifiers([$l|Fmt], Args, Spec) ->
+    modifiers(Fmt, Args, Spec#{strings => false});
+modifiers([$k|Fmt], Args, Spec) ->
+    modifiers(Fmt, Args, Spec#{maps_order => ordered});
+modifiers([$K|Fmt], [MapsOrder | Args], Spec) ->
+    modifiers(Fmt, Args, Spec#{maps_order => MapsOrder});
+modifiers(Fmt, Args, Spec) ->
+    {Spec, Fmt, Args}.
 
 field_width([$-|Fmt0], Args0) ->
     {F,Fmt,Args} = field_value(Fmt0, Args0),
@@ -185,7 +262,12 @@ field_width(F, Fmt, Args) when F >= 0 ->
     {F,right,Fmt,Args}.
 
 precision([$.|Fmt], Args) ->
-    field_value(Fmt, Args);
+    case field_value(Fmt, Args) of
+        {P, _, _} when is_integer(P), P < 0 ->
+            error(badarg);
+        Result ->
+            Result
+    end;
 precision(Fmt, Args) ->
     {none,Fmt,Args}.
 
@@ -234,24 +316,25 @@ collect_cc([$i|Fmt], [A|Args]) -> {$i,[A],Fmt,Args}.
 %%  number of characters of other print (small) requests.
 
 count_small(Cs) ->
-    count_small(Cs, #{p => 0, s => 0, w => 0, other => 0}).
+    count_small(Cs, 0, 0, 0, 0).
 
-count_small([#{control_char := $p}|Cs], #{p := P} = Cnts) ->
-    count_small(Cs, Cnts#{p := P + 1});
-count_small([#{control_char := $P}|Cs], #{p := P} = Cnts) ->
-    count_small(Cs, Cnts#{p := P + 1});
-count_small([#{control_char := $w}|Cs], #{w := W} = Cnts) ->
-    count_small(Cs, Cnts#{w := W + 1});
-count_small([#{control_char := $W}|Cs], #{w := W} = Cnts) ->
-    count_small(Cs, Cnts#{w := W + 1});
-count_small([#{control_char := $s}|Cs], #{w := W} = Cnts) ->
-    count_small(Cs, Cnts#{w := W + 1});
-count_small([S|Cs], #{other := Other} = Cnts) when is_list(S);
-                                                   is_binary(S) ->
-    count_small(Cs, Cnts#{other := Other + io_lib:chars_length(S)});
-count_small([C|Cs], #{other := Other} = Cnts) when is_integer(C) ->
-    count_small(Cs, Cnts#{other := Other + 1});
-count_small([], #{p := P, s := S, w := W, other := Other}) ->
+count_small([#{control_char := $p}|Cs], P, S, W, Other) ->
+    count_small(Cs, P + 1, S, W, Other);
+count_small([#{control_char := $P}|Cs], P, S, W, Other) ->
+    count_small(Cs, P + 1, S, W, Other);
+count_small([#{control_char := $w}|Cs], P, S, W, Other) ->
+    count_small(Cs, P, S, W + 1, Other);
+count_small([#{control_char := $W}|Cs], P, S, W, Other) ->
+    count_small(Cs, P, S, W + 1, Other);
+count_small([#{control_char := $s}|Cs], P, S, W, Other) ->
+    count_small(Cs, P, S, W + 1, Other);
+count_small([Str|Cs], P, S, W, Other) when is_list(Str) ->
+    count_small(Cs, P, S, W, Other + io_lib:chars_length(Str));
+count_small([Str|Cs], P, S, W, Other) when is_binary(Str) ->
+    count_small(Cs, P, S, W, Other + string:length(Str));
+count_small([C|Cs], P, S, W, Other) when is_integer(C) ->
+    count_small(Cs, P, S, W, Other + 1);
+count_small([], P, S, W, Other) ->
     {P, S, W, Other}.
 
 %% build_small([Control]) -> io_lib:chars().
@@ -264,22 +347,24 @@ count_small([], #{p := P, s := S, w := W, other := Other}) ->
 %%  be smart when calculating indentation for characters in format.
 
 build_small([#{control_char := C, args := As, width := F, adjust := Ad,
-               precision := P, pad_char := Pad, encoding := Enc}=CC | Cs]) ->
-    case control_small(C, As, F, Ad, P, Pad, Enc) of
-        not_small -> [CC | build_small(Cs)];
-        S -> lists:flatten(S) ++ build_small(Cs)
+               precision := P, pad_char := Pad, encoding := Enc}=CC | Cs], CL) ->
+    case control_small(C, As, limit_field(F, CL), Ad, P, Pad, Enc) of
+        not_small -> [CC | build_small(Cs, CL)];
+        S -> lists:flatten(S) ++ build_small(Cs, CL)
     end;
-build_small([C|Cs]) -> [C|build_small(Cs)];
-build_small([]) -> [].
+build_small([C|Cs], CL) -> [C|build_small(Cs, CL)];
+build_small([], _CL) -> [].
 
 build_limited([#{control_char := C, args := As, width := F, adjust := Ad,
                  precision := P, pad_char := Pad, encoding := Enc,
-                 strings := Str} | Cs], NumOfPs0, Count0, MaxLen0, I) ->
+                 strings := Str} = Map | Cs],
+              NumOfPs0, Count0, MaxLen0, I) ->
+    Ord = maps:get(maps_order, Map, undefined),
     MaxChars = if
                    MaxLen0 < 0 -> MaxLen0;
                    true -> MaxLen0 div Count0
                end,
-    S = control_limited(C, As, F, Ad, P, Pad, Enc, Str, MaxChars, I),
+    S = control_limited(C, As, F, Ad, P, Pad, Enc, Str, Ord, MaxChars, I),
     NumOfPs = decr_pc(C, NumOfPs0),
     Count = Count0 - 1,
     MaxLen = if
@@ -290,9 +375,10 @@ build_limited([#{control_char := C, args := As, width := F, adjust := Ad,
                      sub(MaxLen0, Len)
              end,
     if
-	NumOfPs > 0 -> [S|build_limited(Cs, NumOfPs, Count,
-                                        MaxLen, indentation(S, I))];
-	true -> [S|build_limited(Cs, NumOfPs, Count, MaxLen, I)]
+	NumOfPs > 0 ->
+            [S|build_limited(Cs, NumOfPs, Count, MaxLen, indentation(S, I))];
+	true ->
+            [S|build_limited(Cs, NumOfPs, Count, MaxLen, I)]
     end;
 build_limited([$\n|Cs], NumOfPs, Count, MaxLen, _I) ->
     [$\n|build_limited(Cs, NumOfPs, Count, MaxLen, 0)];
@@ -306,20 +392,95 @@ decr_pc($p, Pc) -> Pc - 1;
 decr_pc($P, Pc) -> Pc - 1;
 decr_pc(_, Pc) -> Pc.
 
+build_small_bin([#{control_char := C, args := As, width := F, adjust := Ad,
+                   precision := P, pad_char := Pad, encoding := Enc}=CC | Cs], CL) ->
+    case control_small(C, As, limit_field(F, CL), Ad, P, Pad, Enc) of
+        not_small ->
+            [CC | build_small_bin(Cs, CL)];
+        [$\n|_] = NL ->
+            [NL | build_small_bin(Cs, CL)];
+        S ->
+            SBin = unicode:characters_to_binary(S, Enc, unicode),
+            true = is_binary(SBin),
+            [SBin | build_small_bin(Cs, CL)]
+    end;
+build_small_bin([$\t|Cs], CL) ->
+    [$\t | build_small_bin(Cs, CL)];
+build_small_bin([C|Cs], CL) ->
+    [C | build_small_bin(Cs, CL)];
+build_small_bin([], _CL) ->
+    [].
+
+build_limited_bin([#{control_char := C, args := As, width := F, adjust := Ad,
+                     precision := P, pad_char := Pad, encoding := Enc,
+                     strings := Str} = Map | Cs],
+                  NumOfPs0, Count0, MaxLen0, I0) ->
+    Ord = maps:get(maps_order, Map, undefined),
+    MaxChars = if
+                   MaxLen0 < 0 -> MaxLen0;
+                   true -> MaxLen0 div Count0
+               end,
+    {S, Sz, I} = control_limited_bin(C, As, F, Ad, P, Pad, Enc, Str, Ord, MaxChars, I0),
+    NumOfPs = decr_pc(C, NumOfPs0),
+    Count = Count0 - 1,
+    MaxLen = if
+                 MaxLen0 < 0 -> MaxLen0; % optimization
+                 Sz < 0 -> sub(MaxLen0, string:length(S));
+                 true -> sub(MaxLen0, Sz)
+             end,
+    if
+	NumOfPs > 0, I < 0 ->
+            [S|build_limited_bin(Cs, NumOfPs, Count, MaxLen, indentation(S, I0))];
+	true ->
+            [S|build_limited_bin(Cs, NumOfPs, Count, MaxLen, I)]
+    end;
+build_limited_bin([[$\n|_]=NL|Cs], NumOfPs, Count, MaxLen, _I) ->
+    [NL|build_limited_bin(Cs, NumOfPs, Count, MaxLen, 0)];
+build_limited_bin([$\t|Cs], NumOfPs, Count, MaxLen, I) ->
+    [$\t|build_limited_bin(Cs, NumOfPs, Count, MaxLen, ((I + 8) div 8) * 8)];
+build_limited_bin([C|Cs], NumOfPs, Count, MaxLen, I) when is_integer(C) ->
+    [C|build_limited_bin(Cs, NumOfPs, Count, MaxLen, 1+I)];
+build_limited_bin([Bin|Cs], NumOfPs, Count, MaxLen, I) when is_binary(Bin) ->
+    [Bin|build_limited_bin(Cs, NumOfPs, Count, MaxLen, byte_size(Bin)+I)];
+build_limited_bin([], _, _, _, _) -> [].
+
+
 %%  Calculate the indentation of the end of a string given its start
 %%  indentation. We assume tabs at 8 cols.
 
 -spec indentation(String, StartIndent) -> integer() when
-      String :: io_lib:chars(),
+      String :: unicode:chardata(),
       StartIndent :: integer().
 
-indentation([$\n|Cs], _I) -> indentation(Cs, 0);
-indentation([$\t|Cs], I) -> indentation(Cs, ((I + 8) div 8) * 8);
+indentation([$\n|Cs], _I) ->
+    indentation(Cs, 0);
+indentation([$\t|Cs], I) ->
+    indentation(Cs, ((I + 8) div 8) * 8);
 indentation([C|Cs], I) when is_integer(C) ->
     indentation(Cs, I+1);
 indentation([C|Cs], I) ->
     indentation(Cs, indentation(C, I));
-indentation([], I) -> I.
+indentation(Bin, I0) when is_binary(Bin) ->
+    indentation_bin(Bin, I0);
+indentation([], I) ->
+    I.
+
+indentation_bin(Bin, I) ->
+    indentation_bin(Bin, Bin, 0, 0, I).
+
+indentation_bin(<<$\n, Cs/binary>>, Orig, Start, N, _I) ->
+    indentation_bin(Cs, Orig, Start+N+1, 0, 0);
+indentation_bin(<<$\t, Cs/binary>>, Orig, Start, N, I0) ->
+    Part = binary:part(Orig, Start, N),
+    PSz = string:length(Part),
+    indentation_bin(Cs, Orig, Start+N+1, 0, ((I0+PSz + 8) div 8) * 8);
+indentation_bin(<<_, Cs/binary>>, Orig, Start, N, I) ->
+    indentation_bin(Cs, Orig, Start, N+1, I);
+indentation_bin(<<>>, Orig, Start, N, I) ->
+    Part = binary:part(Orig, Start, N),
+    PSz = string:length(Part),
+    I + PSz.
+
 
 %% control_small(FormatChar, [Argument], FieldWidth, Adjust, Precision,
 %%               PadChar, Encoding) -> String
@@ -371,24 +532,55 @@ control_small($n, [], F, Adj, P, Pad, _Enc) -> newline(F, Adj, P, Pad);
 control_small($i, [_A], _F, _Adj, _P, _Pad, _Enc) -> [];
 control_small(_C, _As, _F, _Adj, _P, _Pad, _Enc) -> not_small.
 
-control_limited($s, [L0], F, Adj, P, Pad, latin1=Enc, _Str, CL, _I) ->
-    L = iolist_to_chars(L0, F, CL),
-    string(L, limit_field(F, CL), Adj, P, Pad, Enc);
-control_limited($s, [L0], F, Adj, P, Pad, unicode=Enc, _Str, CL, _I) ->
-    L = cdata_to_chars(L0, F, CL),
-    uniconv(string(L, limit_field(F, CL), Adj, P, Pad, Enc));
-control_limited($w, [A], F, Adj, P, Pad, Enc, _Str, CL, _I) ->
-    Chars = io_lib:write(A, [{depth, -1}, {encoding, Enc}, {chars_limit, CL}]),
-    term(Chars, F, Adj, P, Pad);
-control_limited($p, [A], F, Adj, P, Pad, Enc, Str, CL, I) ->
-    print(A, -1, F, Adj, P, Pad, Enc, Str, CL, I);
-control_limited($W, [A,Depth], F, Adj, P, Pad, Enc, _Str, CL, _I)
-           when is_integer(Depth) ->
-    Chars = io_lib:write(A, [{depth, Depth}, {encoding, Enc}, {chars_limit, CL}]),
-    term(Chars, F, Adj, P, Pad);
-control_limited($P, [A,Depth], F, Adj, P, Pad, Enc, Str, CL, I)
-           when is_integer(Depth) ->
-    print(A, Depth, F, Adj, P, Pad, Enc, Str, CL, I).
+control_limited($s, [L0], F, Adj, P, Pad, Enc, _Str, _Ord, CL, _I) ->
+    if Enc =:= latin1 ->
+            L = iolist_to_chars(L0, F, CL),
+            string(L, limit_field(F, CL), Adj, P, Pad, Enc);
+       Enc =:= unicode ->
+            L = cdata_to_chars(L0, F, CL),
+            uniconv(string(L, limit_field(F, CL), Adj, P, Pad, Enc))
+    end;
+control_limited($w, [A], F, Adj, P, Pad, Enc, _Str, Ord, CL, _I) ->
+    Chars = io_lib:write(A, -1, Enc, Ord, CL),
+    term(Chars, limit_field(F, CL), Adj, P, Pad, Enc);
+control_limited($p, [A], F, Adj, P, Pad, Enc, Str, Ord, CL, I) ->
+    print(A, -1, F, Adj, P, Pad, Enc, list, Str, Ord, CL, I);
+control_limited($W, [A,Depth], F, Adj, P, Pad, Enc, _Str, Ord, CL, _I)
+  when is_integer(Depth) ->
+    Chars = io_lib:write(A, Depth, Enc, Ord, CL),
+    term(Chars, limit_field(F, CL), Adj, P, Pad, Enc);
+control_limited($P, [A,Depth], F, Adj, P, Pad, Enc, Str, Ord, CL, I)
+  when is_integer(Depth) ->
+    print(A, Depth, F, Adj, P, Pad, Enc, list, Str, Ord, CL, I).
+
+control_limited_bin($s, [L0], F, Adj, P, Pad, Enc, _Str, _Ord, CL, _I) ->
+    {B, Sz} = iolist_to_bin(L0, F, CL, Enc),
+    string_bin(B, Sz, limit_field(F, CL), Adj, P, Pad, Enc);
+control_limited_bin($w, [A], F, Adj, P, Pad, Enc, _Str, Ord, CL, I) ->
+    {Chars, Sz} = io_lib:write_bin(A, -1, Enc, Ord, CL),
+    term_bin(Chars, limit_field(F, CL), Adj, P, Pad, Enc, Sz, I);
+control_limited_bin($p, [A], F, Adj, P, Pad, Enc, Str, Ord, CL, I) ->
+    print(A, -1, F, Adj, P, Pad, Enc, binary, Str, Ord, CL, I);
+control_limited_bin($W, [A,Depth], F, Adj, P, Pad, Enc, _Str, Ord, CL, I)
+  when is_integer(Depth) ->
+    {Chars, Sz} = io_lib:write_bin(A, Depth, Enc, Ord, CL),
+    term_bin(Chars, limit_field(F, CL), Adj, P, Pad, Enc, Sz, I);
+control_limited_bin($P, [A,Depth], F, Adj, P, Pad, Enc, Str, Ord, CL, I)
+  when is_integer(Depth) ->
+    print(A, Depth, F, Adj, P, Pad, Enc, binary, Str, Ord, CL, I).
+
+term_bin(T, none, _Adj, none, _Pad, _Enc, Sz, I) ->
+    {T, Sz, Sz+I};
+term_bin(T, none, Adj, P, Pad, Enc, Sz, I) ->
+    term_bin(T, P, Adj, P, Pad, Enc, Sz, I);
+term_bin(T, F, Adj, P0, Pad, _Enc, Sz, I) ->
+    P = erlang:min(Sz, case P0 of none -> F; _ -> min(P0, F) end),
+    if
+	Sz > P ->
+	    {adjust(chars($*, P), chars(Pad, F-P), Adj), F, I+F};
+	F >= P ->
+            {adjust(T, chars(Pad, F-Sz), Adj), F, I+F}
+    end.
 
 -ifdef(UNICODE_AS_BINARIES).
 uniconv(C) ->
@@ -408,10 +600,15 @@ base(B) when is_integer(B) ->
 %%  Adjust the characters within the field if length less than Max padding
 %%  with PadChar.
 
-term(T, none, _Adj, none, _Pad) -> T;
-term(T, none, Adj, P, Pad) -> term(T, P, Adj, P, Pad);
-term(T, F, Adj, P0, Pad) ->
-    L = io_lib:chars_length(T),
+term(T, none, _Adj, none, _Pad, _Enc) ->
+    T;
+term(T, none, Adj, P, Pad, Enc) ->
+    term(T, P, Adj, P, Pad, Enc);
+term(T, F, Adj, P0, Pad, Enc) ->
+    L = case Enc =:= latin1 of
+            true  -> io_lib:chars_length(T);
+            false -> string:length(T)
+        end,
     P = erlang:min(L, case P0 of none -> F; _ -> min(P0, F) end),
     if
 	L > P ->
@@ -425,18 +622,34 @@ term(T, F, Adj, P0, Pad) ->
 %% Print a term. Field width sets maximum line length, Precision sets
 %% initial indentation.
 
-print(T, D, none, Adj, P, Pad, E, Str, ChLim, I) ->
-    print(T, D, 80, Adj, P, Pad, E, Str, ChLim, I);
-print(T, D, F, Adj, none, Pad, E, Str, ChLim, I) ->
-    print(T, D, F, Adj, I+1, Pad, E, Str, ChLim, I);
-print(T, D, F, right, P, _Pad, Enc, Str, ChLim, _I) ->
+print(T, D, none, Adj, P, Pad, E, Type, Str, Ord, ChLim, I) ->
+    print(T, D, 80, Adj, P, Pad, E, Type, Str, Ord, ChLim, I);
+print(T, D, F, Adj, none, Pad, E, Type, Str, Ord, ChLim, I) ->
+    print(T, D, F, Adj, I+1, Pad, E, Type, Str, Ord, ChLim, I);
+print(T, D, F, right, P, _Pad, Enc, list, Str, Ord, ChLim, _I) ->
     Options = [{chars_limit, ChLim},
                {column, P},
                {line_length, F},
                {depth, D},
                {encoding, Enc},
-               {strings, Str}],
-    io_lib_pretty:print(T, Options).
+               {strings, Str},
+               {maps_order, Ord}
+              ],
+    io_lib_pretty:print(T, Options);
+print(T, D, F, right, P, _Pad, Enc, binary, Str, Ord, ChLim, I) ->
+    Options = #{chars_limit => ChLim,
+                column => P,
+                line_length => F,
+                depth => D,
+                encoding => Enc,
+                strings => Str,
+                maps_order => Ord
+               },
+    {Bin, Sz, Col} = Res = io_lib_pretty:print_bin(T, Options),
+    case Col > 0 of
+        true  -> Res;
+        false -> {Bin, Sz, I - Col}
+    end.
 
 %% fwrite_e(Float, Field, Adjust, Precision, PadChar)
 
@@ -447,7 +660,7 @@ fwrite_e(Fl, none, _Adj, P, _Pad) when P >= 2 ->
 fwrite_e(Fl, F, Adj, none, Pad) ->
     fwrite_e(Fl, F, Adj, 6, Pad);
 fwrite_e(Fl, F, Adj, P, Pad) when P >= 2 ->
-    term(float_e(Fl, float_data(Fl), P), F, Adj, F, Pad).
+    term(float_e(Fl, float_data(Fl), P), F, Adj, F, Pad, latin1).
 
 float_e(Fl, Fd, P) ->
     signbit(Fl) ++ abs_float_e(abs(Fl), Fd, P).
@@ -502,7 +715,7 @@ fwrite_f(Fl, none, _Adj, P, _Pad) when P >= 1 ->
 fwrite_f(Fl, F, Adj, none, Pad) ->
     fwrite_f(Fl, F, Adj, 6, Pad);
 fwrite_f(Fl, F, Adj, P, Pad) when P >= 1 ->
-    term(float_f(Fl, float_data(Fl), P), F, Adj, F, Pad).
+    term(float_f(Fl, float_data(Fl), P), F, Adj, F, Pad, latin1).
 
 float_f(Fl, Fd, P) ->
     signbit(Fl) ++ abs_float_f(abs(Fl), Fd, P).
@@ -539,268 +752,10 @@ float_data([_|Cs], Ds) ->
 
 %%  Returns a correctly rounded string that converts to Float when
 %%  read back with list_to_float/1.
-%%
-%%  When abs(Float) < float(1 bsl 53) the shortest such string is
-%%  returned, and otherwise the shortest such string using scientific
-%%  notation is returned. That is, scientific notation is used if and
-%%  only if scientific notation results in a shorter string than
-%%  normal notation when abs(Float) < float(1 bsl 53), and scientific
-%%  notation is used unconditionally if abs(Float) >= float(1 bsl
-%%  53). See comment in insert_decimal/2 for an explanation for why
-%%  float(1 bsl 53) is chosen as cutoff point.
-%%
-%%  The algorithm that is used to find the decimal number that is
-%%  represented by the returned String is described in "Ryu: Fast
-%%  Float-to-String Conversion" in Proceedings of 39th ACM SIGPLAN
-%%  Conference on Programming Language Design and Implementation.
-%%  https://dl.acm.org/doi/pdf/10.1145/3192366.3192369
 
 -spec fwrite_g(float()) -> string().
 fwrite_g(Float) ->
-    case sign_mantissa_exponent(Float) of
-        {0, 0, 0} -> "0.0";
-        {1, 0, 0} -> "-0.0";
-        {S, M, E} when E < 2047 ->
-            {Place, Digits} = 
-                case is_small_int(M, E) of
-                    {int, M1, E1} ->
-                        compute_shortest_int(M1, E1);
-                    not_int ->
-                        fwrite_g_1(M, E)
-                end,
-            DigitList = insert_decimal(Place, Digits, Float),
-            insert_minus(S, DigitList)
-    end.
-
--define(BIG_POW, (1 bsl 52)).
--define(DECODE_CORRECTION, 1075).
-
-sign_mantissa_exponent(F) ->
-    <<S:1, BE:11, M:52>> = <<F:64/float>>,
-    {S, M , BE}.
-
-is_small_int(M, E) ->
-    M2 = ?BIG_POW bor M,
-    E2 = E - ?DECODE_CORRECTION,
-    case E2 > 0 orelse E2 < -52 of
-        true ->
-            %% f = m2 * 2^e2 >= 2^53 is an integer.
-            %% Ignore this case for now.
-            %% or f < 1
-            not_int;
-        _ -> 
-            %% Since 2^52 <= m2 < 2^53 and 0 <= -e2 <= 52: 1 <= f = m2 / 2^-e2 < 2^53.
-            %% Test if the lower -e2 bits of the significand are 0, i.e. whether the fraction is 0.
-            Mask = (1 bsl -E2) - 1,
-            Fraction = M2 band Mask,
-            case Fraction of
-                0 ->
-                %% f is an integer in the range [1, 2^53).
-                %% Note: mantissa might contain trailing (decimal) 0's.
-                    {int, M2 bsr -E2, 0};
-                _ ->
-                    not_int
-            end
-    end.
-
-%%  For small integers in the range [1, 2^53), v.mantissa might contain trailing (decimal) zeros.
-compute_shortest_int(M, E) when M rem 10 =:= 0 ->
-    Q = M div 10,
-    compute_shortest_int(Q, E + 1);
-compute_shortest_int(M, E) ->
-    {E, integer_to_list(M)}.
-
-fwrite_g_1(M, E) ->
-    {Mf, Ef} = decode(M, E),
-    Shift = mmshift(M, E),
-    Mv = 4 * Mf,
-    {Q, Vm, Vr, Vp, E10} = convert_to_decimal(Ef, Mv, Shift),
-    Accept = M rem 2 == 0,
-    {VmIsTrailingZero, VrIsTrailingZero, Vp1} = bounds(Mv, Q, Vp, Accept, Ef, Shift),
-    {D1, E1} = compute_shortest(Vm, Vr, Vp1, VmIsTrailingZero, VrIsTrailingZero, Accept),
-    {E1 + E10, integer_to_list(D1)}.
-
-decode(Mantissa, 0) ->
-    {Mantissa, 1 - ?DECODE_CORRECTION - 2};
-decode(Mantissa, Exponent) ->
-    {Mantissa + ?BIG_POW, Exponent - ?DECODE_CORRECTION - 2}.
-
-mmshift(0, E) when E > 1 ->
-    0;
-mmshift(_M, _E) ->
-    1.
-
-convert_to_decimal(E2, Mv, Shift) when E2 >= 0 ->
-    Q = max(0, ((E2 * 78913) bsr 18) - 1),
-    Mul = io_lib_format_ryu_table:inv_value(Q),
-    K = io_lib_format_ryu_table:pow5_inv_bitcount() + pow5bits(Q) - 1,
-    I = -E2 + Q + K,
-    {Vm, Vr, Vp} = mulShiftAll(Mv, Shift, I, Mul),
-    {Q, Vm, Vr, Vp, Q};
-
-convert_to_decimal(E2, Mv, Shift) when E2 < 0 ->
-    Q = max(0, ((-E2 * 732923) bsr 20) - 1),
-    I = -E2 - Q,
-    K = pow5bits(I) - io_lib_format_ryu_table:pow5_bitcount(),
-    From_file = io_lib_format_ryu_table:value(I),
-    J = Q - K,
-    {Vm, Vr, Vp} = mulShiftAll(Mv, Shift, J, From_file),
-    E10 = E2 + Q,
-    {Q, Vm, Vr, Vp, E10}.
-
-pow5bits(E) ->
-    ((E * 1217359) bsr 19) + 1.
-
-mulShiftAll(Mv, Shift, J, Mul) ->
-    A = mulShift64(Mv - 1 - Shift, Mul, J),
-    B = mulShift64(Mv, Mul, J),
-    C = mulShift64(Mv + 2,Mul, J),
-    {A, B, C}.
-
-mulShift64(M, Mul, J) ->
-    (M * Mul) bsr J.
-
-bounds(Mv, Q, Vp, _Accept, E2, _Shift) when E2 >= 0, Q =< 21, Mv rem 5 =:= 0 ->
-    {false, multipleOfPowerOf5(Mv, Q) , Vp};
-bounds(Mv, Q, Vp, true, E2, Shift) when E2 >= 0, Q =< 21 ->
-    {multipleOfPowerOf5(Mv - 1 - Shift, Q), false , Vp};
-bounds(Mv, Q, Vp, _Accept, E2, _Shift) when E2 >= 0, Q =< 21 ->
-    {false, false , Vp - vpmodifier(multipleOfPowerOf5(Mv + 2, Q))};
-bounds(_Mv, Q, Vp, true, E2, Shift) when E2 < 0, Q =< 1 ->
-    {Shift =:= 1, true, Vp};
-bounds(_Mv, Q, Vp, false, E2, _Shift) when E2 < 0, Q =< 1 ->
-    {false, true, Vp - 1};
-bounds(Mv, Q, Vp, _Accept, E2, _Shift) when E2 < 0, Q < 63 ->
-    {false, (Mv band ((1 bsl Q) -1 )) =:= 0, Vp};
-bounds(_Mv, _Q, Vp, _Accept, _E2, _Shift) ->
-    {false, false, Vp}.
-
-multipleOfPowerOf5(Value, Q) ->
-    pow5factor(Value) >= Q.
-
-pow5factor(Val) ->
-    pow5factor(Val div 5, 0).
-
-pow5factor(Val, Count) when (Val rem 5) /= 0->
-    Count;
-pow5factor(Val, Count) ->
-    pow5factor(Val div 5, Count + 1).
-
-vpmodifier(true) ->
-    1;
-vpmodifier(false) ->
-    0.
-
-compute_shortest(Vm, Vr, Vp, false, false, _Accept) ->
-    {Vm1, Vr1, Removed, RoundUp} =
-        general_case(Vm, Vr, Vp, 0, false),
-    Output = Vr1 + handle_normal_output_mod(Vr1, Vm1, RoundUp),
-    {Output, Removed};
-compute_shortest(Vm, Vr, Vp, VmIsTrailingZero, VrIsTrailingZero, Accept) ->
-    {Vm1, Vr1, Removed, LastRemovedDigit} = 
-        handle_trailing_zeros(Vm, Vr, Vp, VmIsTrailingZero, VrIsTrailingZero, 0, 0),
-    Output = Vr1 + handle_zero_output_mod(Vr1, Vm1, Accept, VmIsTrailingZero, LastRemovedDigit),
-    {Output, Removed}.
-
-general_case(Vm, Vr, Vp, Removed, RoundUp) when (Vp div 100) =< (Vm div 100)->
-    general_case_10(Vm, Vr, Vp, Removed, RoundUp);
-general_case(Vm, Vr, Vp, Removed, _RU) ->
-    VmD100 = Vm div 100,
-    VrD100 = Vr div 100,
-    VpD100 = Vp div 100,
-    RoundUp = ((Vr rem 100) >= 50),
-    general_case_10(VmD100, VrD100, VpD100, 2 + Removed, RoundUp).
-
-general_case_10(Vm, Vr, Vp, Removed, RoundUp) 
-    when (Vp div 10) =< (Vm div 10)->
-    {Vm, Vr, Removed, RoundUp};
-general_case_10(Vm, Vr, Vp, Removed, _RU) ->
-    VmD10 = Vm div 10,
-    VrD10 = Vr div 10,
-    VpD10 = Vp div 10,
-    RoundUp = ((Vr rem 10) >= 5),
-    general_case_10(VmD10, VrD10, VpD10, 1 + Removed, RoundUp).
-
-handle_normal_output_mod(Vr, Vm, RoundUp) when (Vm =:= Vr) or RoundUp ->
-    1;
-handle_normal_output_mod(_Vr, _Vm, _RoundUp) ->
-    0.
-
-handle_trailing_zeros(Vm, Vr, Vp, VmTZ, VrTZ, Removed, LastRemovedDigit)
-    when (Vp div 10) =< (Vm div 10)->
-    vmIsTrailingZero(Vm, Vr, Vp, VmTZ, VrTZ, Removed, LastRemovedDigit);
-handle_trailing_zeros(Vm, Vr, Vp, VmIsTrailingZero, VrIsTrailingZero, Removed, LastRemovedDigit) ->
-    VmTZ = VmIsTrailingZero and ((Vm rem 10) =:= 0),
-    VrTZ = VrIsTrailingZero and (LastRemovedDigit =:= 0),
-    handle_trailing_zeros(Vm div 10, Vr div 10, Vp div 10, VmTZ, VrTZ, 1 + Removed, Vr rem 10).
-
-vmIsTrailingZero(Vm, Vr, _Vp, false = _VmTZ, VrTZ, Removed, LastRemovedDigit) ->
-    handle_50_dotdot_0(Vm, Vr, VrTZ, Removed, LastRemovedDigit);
-vmIsTrailingZero(Vm, Vr, _Vp, _VmTZ, VrTZ, Removed, LastRemovedDigit) when (Vm rem 10) /= 0 ->
-    handle_50_dotdot_0(Vm, Vr, VrTZ, Removed, LastRemovedDigit);
-vmIsTrailingZero(Vm, Vr, Vp, VmTZ, VrTZ, Removed, LastRemovedDigit) ->
-    vmIsTrailingZero(Vm div 10, Vr div 10, Vp div 10, VmTZ, LastRemovedDigit == 0 andalso VrTZ, 1 + Removed, Vr rem 10).
-
-handle_50_dotdot_0(Vm, Vr, true, Removed, 5) when (Vr rem 2) =:= 0 ->
-    {Vm, Vr, Removed, 4};
-handle_50_dotdot_0(Vm, Vr, _VrTZ, Removed, LastRemovedDigit) ->
-    {Vm, Vr, Removed, LastRemovedDigit}.
-
-handle_zero_output_mod(_Vr, _Vm, _Accept, _VmTZ, LastRemovedDigit) when LastRemovedDigit >= 5 ->
-    1;
-handle_zero_output_mod(Vr, Vm, Accept, VmTZ, _LastRemovedDigit) when Vr =:= Vm, ((not Accept) or (not VmTZ)) ->
-    1;
-handle_zero_output_mod(_Vr, _Vm, _Accept, _VmTZ, _LastRemovedDigit) ->
-    0.
-
-insert_decimal(Place, S, Float) ->
-    L = length(S),
-    Exp = Place + L - 1,
-    ExpL = integer_to_list(Exp),
-    ExpCost = length(ExpL) + 2,
-    if
-        Place < 0 ->
-            if
-                Exp >= 0 ->
-                    {S0, S1} = lists:split(L + Place, S),
-                    S0 ++ "." ++ S1;
-                2 - Place - L =< ExpCost ->
-                    "0." ++ lists:duplicate(-Place - L, $0) ++ S;
-                true ->
-                    insert_exp(ExpL, S)
-            end;
-        true ->
-            Dot = if L =:= 1 -> 1; true -> 0 end,
-            if
-                %% All integers in the range [-2^53, 2^53] can
-                %% be stored without loss of precision in an
-                %% IEEE 754 64-bit double but 2^53+1 cannot be
-                %% stored in an IEEE 754 64-bit double without
-                %% loss of precision (float((1 bsl 53)+1) =:=
-                %% float(1 bsl 53)). It thus makes sense to
-                %% show floats that are >= 2^53 or <= -2^53 in
-                %% scientific notation to indicate that the
-                %% number is so large that there could be loss
-                %% in precion when adding or subtracting 1.
-                %%
-                %% https://stackoverflow.com/questions/1848700/biggest-integer-that-can-be-stored-in-a-double?answertab=votes#tab-top
-                ExpCost + Dot >= Place + 2 andalso abs(Float) < float(1 bsl 53) ->
-                    S ++ lists:duplicate(Place, $0) ++ ".0";
-                true ->
-                    insert_exp(ExpL, S)
-            end
-    end.
-
-
-insert_exp(ExpL, [C]) ->
-    [C] ++ ".0e" ++ ExpL;
-insert_exp(ExpL, [C | S]) ->
-    [C] ++ "." ++ S ++ "e" ++ ExpL.
-
-insert_minus(0, Digits) ->
-    Digits;
-insert_minus(1, Digits) ->
-    [$-] ++ Digits.
+    float_to_list(Float, [short]).
 
 %% fwrite_g(Float, Field, Adjust, Precision, PadChar)
 %%  Use the f form if Float is >= 0.1 and < 1.0e4, 
@@ -879,9 +834,12 @@ cdata_to_chars([I|Cs]) ->
 cdata_to_chars([]) ->
     [];
 cdata_to_chars(B) when is_binary(B) ->
-    case catch unicode:characters_to_list(B) of
+    try unicode:characters_to_list(B) of
         L when is_list(L) -> L;
         _ -> binary_to_list(B)
+    catch
+        _:_ ->
+            binary_to_list(B)
     end.
 
 limit_cdata_to_chars(Cs, 0, normal) ->
@@ -905,6 +863,89 @@ limit_cdata_to_chars(Cs, Limit, Mode) ->
             [GC | limit_cdata_to_chars(Cs1, Limit - 1, Mode)]
     end.
 
+iolist_to_bin(L, F, CharsLimit, latin1) when CharsLimit < 0; CharsLimit >= F ->
+    Bin = unicode:characters_to_binary(L, latin1, unicode),
+    {Bin, iolist_size(L)};
+iolist_to_bin(L, F, CharsLimit, unicode) when CharsLimit < 0; CharsLimit >= F ->
+    case unicode:characters_to_binary(L) of
+        Bin when is_binary(Bin) ->
+            {Bin, undefined};
+        {error, Ok, Bad} ->
+            %% Try latin1, strange allowing mixing latin1 and utf8
+            %% but we handled it before for unknown reason.
+            {Bin, _} = iolist_to_bin(Bad, F, CharsLimit, latin1),
+            {iolist_to_binary([Ok|Bin]), undefined}
+    end;
+iolist_to_bin(L, _, CharsLimit, Enc) ->
+    {Acc, Sz, _Limit, Rest} = limit_iolist_to_bin(L, sub(CharsLimit, 3), Enc, 0, <<>>),
+    case string:is_empty(Rest) of
+        true ->
+            {Acc, Sz};
+        false ->
+            {Cont, Size, _, _} = limit_iolist_to_bin(Rest, 4, Enc, 0, <<>>),
+            if Size < 4 ->
+                    {<<Acc/binary, Cont/binary>>, Sz+Size};
+               true ->
+                    {<<Acc/binary, "...">>, Sz+3}
+            end
+    end.
+
+limit_iolist_to_bin(Cs, 0, _, Size, Acc) ->
+    {Acc, Size, 0, Cs};
+limit_iolist_to_bin([C|Cs], Limit, latin1, Size, Acc)
+  when C >= $\000, C =< $\377 ->
+    limit_iolist_to_bin(Cs, Limit-1, latin1, Size+1, <<Acc/binary, C/utf8>>);
+limit_iolist_to_bin(Bin0, Limit, latin1, Size0, Acc)
+  when is_binary(Bin0) ->
+    case byte_size(Bin0) of
+        Sz when Sz > Limit ->
+            {B1, B2} = split_binary(Bin0, Limit),
+            Bin = unicode:characters_to_binary(B1, latin1, unicode),
+            {<<Acc/binary, Bin/binary>>, Size0+Limit, 0, B2};
+        Sz ->
+            Bin = unicode:characters_to_binary(Bin0, latin1, unicode),
+            {<<Acc/binary, Bin/binary>>, Size0+Sz, Limit-Sz, []}
+    end;
+limit_iolist_to_bin(Bin0, Limit, unicode, Size0, Acc)
+  when is_binary(Bin0) ->
+    try string:length(Bin0) of
+        Sz when Sz > Limit ->
+            B1 = string:slice(Bin0, 0, Limit),
+            Skip = byte_size(Bin0) - byte_size(B1),
+            <<_:Skip/binary, B2/binary>> = Bin0,
+            {<<Acc/binary, B1/binary>>, Size0+Limit, 0, B2};
+        Sz ->
+            {<<Acc/binary, Bin0/binary>>, Size0+Sz, Limit-Sz, []}
+    catch _:_ ->  %% We allow latin1 as binary strings, so try that
+            limit_iolist_to_bin(Bin0, Limit, latin1, Size0, Acc)
+    end;
+limit_iolist_to_bin(CPs, Limit, unicode, Size, Acc) ->
+    case string:next_grapheme(CPs) of
+        {error, <<C,Cs1/binary>>} ->
+            %% This is how ~ts handles Latin1 binaries with option
+            %% chars_limit.
+            limit_iolist_to_bin(Cs1, Limit-1, unicode, Size+1, <<Acc/binary, C/utf8>>);
+        {error, [C|Cs1]} -> % not all versions of module string return this
+            limit_iolist_to_bin(Cs1, Limit-1, unicode, Size+1, <<Acc/binary, C/utf8>>);
+        [] ->
+            {Acc, Size, Limit, []};
+        [GC|Cs1] when is_integer(GC) ->
+            limit_iolist_to_bin(Cs1, Limit-1, unicode, Size+1, <<Acc/binary, GC/utf8>>);
+        [GC|Cs1] ->
+            Utf8 = unicode:characters_to_binary(GC),
+            limit_iolist_to_bin(Cs1, Limit-1, unicode, Size+1, <<Acc/binary, Utf8/binary>>)
+    end;
+limit_iolist_to_bin([Deep|Cs], Limit0, Enc, Size0, Acc0) ->
+    {Acc, Sz, L, Cont} = limit_iolist_to_bin(Deep, Limit0, Enc, Size0, Acc0),
+    case string:is_empty(Cont) of
+        true ->
+            limit_iolist_to_bin(Cs, L, Enc, Sz, Acc);
+        false ->
+            limit_iolist_to_bin([Cont|Cs], L, Enc, Sz, Acc)
+    end;
+limit_iolist_to_bin([], Limit, _Enc, Size, Acc) ->
+    {Acc, Size, Limit, []}.
+
 limit_field(F, CharsLimit) when CharsLimit < 0; F =:= none ->
     F;
 limit_field(F, CharsLimit) ->
@@ -912,7 +953,8 @@ limit_field(F, CharsLimit) ->
 
 %% string(String, Field, Adjust, Precision, PadChar)
 
-string(S, none, _Adj, none, _Pad, _Enc) -> S;
+string(S, none, _Adj, none, _Pad, _Enc) ->
+    S;
 string(S, F, Adj, none, Pad, Enc) ->
     string_field(S, F, Adj, io_lib:chars_length(S), Pad, Enc);
 string(S, none, _Adj, P, Pad, Enc) ->
@@ -938,6 +980,41 @@ string_field(S, F, Adj, N, Pad, _Enc) when N < F ->
 string_field(S, _, _, _, _, _) -> % N == F
     S.
 
+string_bin(S, _, none, _Adj, none, _Pad, _Enc) ->
+    {S, -1, -1};
+string_bin(S, undefined, F, Adj, P, Pad, Enc) ->
+    unicode = Enc, %% Assert size=-1 should only happen for unicode
+    string_bin(S, string:length(S), F, Adj, P, Pad, Enc);
+string_bin(S, Sz, F, Adj, none, Pad, Enc) ->
+    string_field_bin(S, F, Adj, Sz, Pad, Enc);
+string_bin(S, Sz, none, _Adj, P, Pad, Enc) ->
+    string_field_bin(S, P, left, Sz, Pad, Enc);
+string_bin(S0, Sz, F, Adj, P, Pad, Enc) when F >= P ->
+    if F > P ->
+	    if Sz > P ->
+                    S = adjust(flat_trunc(S0, P, Enc), chars(Pad, F-P), Adj),
+                    {S, F, -1};
+	       Sz < P ->
+		    S = adjust([S0|chars(Pad, P-Sz)], chars(Pad, F-P), Adj),
+                    {S, F, -1};
+	       true -> % N == P
+		    S = adjust(S0, chars(Pad, F-P), Adj),
+                    {S, Sz+(F-P), -1}
+	    end;
+       true -> % F == P
+	    string_field_bin(S0, F, Adj, Sz, Pad, Enc)
+    end.
+
+string_field_bin(S0, F, _Adj, N, _Pad, Enc) when N > F ->
+    S = flat_trunc(S0, F, Enc),
+    {S, F, -1};
+string_field_bin(S0, F, Adj, N, Pad, _Enc) when N < F ->
+    S = adjust(S0, chars(Pad, F-N), Adj),
+    {S, N+F-N, -1};
+string_field_bin(S, _, _, N, _, _) -> % N == F
+    {S, N, -1}.
+
+
 %% unprefixed_integer(Int, Field, Adjust, Base, PadChar, Lowercase)
 %% -> [Char].
 
@@ -945,10 +1022,10 @@ unprefixed_integer(Int, F, Adj, Base, Pad, Lowercase)
   when Base >= 2, Base =< 1+$Z-$A+10 ->
     if Int < 0 ->
 	    S = cond_lowercase(erlang:integer_to_list(-Int, Base), Lowercase),
-	    term([$-|S], F, Adj, none, Pad);
+	    term([$-|S], F, Adj, none, Pad, latin1);
        true ->
 	    S = cond_lowercase(erlang:integer_to_list(Int, Base), Lowercase),
-	    term(S, F, Adj, none, Pad)
+	    term(S, F, Adj, none, Pad, latin1)
     end.
 
 %% prefixed_integer(Int, Field, Adjust, Base, PadChar, Prefix, Lowercase)
@@ -958,10 +1035,10 @@ prefixed_integer(Int, F, Adj, Base, Pad, Prefix, Lowercase)
   when Base >= 2, Base =< 1+$Z-$A+10 ->
     if Int < 0 ->
 	    S = cond_lowercase(erlang:integer_to_list(-Int, Base), Lowercase),
-	    term([$-,Prefix|S], F, Adj, none, Pad);
+	    term([$-,Prefix|S], F, Adj, none, Pad, latin1);
        true ->
 	    S = cond_lowercase(erlang:integer_to_list(Int, Base), Lowercase),
-	    term([Prefix|S], F, Adj, none, Pad)
+	    term([Prefix|S], F, Adj, none, Pad, latin1)
     end.
 
 %% char(Char, Field, Adjust, Precision, PadChar) -> chars().
@@ -987,11 +1064,11 @@ adjust(Data, Pad, right) -> [Pad|Data].
 
 %% Flatten and truncate a deep list to at most N elements.
 
-flat_trunc(List, N, latin1) when is_integer(N), N >= 0 ->
-    {S, _} = lists:split(N, lists:flatten(List)),
-    S;
-flat_trunc(List, N, unicode) when is_integer(N), N >= 0 ->
-    string:slice(List, 0, N).
+flat_trunc(Bin, N, latin1) when is_binary(Bin), is_integer(N), N >= 0 ->
+    {B, _} = split_binary(Bin, N),
+    B;
+flat_trunc(Str, N, _) when is_integer(N), N >= 0 ->
+    string:slice(Str, 0, N).
 
 %% A deep version of lists:duplicate/2
 
@@ -1027,7 +1104,7 @@ lowercase([H|T]) ->
 lowercase([]) ->
     [].
 
-%% Make sure T does change sign.
+%% Make sure T does not change sign.
 sub(T, _) when T < 0 -> T;
 sub(T, E) when T >= E -> T - E;
 sub(_, _) -> 0.

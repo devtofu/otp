@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2005-2016. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2005-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -39,7 +41,9 @@
 -export([attributes/1, expr/1, guard/1,
          init/1, pattern/1, strict/1, update/1,
 	 otp_5915/1, otp_7931/1, otp_5990/1,
-	 otp_7078/1, otp_7101/1, maps/1]).
+	 otp_7078/1, maps/1, zlc/1,
+         side_effects/1,
+         update_anon_native_record/1]).
 
 init_per_testcase(_Case, Config) ->
     Config.
@@ -53,11 +57,13 @@ suite() ->
 
 all() -> 
     [attributes, expr, guard, init,
-     pattern, strict, update, maps, {group, tickets}].
+     pattern, strict, update, maps,
+     side_effects, zlc, {group, tickets},
+     update_anon_native_record].
 
 groups() -> 
     [{tickets, [],
-      [otp_5915, otp_7931, otp_5990, otp_7078, otp_7101]}].
+      [otp_5915, otp_7931, otp_5990, otp_7078]}].
 
 init_per_suite(Config) ->
     Config.
@@ -146,6 +152,22 @@ expr(Config) when is_list(Config) ->
 
          is_record(_, _, _) ->
              error(wrong_is_record).
+      ">>,
+      <<"
+         -record(foo, {bar = [Bar || Bar <- ?MODULE:id([]), size(Bar) > 0]}).
+
+         t() ->
+             {'EXIT',{{bad_filter,{foo,[]}},[_|_]}} = catch gh6501a(whatever),
+             [whatever] = gh6501b(whatever),
+             ok.
+
+         gh6501a(Bar) ->
+             [Bar || #foo{}].
+
+         gh6501b(Bar) ->
+             [Bar || is_tuple(#foo{})].
+
+         id(I) -> I.
       ">>
       ],
 
@@ -205,21 +227,60 @@ guard(Config) when is_list(Config) ->
 %% Wildcard initialisation.
 init(Config) when is_list(Config) ->
     Ts = [
-      <<"
-         -record(r, {a,b,c,d = foo}).
+          ~"""
+          -record(r, {a,b,c,d = foo}).
 
-         t() ->
-             R = #r{_ = init, b = b},
-             #r{c = init, b = b, a = init} = R,
-             case R of
-                 #r{b = b, _ = init} -> ok;
-                 _ -> not_ok
-             end.
-      ">>
-      ],
+          t() ->
+              R = #r{_ = init, b = b},
+              #r{c = init, b = b, a = init} = R,
+              case R of
+                  #r{b = b, _ = init} -> ok;
+                  _ -> not_ok
+              end.
+          """,
+          ~"""
+            -record(r0, {a}).
+            -record(r1, {rf1 = (#r0{a = #{ok => ok || ok}})}).
+
+            t() ->
+                catch <<0 || #r1{}>>,
+                ok.
+            """,
+          ~"""
+            -record(r0, {a}).
+            -record(r1, {
+                         rf1 = fun
+                                   (+0.0) ->
+                                       (list_to_bitstring(ok))#r0.a;
+                                   (_) when ok ->
+                                       ok
+                               end
+                        }).
+
+            t() ->
+                catch <<0 || (#r1{})>>,
+                ok.
+            """,
+          ~"""
+           -record(r0, {a}).
+           -record(r1, {
+                        a = {
+                             ((ok)#r0{})#r0.a,
+                             case whatever of
+                                   _ when cucumber ->
+                                       banan
+                               end
+                              }
+                       }).
+
+           t() ->
+               catch #{ok => ok || #r1{}},
+               ok.
+           """
+         ],
     run(Config, Ts),
     ok.
-    
+
 %% Some patterns.
 pattern(Config) when is_list(Config) ->
     Ts = [
@@ -270,7 +331,7 @@ pattern(Config) when is_list(Config) ->
              11;
          t(L) when is_list(L) ->
              12;
-         t({L}) when list(L) ->
+         t({L}) when is_list(L) ->
              13;
          t({a,b}) ->
              14;
@@ -286,21 +347,21 @@ pattern(Config) when is_list(Config) ->
              21;
          t(#r.a) ->
              22;
-         t(A) when is_record(A, r), record(element(2, A), r) ->
+         t(A) when is_record(A, r), is_record(element(2, A), r) ->
              23;
          t(A) when is_record(A, r) ->
              1;
          t(I) when is_integer(I) ->
              3;
-         t({I}) when integer(I) ->
+         t({I}) when is_integer(I) ->
              4;
-         t({F}) when float(F) ->
+         t({F}) when is_float(F) ->
              7;
          t({A} = B) when A < B ->
              19;
          t(F) when is_float(F) ->
              6;
-         t(T) when tuple(T) ->
+         t(T) when is_tuple(T) ->
              16.
       ">>
       ],
@@ -317,7 +378,7 @@ strict(Config) when is_list(Config) ->
              ok = try 
                       {1, 2} = {A#r2.a, A#r2.b},
                       not_ok
-                  catch error:{badrecord,r2} -> ok
+                  catch error:{badrecord,{r1,1,2}} -> ok
                   end,
              try
                  case foo of
@@ -402,6 +463,15 @@ maps(Config) when is_list(Config) ->
     run(Config, Ts, [strict_record_tests]),
     ok.
 
+zlc(Config) when is_list(Config) ->
+    Ts = [<<"-record(rr, {a,b,c}).
+             t() -> R0 = id(#rr{a=[{X,Y}||X <- [1,2] && Y <- [a,b]]}),
+             ok.
+             id(X) -> X.
+            ">>],
+    run(Config, Ts, [strict_record_tests]),
+    ok.
+
 %% Strict record tests in guards.
 otp_5915(Config) when is_list(Config) ->
     %% These tests are also run by the compiler's record_SUITE.
@@ -419,17 +489,17 @@ otp_5915(Config) when is_list(Config) ->
                          2 end(2),
              3 = fun(A) when (A#r2.a)#r1.a =:= 3 -> 3 end(#r2{a = #r1{a = 3}}),
              ok = fun() ->
-                          F = fun(A) when record(A#r.a, r1) -> 4;
-                                 (A) when record(A#r1.a, r1) -> 5
+                          F = fun(A) when is_record(A#r.a, r1) -> 4;
+                                 (A) when is_record(A#r1.a, r1) -> 5
                               end,
                           5 = F(#r1{a = #r1{}}),
                           4 = F(#r{a = #r1{}}),
                           ok
                   end(),
-             3 = fun(A) when record(A#r1.a, r),
+             3 = fun(A) when is_record(A#r1.a, r),
                                    (A#r1.a)#r.a > 3 -> 3
                  end(#r1{a = #r{a = 4}}),
-             7 = fun(A) when record(A#r3.a, r1) -> 7 end(#r3{}),
+             7 = fun(A) when is_record(A#r3.a, r1) -> 7 end(#r3{}),
              [#r1{a = 2,b = 1}] = 
                  fun() ->
                          [A || A <- [#r1{a = 1, b = 3}, 
@@ -457,7 +527,7 @@ otp_5915(Config) when is_list(Config) ->
                  end(#r1{a = 2}),
 
              3 = fun(A) when A#r1.a > 3, 
-                             record(A, r1) -> 3
+                             is_record(A, r1) -> 3
                  end(#r1{a = 5}),
 
              ok = fun() ->
@@ -488,10 +558,6 @@ otp_5915(Config) when is_list(Config) ->
                           ok
                   end(),
 
-             a = fun(A) when record(A, r),
-                             A#r.a =:= 1,
-                             A#r.b =:= 2 ->a
-                 end(#r{a = 1, b = 2}),
              a = fun(A) when erlang:is_record(A, r),
                              A#r.a =:= 1,
                              A#r.b =:= 2 -> a
@@ -653,11 +719,11 @@ otp_5990(Config) when is_list(Config) ->
          -record('OrdSet', {orddata = {},
                             ordtype = {}}).
 
-         to_sets(S) when tuple(S#'OrdSet'.ordtype) ->
+         to_sets(S) when is_tuple(S#'OrdSet'.ordtype) ->
              ok.
 
          lc(S) ->
-             [X || X <- [S], tuple(X#'OrdSet'.ordtype)].
+             [X || X <- [S], is_tuple(X#'OrdSet'.ordtype)].
 
          t() ->
              S = #'OrdSet'{},
@@ -701,65 +767,47 @@ otp_7078(Config) when is_list(Config) ->
     run(Config, Ts, [strict_record_tests]),
     ok.
 
--record(otp_7101, {a,b,c=[],d=[],e=[]}).
+update_anon_native_record(Config) when is_list(Config) ->
+
+    Ts = [
+          ~"""
+           -record #nr{x = 0, y = 0}.
+           -record(tup, {a,b}).
+
+           t() ->
+             R0 = #nr{},
+             T0 = #tup{},
+             R0#_{x = (T0#tup.a)},
+             ok.
+           """],
+    run(Config, Ts),
+    ok.
+
 
 id(I) -> I.
 
-%% OTP-7101. Record update: more than one call to setelement/3.
-otp_7101(Config) when is_list(Config) ->
-    %% Ensure the compiler won't do any funny constant propagation tricks.
-    id(#otp_7101{a=a,b=b,c=c,d=d,e=e}),
-    Rec = id(#otp_7101{}),
+-record(side_effects, {a,b,c}).
 
-    %% Spawn a tracer process to count the number of setelement/3 calls.
-    %% The tracer will forward all trace messages to us.
-    Self = self(),
-    Tracer = spawn_link(fun() -> otp_7101_tracer(Self, 0) end),
-    1 = erlang:trace_pattern({erlang,setelement,3}, true),
-    erlang:trace(self(), true, [{tracer,Tracer},call]),
-    
-    %% Update the record.
-    #otp_7101{a=2,b=1,c=[],d=[],e=[]} = otp_7101_update1(Rec),
-    #otp_7101{a=1,b=2,c=[],d=[],e=[]} = otp_7101_update2(Rec),
-    #otp_7101{a=2,b=1,c=[],d=[],e=[]} = otp_7101_update3(Rec),
-    #otp_7101{a=1,b=2,c=[],d=[],e=[]} = otp_7101_update4(Rec),
+%% Make sure that the record expression is only evaluated once.
+side_effects(_Config) ->
+    init_counter(),
 
-    %% Verify that setelement/3 was called the same number of times as
-    %% the number of record updates.
-    Ref = erlang:trace_delivered(Self),
-    receive
-	{trace_delivered, Self, Ref} ->
-	    Tracer ! done
-    end,
-    1 = erlang:trace_pattern({erlang,setelement,3}, false),
-    receive
-	4 ->
-	    ok;
-	Other ->
-	    ct:fail({unexpected,Other})
-    end.
+    {'EXIT',{{badrecord,0},_}} = catch (id(bump_counter()))#side_effects{a=1},
+    1 = read_counter(),
 
-otp_7101_tracer(Parent, N) ->
-    receive
-	{trace,Parent,call,{erlang,setelement,[_,_,_]}} ->
-	    otp_7101_tracer(Parent, N+1);
-	done ->
-	    Parent ! N
-    end.
+    {'EXIT',{{badrecord,1},_}} = catch (id(bump_counter()))#side_effects.b,
+    2 = read_counter(),
 
-otp_7101_update1(R) ->
-    R#otp_7101{b=1,
-	       a=2}.
+    ok.
 
-otp_7101_update2(R) ->
-    R#otp_7101{a=1,
-	       b=2}.
+init_counter() ->
+    put(counter, 0).
 
-otp_7101_update3(R) ->
-    R#otp_7101{b=1,a=2}.
+bump_counter() ->
+    put(counter, get(counter) + 1).
 
-otp_7101_update4(R) ->
-    R#otp_7101{a=1,b=2}.
+read_counter() ->
+    get(counter).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 

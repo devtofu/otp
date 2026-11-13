@@ -2,7 +2,9 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 2002-2016. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 2002-2025. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,6 +31,15 @@ SAVE="$@"
 # Constants
 COMMON_CFLAGS="-nologo -D__WIN32__ -DWIN32 -DWINDOWS -D_WIN32 -DNT -D_CRT_SECURE_NO_DEPRECATE"
 
+if [ "$CONFIG_SUBTYPE" = "arm64" -o "$CONFIG_SUBTYPE" = "x64_arm64" ]; then
+    MACHINE="ARM64"
+    COMMON_CFLAGS="${COMMON_CFLAGS} -D__aarch64__"
+elif [ "$CONFIG_SUBTYPE" = "win64" ]; then
+    MACHINE="x64"
+else
+    MACHINE="x86"
+fi
+
 # Variables
 # The stdout and stderr for the compiler
 MSG_FILE=/tmp/cl.exe.$$.1
@@ -39,8 +50,10 @@ ERR_FILE=/tmp/cl.exe.$$.2
 MD_FORCED=false
 # If we're preprocession (only) i.e. -E
 PREPROCESSING=false
-# If we're generating dependencies (implies preprocesing)
+# If we're generating dependencies (implies preprocessing)
 DEPENDENCIES=false
+# If we're generating fast dependencies
+FAST_DEPENDENCIES=false
 # If this is supposed to be a debug build
 DEBUG_BUILD=false
 # If this is supposed to be an optimized build (there can only be one...)
@@ -62,7 +75,7 @@ CMD=""
 # All the c source files, in unix style
 SOURCES=""
 # All the options to pass to the linker, kept in Unix style
-LINKCMD=""
+LINKCMD="-MACHINE:${MACHINE}"
 
 
 # Loop through the parameters and set the above variables accordingly
@@ -87,10 +100,15 @@ while test -n "$1" ; do
     case "$x" in
 	-Wall)
 	    ;;
+        -Werror)
+	    CMD="$CMD /WX";;
 	-c)
 	    LINKING=false;;
 	    #CMD="$CMD -c";;
 	-MM)
+	    LINKING=false;
+	    FAST_DEPENDENCIES=true;;
+	-MS)
 	    PREPROCESSING=true;
 	    LINKING=false;
 	    DEPENDENCIES=true;;
@@ -107,6 +125,10 @@ while test -n "$1" ; do
 		MD=-MD;
 	    fi
 	    OPTIMIZED_BUILD=true;;
+        -O0|-Og)
+            ;;
+        -fno-common|-fno-omit-frame-pointer|-std=gnu99)
+            ;;
 	-O*)
 	    # Optimization hardcoded
 	    OPTIMIZE_FLAGS="-Ox -Z7";
@@ -225,7 +247,7 @@ mkdir $TMPOBJDIR
 
 WINTMPDIR=`w32_path.sh -w $TMPOBJDIR`
 
-# Sometimes the file server doesn't keep up (paralell file creation)
+# Sometimes the file server doesn't keep up (parallel file creation)
 while true ; do
     DIR_EXISTS=$(cd /mnt/c; cmd.exe /C "IF EXIST $WINTMPDIR (echo yes) ELSE (echo no)")
     case $DIR_EXISTS in   # Contains trash in the end of string
@@ -241,75 +263,139 @@ while true ; do
     esac
 done
 
-# Compile
-for x in $SOURCES; do
-    # Compile each source
-    if [ $LINKING = false ]; then
-	# We should have an output defined, which is a directory
-	# or an object file
-	case $OUTFILE in
-	    /*.o)
-		# Simple output, SOURCES should be one single
-		n=`echo $SOURCES | wc -w`;
-		if [ $n -gt 1 ]; then
-		    echo "cc.sh:Error, multiple sources, one object output.";
-		    exit 1;
-		else
-		    output_filename=`echo $OUTFILE`;
-		fi;;
-	    *.o)
-		# Relative path needs no translation
-		n=`echo $SOURCES | wc -w`
-		if [ $n -gt 1 ]; then
-		    echo "cc.sh:Error, multiple sources, one object output."
-		    exit 1
-		else
-		    output_filename=$OUTFILE
-		fi;;
-	    /*)
-		# Absolute directory
-		o=`echo $x | sed 's,.*/,,' | sed 's,\.c$,.o,'`
-		output_filename=`echo $OUTFILE`
-		output_filename="$output_filename/${o}";;
-	    *)
-		# Relative_directory or empty string (.//x.o is valid)
-		o=`echo $x | sed 's,.*/,,' | sed 's,\.cp*$,.o,'`
-		output_filename="./${OUTFILE}/${o}";;
-	esac
-    else
-	# We are linking, which means we build objects in a temporary
-	# directory and link from there. We should retain the basename
-	# of each source to make examining the exe easier...
-	o=`echo $x | sed 's,.*/,,' | sed 's,\.c$,.o,'`
-	output_filename=$TMPOBJDIR/$o
-	ACCUM_OBJECTS="$ACCUM_OBJECTS $output_filename"
-    fi
-    # Now we know enough, lets try a compilation...
-    if [ $USEABSPATH = true ]; then
-        MPATH=`w32_path.sh -a -d $x`
-    else
-        MPATH=`w32_path.sh -d $x`
-    fi
-    if [ $PREPROCESSING = true ]; then
-	output_flag="-E"
-    else
-	output_flag="/FS -c -Fo`w32_path.sh -a -d ${output_filename}`"
-    fi
+## This is a faster dependency calculation method that
+## only invokes cl.exe once for all files.
+if [ $FAST_DEPENDENCIES = true ]; then
+    MPATH=
+    for x in $SOURCES; do
+	if [ $USEABSPATH = true ]; then
+	    MPATH="$MPATH $(w32_path.sh -a -d $x)"
+	else
+	    MPATH="$MPATH $(w32_path.sh -d $x)"
+	fi
+    done
     params="$COMMON_CFLAGS $MD $DEBUG_FLAGS $OPTIMIZE_FLAGS \
-	    $CMD ${output_flag} $MPATH"
+	    $CMD /showIncludes '-Fo`w32_path.sh -a -d ${TMPOBJDIR}`\\' $MPATH"
     if [ "X$CC_SH_DEBUG_LOG" != "X" ]; then
 	echo cc.sh "$SAVE" >>$CC_SH_DEBUG_LOG
 	echo cl.exe $params >>$CC_SH_DEBUG_LOG
     fi
-    eval cl.exe $params >$MSG_FILE 2>$ERR_FILE
+    eval cl.exe $params > $MSG_FILE 2> $ERR_FILE
     RES=$?
-    if test $PREPROCESSING = false; then
-	cat $ERR_FILE >&2
-	tail -n +2 $MSG_FILE
-    else
-	tail -n +2 $ERR_FILE >&2
-	if test $DEPENDENCIES = true; then
-	    perl -e '
+    tail -n +2 $ERR_FILE | grep -v LNK1561 >&2
+    if grep "LNK1561" $ERR_FILE; then
+	rm -f $ERR_FILE $MSG_FILE
+	rm -rf $TMPOBJDIR
+	exit $RES
+    fi
+    perl -e '
+my $deps = "";
+my @sources = split(" ",$ARGV[1]);
+
+open(FH, "<", $ARGV[0]) or die $!;
+
+sub flushDeps() {
+    if ($deps ne "") {
+        ## To start a new shell can be very slow so we run all
+        ## the wslpath translations in a single run
+        my @paths = split("\n",`for x in $deps; do wslpath -u "\$x"; done`);
+        foreach (@paths) {
+            print "\\\n $_";
+        }
+        print "\n\n";
+    }
+}
+
+while (<FH>) {
+    $_ =~ tr/\r\n/\n/d;
+    if (/^(.*)\.(c|cpp)$/) {
+        my $target = "$1";
+        flushDeps();
+        $deps = shift(@sources) . " ";
+        print $target.".o:";
+    }
+    if (/^Note: including file:\s*(.*)$/) {
+        ## Ignore any deps that comes from "Program Files"
+        next if /Program Files/;
+        my $file = $1;
+        $file =~ s/\\/\//g;
+        $deps .= "'"'"'$file'"'"' ";
+    }
+}
+flushDeps();
+' $MSG_FILE "$MPATH"
+    RES=$?
+    rm -f $ERR_FILE $MSG_FILE
+else
+    # Compile
+    for x in $SOURCES; do
+        # Compile each source
+        if [ $LINKING = false ]; then
+	    # We should have an output defined, which is a directory
+	    # or an object file
+	    case $OUTFILE in
+	        /*.o)
+		    # Simple output, SOURCES should be one single
+		    n=`echo $SOURCES | wc -w`;
+		    if [ $n -gt 1 ]; then
+		        echo "cc.sh:Error, multiple sources, one object output.";
+		        exit 1;
+		    else
+		        output_filename=`echo $OUTFILE`;
+		    fi;;
+	        *.o)
+		    # Relative path needs no translation
+		    n=`echo $SOURCES | wc -w`
+		    if [ $n -gt 1 ]; then
+		        echo "cc.sh:Error, multiple sources, one object output."
+		        exit 1
+		    else
+		        output_filename=$OUTFILE
+		    fi;;
+	        /*)
+		    # Absolute directory
+		    o=`echo $x | sed 's,.*/,,' | sed 's,\.c$,.o,'`
+		    output_filename=`echo $OUTFILE`
+		    output_filename="$output_filename/${o}";;
+	        *)
+		    # Relative_directory or empty string (.//x.o is valid)
+		    o=`echo $x | sed 's,.*/,,' | sed 's,\.cp*$,.o,'`
+		    output_filename="./${OUTFILE}/${o}";;
+	    esac
+        else
+	    # We are linking, which means we build objects in a temporary
+	    # directory and link from there. We should retain the basename
+	    # of each source to make examining the exe easier...
+	    o=`echo $x | sed 's,.*/,,' | sed 's,\.c$,.o,'`
+	    output_filename=$TMPOBJDIR/$o
+	    ACCUM_OBJECTS="$ACCUM_OBJECTS $output_filename"
+        fi
+        # Now we know enough, lets try a compilation...
+        if [ $USEABSPATH = true ]; then
+            MPATH=`w32_path.sh -a -d $x`
+        else
+            MPATH=`w32_path.sh -d $x`
+        fi
+        if [ $PREPROCESSING = true ]; then
+	    output_flag="-E"
+        else
+	    output_flag="/FS -c -Fo`w32_path.sh -a -d ${output_filename}`"
+        fi
+        params="$COMMON_CFLAGS $MD $DEBUG_FLAGS $OPTIMIZE_FLAGS \
+	    $CMD ${output_flag} $MPATH"
+        if [ "X$CC_SH_DEBUG_LOG" != "X" ]; then
+	    echo cc.sh "$SAVE" >>$CC_SH_DEBUG_LOG
+	    echo cl.exe $params >>$CC_SH_DEBUG_LOG
+        fi
+        eval cl.exe $params >$MSG_FILE 2>$ERR_FILE
+        RES=$?
+        if test $PREPROCESSING = false; then
+	    cat $ERR_FILE >&2
+	    tail -n +2 $MSG_FILE
+        else
+	    tail -n +2 $ERR_FILE >&2
+	    if test $DEPENDENCIES = true; then
+	        perl -e '
 my $file = "'$x'";
 while (<>) {
       next unless /^#line/;
@@ -331,18 +417,18 @@ if (@f) {
      print "\n\n";
      print STDERR "Made dependencies for $file\n";
 }' $MSG_FILE
-	else
-	    cat $MSG_FILE
-	fi
-    fi
-    rm -f $ERR_FILE $MSG_FILE
-    if [ $RES != 0 ]; then
-	echo Failed: cl.exe $params
-	rm -rf $TMPOBJDIR
-	exit $RES
-    fi
-done
-
+	    else
+	        cat $MSG_FILE
+	    fi
+        fi
+        rm -f $ERR_FILE $MSG_FILE
+        if [ $RES != 0 ]; then
+	    echo Failed: cl.exe $params
+	    rm -rf $TMPOBJDIR
+	    exit $RES
+        fi
+    done
+fi
 # If we got here, we succeeded in compiling (if there were anything to compile)
 # The output filename should name an executable if we're linking
 if [ $LINKING = true ]; then
@@ -360,7 +446,7 @@ if [ $LINKING = true ]; then
 	*)
 	    out_spec="-o $OUTFILE";;
     esac
-    # Descide which standard library to link against
+    # Decide which standard library to link against
     case $MD in
 	-ML)
 	    stdlib="-lLIBC";;

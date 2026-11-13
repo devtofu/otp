@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -40,14 +42,15 @@
 %%----------------------------------------------------------------------
 %% Test groups
 %%----------------------------------------------------------------------
-all() -> 
-    [{group, cpd_tests}, xpath_text1, xpath_main,
+all() ->
+    [doctests,
+     {group, cpd_tests}, xpath_text1, xpath_main,
      xpath_abbreviated_syntax, xpath_functions, xpath_namespaces,
      {group, misc}, {group, eventp_tests},
      {group, ticket_tests}, {group, app_test},
-     {group, appup_test}].
+     {group, appup_test}, {group, format_test}].
 
-groups() -> 
+groups() ->
     [{cpd_tests, [],
       [cpd_invalid1, cpd_invalid1_index, cpd_invalid2_index,
        cpd_invalid_index3, cpd_invalid_is_layer,
@@ -55,14 +58,17 @@ groups() ->
      {misc, [],
       [latin1_alias, syntax_bug1, syntax_bug2, syntax_bug3,
        pe_ref1, copyright, testXSEIF, export_simple1, export,
-       default_attrs_bug, xml_ns, scan_splits_string_bug]},
+       export_cdata, export_comments,
+       default_attrs_bug, xml_ns, scan_splits_string_bug,
+       allow_entities_test]},
      {eventp_tests, [], [sax_parse_and_export]},
      {ticket_tests, [],
       [ticket_5998, ticket_7211, ticket_7214, ticket_7430,
        ticket_6873, ticket_7496, ticket_8156, ticket_8697,
        ticket_9411, ticket_9457, ticket_9664_schema, ticket_9664_dtd]},
      {app_test, [], [{xmerl_app_test, all}]},
-     {appup_test, [], [{xmerl_appup_test, all}]}].
+     {appup_test, [], [{xmerl_appup_test, all}]},
+     {format_test, [], [formatter_pass,formatter_fail]}].
 
 suite() ->
     [{timetrap,{minutes,10}}].
@@ -77,10 +83,9 @@ init_per_suite(Config) ->
     ok=erl_tar:extract("misc.tar.gz",[compressed]),
     ok = change_mode(["cpd", "misc"]),
     file:set_cwd(filename:join(datadir(Config),xpath)),
-    TestServerIncludeDir=filename:join(filename:dirname(code:priv_dir(test_server)), "include"),
-    {ok, xpath_lib} = compile:file(xpath_lib, [{i, TestServerIncludeDir}]),
-    {ok, xpath_text} = compile:file(xpath_text, [{i, TestServerIncludeDir}]),
-    {ok, xpath_abbrev} = compile:file(xpath_abbrev, [{i, TestServerIncludeDir}]),
+    {ok, xpath_lib} = compile:file(xpath_lib, []),
+    {ok, xpath_text} = compile:file(xpath_text, []),
+    {ok, xpath_abbrev} = compile:file(xpath_abbrev, []),
     Config.
 
 
@@ -112,6 +117,12 @@ end_per_testcase(_Func,_Config) ->
 %%----------------------------------------------------------------------
 %% Test cases
 %%----------------------------------------------------------------------
+doctests(_Config) ->
+    Options = [{missing_tests, []}],
+    ok = ct_doctest:module(xmerl, Options),
+    ok = ct_doctest:module(xmerl_xpath, Options),
+    ok = ct_doctest:module(xmerl_xs, Options).
+
 cpd_invalid1(Config) ->
     file:set_cwd(datadir(Config)),
     case catch xmerl_scan:file(datadir_join(Config,[cpd,"cpd_test.xml"]),[]) of
@@ -257,12 +268,12 @@ xml_ns(_Config) ->
                  attributes = [#xmlAttribute{name = 'xmlns:xml',
                                              expanded_name = {"xmlns","xml"},
                                              nsinfo = {"xmlns","xml"},
-                                             namespace = #xmlNamespace{default = [], 
+                                             namespace = #xmlNamespace{default = [],
                                                                        nodes = [{"xml",'http://www.w3.org/XML/1998/namespace'}]}},
                                #xmlAttribute{name = 'xml:attr1',
                                              expanded_name = {'http://www.w3.org/XML/1998/namespace',attr1},
                                              nsinfo = {"xml","attr1"},
-                                             namespace = #xmlNamespace{default = [], 
+                                             namespace = #xmlNamespace{default = [],
                                                                        nodes = [{"xml",'http://www.w3.org/XML/1998/namespace'}]}}]},
      []
     } = xmerl_scan:string(Doc2, [{namespace_conformant, true}]),
@@ -274,7 +285,8 @@ scan_splits_string_bug(_Config) ->
 
 pe_ref1(Config) ->
     file:set_cwd(datadir(Config)),
-    {#xmlElement{},[]} = xmerl_scan:file(datadir_join(Config,[misc,"PE_ref1.xml"]),[{validation,true}]).
+    {#xmlElement{},[]} = xmerl_scan:file(datadir_join(Config,[misc,"PE_ref1.xml"]),
+                                         [{allow_entities, true}, {validation,true}]).
 
 copyright(Config) ->
     file:set_cwd(datadir(Config)),
@@ -282,7 +294,8 @@ copyright(Config) ->
 
 testXSEIF(Config) ->
     file:set_cwd(datadir(Config)),
-    {#xmlElement{},[]} = xmerl_scan:file(datadir_join(Config,[misc,"ReplBoard_1_1543-CNA11313Uen.xml"]),[{validation,true}]).
+    {#xmlElement{},[]} = xmerl_scan:file(datadir_join(Config,[misc,"ReplBoard_1_1543-CNA11313Uen.xml"]),
+                                         [{allow_entities, true}, {validation,true}]).
 
 export_simple1(_Config) ->
     Simple = simple(),
@@ -305,6 +318,31 @@ export(Config) ->
     {ok, B} = file:read_file(TestFile),
     ok.
 
+export_cdata(_Config) ->
+    InData = <<"<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<doc>
+   <a>Test...</a>
+   <b><![CDATA[
+<c>Test</c>
+]]></b>
+</doc>">>,
+    Prolog = ["<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"],
+    {E,_} = xmerl_scan:string(binary:bin_to_list(InData)),
+    Exported = xmerl:export([E],xmerl_xml,[{prolog,Prolog}]),
+    InData = list_to_binary(Exported),
+    ok.
+
+export_comments(Config) ->
+    InData = <<"<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<doc>
+    <!-- top comment --><a>Test...</a>
+    <!-- bottom comment --></doc>">>,
+    Prolog = ["<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"],
+    {E, _} = xmerl_scan:string(binary:bin_to_list(InData)),
+    Exported = xmerl:export([E],xmerl_xml,[{prolog,Prolog}]),
+    InData = list_to_binary(Exported),
+    ok.
+
 %%----------------------------------------------------------------------
 
 sax_parse_and_export(Config) ->
@@ -318,7 +356,7 @@ sax_parse_export_xml_big(Config) ->
     OutDir = privdir(Config),
     io:format("DataDir: ~p~n,OutDir:~p~n",[DataDir,OutDir]),
     CMOMxml = filename:join([DataDir,"eventp","CMOM.xml"]),
-    {Ex,[]} = xmerl_eventp:file_sax(CMOMxml, xmerl_xml,[],[]),
+    {Ex,[]} = xmerl_eventp:file_sax(CMOMxml, xmerl_xml,[],[{allow_entities, true}]),
     OutFile = filename:join([OutDir,"cmom"]),
     file:delete(OutFile),
     StubFile = filename:join([DataDir,"eventp","CelloMOM.stub"]),
@@ -335,7 +373,7 @@ sax_parse_export_xml_small(Config) ->
     DataDir = datadir(Config),
     OutDir = privdir(Config),
     Wurfl_xml = filename:join([DataDir,"eventp","wurfl.xml"]),
-    {Ex,[]} = xmerl_eventp:file_sax(Wurfl_xml, xmerl_xml,[],[]),
+    {Ex,[]} = xmerl_eventp:file_sax(Wurfl_xml, xmerl_xml,[],[{allow_entities, true}]),
     OutFile = filename:join([OutDir,"wrfl"]),
     file:delete(OutFile),
     StubFile = filename:join([DataDir,"eventp","wurfl.stub"]),
@@ -349,15 +387,15 @@ sax_parse_export_xml_small(Config) ->
     ok.
 
 simple() ->
-    [{document, 
+    [{document,
       [{title, "Doc Title"}, {author, "Ulf Wiger"}],
-      [{section, 
+      [{section,
 	[{heading, "heading1"}],
 	[{'P', ["This is a paragraph of text."]},
-	 {section, 
+	 {section,
 	  [{heading, "heading2"}],
 	  [{'P', ["This is another paragraph."]},
-	   {table, 
+	   {table,
 	    [{border, 1}],
 	    [{heading,
 	      [{col, ["head1"]},
@@ -393,7 +431,7 @@ generate_section_attribute(0) ->
 generate_section_attribute(N) ->
     {{heading, "heading1"},N-1}.
 
-    
+
 generate_subsection_content(0) ->
     done;
 generate_subsection_content(1) ->
@@ -445,12 +483,12 @@ generate_heading_col(N) ->
 %% ticket_5998
 %%
 %% A Kleene Closure child in a sequence consumed all following
-%% childs. This problem has been fixed.
+%% child's. This problem has been fixed.
 %%
 ticket_5998(Config) ->
     DataDir = datadir(Config),
     %% First fix is tested by case syntax_bug2.
-    
+
     ok =
         case catch xmerl_scan:file(filename:join([DataDir,misc,"ticket_5998_2.xml"])) of
             {'EXIT',{fatal,Reason1}} ->
@@ -477,25 +515,25 @@ ticket_5998(Config) ->
 %% ticket_7211
 %%
 %% A Kleene Closure child in a sequence consumed all following
-%% childs. This problem has been fixed.
+%% child's. This problem has been fixed.
 %%
 ticket_7211(Config) ->
     DataDir = datadir(Config),
     {E,[]} = xmerl_scan:file(filename:join([DataDir,misc,"notes2.xml"]),
                              [{fetch_path,[filename:join([DataDir,misc,erlang_docs_dtd])]},
-                              {validation,dtd}]),
-    
+                              {allow_entities, true}, {validation,dtd}]),
+
     ok = case E of
              Rec when is_record(Rec,xmlElement) ->
                  ok;
              _ ->
                  E
          end,
-		       
+
     {E2,[]} = xmerl_scan:file(filename:join([DataDir,misc,"XS.xml"]),
                               [{fetch_path,[filename:join([DataDir,misc,erlang_docs_dtd])]},
-                               {validation,dtd}]),
-    
+                               {validation,dtd}, {allow_entities, true}]),
+
     ok = case E2 of
              Rec2 when is_record(Rec2,xmlElement) ->
                  ok;
@@ -507,7 +545,7 @@ ticket_7211(Config) ->
 %% ticket_7214
 %%
 %% Now validating xhtml1-transitional.dtd.
-%% A certain contentspec with a succeding choice, that didn't match
+%% A certain contentspec with a succeeding choice, that didn't match
 %% all content, followed by other child elements caused a
 %% failure. This is now corrected.
 %%
@@ -515,9 +553,9 @@ ticket_7214(Config) ->
     DataDir = datadir(Config),
 
     {E,[]} = xmerl_scan:file(filename:join([DataDir,misc,'block_tags.html']),
-                             [{validation,dtd},
+                             [{validation,dtd},{allow_entities, true},
                               {fetch_path,[filename:join([DataDir,misc,erlang_docs_dtd])]}]),
-    
+
     ok = case E of
              Rec when is_record(Rec,xmlElement) ->
                  ok;
@@ -528,7 +566,7 @@ ticket_7214(Config) ->
 %%
 %% ticket_7430
 %%
-%% Problem with contents of numeric character references followed by 
+%% Problem with contents of numeric character references followed by
 %% UTF-8 characters..
 %%
 ticket_7430(_Config) ->
@@ -607,7 +645,7 @@ ticket_9457_cont(Continue, Exception, GlobalState) ->
     end.
 
 
-%% Test that comments are handled correct whith
+%% Test that comments are handled correct with
 ticket_9664_schema(Config) ->
     {E, _} = xmerl_scan:file(datadir_join(Config,[misc,"ticket_9664_schema.xml"]),[]),
     {ok, S} = xmerl_xsd:process_schema(datadir_join(Config,[misc,"motorcycles.xsd"])),
@@ -620,12 +658,20 @@ ticket_9664_schema(Config) ->
                               {validation, schema}]),
     ok.
 
-%% Test that comments are handled correct whith
+%% Test that comments are handled correct with
 ticket_9664_dtd(Config) ->
     {E, _} = xmerl_scan:file(datadir_join(Config,[misc,"ticket_9664_dtd.xml"]),[]),
     {E, _} = xmerl_scan:file(datadir_join(Config,[misc,"ticket_9664_dtd.xml"]),[{validation, true}]),
     ok.
 
+
+allow_entities_test(Config) ->
+    DataDir = proplists:get_value(data_dir, Config),
+    File = filename:join(DataDir, "lol_1_test.xml"), %% Depth 9
+    %% Disallow entities
+    {'EXIT',{fatal, {{error,entities_not_allowed}, _, _, _}}} =
+        (catch xmerl_scan:file(File, [{allow_entities, false}])),
+    ok.
 
 %%======================================================================
 %% Support Functions
@@ -670,7 +716,7 @@ change_mode3([F|Fs]) ->
             chmod(F)
     end,
     change_mode3(Fs).
-    
+
 chmod(F) ->
     case file:read_file_info(F) of
 	{ok,FileInfo} ->
@@ -687,3 +733,102 @@ datadir(Config) ->
 
 datadir_join(Config,Files) ->
     filename:join([datadir(Config)|Files]).
+
+%%======================================================================
+%% New formatter tests input/output
+%%======================================================================
+
+html() ->
+    "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \"DTD/xhtml1-strict.dtd\"><html>"
+    "<head><title>Doc Title</title><author>Ulf Wiger</author></head>"
+    "<h1>heading1</h1>"
+    "<p>This is a paragraph of text.</p>"
+    "<h2>heading2</h2>"
+    "<p>This is another paragraph.</p>"
+    "<table>"
+    "<thead><tr><td>head1</td><td>head2</td></tr></thead>"
+    "<tr><td>col11</td><td>col122</td></tr>"
+    "<tr><td>col21</td><td>col122</td></tr>"
+    "</table>"
+    "</html>".
+
+html_indented() ->
+    "<?xml version=\"1.0\"?>"
+    "\n<html>"
+    "\n  <head>"
+    "\n    <title>Doc Title</title>"
+    "\n    <author>Ulf Wiger</author>"
+    "\n  </head>"
+    "\n  <h1>heading1</h1>"
+    "\n  <p>This is a paragraph of text.</p>"
+    "\n  <h2>heading2</h2>"
+    "\n  <p>This is another paragraph.</p>"
+    "\n  <table>"
+    "\n    <thead>"
+    "\n      <tr>"
+    "\n        <td>head1</td>"
+    "\n        <td>head2</td>"
+    "\n      </tr>"
+    "\n    </thead>"
+    "\n    <tr>"
+    "\n      <td>col11</td>"
+    "\n      <td>col122</td>"
+    "\n    </tr>"
+    "\n    <tr>"
+    "\n      <td>col21</td>"
+    "\n      <td>col122</td>"
+    "\n    </tr>"
+    "\n  </table>"
+    "\n</html>".
+
+xml_namespace() ->
+    "<?xml version=\"1.0\"?>"
+    "<!-- initially, the default namespace is \"books\" -->"
+    "<book xmlns='urn:loc.gov:books' xmlns:isbn='urn:ISBN:0-395-36341-6'>"
+    "<title>Cheaper by the Dozen</title>"
+    "<isbn:number>1568491379</isbn:number>"
+    "<notes>"
+    "<!-- make HTML the default namespace for some comments -->"
+    "<p xmlns='urn:w3-org-ns:HTML'>"
+    "This is a <i>funny</i> book!"
+    "</p>"
+    "</notes>"
+    "</book>".
+
+xml_namespace_indented() ->
+  "<?xml version=\"1.0\"?>"
+  "\n<book xmlns=\"urn:loc.gov:books\" xmlns:isbn=\"urn:ISBN:0-395-36341-6\">"
+  "\n  <title>Cheaper by the Dozen</title>"
+  "\n  <isbn:number>1568491379</isbn:number>"
+  "\n  <notes>"
+  "\n    <!-- make HTML the default namespace for some comments -->"
+  "\n    <p xmlns=\"urn:w3-org-ns:HTML\">This is a <i>funny</i> book!</p>"
+  "\n  </notes>"
+  "\n</book>".
+
+output_element_to_str(E) ->
+    Output = xmerl:export([E], xmerl_xml_indent),
+    [Str] = io_lib:format("~s", [lists:flatten(Output)]),
+    Str.
+
+%%======================================================================
+%% New formatter tests
+%%======================================================================
+formatter_pass(_Config) ->
+
+    FetchFun = fun(_DTDSpec, S) -> {ok, not_fetched, S} end,
+    %% Generate based on namespace-example
+    {Ns, _} = xmerl_scan:string(xml_namespace(), [{fetch_fun, FetchFun}]),
+    GNs = output_element_to_str(Ns),
+    INs = xml_namespace_indented(),
+    INs = GNs,
+
+    %% Generate based on html-example
+    {Html, _} = xmerl_scan:string(html(), [{fetch_fun, FetchFun}]),
+    GHtml = output_element_to_str(Html),
+    IHtml = html_indented(),
+    GHtml = IHtml,
+    ok.
+
+formatter_fail(_Config) ->
+    ok.

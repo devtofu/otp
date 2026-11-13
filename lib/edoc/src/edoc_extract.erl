@@ -1,7 +1,16 @@
 %% =====================================================================
-%% Licensed under the Apache License, Version 2.0 (the "License"); you may
-%% not use this file except in compliance with the License. You may obtain
-%% a copy of the License at <http://www.apache.org/licenses/LICENSE-2.0>
+%% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0 OR LGPL-2.1-or-later
+%%
+%% Copyright Ericsson AB 2009-2026. All Rights Reserved.
+%% Copyright 2001-2003 Richard Carlsson
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
 %%
 %% Unless required by applicable law or agreed to in writing, software
 %% distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,7 +28,8 @@
 %% above, a recipient may use your version of this file under the terms of
 %% either the Apache License or the LGPL.
 %%
-%% @copyright 2001-2003 Richard Carlsson
+%% %CopyrightEnd%
+%%
 %% @author Richard Carlsson <carlsson.richard@gmail.com>
 %% @see edoc
 %% @end
@@ -28,6 +38,9 @@
 %% @doc EDoc documentation extraction.
 
 -module(edoc_extract).
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}},
+          nowarn_deprecated_catch]).
 
 -export([source/3, source/4, source/5,
 	 header/3, header/4, header/5,
@@ -41,6 +54,7 @@
 
 -type filename() :: file:filename().
 -type proplist() :: proplists:proplist().
+-type context() :: module | footer | function | overview | single.
 
 %% @doc Like {@link source/5}, but reads the syntax tree and the
 %% comments from the specified file.
@@ -233,7 +247,7 @@ add_macro_defs(Defs0, Opts, Env) ->
 
 -spec file(File, Context, Env, Opts) -> {ok, Tags} | {error, Reason} when
       File :: filename(),
-      Context :: edoc_tags:tag_flag(),
+      Context :: context(),
       Env :: edoc:env(),
       Opts :: proplist(),
       Tags :: [term()],
@@ -264,7 +278,7 @@ file(File, Context, Env, Opts) ->
 
 -spec text(Text, Context, Env, Opts) -> Tags when
       Text :: string(),
-      Context :: overview,
+      Context :: context(),
       Env :: edoc:env(),
       Opts :: proplist(),
       Tags :: [term()].

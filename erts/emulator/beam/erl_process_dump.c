@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2003-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2003-2026. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -48,8 +50,8 @@ static void dump_process_info(fmtfn_t to, void *to_arg, Process *p);
 static void dump_element(fmtfn_t to, void *to_arg, Eterm x);
 static void dump_dist_ext(fmtfn_t to, void *to_arg, ErtsDistExternal *edep);
 static void dump_element_nl(fmtfn_t to, void *to_arg, Eterm x);
-static int stack_element_dump(fmtfn_t to, void *to_arg, Eterm* sp,
-			      int yreg);
+static Uint stack_element_dump(fmtfn_t to, void *to_arg, Eterm* sp,
+                               Uint yreg);
 static void stack_trace_dump(fmtfn_t to, void *to_arg, Eterm* sp);
 static void print_function_from_pc(fmtfn_t to, void *to_arg, ErtsCodePtr x);
 static void heap_dump(fmtfn_t to, void *to_arg, Eterm x);
@@ -159,9 +161,12 @@ Uint erts_process_memory(Process *p, int include_sigs_in_transit)
          * Size of message queue plus size of all signals
          * in transit to the process!
          */
-        erts_proc_lock(p, ERTS_PROC_LOCK_MSGQ);
-        erts_proc_sig_fetch(p);
-        erts_proc_unlock(p, ERTS_PROC_LOCK_MSGQ);
+        if (!(p->sig_qs.flags & FS_FLUSHING_SIGS)
+            || ERTS_IS_CRASH_DUMPING) {
+            erts_proc_sig_queue_lock(p);
+            erts_proc_sig_fetch(p);
+            erts_proc_unlock(p, ERTS_PROC_LOCK_MSGQ);
+        }
 
         ERTS_FOREACH_SIG_PRIVQS(
             p, mp,
@@ -223,12 +228,14 @@ static void
 dump_process_info(fmtfn_t to, void *to_arg, Process *p)
 {
     Eterm* sp;
-    int yreg = -1;
+    Uint yreg = 0;
 
-    if (ERTS_TRACE_FLAGS(p) & F_SENSITIVE)
+    if (ERTS_IS_PROC_SENSITIVE(p))
         return;
 
-    erts_proc_sig_fetch(p);
+    if (!(p->sig_qs.flags & FS_FLUSHING_SIGS) || ERTS_IS_CRASH_DUMPING) {
+        erts_proc_sig_fetch(p);
+    }
 
     if (p->sig_qs.first || p->sig_qs.cont) {
 	erts_print(to, to_arg, "=proc_messages:%T\n", p->common.id);
@@ -269,7 +276,7 @@ dump_dist_ext(fmtfn_t to, void *to_arg, ErtsDistExternal *edep)
     if (!edep)
 	erts_print(to, to_arg, "D0:E0:");
     else {
-	byte *e;
+	const byte *e;
 	size_t sz;
         int i;
 
@@ -318,7 +325,7 @@ dump_element(fmtfn_t to, void *to_arg, Eterm x)
 	erts_print(to, to_arg, "H" PTR_FMT, boxed_val(x));
     } else if (is_immed(x)) {
 	if (is_atom(x)) {
-	    unsigned char* s = atom_tab(atom_val(x))->name;
+	    const byte* s = erts_atom_get_name(atom_tab(atom_val(x)));
 	    int len = atom_tab(atom_val(x))->len;
 	    int i;
 
@@ -363,7 +370,7 @@ erts_limited_stack_trace(fmtfn_t to, void *to_arg, Process *p)
     Eterm* sp;
 
 
-    if (ERTS_TRACE_FLAGS(p) & F_SENSITIVE) {
+    if (ERTS_IS_PROC_SENSITIVE(p)) {
 	return;
     }
 
@@ -403,8 +410,8 @@ erts_limited_stack_trace(fmtfn_t to, void *to_arg, Process *p)
 
 }
 
-static int
-stack_element_dump(fmtfn_t to, void *to_arg, Eterm* sp, int yreg)
+static Uint
+stack_element_dump(fmtfn_t to, void *to_arg, Eterm* sp, Uint yreg)
 {
     Eterm x = *sp;
 
@@ -437,16 +444,7 @@ print_function_from_pc(fmtfn_t to, void *to_arg, ErtsCodePtr x)
     const ErtsCodeMFA* cmfa = erts_find_function_from_pc(x);
 
     if (cmfa == NULL) {
-        if (x == beam_exit) {
-            erts_print(to, to_arg, "<terminate process>");
-        } else if (x == beam_continue_exit) {
-            erts_print(to, to_arg, "<continue terminate process>");
-        } else if (x == beam_normal_exit) {
-            erts_print(to, to_arg, "<terminate process normally>");
-        }
-        else {
-            erts_print(to, to_arg, "unknown function");
-        }
+        erts_print(to, to_arg, erts_internal_fun_description_from_pc(x));
     } else {
         const char *mfa_addr, *cp_addr;
 
@@ -457,6 +455,79 @@ print_function_from_pc(fmtfn_t to, void *to_arg, ErtsCodePtr x)
                    cmfa->module, cmfa->function, cmfa->arity,
                    cp_addr - mfa_addr);
     }
+}
+
+static void
+dump_sub_bitstring(fmtfn_t to, void *to_arg, Uint br_flags, BinRef *br,
+                   const byte *base, Uint offset, Uint size) {
+    Binary *binary = br->val;
+    int encode_as_binref;
+
+    /* Magic binaries (that appear as such, like NIF resource binaries) cannot
+     * be reliably dumped as off-heap bitstrings, and may be far too large to
+     * dump in-line here as if they're on-heap bitstrings.
+     *
+     * As a compromise, we print a reference to the binary but exclude it from
+     * the list provided to `dump_binaries`. */
+    if (!(binary->intern.flags & BIN_FLAG_MAGIC)) {
+        if (erts_atomic_xchg_nob(&binary->intern.refc, 0) > 0) {
+            binary->intern.flags = (UWord)all_binaries;
+            all_binaries = binary;
+        }
+
+        /* When the BinRef hasn't been visited yet (header is still BIN_REF),
+         * we pretend that this is a BinRef because the crashdump viewer barfs
+         * on dumps where sub-binaries refer _directly_ to binaries that have
+         * been truncated. This will need to be revisited once crashdump viewer
+         * is made bitstring-aware. */
+        encode_as_binref = (br->thing_word == HEADER_BIN_REF);
+    } else {
+        encode_as_binref = 1;
+    }
+
+    /* Emit bitstrings in the old sub-binary format which ignored bit offsets
+     * and truncated sizes to bytes (not even rounding up when required). This
+     * is not ideal but at least it contains most of the underlying data. */
+    if (encode_as_binref) {
+        erts_print(to, to_arg,
+                   "Yc" PTR_FMT ":" PTR_FMT ":" PTR_FMT "\n",
+                   binary, BYTE_OFFSET(offset), BYTE_SIZE(size));
+    } else {
+        Eterm br_term = (Eterm)br | br_flags;
+
+        erts_print(to, to_arg,
+                   "Ys" PTR_FMT ":" PTR_FMT ":" PTR_FMT "\n",
+                   br_term, BYTE_OFFSET(offset), BYTE_SIZE(size));
+    }
+}
+
+static void
+dump_heap_bitstring(fmtfn_t to, void *to_arg, byte *base,
+                    Uint offset, Uint size)
+{
+    /* We ignore trailing bits for now, the crashdump viewer has historically
+     * ignored bits altogether even for sub-binaries. */
+    erts_print(to, to_arg, "Yh%X:", BYTE_SIZE(size));
+    erts_print_base64(to, to_arg, &base[BYTE_OFFSET(offset)], BYTE_SIZE(size));
+    erts_putc(to, to_arg, '\n');
+}
+
+static void
+dump_bin_ref(fmtfn_t to, void *to_arg, BinRef *br)
+{
+    Binary *binary = br->val;
+
+    /* See corresponding comment in `dump_sub_bitstring`. */
+    if (!(binary->intern.flags & BIN_FLAG_MAGIC)) {
+        if (erts_atomic_xchg_nob(&binary->intern.refc, 0) > 0) {
+            binary->intern.flags = (UWord)all_binaries;
+            all_binaries = binary;
+        }
+    }
+
+    erts_print(to, to_arg,
+               "Yc" PTR_FMT ":" PTR_FMT ":" PTR_FMT "\n",
+               binary, 0, binary->orig_size);
 }
 
 static void
@@ -538,64 +609,29 @@ heap_dump(fmtfn_t to, void *to_arg, Eterm x)
 		} else if (_is_bignum_header(hdr)) {
 		    erts_print(to, to_arg, "B%T\n", x);
 		    *ptr = OUR_NIL;
-		} else if (is_binary_header(hdr)) {
-		    Uint tag = thing_subtag(hdr);
-		    Uint size = binary_size(x);
+		} else if (is_bitstring_header(hdr)) {
+                    Uint offset, size;
+                    Eterm br_flags;
+                    byte *base;
+                    BinRef *br;
 
-		    if (tag == HEAP_BINARY_SUBTAG) {
-			byte* p;
+                    ERTS_GET_BITSTRING_REF(x, br_flags, br, base, offset, size);
 
-			erts_print(to, to_arg, "Yh%X:", size);
-			p = binary_bytes(x);
-                        erts_print_base64(to, to_arg, p, size);
-		    } else if (tag == REFC_BINARY_SUBTAG) {
-			ProcBin* pb = (ProcBin *) binary_val(x);
-			Binary* val = pb->val;
+                    if (br) {
+                        if (erts_is_literal(br_flags | (Eterm)br, (Eterm*)br)) {
+                            mark_literal((Eterm*)br);
+                        }
 
-			if (erts_atomic_xchg_nob(&val->intern.refc, 0) != 0) {
-			    val->intern.flags = (UWord) all_binaries;
-			    all_binaries = val;
-			}
-			erts_print(to, to_arg,
-				   "Yc" PTR_FMT ":" PTR_FMT ":" PTR_FMT,
-				   val,
-				   pb->bytes - (byte *)val->orig_bytes,
-				   size);
-		    } else if (tag == SUB_BINARY_SUBTAG) {
-			ErlSubBin* Sb = (ErlSubBin *) binary_val(x);
-			Eterm* real_bin;
-			void* val;
+                        dump_sub_bitstring(to, to_arg, br_flags, br,
+                                           base, offset, size);
+                    } else {
+                        dump_heap_bitstring(to, to_arg, base, offset, size);
+                    }
 
-			/*
-			 * Must use boxed_val() here, because the original
-			 * binary may have been visited and have had its
-			 * header word changed to OUR_NIL (in which case
-			 * binary_val() will cause an assertion failure in
-			 * the DEBUG emulator).
-			 */
-
-			real_bin = boxed_val(Sb->orig);
-
-			if (thing_subtag(*real_bin) == REFC_BINARY_SUBTAG) {
-			    /*
-			     * Unvisited REFC_BINARY: Point directly to
-			     * the binary.
-			     */
-			    ProcBin* pb = (ProcBin *) real_bin;
-			    val = pb->val;
-			} else {
-			    /*
-			     * Heap binary or visited REFC binary: Point
-			     * to heap binary or ProcBin on the heap.
-			     */
-			    val = real_bin;
-			}
-			erts_print(to, to_arg,
-				   "Ys" PTR_FMT ":" PTR_FMT ":" PTR_FMT,
-				   val, Sb->offs, size);
-		    }
-		    erts_putc(to, to_arg, '\n');
-		    *ptr = OUR_NIL;
+                    *ptr = OUR_NIL;
+                } else if (hdr == HEADER_BIN_REF) {
+                    dump_bin_ref(to, to_arg, (BinRef*)ptr);
+                    *ptr = OUR_NIL;
 		} else if (is_external_pid_header(hdr)) {
 		    erts_print(to, to_arg, "P%T\n", x);
 		    *ptr = OUR_NIL;
@@ -690,14 +726,15 @@ static void
 dump_binaries(fmtfn_t to, void *to_arg, Binary* current)
 {
     while (current) {
-	SWord size = current->orig_size;
-	byte* bytes = (byte*) current->orig_bytes;
+        SWord size = current->orig_size;
+        byte* bytes = (byte*) current->orig_bytes;
 
-	erts_print(to, to_arg, "=binary:" PTR_FMT "\n", current);
-	erts_print(to, to_arg, "%X:", size);
+        erts_print(to, to_arg, "=binary:" PTR_FMT "\n", current);
+        erts_print(to, to_arg, "%X:", size);
         erts_print_base64(to, to_arg, bytes, size);
         erts_putc(to, to_arg, '\n');
-	current = (Binary *) current->intern.flags;
+
+        current = (Binary *) current->intern.flags;
     }
 }
 
@@ -708,7 +745,7 @@ dump_externally(fmtfn_t to, void *to_arg, Eterm term)
     byte* s; 
     byte* p;
 
-    if (is_fun(term)) {
+    if (is_any_fun(term)) {
 	/*
 	 * The fun's environment used to cause trouble. There were
 	 * two kind of problems:
@@ -724,10 +761,10 @@ dump_externally(fmtfn_t to, void *to_arg, Eterm term)
 	 * The crashdump_viewer does not allow inspection of them anyway.
 	 */
 	ErlFunThing* funp = (ErlFunThing *) fun_val(term);
-	Uint num_free = funp->num_free;
+	Uint env_size = fun_num_free(funp);
 	Uint i;
 
-	for (i = 0; i < num_free; i++) {
+	for (i = 0; i < env_size; i++) {
 	    funp->env[i] = NIL;
 	}
     }
@@ -768,8 +805,9 @@ init_literal_areas(void)
     ErtsCodeIndex code_ix;
     ErtsLiteralArea** area_p;
 
+    ERTS_LC_ASSERT(ERTS_IS_CRASH_DUMPING);
+
     code_ix = erts_active_code_ix();
-    erts_rlock_old_code(code_ix);
 
     lit_areas = area_p = erts_dump_lit_areas;
     num_lit_areas = 0;
@@ -798,8 +836,6 @@ init_literal_areas(void)
 
     qsort(erts_persistent_areas, erts_num_persistent_areas,
           sizeof(ErtsLiteralArea *), compare_areas);
-
-    erts_runlock_old_code(code_ix);
 }
 
 static int search_areas(const void * a, const void * b) {
@@ -841,17 +877,16 @@ static void mark_literal(Eterm* ptr)
 static void
 dump_literals(fmtfn_t to, void *to_arg)
 {
-    ErtsCodeIndex code_ix;
     int i;
     Uint idx;
 
-    code_ix = erts_active_code_ix();
-    erts_rlock_old_code(code_ix);
+    ERTS_LC_ASSERT(ERTS_IS_CRASH_DUMPING);
 
     erts_print(to, to_arg, "=literals\n");
 
-    for (i = 0; i < ERTS_NUM_GLOBAL_LITERALS; i++) {
-        ErtsLiteralArea* area = erts_get_global_literal_area(i);
+    for (ErtsLiteralArea *area = erts_global_literal_iterate_area(NULL);
+         area != NULL;
+         area = erts_global_literal_iterate_area(area)) {
         dump_module_literals(to, to_arg, area);
     }
 
@@ -861,11 +896,10 @@ dump_literals(fmtfn_t to, void *to_arg)
         }
     }
 
-    erts_runlock_old_code(code_ix);
-
     for (idx = 0; idx < erts_num_persistent_areas; idx++) {
         dump_module_literals(to, to_arg, erts_persistent_areas[idx]);
     }
+
 }
 
 static void
@@ -926,58 +960,25 @@ dump_module_literals(fmtfn_t to, void *to_arg, ErtsLiteralArea* lit_area)
                 erts_print(to, to_arg, "F%X:%s\n", i, sbuf);
             } else if (_is_bignum_header(w)) {
                 erts_print(to, to_arg, "B%T\n", term);
-            } else if (is_binary_header(w)) {
-                Uint tag = thing_subtag(w);
-                Uint size = binary_size(term);
+            } else if (is_bitstring_header(w)) {
+                ERTS_DECLARE_DUMMY(Eterm br_flags);
+                Uint offset, size;
+                byte *base;
+                BinRef *br;
 
-                if (tag == HEAP_BINARY_SUBTAG) {
-                    byte* p;
+                ERTS_GET_BITSTRING_REF(term, br_flags, br, base, offset, size);
 
-                    erts_print(to, to_arg, "Yh%X:", size);
-                    p = binary_bytes(term);
-                    erts_print_base64(to, to_arg, p, size);
-                } else if (tag == REFC_BINARY_SUBTAG) {
-                    ProcBin* pb = (ProcBin *) binary_val(term);
-                    Binary* val = pb->val;
-
-                    if (erts_atomic_xchg_nob(&val->intern.refc, 0) != 0) {
-                        val->intern.flags = (UWord) all_binaries;
-                        all_binaries = val;
-                    }
-                    erts_print(to, to_arg,
-                               "Yc" PTR_FMT ":" PTR_FMT ":" PTR_FMT,
-                               val,
-                               pb->bytes - (byte *)val->orig_bytes,
-                               size);
-                } else if (tag == SUB_BINARY_SUBTAG) {
-                    ErlSubBin* Sb = (ErlSubBin *) binary_val(term);
-                    Eterm* real_bin;
-                    void* val;
-
-                    real_bin = boxed_val(Sb->orig);
-                    if (thing_subtag(*real_bin) == REFC_BINARY_SUBTAG) {
-                        /*
-                         * Unvisited REFC_BINARY: Point directly to
-                         * the binary.
-                         */
-                        ProcBin* pb = (ProcBin *) real_bin;
-                        val = pb->val;
-                    } else {
-                        /*
-                         * Heap binary or visited REFC binary: Point
-                         * to heap binary or ProcBin on the heap.
-                         */
-                        val = real_bin;
-                    }
-                    erts_print(to, to_arg,
-                               "Ys" PTR_FMT ":" PTR_FMT ":" PTR_FMT,
-                               val, Sb->offs, size);
+                if (br) {
+                    dump_sub_bitstring(to, to_arg, br_flags, br,
+                                       base, offset, size);
+                } else {
+                    dump_heap_bitstring(to, to_arg, base, offset, size);
                 }
-                erts_putc(to, to_arg, '\n');
+            } else if (w == HEADER_BIN_REF) {
+                dump_bin_ref(to, to_arg, (BinRef*)htop);
             } else if (is_map_header(w)) {
                 if (is_flatmap_header(w)) {
                     flatmap_t* fmp = (flatmap_t *) flatmap_val(term);
-                    Eterm* values = htop + sizeof(flatmap_t) / sizeof(Eterm);
                     Uint map_size = fmp->size;
                     int i;
 
@@ -985,7 +986,7 @@ dump_module_literals(fmtfn_t to, void *to_arg, ErtsLiteralArea* lit_area)
                     dump_element(to, to_arg, fmp->keys);
                     erts_putc(to, to_arg, ':');
                     for (i = 0; i < map_size; i++) {
-                        dump_element(to, to_arg, values[i]);
+                        dump_element(to, to_arg, fmp->values[i]);
                         if (i < map_size-1) {
                             erts_putc(to, to_arg, ',');
                         }
@@ -1027,11 +1028,14 @@ dump_module_literals(fmtfn_t to, void *to_arg, ErtsLiteralArea* lit_area)
                 dump_externally(to, to_arg, term);
                 erts_putc(to, to_arg, '\n');
             }
+
             size = 1 + header_arity(w);
             switch (w & _HEADER_SUBTAG_MASK) {
             case FUN_SUBTAG:
-                ASSERT(((ErlFunThing*)(htop))->num_free == 0);
-                size += 1;
+                {
+                    const ErlFunThing *funp = (ErlFunThing*)htop;
+                    size += fun_num_free(funp);
+                }
                 break;
             case MAP_SUBTAG:
                 if (is_flatmap_header(w)) {
@@ -1039,9 +1043,6 @@ dump_module_literals(fmtfn_t to, void *to_arg, ErtsLiteralArea* lit_area)
                 } else {
                     size += hashmap_bitcount(MAP_HEADER_VAL(w));
                 }
-                break;
-            case SUB_BINARY_SUBTAG:
-                size += 1;
                 break;
             }
             break;
@@ -1123,8 +1124,8 @@ erts_dump_extended_process_state(fmtfn_t to, void *to_arg, erts_aint32_t psflg) 
                 erts_print(to, to_arg, "FREE"); break;
             case ERTS_PSFLG_EXITING:
                 erts_print(to, to_arg, "EXITING"); break;
-            case ERTS_PSFLG_UNUSED:
-                erts_print(to, to_arg, "UNUSED"); break;
+            case ERTS_PSFLG_MSG_SIG_IN_Q:
+                erts_print(to, to_arg, "MSG_SIG_IN_Q"); break;
             case ERTS_PSFLG_ACTIVE:
                 erts_print(to, to_arg, "ACTIVE"); break;
             case ERTS_PSFLG_IN_RUNQ:
@@ -1137,8 +1138,8 @@ erts_dump_extended_process_state(fmtfn_t to, void *to_arg, erts_aint32_t psflg) 
                 erts_print(to, to_arg, "GC"); break;
             case ERTS_PSFLG_SYS_TASKS:
                 erts_print(to, to_arg, "SYS_TASKS"); break;
-            case ERTS_PSFLG_SIG_IN_Q:
-                erts_print(to, to_arg, "SIG_IN_Q"); break;
+            case ERTS_PSFLG_NMSG_SIG_IN_Q:
+                erts_print(to, to_arg, "NMSG_SIG_IN_Q"); break;
             case ERTS_PSFLG_ACTIVE_SYS:
                 erts_print(to, to_arg, "ACTIVE_SYS"); break;
             case ERTS_PSFLG_RUNNING_SYS:

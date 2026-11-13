@@ -1,7 +1,9 @@
 %% 
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2004-2019. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2004-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,10 +21,22 @@
 %% 
 
 -module(snmpm_mpd).
+-moduledoc """
+Message Processing and Dispatch module for the SNMP manager
+
+The module `snmpm_mpd` implements the version independent Message Processing and
+Dispatch functionality in SNMP for the manager. It is supposed to be used from a
+Network Interface process
+([Definition of Manager Net if](snmp_manager_netif.md)).
+
+Legacy API function `process_msg/7` that has got separate `IpAddr` and
+`PortNumber` arguments still works as before for backwards compatibility
+reasons.
+""".
 
 -export([init/1, 
 
-	 process_msg/7, process_msg/6,
+	 process_msg/6, process_msg/7,
 	 generate_msg/5, generate_response_msg/4,
 
 	 next_msg_id/0, 
@@ -30,6 +44,16 @@
 
 	 reset/1, 
 	 inc/1]).
+
+
+-export_type([
+              logger/0,
+              msg_data_cmy/0,
+              msg_data_cmyt/0,
+              msg_data_v3/0,
+              msg_data_acm/0,
+              mpd_state/0
+             ]).
 
 -define(SNMP_USE_V3, true).
 -include("snmp_types.hrl").
@@ -44,9 +68,68 @@
 
 -record(state, {v1 = false, v2c = false, v3 = false}).
 
+-doc "A `fun` that handles audit trail logging.".
+-type logger() ::
+        fun((Data :: binary() |
+                     snmp_pdus:pdu() |
+                     snmp_pdus:trappdu() |
+                     snmp_pdus:message() | 
+                     {V3Hdr          :: snmp_pdus:v3_hdr(),
+                      ScopedPDUBytes :: binary()}) -> snmp:void()).
+
+-doc """
+Is an opaque data structure containing necessary security information for v1 and
+v2 messages.
+""".
+-opaque msg_data_cmy() ::
+          {
+           Community :: snmp:community(),
+           SecModel  :: snmp:sec_model()
+          }.
+-doc """
+Is an opaque data structure containing necessary security and transport
+information for v1 and v2 messages.
+""".
+-opaque msg_data_cmyt() ::
+          {
+           Community :: snmp:community(),
+           SecModel  :: snmp:sec_model(),
+           TDomain   :: snmp:tdomain(),
+           TAddress  :: snmp:taddress()
+          }.
+-doc """
+Is an opaque data structure containing necessary security information for v3
+messages.
+""".
+-opaque msg_data_v3() ::
+          {
+           SecModel    :: snmp:sec_model(),
+           SecName     :: snmp:sec_name(),
+           SecLevel    :: snmp:sec_level(),
+           CtxEngineID :: snmp:engine_id(),
+           CtxName     :: snmp:context_name(),
+           TargetName  :: snmpm:target_name()
+          }.
+-doc """
+Is an opaque data structure containing necessary security information for
+(incoming) v3 messages.
+""".
+-opaque msg_data_acm() ::
+          {
+           MsgID       :: snmp_pdus:msg_id(),
+           SecModel    :: snmp:sec_model(),
+           SecName     :: snmp:sec_name(),
+           SecLevel    :: snmp:sec_level(),
+           CtxEngineID :: snmp:engine_id(),
+           CtxName     :: snmp:context_name(),
+           SecData     :: term()
+          }.
+
+-opaque mpd_state() :: #state{}.
+
 					
 %%%-----------------------------------------------------------------
-%%% This module implemets the Message Processing and Dispatch part of
+%%% This module implements the Message Processing and Dispatch part of
 %%% the multi-lingual SNMP agent.
 %%%
 %%% The MPD is responsible for:
@@ -63,9 +146,21 @@
 %%% the counters only, it does not provide instrumentation functions
 %%% for the counters.
 %%%
-%%% With the terms defined in rfc2271, this module implememts part
+%%% With the terms defined in rfc2271, this module implements part
 %%% of the Dispatcher and the Message Processing functionality.
 %%%-----------------------------------------------------------------
+
+-doc """
+This function can be called from the `net-if` process at start-up.
+The options list defines which versions to use.
+
+It also initializes some SNMP counters.
+
+""".
+-spec init(Vsns) -> MPDState when
+      Vsns     :: [snmp:version()],
+      MPDState :: mpd_state().
+
 init(Vsns) ->
     ?vdebug("init -> entry with ~p", [Vsns]),
     ?SNMP_RAND_SEED(),
@@ -81,6 +176,7 @@ init(Vsns) ->
     ?vtrace("init -> done when ~p", [State]),
     State.
 
+-doc false.
 reset(#state{v3 = V3}) ->
     reset_counters(),
     reset_usm(V3).
@@ -96,10 +192,49 @@ reset(#state{v3 = V3}) ->
 %% Purpose: This is the main Message Dispatching function. (see
 %%          section 4.2.1 in rfc2272)
 %%-----------------------------------------------------------------
-process_msg(Msg, Domain, Ip, Port, State, NoteStore, Logger) ->
-    process_msg(Msg, Domain, {Ip, Port}, State, NoteStore, Logger).
 
-process_msg(Msg, Domain, Addr, State, NoteStore, Logger) ->
+-doc false.
+process_msg(Msg, Domain, Ip, Port, State, NoteStore, Log) ->
+    process_msg(Msg, Domain, {Ip, Port}, State, NoteStore, Log).
+
+-doc """
+Processes an incoming message. Performs authentication and decryption as
+necessary. The return values should be passed the manager server.
+
+`NoteStore` is the [`pid()`](`t:pid/0`) of the `note-store` process.
+
+`Logger` is the function used for audit trail logging.
+
+In the case when the pdu type is `report`, `MsgData` is either `ok` or
+`{error, ReqId, Reason}`.
+""".
+-doc(#{since => <<"OTP 17.3">>}).
+-spec process_msg(Msg, Domain, Addr, State, NoteStore, Log) ->
+          {ok, Vsn, PduV2, PduMS, MsgDataV2} |
+          {ok, 'version-3', PduV3, PduMS, MsgDataV3} |
+          {discarded, Reason} when
+      Msg       :: binary(),
+      Domain    :: snmpUDPDomain | snmp:tdomain(),
+      Addr      :: {Ip, Port},
+      Ip        :: inet:ip_address(),
+      Port      :: inet:port_number(),
+      State     :: mpd_state(),
+      NoteStore :: pid(),
+      Log       :: logger(),
+      Vsn       :: 'version-1' | 'version-2',
+      PduV2     :: snmp_pdus:pdu() | snmp_pdus:trappdu(),
+      PduV3     :: snmp_pdus:pdu(),
+      PduMS     :: pos_integer(),
+      MsgDataV2 :: msg_data_cmyt(),
+      MsgDataV3 :: ok |
+                   {error, ReqId, ACM} |
+                   undefined |
+                   msg_data_acm(),
+      ReqId     :: snmpm:request_id(),
+      ACM       :: term(),
+      Reason    :: term().
+          
+process_msg(Msg, Domain, Addr, State, NoteStore, Log) ->
     inc(snmpInPkts),
 
     case (catch snmp_pdus:dec_message_only(binary_to_list(Msg))) of
@@ -110,7 +245,7 @@ process_msg(Msg, Domain, Addr, State, NoteStore, Logger) ->
 	    HS = ?empty_msg_size + length(Community),
 	    process_v1_v2c_msg(
 	      'version-1', NoteStore, Msg, Domain, Addr,
-	      Community, Data, HS, Logger);
+	      Community, Data, HS, Log);
 
 	%% Version 2
 	#message{version = 'version-2', vsn_hdr = Community, data = Data}
@@ -118,7 +253,7 @@ process_msg(Msg, Domain, Addr, State, NoteStore, Logger) ->
 	    HS = ?empty_msg_size + length(Community),
 	    process_v1_v2c_msg(
 	      'version-2', NoteStore, Msg, Domain, Addr,
-	      Community, Data, HS, Logger);
+	      Community, Data, HS, Log);
 	     
 	%% Version 3
 	#message{version = 'version-3', vsn_hdr = H, data = Data}
@@ -128,7 +263,7 @@ process_msg(Msg, Domain, Addr, State, NoteStore, Logger) ->
 		"~n   msgFlags:    ~p"
 		"~n   msgSecModel: ~p",
 		[H#v3_hdr.msgID,H#v3_hdr.msgFlags,H#v3_hdr.msgSecurityModel]),
-	    process_v3_msg(NoteStore, Msg, H, Data, Addr, Logger);
+	    process_v3_msg(NoteStore, Msg, H, Data, Addr, Log);
 
 	%% Crap
 	{'EXIT', {bad_version, Vsn}} ->
@@ -305,17 +440,26 @@ process_v3_msg(NoteStore, Msg, Hdr, Data, Address, Log) ->
 		{SecEngineID, MsgSecModel, SecName, SecLevel,
 		 CtxEngineID, CtxName, _ReqId} ->
 		    ?vtrace("process_v3_msg -> 7.2.11b: ok", []),
-		    %% BMK BMK: Should we discard the cached info
-		    %% BMK BMK: or do we let the gc deal with it?
+		    %% Should we discard the cached info
+		    %% or do we let the gc deal with it?
  		    {ok, 'version-3', PDU, PduMMS, ok};
  		_ when is_tuple(Note) ->
  		    ?vlog("process_v3_msg -> 7.2.11b: error"
- 			  "~n   Note: ~p", [Note]),
+ 			  "~n      Note:        ~p"
+ 			  "~n      SecEngineID: ~p"
+ 			  "~n      MsgSecModel: ~p"
+ 			  "~n      SecName:     ~p"
+ 			  "~n      SecLevel:    ~p"
+ 			  "~n      CtxEngineID: ~p"
+ 			  "~n      CtxName:     ~p",
+                          [Note,
+                           SecEngineID, MsgSecModel, SecName, SecLevel,
+                           CtxEngineID, CtxName]),
 		    Recv  = {SecEngineID, MsgSecModel, SecName, SecLevel,
 			     CtxEngineID, CtxName, PDU#pdu.request_id}, 
 		    Err   = sec_error(Note, Recv), 
  		    ACM   = {invalid_sec_info, Err}, 
-		    ReqId = element(size(Note), Note), 
+		    ReqId = element(tuple_size(Note), Note),
  		    {ok, 'version-3', PDU, PduMMS, {error, ReqId, ACM}};
 		_NoFound ->
 		    ?vtrace("process_v3_msg -> _NoFound: "
@@ -358,7 +502,6 @@ process_v3_msg(NoteStore, Msg, Hdr, Data, Address, Log) ->
 			    ?vtrace("and the agent EngineID (~p) "
 				    "is know to us", [CtxEngineID]),
 			    %% Uses ACMData that snmpm_acm knows of.
-			    %% BUGBUG BUGBUG
 			    ACMData = 
 				{MsgID, MsgSecModel, SecName, SecLevel,
 				 CtxEngineID, CtxName, SecData},
@@ -403,10 +546,10 @@ process_v3_msg(NoteStore, Msg, Hdr, Data, Address, Log) ->
 
 
 sec_error(T1, T2) 
-  when is_tuple(T1) andalso is_tuple(T2) andalso (size(T1) =:= size(T2)) ->
+  when tuple_size(T1) =:= tuple_size(T2) ->
     Tags = {sec_engine_id, msg_sec_model, sec_name, sec_level, 
 	    ctx_engine_id, ctx_name, request_id}, 
-    sec_error(size(T1), T1, T2, Tags, []);
+    sec_error(tuple_size(T1), T1, T2, Tags, []);
 sec_error(T1, T2) ->
     [{internal_error, T1, T2}].
 
@@ -459,18 +602,20 @@ check_sec_module_result({error, Reason, ErrorInfo}, V3Hdr, Data, true, Log) ->
 	    "~n   Reason:    ~p"
 	    "~n   ErrorInfo: ~p", [Reason, ErrorInfo]),
     #v3_hdr{msgID = MsgID, msgSecurityModel = MsgSecModel} = V3Hdr,
+    {_, _, Opts} = ErrorInfo,
     Pdu = get_scoped_pdu(Data),
     case generate_v3_report_msg(MsgID, MsgSecModel, Pdu, ErrorInfo, Log) of
 	{ok, Report} ->
-	    discard({securityError, Reason}, Report);
+            discard({securityError, Reason, Opts}, Report);
 	{discarded, _SomeOtherReason} ->
-	    discard({securityError, Reason})
+            discard({securityError, Reason, Opts})
     end;
-check_sec_module_result({error, Reason, _ErrorInfo}, _, _, _, _) ->
+check_sec_module_result({error, Reason, ErrorInfo}, _, _, _, _) ->
     ?vtrace("security module result:"
-	    "~n   Reason:     ~p"
-	    "~n   _ErrorInfo: ~p", [Reason, _ErrorInfo]),
-    discard({securityError, Reason});
+            "~n   Reason:     ~p"
+            "~n   ErrorInfo: ~p", [Reason, ErrorInfo]),
+    {_, _, Opts} = ErrorInfo,
+    discard({securityError, Reason, Opts});
 check_sec_module_result(Res, _, _, _, _) ->
     ?vtrace("security module result:"
 	    "~n   Res: ~p", [Res]),
@@ -485,6 +630,28 @@ get_scoped_pdu(D) ->
 %%-----------------------------------------------------------------
 %% Generate a message
 %%-----------------------------------------------------------------
+
+-doc """
+Generates a possibly encrypted packet to be sent to the network.
+
+`NoteStore` is the [`pid()`](`t:pid/0`) of the `note-store` process.
+
+`MsgData` is the message specific data used in the SNMP message. In SNMPv1 and
+SNMPv2c, this message data is the community string. In SNMPv3, it is the context
+information.
+
+`Logger` is the function used for audit trail logging.
+""".
+-spec generate_msg(Vsn, NoteStore, Pdu, MsgData, Log) ->
+          {ok, Packet} | {discarded, Reason} when
+      Vsn       :: snmp_pdus:version(),
+      NoteStore :: pid(),
+      Pdu       :: snmp_pdus:pdu(),
+      MsgData   :: msg_data_cmy() | msg_data_v3(),
+      Log       :: logger(),
+      Packet    :: binary(),
+      Reason    :: term().
+
 generate_msg('version-3', NoteStore, Pdu, 
 	     {SecModel, SecName, SecLevel, CtxEngineID, CtxName, 
 	      TargetName}, Log) ->
@@ -576,7 +743,7 @@ sec_module(?SEC_USM) ->
 %%       securityEngineID is set to the value of the target entity's
 %%       snmpEngineID.
 %% 
-%% As we never send traps, the SecEngineID is allways the 
+%% As we never send traps, the SecEngineID is always the 
 %% snmpEngineID of the target entity!
 sec_engine_id(TargetName) ->
     case get_agent_engine_id(TargetName) of
@@ -590,10 +757,10 @@ sec_engine_id(TargetName) ->
 	end.
 
 
-%% BMK BMK BMK
-%% This one looks very similar to lik generate_v1_v2c_response_msg!
+%% <KOLLA>
+%% This one looks very similar to link generate_v1_v2c_response_msg!
 %% Common/shared? Should there be differences?
-%% 
+%% </KOLLA>
 generate_v1_v2c_msg(Vsn, Pdu, Community, Log) ->
     ?vdebug("generate_v1_v2c_msg -> encode pdu", []),
     case (catch snmp_pdus:enc_pdu(Pdu)) of
@@ -613,7 +780,7 @@ generate_v1_v2c_msg(Vsn, Pdu, Community, Log) ->
 			     "(pdu: ~w, community: ~w): ~n~w",
 			     [Pdu, Community, Reason]),
 		    {discarded, Reason};
-		{ok, Packet} when size(Packet) =< MMS ->
+		{ok, Packet} when byte_size(Packet) =< MMS ->
 		    Log(Packet),
 		    inc_snmp_out(Pdu),
 		    {ok, Packet};
@@ -621,7 +788,7 @@ generate_v1_v2c_msg(Vsn, Pdu, Community, Log) ->
 		    ?vlog("packet max size exceeded: "
 			  "~n   MMS: ~p"
 			  "~n   Len: ~p",
-			  [MMS, size(Packet)]),
+			  [MMS, byte_size(Packet)]),
 		    {discarded, tooBig}
 	    end
     end.
@@ -629,6 +796,21 @@ generate_v1_v2c_msg(Vsn, Pdu, Community, Log) ->
 
 
 %% -----------------------------------------------------------------------
+
+-doc """
+Generates a possibly encrypted response packet to be sent to the network.
+
+`MsgData` is the message specific data used in the SNMP message. This value is
+received from the [`process_msg/6`](`snmpm_mpd:process_msg/6`) function.
+""".
+-spec generate_response_msg(Vsn, Pdu, MsgData, Log) ->
+          {ok, Packet} | {discarded, Reason} | {error, Reason} when
+      Vsn     :: snmp_pdus:version(),
+      Pdu     :: snmp_pdus:pdu(),
+      MsgData :: msg_data_cmy() | msg_data_cmyt() | msg_data_v3(),
+      Log     :: logger(),
+      Packet  :: binary(),
+      Reason  :: term().
 
 generate_response_msg('version-3', Pdu,
 		      {MsgID, SecModel, SecName, SecLevel, 
@@ -674,7 +856,7 @@ generate_v3_response_msg(#pdu{type = Type} = Pdu, MsgID,
 		%% if it's larger than the agent can handle - 
 		%% it will be dropped. Just check against the
 		%% internal size.  
-		{ok, Packet} when size(Packet) =< MMS ->
+		{ok, Packet} when byte_size(Packet) =< MMS ->
 		    if
 			SecLevel == 3 -> 
 			    %% encrypted - log decrypted pdu
@@ -751,13 +933,13 @@ generate_v1_v2c_response_msg(Vsn, Pdu, Comm, Log) ->
 			     [Pdu, Comm, Reason]),
 		    {discarded, Reason};
 		
-		{ok, Packet} when size(Packet) =< MMS ->
+		{ok, Packet} when byte_size(Packet) =< MMS ->
 		    Log(Packet),
 		    inc_snmp_out(Pdu),
 		    {ok, Packet};
 
 		{ok, Packet} ->  %% Too big
-		    too_big(Vsn, Pdu, Comm, MMS, size(Packet), Log)
+		    too_big(Vsn, Pdu, Comm, MMS, byte_size(Packet), Log)
 	    end
     end.
 		    
@@ -861,7 +1043,7 @@ get_max_message_size() ->
 	{ok, MMS} ->
 	    MMS;
 	E ->
-	    user_err("failed retreiving engine max message size: ~w", [E]),
+	    user_err("failed retrieving engine max message size: ~w", [E]),
 	    484
     end.
 
@@ -909,16 +1091,31 @@ get_engine_id() ->
 get_agent_engine_id(Name) ->
     snmpm_config:get_agent_engine_id(Name).
 
-is_known_engine_id(EngineID, {Addr, Port}) ->
-    snmpm_config:is_known_engine_id(EngineID, Addr, Port).
+%% We cannot include 'Port' in this check since agents
+%% can use ephemeral ports (random ports) for traps/notifications.
+is_known_engine_id(EngineID, {Addr, _Port}) ->
+    Agents = snmpm_config:which_agents(engine_id, EngineID),
+    is_known_engine_id2(Agents, Addr).
+
+is_known_engine_id2([], _Addr) ->
+    false;
+is_known_engine_id2([TargetName|Agents], Addr) ->
+    case snmpm_config:agent_info(TargetName, address) of
+        {ok, Addr} ->
+            true;
+        _ ->
+            is_known_engine_id2(Agents, Addr)
+    end.
 
 
 %%-----------------------------------------------------------------
 %% Sequence number (msg-id & req-id) functions
 %%-----------------------------------------------------------------
+-doc false.
 next_msg_id() ->
     next_id(msg_id).
 
+-doc false.
 next_req_id() ->
     next_id(req_id).
 
@@ -1004,6 +1201,7 @@ counters() ->
 %%  inc(VariableName) increments the variable (Counter) in
 %%  the local mib. (e.g. snmpInPkts)
 %%-----------------------------------------------------------------
+-doc false.
 inc(Name)    -> inc(Name, 1).
 inc(Name, N) -> snmpm_config:incr_stats_counter(Name, N).
 

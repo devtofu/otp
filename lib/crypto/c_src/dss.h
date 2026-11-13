@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2010-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2010-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,8 +26,9 @@
 #include "common.h"
 
 #ifdef HAVE_DSA
-int get_dss_private_key(ErlNifEnv* env, ERL_NIF_TERM key, DSA *dsa);
-int get_dss_public_key(ErlNifEnv* env, ERL_NIF_TERM key, DSA *dsa);
+int get_dss_private_key(ErlNifEnv* env, ERL_NIF_TERM key, EVP_PKEY **pkey);
+int get_dss_public_key(ErlNifEnv* env, ERL_NIF_TERM key, EVP_PKEY **pkey);
+int dss_privkey_to_pubkey(ErlNifEnv* env, EVP_PKEY *pkey, ERL_NIF_TERM *ret);
 #endif
 
 #endif /* E_DSS_H__ */

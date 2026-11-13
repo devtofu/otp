@@ -1,6 +1,26 @@
 #!/bin/sh
+# %CopyrightBegin%
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 2017-2025. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# %CopyrightEnd%
 
-# ./create-image openssl 1.0.2m
+
+# ./create-image openssl 1.0.2m [in-file] 
 
 case "$1" in
     "openssl")
@@ -23,6 +43,8 @@ case "$1" in
 	;;
 esac
 
+INPUT_FILE=$3
+
 case $1$2 in
     openssl0.9.8[a-l])
         CONFIG_FLAGS=no-asm
@@ -41,7 +63,7 @@ esac
 # Make a Dockerfile. This method simplifies env variable handling considerably:
 cat - > TempDockerFile <<EOF
 
-    FROM ubuntubuildbase
+    FROM ssh_compat_suite-ubuntu:latest
 
     LABEL version=$FAM-$VER
 
@@ -62,7 +84,16 @@ EOF
 
 # Fetch the tar file. This could be done in an "ADD ..." in the Dockerfile,
 # but then we hit the proxy problem...
-wget -O $TMP $PFX$VER$SFX
+
+if [ "x$INPUT_FILE" = "x" ]
+then
+    wget -O $TMP $PFX$VER$SFX
+
+elif [ "x$INPUT_FILE" != "x$TMP" ]
+then
+     echo "Use $INPUT_FILE for input"
+    cp $INPUT_FILE $TMP
+fi
 
 # Build the image:
 docker build -t ssh_compat_suite-$FAM:$VER -f ./TempDockerFile .

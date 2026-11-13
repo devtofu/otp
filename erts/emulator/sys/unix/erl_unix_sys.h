@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
+ *
+ * SPDX-License-Identifier: Apache-2.0
  * 
- * Copyright Ericsson AB 1997-2018. All Rights Reserved.
+ * Copyright Ericsson AB 1997-2025. All Rights Reserved.
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -73,15 +75,9 @@
 #   include <sys/mman.h>
 #endif
 
-#if TIME_WITH_SYS_TIME
+#include <time.h>
+#if HAVE_SYS_TIME_H
 #   include <sys/time.h>
-#   include <time.h>
-#else
-#   if HAVE_SYS_TIME_H
-#       include <sys/time.h>
-#   else
-#       include <time.h>
-#   endif
 #endif
 
 #include <sys/times.h>
@@ -111,6 +107,10 @@
 
 #ifdef HAVE_POSIX_MEMALIGN
 #  define ERTS_HAVE_ERTS_SYS_ALIGNED_ALLOC 1
+#endif
+
+#ifndef RETSIGTYPE
+#define RETSIGTYPE void
 #endif
 
 /*
@@ -149,6 +149,12 @@ typedef struct tms SysTimes;
 #define SYS_CLK_TCK (erts_sys_time_data__.r.o.ticks_per_sec)
 
 #define sys_times(Arg) times(Arg)
+
+#if !HAVE_DECL_DAYLIGHT
+extern int sys_daylight;
+#else
+#define sys_daylight daylight
+#endif
 
 #if SIZEOF_LONG == 8
 typedef long ErtsMonotonicTime;
@@ -283,7 +289,7 @@ ERTS_GLB_INLINE ErtsSysPerfCounter erts_sys_perf_counter(void);
 #if ERTS_GLB_INLINE_INCL_FUNC_DEF
 
 ERTS_GLB_FORCE_INLINE ErtsSysPerfCounter
-erts_sys_perf_counter()
+erts_sys_perf_counter(void)
 {
     return (*erts_sys_time_data__.r.o.perf_counter)();
 }
@@ -317,6 +323,27 @@ int sys_stop_hrvtime(void);
 
 /* No use in having other resolutions than 1 Ms. */
 #define SYS_CLOCK_RESOLUTION 1
+
+ERTS_GLB_INLINE struct tm *sys_localtime_r(time_t *the_clock, struct tm *buff);
+
+#if ERTS_GLB_INLINE_INCL_FUNC_DEF
+
+ERTS_GLB_INLINE struct tm *sys_localtime_r(time_t *the_clock, struct tm *buff) {
+#ifdef HAVE_LOCALTIME_R
+    tzset(); /* POSIX.1-2004 does not require tzset to be called within
+                localtime_r, so if summer/winter-time has passed localtime_r
+                will return the time when Erlang was started. So we need to
+                call tzset() before all localtime_r calls.
+
+                localtime already calls tzset for each call, so the performance
+                penalty should be acceptable.... */
+    return localtime_r(the_clock, buff);
+#else
+    return localtime(the_clock);
+#endif
+}
+
+#endif /* ERTS_GLB_INLINE_INCL_FUNC_DEF */
 
 /* These are defined in sys.c */
 typedef void (*SIGFUNC)(int);

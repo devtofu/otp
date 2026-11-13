@@ -1,38 +1,62 @@
+## %CopyrightBegin%
+##
+## SPDX-License-Identifier: Apache-2.0
+##
+## Copyright Ericsson AB 2024-2026. All Rights Reserved.
+##
+## Licensed under the Apache License, Version 2.0 (the "License");
+## you may not use this file except in compliance with the License.
+## You may obtain a copy of the License at
+##
+##     http://www.apache.org/licenses/LICENSE-2.0
+##
+## Unless required by applicable law or agreed to in writing, software
+## distributed under the License is distributed on an "AS IS" BASIS,
+## WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+## See the License for the specific language governing permissions and
+## limitations under the License.
+##
+## %CopyrightEnd%
+
 name: Sync all github releases with erlang.org
 
-## Update the base image every day
+## Sync all github releases every hour
 on:
   workflow_dispatch:
   schedule:
   ## In UTC
   - cron: '0 * * * *'
 
+## Needed to create releases
+permissions:
+  contents: read
+
 ## Build base images to be used by other github workflows
 jobs:
 
-  # Wait for up to a minute for previous runs to complete, abort if not done by then
-  pre-ci:
-    runs-on: ubuntu-latest
-    timeout-minutes: 1
-    steps:
-      - name: 'Block Concurrent Executions'
-        uses: softprops/turnstyle@v1
-        with:
-          poll-interval-seconds: 10
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
   sync-releases:
-    needs: pre-ci
     if: github.repository == 'erlang/otp'
+    concurrency: sync-github-releases
     runs-on: ubuntu-latest
+    permissions:
+        ## Needed to create releases
+        contents: write
+        actions: write
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       ## We need to login to the package registry in order to pull
       ## the base debian image.
       - name: Docker login
-        run: docker login https://docker.pkg.github.com -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: docker login https://ghcr.io -u "${GITHUB_ACTOR}" -p "${GITHUB_TOKEN}"
       - name: Sync releases
-        run: >
-          .github/scripts/sync-github-releases.sh ${{ github.repository }}
-          "Bearer ${{ secrets.GITHUB_TOKEN }}" "^[2-9][1-9]\\..*" 25m
+        env:
+          ERLANG_ORG_TOKEN: ${{ secrets.TRIGGER_ERLANG_ORG_BUILD }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pip install --require-hashes -r .github/requirements/mdformat.txt
+          .github/scripts/sync-github-releases.sh ${{ github.repository }} \
+            "Bearer ${GITHUB_TOKEN}" "^[2-9][1-9]\\..*" 25m

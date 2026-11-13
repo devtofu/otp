@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2000-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2000-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -56,7 +58,7 @@
 %% Open or create a database table. In the mnesia/dets case, 
 %% where the table is stored on disc, it could be of interest
 %% to clear the table. This is controlled by the Action parameter.
-%% An empty node list ([]), is traslated into a list containing
+%% An empty node list ([]), is translated into a list containing
 %% only the own node.
 %% ---------------------------------------------------------------
 open({mnesia,Nodes,clear}, Name, RecName, Attr, Type) when is_list(Nodes) ->
